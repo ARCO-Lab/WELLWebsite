@@ -23,5 +23,9 @@ Create ```bash .env``` file in ```bash backend/``` directory:
 HOBOLINK_API_URL=https://api.hobolink.licor.cloud/v1/data
 HOBOLINK_API_TOKEN=your-api-token-here
 HOBOLINK_LOGGERS=weatherlogger,waterlogger1,waterlogger2,...,waterlogger5
+
+WQDATA_API_URL=https://www.wqdatalive.com/api/v1
+WQDATA_API_KEY=your-api-key-here
+WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
