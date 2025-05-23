@@ -1,9 +1,12 @@
-@app.route("/api/weather")
-def get_weather():
-    data = get_weather_data()  # from services.py
-    return jsonify(data)
+from flask import jsonify
+from services import get_weather_data
+#, get_water_quality_data
 
-@app.route("/api/water_quality")
+def get_weather():
+    data = get_weather_data()
+    return jsonify(data)
+"""
 def get_water_quality():
-    data = get_water_quality_data()  # from services.py
-    return jsonify(data)            
+    data = get_water_quality_data()
+    return jsonify(data)
+"""

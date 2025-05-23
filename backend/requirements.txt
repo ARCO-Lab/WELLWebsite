@@ -1,2 +1,5 @@
 requests
 dotenv
+flask
+flask_cors
+routes
