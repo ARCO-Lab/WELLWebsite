@@ -4,7 +4,7 @@ const WeatherChart = () => {
   const [weatherData, setWeatherData] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch("http://localhost:3000/api/weather")  // or "/api/weather" if using a Next.js proxy route
+    fetch("/api/weather")  // or "/api/weather" if using a Next.js proxy route
       .then((res) => res.json())
       .then((json) => {
         setWeatherData(json);
@@ -13,9 +13,9 @@ const WeatherChart = () => {
   }, []);
 
   return (
-    <div className="bg-white p-4 rounded shadow">
-      <h2 className="text-lg font-semibold mb-2">Raw Weather Data</h2>
-      <pre className="text-sm text-gray-700 whitespace-pre-wrap overflow-x-auto">
+    <div className="p-4 bg-white rounded shadow">
+      <h2 className="mb-2 text-lg font-semibold">Raw Weather Data</h2>
+      <pre className="overflow-x-auto text-sm text-gray-700 whitespace-pre-wrap">
         {JSON.stringify(weatherData, null, 2)}
       </pre>
     </div>

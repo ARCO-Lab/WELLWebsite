@@ -7,22 +7,31 @@ const FilterPanel = () => {
     quality: false,
   });
 
-  const toggle = (key: keyof typeof open) =>
-    setOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  const [checked, setChecked] = useState({
+    gauges: false,
+    weather: false,
+    quality: false,
+  });
+
+  const toggleGroupMain = (group: keyof typeof checked) => {
+    setChecked((prev) => ({ ...prev, [group]: !prev[group] }));
+    setOpen((prev) => ({ ...prev, [group]: !prev[group] }));
+  };
 
   return (
-    <div className="w-full h-full p-4 bg-white rounded shadow overflow-y-auto">
-      {/* Stream Gauges */}
+    <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow">
+      {/* Water Loggers */}
       <div className="mb-4">
-        <button
-          onClick={() => toggle("gauges")}
-          className="w-full text-left font-semibold text-gray-800 flex justify-between"
-        >
-          Stream Gauges
-          <span>{open.gauges ? "▲" : "▼"}</span>
-        </button>
+        <label className="flex items-center space-x-2 font-semibold text-gray-800">
+          <input
+            type="checkbox"
+            checked={checked.gauges}
+            onChange={() => toggleGroupMain("gauges")}
+          />
+          <span>Water Loggers</span>
+        </label>
         {open.gauges && (
-          <ul className="ml-2 mt-2 space-y-1 text-sm text-gray-700">
+          <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
             <li><input type="checkbox" /> Water Level</li>
             <li><input type="checkbox" /> Water Temperature</li>
           </ul>
@@ -31,36 +40,42 @@ const FilterPanel = () => {
 
       {/* Weather Data */}
       <div className="mb-4">
-        <button
-          onClick={() => toggle("weather")}
-          className="w-full text-left font-semibold text-gray-800 flex justify-between"
-        >
-          Weather Data
-          <span>{open.weather ? "▲" : "▼"}</span>
-        </button>
+        <label className="flex items-center space-x-2 font-semibold text-gray-800">
+          <input
+            type="checkbox"
+            checked={checked.weather}
+            onChange={() => toggleGroupMain("weather")}
+          />
+          <span>Weather Data</span>
+        </label>
         {open.weather && (
-          <ul className="ml-2 mt-2 space-y-1 text-sm text-gray-700">
+          <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
             <li><input type="checkbox" /> Air Temperature</li>
             <li><input type="checkbox" /> Barometric Pressure</li>
-            <li><input type="checkbox" /> Wind Speed and Direction</li>
+            <li><input type="checkbox" /> Wind Speed</li>
+            <li><input type="checkbox" /> Gust Speed</li>
+            <li><input type="checkbox" /> Wind Direction</li>
+            <li><input type="checkbox" /> Relative Humidity</li>
+            <li><input type="checkbox" /> Dew Point</li>
             <li><input type="checkbox" /> Rainfall</li>
+            <li><input type="checkbox" /> Water Content</li>
             <li><input type="checkbox" /> Solar Radiation</li>
-            <li><input type="checkbox" /> Soil Moisture</li>
           </ul>
         )}
       </div>
 
       {/* Water Quality */}
       <div>
-        <button
-          onClick={() => toggle("quality")}
-          className="w-full text-left font-semibold text-gray-800 flex justify-between"
-        >
-          Water Quality
-          <span>{open.quality ? "▲" : "▼"}</span>
-        </button>
+        <label className="flex items-center space-x-2 font-semibold text-gray-800">
+          <input
+            type="checkbox"
+            checked={checked.quality}
+            onChange={() => toggleGroupMain("quality")}
+          />
+          <span>Water Quality</span>
+        </label>
         {open.quality && (
-          <ul className="ml-2 mt-2 space-y-1 text-sm text-gray-700">
+          <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
             <li><input type="checkbox" /> Temperature</li>
             <li><input type="checkbox" /> Conductivity</li>
             <li><input type="checkbox" /> Salinity</li>

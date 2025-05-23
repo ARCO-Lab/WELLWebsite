@@ -15,7 +15,7 @@ export default function Dashboard() {
         <h1 className="mb-6 text-3xl font-bold">WELL Sensor Dashboard</h1>
 
         {/* Top-level grid: 4 columns */}
-        <div className="grid grid-cols-4 gap-4 h-[85vh]">
+        <div className="grid h-full grid-cols-4 gap-4">
           {/* Filters – full height */}
           <div className="flex flex-col justify-between col-span-1 p-4 bg-white rounded shadow">
             <div>
@@ -37,7 +37,7 @@ export default function Dashboard() {
               <div className="col-span-1 p-4 bg-white rounded shadow">
                 <h2 className="mb-2 text-xl font-semibold">Sensor Data</h2>
                 <div className="space-y-2">
-                  <div className="h-12 p-2 bg-gray-100 rounded">Temperature</div>
+                  <div className="h-12 p-2 bg-gray-100 rounded h-13">Temperature</div>
                   <div className="h-12 p-2 bg-gray-100 rounded">Dissolved Oxygen</div>
                   <div className="h-12 p-2 bg-gray-100 rounded">Turbidity</div>
                 </div>
