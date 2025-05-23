@@ -1,20 +1,27 @@
 import React, { useState } from "react";
 
-const FilterPanel = () => {
+type Props = {
+  activeGroups: {
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  };
+  setActiveGroups: React.Dispatch<React.SetStateAction<{
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  }>>;
+};
+
+const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups }) => {
   const [open, setOpen] = useState({
     gauges: false,
     weather: false,
     quality: false,
   });
 
-  const [checked, setChecked] = useState({
-    gauges: false,
-    weather: false,
-    quality: false,
-  });
-
-  const toggleGroupMain = (group: keyof typeof checked) => {
-    setChecked((prev) => ({ ...prev, [group]: !prev[group] }));
+  const toggleGroupMain = (group: keyof typeof activeGroups) => {
+    setActiveGroups((prev) => ({ ...prev, [group]: !prev[group] }));
     setOpen((prev) => ({ ...prev, [group]: !prev[group] }));
   };
 
@@ -25,7 +32,7 @@ const FilterPanel = () => {
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
             type="checkbox"
-            checked={checked.gauges}
+            checked={activeGroups.gauges}
             onChange={() => toggleGroupMain("gauges")}
           />
           <span>Water Loggers</span>
@@ -43,7 +50,7 @@ const FilterPanel = () => {
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
             type="checkbox"
-            checked={checked.weather}
+            checked={activeGroups.weather}
             onChange={() => toggleGroupMain("weather")}
           />
           <span>Weather Data</span>
@@ -69,7 +76,7 @@ const FilterPanel = () => {
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
             type="checkbox"
-            checked={checked.quality}
+            checked={activeGroups.quality}
             onChange={() => toggleGroupMain("quality")}
           />
           <span>Water Quality</span>

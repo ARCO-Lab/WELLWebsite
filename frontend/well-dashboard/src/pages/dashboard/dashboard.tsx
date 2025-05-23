@@ -1,9 +1,19 @@
+import { useState } from "react";
 import Head from "next/head";
 import Header from "@/components/Header";
 import FilterPanel from "@/components/FilterPanel";
 import WeatherChart from "@/components/Chart";
+import dynamic from "next/dynamic";
+
+const Map = dynamic(() => import("@/components/Map"), { ssr: false });
 
 export default function Dashboard() {
+  const [activeGroups, setActiveGroups] = useState({
+    gauges: false,
+    weather: false,
+    quality: false,
+  });
+
   return (
     <>
       <Head>
@@ -21,12 +31,15 @@ export default function Dashboard() {
             <div>
               <h2 className="mb-4 text-xl font-semibold">Filters</h2>
               <div className="space-y-2">
-                <FilterPanel />
+                <FilterPanel
+                  activeGroups={activeGroups}
+                  setActiveGroups={setActiveGroups}
+                />
+                <div className="mt-6 space-y-2">
+                    <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-blue-600">Apply</button>
+                    <button className="w-full py-2 text-white bg-gray-600 rounded hover:bg-green-600">Download</button>
+                </div>
               </div>
-            </div>
-            <div className="mt-6 space-y-2">
-              <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-blue-600">Apply</button>
-              <button className="w-full py-2 text-white bg-gray-600 rounded hover:bg-green-600">Download</button>
             </div>
           </div>
 
@@ -44,7 +57,7 @@ export default function Dashboard() {
               </div>
               <div className="col-span-2 p-4 bg-white rounded shadow">
                 <h2 className="mb-2 text-xl font-semibold">Map</h2>
-                <div className="w-full h-full bg-gray-200 rounded">Google Map Placeholder</div>
+                <Map activeGroups={activeGroups} />
               </div>
             </div>
 

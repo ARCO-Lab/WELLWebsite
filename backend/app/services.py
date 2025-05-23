@@ -15,8 +15,8 @@ def get_weather_data(start_time=None, end_time=None):
         start_time = (now - timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S")
         end_time=now.strftime("%Y-%m-%d %H:%M:%S")
         # weather station down so current all time start:"2025-05-09 15:20:00" all time end: "2025-05-21 12:15:00"
-        start_time = "2025-05-21 00:15:00" #12 hours less than last input
-        end_time = "2025-05-21 12:15:00"
+        start_time = "2025-05-21 12:05:00" #12 hours less than last input
+        end_time = "2025-05-21 12:05:00"
     weather_logger = hobo_loggers.split(",")[0]
 
     headers = {
