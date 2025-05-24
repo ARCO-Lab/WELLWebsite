@@ -18,7 +18,7 @@ const metrics: WeatherMetric[] = [
   { label: "Water Content", key: "Water Content" },
 ];
 
-const WeatherMetrics = () => {
+const WeatherMetrics = ({ activeKeys }: { activeKeys: string[] }) => {
   const [weatherData, setWeatherData] = useState<any[]>([]);
 
   useEffect(() => {
@@ -32,7 +32,9 @@ const WeatherMetrics = () => {
     <div className="p-4 overflow-y-auto bg-white rounded shadow max-h-25">
       <h2 className="mb-2 text-lg font-semibold">Weather Metrics</h2>
       <ul className="space-y-1 text-sm text-gray-800">
-        {metrics.map(({ label, key }) => {
+        {metrics
+            .filter(({ label }) => activeKeys.includes(label))
+            .map(({ label, key }) => {
           const entry = weatherData.find((d) => d.sensor_measurement_type === key);
           const value = entry?.value?.toFixed(2) ?? "--";
           const unit = entry?.unit ?? "";

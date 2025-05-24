@@ -19,6 +19,10 @@ export default function Dashboard() {
     weather: false,
     quality: false,
   });
+  const [subFilters, setSubFilters] = useState({
+    weather: [] as string[],
+    quality: [] as string[],
+  });
   
   const graphComponents = [];
     if (activeGroups.weather) graphComponents.push(<WeatherChart key="weather" />);
@@ -29,7 +33,7 @@ export default function Dashboard() {
                     graphComponents.length === 2 ? "grid-cols-2" :
                     graphComponents.length === 3 ? "grid-cols-3" : "";
   const metricComponents = [];
-    if (activeGroups.weather) metricComponents.push(<WeatherMetrics key="weather" />);
+    if (activeGroups.weather) metricComponents.push(<WeatherMetrics key="weather" activeKeys={subFilters.weather} />);
     if (activeGroups.quality) metricComponents.push(<QualityMetrics key="quality" />);
     if (activeGroups.gauges) metricComponents.push(<LoggerMetrics key="gauges" />);
 
@@ -57,6 +61,8 @@ export default function Dashboard() {
                 <FilterPanel
                   activeGroups={activeGroups}
                   setActiveGroups={setActiveGroups}
+                  subFilters={subFilters}
+                  setSubFilters={setSubFilters}
                 />
                 <div className="mt-6 space-y-2">
                     <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-green-600">Download</button>

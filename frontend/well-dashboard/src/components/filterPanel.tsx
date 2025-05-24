@@ -11,9 +11,17 @@ type Props = {
     weather: boolean;
     quality: boolean;
   }>>;
+  subFilters: {
+    weather: string[];
+    quality: string[];
+  };
+  setSubFilters: React.Dispatch<React.SetStateAction<{
+    weather: string[];
+    quality: string[];
+  }>>;
 };
 
-const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups }) => {
+const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters }) => {
   const [open, setOpen] = useState({
     gauges: false,
     weather: false,
@@ -23,6 +31,14 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups }) => {
   const toggleGroupMain = (group: keyof typeof activeGroups) => {
     setActiveGroups((prev) => ({ ...prev, [group]: !prev[group] }));
     setOpen((prev) => ({ ...prev, [group]: !prev[group] }));
+  };
+
+  const toggleSubFilter = (group: "weather" | "quality", label: string) => {
+    setSubFilters((prev) => {
+        const selected = new Set(prev[group]);
+        selected.has(label) ? selected.delete(label) : selected.add(label);
+        return { ...prev, [group]: Array.from(selected) };
+    });
   };
 
   return (
@@ -56,19 +72,22 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups }) => {
           <span>Weather Data</span>
         </label>
         {open.weather && (
-          <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-            <li><input type="checkbox" /> Air Temperature</li>
-            <li><input type="checkbox" /> Barometric Pressure</li>
-            <li><input type="checkbox" /> Wind Speed</li>
-            <li><input type="checkbox" /> Gust Speed</li>
-            <li><input type="checkbox" /> Wind Direction</li>
-            <li><input type="checkbox" /> Relative Humidity</li>
-            <li><input type="checkbox" /> Dew Point</li>
-            <li><input type="checkbox" /> Rainfall</li>
-            <li><input type="checkbox" /> Water Content</li>
-            <li><input type="checkbox" /> Solar Radiation</li>
-          </ul>
-        )}
+            <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
+                {["Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction", "Relative Humidity", "Dew Point", "Rainfall", "Water Content", "Solar Radiation"].map((label) => (
+                <li key={label}>
+                    <label>
+                    <input
+                        type="checkbox"
+                        checked={subFilters.weather.includes(label)}
+                        onChange={() => toggleSubFilter("weather", label)}
+                    />{" "}
+                    {label}
+                    </label>
+                </li>
+                ))}
+            </ul>
+          )}
+
       </div>
 
       {/* Water Quality */}
