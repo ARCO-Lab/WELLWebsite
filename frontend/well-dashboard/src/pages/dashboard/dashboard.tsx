@@ -2,16 +2,17 @@ import { useState } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import Header from "@/components/Header";
-import FilterPanel from "@/components/FilterPanel";
+import FilterPanel from "@/components/filters/FilterPanel";
 import WeatherChart from "@/components/graphs/WeatherGraph";
 import LoggerGraph from "@/components/graphs/LoggerGraph";
 import QualityGraph from "@/components/graphs/QualityGraph";
 import WeatherMetrics from "@/components/metrics/WeatherMetrics";
 import QualityMetrics from "@/components/metrics/QualityMetrics";
 import LoggerMetrics from "@/components/metrics/LoggerMetrics";
+import Calendar from "@/components/filters/Calendar";
 
 
-const Map = dynamic(() => import("@/components/Map"), { ssr: false });
+const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
 export default function Dashboard() {
   const [activeGroups, setActiveGroups] = useState({
@@ -23,6 +24,18 @@ export default function Dashboard() {
     weather: [] as string[],
     quality: [] as string[],
   });
+  const [startDate, setStartDate] = useState<Date | null>(() => {
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    return oneWeekAgo;
+  });
+  const [endDate, setEndDate] = useState<Date | null>(() => {
+    const today = new Date();
+    return today;
+  });
+
+
+
   
   const graphComponents = [];
     if (activeGroups.weather) graphComponents.push(<WeatherChart key="weather" />);
@@ -63,6 +76,12 @@ export default function Dashboard() {
                   setActiveGroups={setActiveGroups}
                   subFilters={subFilters}
                   setSubFilters={setSubFilters}
+                />
+                <Calendar
+                  startDate={startDate}
+                  endDate={endDate}
+                  onStartChange={setStartDate}
+                  onEndChange={setEndDate}
                 />
                 <div className="mt-6 space-y-2">
                     <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-green-600">Download</button>
