@@ -11,6 +11,7 @@ import QualityMetrics from "@/components/metrics/QualityMetrics";
 import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
+import Download from "@/components/Download";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
@@ -84,7 +85,12 @@ export default function Dashboard() {
                   onEndChange={setEndDate}
                 />
                 <div className="mt-6 space-y-2">
-                    <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-green-600">Download</button>
+                    <Download
+                      activeGroups={activeGroups}
+                      startDate={startDate}
+                      endDate={endDate}
+                    />
+
                 </div>
               </div>
             </div>
