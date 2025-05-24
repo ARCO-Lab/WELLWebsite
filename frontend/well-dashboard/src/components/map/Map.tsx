@@ -14,13 +14,13 @@ interface MapProps {
 const center = { lat: 43.260456, lng: -79.932517 };
 
 const markers = [
-  { lat: 43.2671, lng: -79.928828, label: "Water Logger 1", icon: "/mapIcons/loggerIcon.png", group: "gauges" },
-  { lat: 43.264372, lng: -79.928956, label: "Water Logger 2", icon: "/mapIcons/loggerIcon.png", group: "gauges" },
-  { lat: 43.260456, lng: -79.932517, label: "Water Logger 3", icon: "/mapIcons/loggerIcon.png", group: "gauges" },
-  { lat: 43.258192, lng: -79.938394, label: "Water Logger 4", icon: "/mapIcons/loggerIcon.png", group: "gauges" },
-  { lat: 43.253939, lng: -79.942208, label: "Water Logger 5", icon: "/mapIcons/loggerIcon.png", group: "gauges" },
-  { lat: 43.260456, lng: -79.932812, label: "Water Quality Sensor", icon: "/mapIcons/qualityIcon.png", group: "quality" },
-  { lat: 43.265686, lng: -79.929256, label: "Weather Station", icon: "/mapIcons/weatherIcon.png", group: "weather" },
+  { lat: 43.2671, lng: -79.928828, label: "Water Logger 1", icon: "/icons/loggerIcon.png", group: "gauges" },
+  { lat: 43.264372, lng: -79.928956, label: "Water Logger 2", icon: "/icons/loggerIcon.png", group: "gauges" },
+  { lat: 43.260456, lng: -79.932517, label: "Water Logger 3", icon: "/icons/loggerIcon.png", group: "gauges" },
+  { lat: 43.258192, lng: -79.938394, label: "Water Logger 4", icon: "/icons/loggerIcon.png", group: "gauges" },
+  { lat: 43.253939, lng: -79.942208, label: "Water Logger 5", icon: "icons/loggerIcon.png", group: "gauges" },
+  { lat: 43.260456, lng: -79.932812, label: "Water Quality Sensor", icon: "/icons/qualityIcon.png", group: "quality" },
+  { lat: 43.265686, lng: -79.929256, label: "Weather Station", icon: "/icons/weatherIcon.png", group: "weather" },
 ];
 
 const containerStyle = {

@@ -10,7 +10,7 @@ import WeatherMetrics from "@/components/metrics/WeatherMetrics";
 import QualityMetrics from "@/components/metrics/QualityMetrics";
 import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 import Calendar from "@/components/filters/Calendar";
-
+import Information from "@/components/Information";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
@@ -42,7 +42,7 @@ export default function Dashboard() {
     if (activeGroups.quality) graphComponents.push(<QualityGraph key="quality" />);
     if (activeGroups.gauges) graphComponents.push(<LoggerGraph key="gauges" />);
 
-    const graphCols = graphComponents.length === 1 ? "grid-cols-1" :
+  const graphCols = graphComponents.length === 1 ? "grid-cols-1" :
                     graphComponents.length === 2 ? "grid-cols-2" :
                     graphComponents.length === 3 ? "grid-cols-3" : "";
   const metricComponents = [];
@@ -50,7 +50,7 @@ export default function Dashboard() {
     if (activeGroups.quality) metricComponents.push(<QualityMetrics key="quality" />);
     if (activeGroups.gauges) metricComponents.push(<LoggerMetrics key="gauges" />);
 
-    const metricRows = metricComponents.length === 1 ? "grid-rows-1" :
+  const metricRows = metricComponents.length === 1 ? "grid-rows-1" :
                    metricComponents.length === 2 ? "grid-rows-2" :
                    metricComponents.length === 3 ? "grid-rows-3" : "";
 
@@ -69,7 +69,7 @@ export default function Dashboard() {
           {/* Filters – full height */}
           <div className="flex flex-col justify-between col-span-1 p-4 bg-white rounded shadow">
             <div>
-              <h2 className="mb-4 text-xl font-semibold">Filters</h2>
+              <h2 className="flex items-center justify-between mb-4 text-xl font-semibold">Filters <Information id={1}/></h2>
               <div className="space-y-2">
                 <FilterPanel
                   activeGroups={activeGroups}
@@ -96,21 +96,21 @@ export default function Dashboard() {
             <div className="grid grid-cols-3 gap-4 flex-grow-[2] h-1/2">
                 {/* Sensor Data */}
                 <div className="flex flex-col h-full col-span-1 p-4 bg-white rounded shadow">
-                    <h2 className="mb-2 text-xl font-semibold">Sensor Data</h2>
+                    <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Latest Data <Information id={3}/></h2>
                     <div className="flex flex-col flex-grow gap-4">
                         {metricComponents}
                     </div>
                 </div>
               {/* Map */}
               <div className="col-span-2 p-4 bg-white rounded shadow">
-                <h2 className="mb-2 text-xl font-semibold">Map</h2>
+                <h2 className="flex items-center justify-between mb-2 text-xl font-semibold font-semiboldmb-2">Map <Information id={2}/></h2>
                 <Map activeGroups={activeGroups} />
               </div>
             </div>
 
             {/* Bottom Row: Graphs */}
             <div className="flex-grow p-4 bg-white rounded shadow">
-              <h2 className="mb-2 text-xl font-semibold">Graphs</h2>
+              <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Graphs <Information id={4}/></h2>
               <div className={`grid gap-4 ${graphCols}`}>
                 {graphComponents}
               </div>
