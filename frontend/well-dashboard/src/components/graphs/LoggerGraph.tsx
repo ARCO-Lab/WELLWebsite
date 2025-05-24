@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const WeatherChart = () => {
+const LoggerGraph = () => {
   const [weatherData, setWeatherData] = useState<any[]>([]);
 
   useEffect(() => {
@@ -14,7 +14,7 @@ const WeatherChart = () => {
 
   return (
     <div className="p-4 bg-white rounded shadow">
-      <h2 className="mb-2 text-lg font-semibold">Raw Weather Data</h2>
+      <h2 className="mb-2 text-lg font-semibold">Water Loggers</h2>
       <pre className="overflow-x-auto text-sm text-gray-700 whitespace-pre-wrap">
         {JSON.stringify(weatherData, null, 2)}
       </pre>
@@ -22,4 +22,4 @@ const WeatherChart = () => {
   );
 };
 
-export default WeatherChart;
+export default LoggerGraph;

@@ -1,9 +1,12 @@
 import { useState } from "react";
 import Head from "next/head";
+import dynamic from "next/dynamic";
 import Header from "@/components/Header";
 import FilterPanel from "@/components/FilterPanel";
-import WeatherChart from "@/components/Chart";
-import dynamic from "next/dynamic";
+import WeatherChart from "@/components/graphs/WeatherGraph";
+import LoggerGraph from "@/components/graphs/LoggerGraph";
+import QualityGraph from "@/components/graphs/QualityGraph";
+
 
 const Map = dynamic(() => import("@/components/Map"), { ssr: false });
 
@@ -13,6 +16,15 @@ export default function Dashboard() {
     weather: false,
     quality: false,
   });
+  
+  const graphComponents = [];
+    if (activeGroups.weather) graphComponents.push(<WeatherChart key="weather" />);
+    if (activeGroups.quality) graphComponents.push(<QualityGraph key="quality" />);
+    if (activeGroups.gauges) graphComponents.push(<LoggerGraph key="gauges" />);
+
+    const graphCols = graphComponents.length === 1 ? "grid-cols-1" :
+                    graphComponents.length === 2 ? "grid-cols-2" :
+                    graphComponents.length === 3 ? "grid-cols-3" : "";
 
   return (
     <>
@@ -64,7 +76,9 @@ export default function Dashboard() {
             {/* Bottom Row: Graphs */}
             <div className="flex-grow p-4 bg-white rounded shadow">
               <h2 className="mb-2 text-xl font-semibold">Graphs</h2>
-              <WeatherChart />
+              <div className={`grid gap-4 ${graphCols}`}>
+                {graphComponents}
+              </div>
             </div>
           </div>
         </div>
