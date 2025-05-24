@@ -1,12 +1,8 @@
 from flask import jsonify
-from services import get_weather_data
-#, get_water_quality_data
+from services import WeatherService
+from config import Config
 
-def get_weather():
-    data = get_weather_data()
-    return jsonify(data)
-"""
-def get_water_quality():
-    data = get_water_quality_data()
-    return jsonify(data)
-"""
+weather_service = WeatherService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)
+
+def register_routes(app):
+    app.add_url_rule("/api/weather", "get_weather", lambda: jsonify(weather_service.get_weather_data()))
