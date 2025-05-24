@@ -6,6 +6,9 @@ import FilterPanel from "@/components/FilterPanel";
 import WeatherChart from "@/components/graphs/WeatherGraph";
 import LoggerGraph from "@/components/graphs/LoggerGraph";
 import QualityGraph from "@/components/graphs/QualityGraph";
+import WeatherMetrics from "@/components/metrics/WeatherMetrics";
+import QualityMetrics from "@/components/metrics/QualityMetrics";
+import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 
 
 const Map = dynamic(() => import("@/components/Map"), { ssr: false });
@@ -25,6 +28,14 @@ export default function Dashboard() {
     const graphCols = graphComponents.length === 1 ? "grid-cols-1" :
                     graphComponents.length === 2 ? "grid-cols-2" :
                     graphComponents.length === 3 ? "grid-cols-3" : "";
+  const metricComponents = [];
+    if (activeGroups.weather) metricComponents.push(<WeatherMetrics key="weather" />);
+    if (activeGroups.quality) metricComponents.push(<QualityMetrics key="quality" />);
+    if (activeGroups.gauges) metricComponents.push(<LoggerMetrics key="gauges" />);
+
+    const metricRows = metricComponents.length === 1 ? "grid-rows-1" :
+                   metricComponents.length === 2 ? "grid-rows-2" :
+                   metricComponents.length === 3 ? "grid-rows-3" : "";
 
   return (
     <>
@@ -48,25 +59,24 @@ export default function Dashboard() {
                   setActiveGroups={setActiveGroups}
                 />
                 <div className="mt-6 space-y-2">
-                    <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-blue-600">Apply</button>
-                    <button className="w-full py-2 text-white bg-gray-600 rounded hover:bg-green-600">Download</button>
+                    <button className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-green-600">Download</button>
                 </div>
               </div>
             </div>
           </div>
 
           {/* Right 3/4: sensor + map + graphs */}
-          <div className="flex flex-col h-full col-span-3 gap-4">
+          <div className="flex flex-col h-full col-span-3 gap-12">
             {/* Top Row: Sensor + Map */}
             <div className="grid grid-cols-3 gap-4 flex-grow-[2] h-1/2">
-              <div className="col-span-1 p-4 bg-white rounded shadow">
-                <h2 className="mb-2 text-xl font-semibold">Sensor Data</h2>
-                <div className="space-y-2">
-                  <div className="h-12 p-2 bg-gray-100 rounded h-13">Temperature</div>
-                  <div className="h-12 p-2 bg-gray-100 rounded">Dissolved Oxygen</div>
-                  <div className="h-12 p-2 bg-gray-100 rounded">Turbidity</div>
+                {/* Sensor Data */}
+                <div className="flex flex-col h-full col-span-1 p-4 bg-white rounded shadow">
+                    <h2 className="mb-2 text-xl font-semibold">Sensor Data</h2>
+                    <div className="flex flex-col flex-grow gap-4">
+                        {metricComponents}
+                    </div>
                 </div>
-              </div>
+              {/* Map */}
               <div className="col-span-2 p-4 bg-white rounded shadow">
                 <h2 className="mb-2 text-xl font-semibold">Map</h2>
                 <Map activeGroups={activeGroups} />

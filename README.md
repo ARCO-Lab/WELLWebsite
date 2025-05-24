@@ -29,3 +29,8 @@ WQDATA_API_KEY=your-api-key-here
 WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
+
+
+TODO: information icon for each part
+start with everything checked when page loads, then allow user to change (default date range being the last week)
+graphs mimic wqlive graph template
