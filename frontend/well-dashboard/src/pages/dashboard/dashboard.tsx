@@ -12,6 +12,7 @@ import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
+import Modal from "@/components/Modal";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
@@ -35,31 +36,55 @@ export default function Dashboard() {
     return today;
   });
 
+  const cachedMetrics = {
+    weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} />,
+    quality: <QualityMetrics key="quality" />,
+    gauges: <LoggerMetrics key="gauges" />,
+  };
 
-
+  const cachedGraphs = {
+    weather: <WeatherChart key="weather" />,
+    quality: <QualityGraph key="quality" />,
+    gauges: <LoggerGraph key="gauges" />,
+  };
   
   const graphComponents = [];
-    if (activeGroups.weather) graphComponents.push(<WeatherChart key="weather" />);
-    if (activeGroups.quality) graphComponents.push(<QualityGraph key="quality" />);
-    if (activeGroups.gauges) graphComponents.push(<LoggerGraph key="gauges" />);
+  if (activeGroups.weather) graphComponents.push(cachedGraphs.weather);
+  if (activeGroups.quality) graphComponents.push(cachedGraphs.quality);
+  if (activeGroups.gauges) graphComponents.push(cachedGraphs.gauges);
 
   const graphCols = graphComponents.length === 1 ? "grid-cols-1" :
                     graphComponents.length === 2 ? "grid-cols-2" :
                     graphComponents.length === 3 ? "grid-cols-3" : "";
+                    
   const metricComponents = [];
-    if (activeGroups.weather) metricComponents.push(<WeatherMetrics key="weather" activeKeys={subFilters.weather} />);
-    if (activeGroups.quality) metricComponents.push(<QualityMetrics key="quality" />);
-    if (activeGroups.gauges) metricComponents.push(<LoggerMetrics key="gauges" />);
+  if (activeGroups.weather) metricComponents.push(cachedMetrics.weather);
+  if (activeGroups.quality) metricComponents.push(cachedMetrics.quality);
+  if (activeGroups.gauges) metricComponents.push(cachedMetrics.gauges);
 
-  const metricRows = metricComponents.length === 1 ? "grid-rows-1" :
-                   metricComponents.length === 2 ? "grid-rows-2" :
-                   metricComponents.length === 3 ? "grid-rows-3" : "";
+  // Dynamic flex basis for metrics based on count
+  const getMetricFlexBasis = (count: number) => {
+    if (count === 1) return "flex-1"; // 100%
+    if (count === 2) return "flex-1"; // 50% each with flex-1
+    if (count === 3) return "flex-1"; // 33.33% each with flex-1
+    return "flex-1";
+  };
+                   
+  const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const openModal = (content: React.ReactNode) => {
+    setModalContent(content);
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setModalContent(null);
+    setIsModalOpen(false);
+  };
 
   return (
     <>
-      <Head>
-        <title>WELL Sensor Dashboard</title>
-      </Head>
       <Header />
       <main className="min-h-screen p-6 text-black bg-white">
         {/* Title */}
@@ -85,12 +110,11 @@ export default function Dashboard() {
                   onEndChange={setEndDate}
                 />
                 <div className="mt-6 space-y-2">
-                    <Download
-                      activeGroups={activeGroups}
-                      startDate={startDate}
-                      endDate={endDate}
-                    />
-
+                  <Download
+                    activeGroups={activeGroups}
+                    startDate={startDate}
+                    endDate={endDate}
+                  />
                 </div>
               </div>
             </div>
@@ -98,32 +122,56 @@ export default function Dashboard() {
 
           {/* Right 3/4: sensor + map + graphs */}
           <div className="flex flex-col h-full col-span-3 gap-12">
-            {/* Top Row: Sensor + Map */}
-            <div className="grid grid-cols-3 gap-4 flex-grow-[2] h-1/2">
-                {/* Sensor Data */}
-                <div className="flex flex-col h-full col-span-1 p-4 bg-white rounded shadow">
-                    <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Latest Data <Information id={3}/></h2>
-                    <div className="flex flex-col flex-grow gap-4">
-                        {metricComponents}
+            {/* Top Row: Sensor + Map*/}
+            <div className="grid grid-cols-3 gap-4 h-96">
+              {/* Latest Data */}
+              <div className="flex flex-col col-span-1 p-4 bg-white rounded shadow h-96">
+                <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Latest Data <Information id={3}/></h2>
+                <div className="flex flex-col flex-1 min-h-0">
+                  {metricComponents.map((comp, index) => (
+                    <div
+                      key={index}
+                      onClick={() => openModal(comp)}
+                      className={`${getMetricFlexBasis(metricComponents.length)} overflow-y-auto transition cursor-pointer hover:shadow-lg rounded p-2 min-h-0`}
+                    >
+                      {comp}
                     </div>
+                  ))}
                 </div>
+              </div>
+              
               {/* Map */}
-              <div className="col-span-2 p-4 bg-white rounded shadow">
-                <h2 className="flex items-center justify-between mb-2 text-xl font-semibold font-semiboldmb-2">Map <Information id={2}/></h2>
-                <Map activeGroups={activeGroups} />
+              <div className="col-span-2 p-4 bg-white rounded shadow h-96">
+                <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Map <Information id={2}/></h2>
+                <div className="h-full">
+                  <Map activeGroups={activeGroups} />
+                </div>
               </div>
             </div>
-
+            
             {/* Bottom Row: Graphs */}
             <div className="flex-grow p-4 bg-white rounded shadow">
               <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Graphs <Information id={4}/></h2>
               <div className={`grid gap-4 ${graphCols}`}>
-                {graphComponents}
+                {graphComponents.map((comp, index) => (
+                  <div
+                    key={index}
+                    onClick={() => openModal(comp)}
+                    className="transition cursor-pointer hover:shadow-lg"
+                  >
+                    {comp}
+                  </div>
+                ))}
               </div>
             </div>
           </div>
         </div>
       </main>
+
+      {/* Modal for metrics/graphs */}
+      <Modal isOpen={isModalOpen} onClose={closeModal}>
+        {modalContent}
+      </Modal>
     </>
   );
 }

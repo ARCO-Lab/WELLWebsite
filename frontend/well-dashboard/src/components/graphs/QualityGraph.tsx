@@ -14,7 +14,7 @@ const QualityGraph = () => {
 
   return (
     <div className="p-4 bg-white rounded shadow">
-      <h2 className="mb-2 text-lg font-semibold">Water Quality</h2>
+      <h2 className="mb-2 text-lg font-semibold text-black">Water Quality</h2>
       <pre className="overflow-x-auto text-sm text-gray-700 whitespace-pre-wrap">
         {JSON.stringify(weatherData, null, 2)}
       </pre>

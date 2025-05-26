@@ -31,8 +31,8 @@ const QualityMetrics = () => {
   }, []);
 
   return (
-    <div className="p-4 overflow-y-auto bg-white rounded shadow max-h-25">
-      <h2 className="mb-2 text-lg font-semibold">Water Quality Metrics</h2>
+    <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow">
+      <h2 className="mb-2 text-lg font-semibold text-black">Water Quality Metrics</h2>
       <ul className="space-y-1 text-sm text-gray-800">
         {metrics.map(({ label, key }) => {
           const entry = qualityData.find((d) => d.sensor_measurement_type === key);

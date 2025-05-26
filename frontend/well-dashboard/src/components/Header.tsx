@@ -13,7 +13,7 @@ export default function Header() {
         />
         </div>
       <Link href="/">
-        <button className="px-4 py-2 text-black transition bg-yellow-400 rounded hover:bg-blue-700">
+        <button className="px-4 py-2 text-black transition bg-yellow-400 rounded cursor-pointer hover:bg-blue-700">
           Home
         </button>
       </Link>

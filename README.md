@@ -31,6 +31,10 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
 
-TODO: information icon for each part
+TODO: 
 start with everything checked when page loads, then allow user to change (default date range being the last week)
 graphs mimic wqlive graph template
+
+have latest dat take full part when only 1 half when 2, third when 3 with scroll if needed:
+
+have pop up close on click off, take bigger part of page normally, and not recall api but open the existing metric or graph

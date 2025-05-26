@@ -47,7 +47,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
       <div className="mb-4">
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
-            type="checkbox"
+            type="checkbox" className= "cursor-pointer"
             checked={activeGroups.gauges}
             onChange={() => toggleGroupMain("gauges")}
           />
@@ -55,8 +55,8 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
         </label>
         {open.gauges && (
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-            <li><input type="checkbox" /> Water Level</li>
-            <li><input type="checkbox" /> Water Temperature</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Water Level</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Water Temperature</li>
           </ul>
         )}
       </div>
@@ -65,7 +65,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
       <div className="mb-4">
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
-            type="checkbox"
+            type="checkbox" className= "cursor-pointer"
             checked={activeGroups.weather}
             onChange={() => toggleGroupMain("weather")}
           />
@@ -77,7 +77,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
                 <li key={label}>
                     <label>
                     <input
-                        type="checkbox"
+                        type="checkbox" className= "cursor-pointer"
                         checked={subFilters.weather.includes(label)}
                         onChange={() => toggleSubFilter("weather", label)}
                     />{" "}
@@ -94,7 +94,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
       <div>
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
-            type="checkbox"
+            type="checkbox" className= "cursor-pointer"
             checked={activeGroups.quality}
             onChange={() => toggleGroupMain("quality")}
           />
@@ -102,14 +102,14 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
         </label>
         {open.quality && (
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-            <li><input type="checkbox" /> Temperature</li>
-            <li><input type="checkbox" /> Conductivity</li>
-            <li><input type="checkbox" /> Salinity</li>
-            <li><input type="checkbox" /> Total Dissolved Solids (TDS)</li>
-            <li><input type="checkbox" /> Dissolved Oxygen (ODO)</li>
-            <li><input type="checkbox" /> Dissolved Oxygen Saturation (ODOSat)</li>
-            <li><input type="checkbox" /> Turbidity</li>
-            <li><input type="checkbox" /> Total Suspended Solids (TSS)</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Temperature</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Conductivity</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Salinity</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Total Dissolved Solids (TDS)</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Dissolved Oxygen (ODO)</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Dissolved Oxygen Saturation (ODOSat)</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Turbidity</li>
+            <li><input type="checkbox" className= "cursor-pointer"/> Total Suspended Solids (TSS)</li>
           </ul>
         )}
       </div>

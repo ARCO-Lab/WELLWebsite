@@ -52,7 +52,7 @@ const Download: React.FC<DownloadProps> = ({ activeGroups, startDate, endDate })
   return (
     <button
       onClick={handleDownload}
-      className="w-full py-2 text-white bg-yellow-500 rounded hover:bg-green-600"
+      className="w-full py-2 text-white bg-yellow-500 rounded cursor-pointer hover:bg-green-600"
     >
       Download
     </button>
