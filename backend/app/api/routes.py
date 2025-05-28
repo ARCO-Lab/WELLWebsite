@@ -1,5 +1,5 @@
 from flask import jsonify
-from services import WeatherService
+from api.services import WeatherService
 from config import Config
 
 weather_service = WeatherService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)

@@ -3,3 +3,5 @@ dotenv
 flask
 flask_cors
 routes
+flask_sqlalchemy
+psycopg2

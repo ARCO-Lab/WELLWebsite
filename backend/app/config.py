@@ -8,3 +8,6 @@ class Config:
     HOBO_API_URL = os.getenv("HOBOLINK_API_URL")
     HOBO_API_TOKEN = os.getenv("HOBOLINK_API_TOKEN")
     HOBO_LOGGERS = os.getenv("HOBOLINK_LOGGERS")
+    
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
