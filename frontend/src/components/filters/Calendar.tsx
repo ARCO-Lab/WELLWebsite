@@ -10,6 +10,9 @@ interface Props {
 };
 
 const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndChange }) => {
+
+  console.log("Calendar Rendered", { startDate, endDate });
+  
   return (
     <div className="flex flex-col">
       <div className="flex flex-col gap-2 md:flex-row">

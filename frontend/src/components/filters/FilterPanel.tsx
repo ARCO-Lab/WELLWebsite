@@ -41,6 +41,8 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
     });
   };
 
+  console.log("Active Groups:", activeGroups);
+
   return (
     <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow">
       {/* Water Loggers */}
@@ -73,7 +75,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
         </label>
         {open.weather && (
             <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-                {["Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction", "Relative Humidity", "Dew Point", "Rainfall", "Water Content", "Solar Radiation"].map((label) => (
+                {["Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction", "Relative Humidity", "Dew Point", "Rainfall", "Water Content", "Solar Radiation", "Soil Temperature"].map((label) => (
                 <li key={label}>
                     <label>
                     <input

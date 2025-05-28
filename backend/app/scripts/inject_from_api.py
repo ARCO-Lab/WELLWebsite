@@ -4,7 +4,7 @@ import pathlib
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from main import create_app
+from server import create_app
 from db.database import db
 from db.models import SensorMeasurement
 from api.services import WeatherService
@@ -23,7 +23,7 @@ def parse_weather_entry(entry, logger_id):
     timestamp = datetime.fromisoformat(entry.get("timestamp"))
 
     # Distinguish between Soil and Air Temperature
-    if sensor_sn == "22047792-1":
+    if sensor_sn == "21948438-1":
         measurement_type = "Soil Temperature"
     elif sensor_sn == "22154270-1":
         measurement_type = "Air Temperature"

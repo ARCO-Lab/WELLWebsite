@@ -8,13 +8,20 @@ interface DownloadProps {
   };
   startDate: Date | null;
   endDate: Date | null;
+  data: {
+    measurement_type: string;
+    value: number;
+    unit: string;
+    recorded_at: string;
+    group_type: string;
+  }[];
 }
 
 const formatDate = (date: Date) => {
   return date.toISOString().split("T")[0].replace(/-/g, "");
 };
 
-const Download: React.FC<DownloadProps> = ({ activeGroups, startDate, endDate }) => {
+const Download: React.FC<DownloadProps> = ({ activeGroups, startDate, endDate, data }) => {
   const getFileName = () => {
     const parts = ["WELL"];
     if (activeGroups.gauges) parts.push("WaterLogger");
@@ -28,11 +35,26 @@ const Download: React.FC<DownloadProps> = ({ activeGroups, startDate, endDate })
   };
 
   const handleDownload = () => {
+    if (!data || data.length === 0) {
+      console.warn("No data available to download.");
+      return;
+    }
+    
     const headers = ["Sensor", "Value", "Unit", "Timestamp"];
-    const rows: string[][] = [];
+    const filtered = data.filter((entry) => {
+      if (entry.group_type === "Weather" && activeGroups.weather) return true;
+      if (entry.group_type === "Quality" && activeGroups.quality) return true;
+      if (entry.group_type === "Logger" && activeGroups.gauges) return true;
+      return false;
+    });
 
-    // TODO: Replace this with real data fetching and formatting logic from database
-    // Example: rows.push(["Temperature", "12.3", "°C", "2025-03-14 12:00:00"]);
+    const sorted = filtered.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
+    const rows = sorted.map((entry) => [
+      entry.measurement_type,
+      entry.value.toString(),
+      entry.unit ?? "",
+      entry.recorded_at,
+    ]);
 
     const csvContent = [headers, ...rows]
       .map((row) => row.join(","))

@@ -13,6 +13,7 @@ import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
 import Modal from "@/components/Modal";
+import useFilteredData from "@/hooks/useFilteredData";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
@@ -35,6 +36,8 @@ export default function Dashboard() {
     const today = new Date();
     return today;
   });
+
+  const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   const cachedMetrics = {
     weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} />,

@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from main import create_app
+from server import create_app
 from db.database import db
 from db.models import SensorMeasurement
 from api.services import WeatherService
