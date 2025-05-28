@@ -25,8 +25,8 @@ out/
 Thumbs.db
 
 # Logs
-logs
-*.log
+#logs
+#*.log
 
 # TypeScript cache
 *.tsbuildinfo
@@ -50,3 +50,4 @@ venv/
 # Python
 __pycache__/
 *.pyc
+
