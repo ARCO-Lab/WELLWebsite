@@ -38,8 +38,6 @@ graphs mimic wqlive graph template
 
 make modal not recall but open existing one on bigger scale (Wait for graphs to be finished)
 
-ensure calendar date start cant be higher than end, and default hours minutes seconds is 00:00:00 for the request
-
 fix download have header have units
 database in est while frontend in utc
 

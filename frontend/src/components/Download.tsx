@@ -9,7 +9,7 @@ interface DownloadProps {
   subFilters: {
     weather: string[];
     quality: string[];
-    gauges: string[]; 
+    gauges: string[];
   };
   startDate: Date | null;
   endDate: Date | null;
@@ -17,7 +17,7 @@ interface DownloadProps {
     measurement_type: string;
     value: number;
     unit: string;
-    timestamp: string;
+    recorded_at: string; // change to timestamp once other api ready and inject_historical is done too
     group_type: string;
   }[];
 }
@@ -31,7 +31,7 @@ const Download: React.FC<DownloadProps> = ({
   subFilters,
   startDate,
   endDate,
-  data
+  data,
 }) => {
   const getFileName = () => {
     const parts = ["WELL"];
@@ -46,69 +46,71 @@ const Download: React.FC<DownloadProps> = ({
   };
 
   const handleDownload = () => {
-  if (!data || data.length === 0) {
-    console.warn("No data available to download.");
-    return;
-  }
-
-  // 1. Filter by active groups and subfilters
-  const filtered = data.filter((entry) => {
-    if (entry.group_type === "Weather" && activeGroups.weather) {
-      return subFilters.weather.includes(entry.measurement_type);
+    if (!data || data.length === 0) {
+      console.warn("No data available to download.");
+      return;
     }
-    if (entry.group_type === "Quality" && activeGroups.quality) {
-      return subFilters.quality.includes(entry.measurement_type);
-    }
-    if (entry.group_type === "Logger" && activeGroups.gauges) {
-      return subFilters.gauges.includes(entry.measurement_type);
-    }
-    return false;
-  });
 
-  // 2. Identify unique timestamps and metrics
-  const timestamps = [...new Set(filtered.map((d) => d.timestamp))].sort();
-  const metricKeys = [
-    ...new Set(filtered.map((d) => d.measurement_type)),
-  ].sort();
-
-  // 3. Build rows
-  const rows = timestamps.map((timestamp, index) => {
-    const row: any = {
-      id: index + 1,
-      timestamp,
-    };
-
-    metricKeys.forEach((key) => {
-      const match = filtered.find(
-        (d) => d.timestamp === timestamp && d.measurement_type === key
-      );
-      row[key] = match ? match.value.toFixed(2) : "";
+    // 1. Filter based on activeGroups and subFilters
+    const filtered = data.filter((entry) => {
+      if (entry.group_type === "Weather" && activeGroups.weather) {
+        return subFilters.weather.includes(entry.measurement_type);
+      }
+      if (entry.group_type === "Quality" && activeGroups.quality) {
+        return subFilters.quality.includes(entry.measurement_type);
+      }
+      if (entry.group_type === "Logger" && activeGroups.gauges) {
+        return subFilters.gauges.includes(entry.measurement_type);
+      }
+      return false;
     });
 
-    return row;
-  });
+    // 2. Get unique timestamps
+    const timestamps = [...new Set(filtered.map((d) => d.recorded_at))].sort();
 
-  // 4. Construct CSV headers and rows
-  const headers = ["ID", "Timestamp", ...metricKeys];
-  const csvRows = [headers.join(",")];
+    // 3. Collect all metric keys based on activeGroups and subFilters
+    const metricKeys: string[] = [
+      ...(activeGroups.weather ? subFilters.weather : []),
+      ...(activeGroups.quality ? subFilters.quality : []),
+      ...(activeGroups.gauges ? subFilters.gauges : []),
+    ];
 
-  rows.forEach((row) => {
-    const csvRow = headers.map((header) => row[header] ?? "").join(",");
-    csvRows.push(csvRow);
-  });
+    // 4. Map rows
+    const rows = timestamps.map((timestamp, index) => {
+      const row: any = {
+        ID: index + 1,
+        Timestamp: timestamp,
+      };
 
-  // 5. Download as CSV
-  const csvContent = csvRows.join("\n");
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.setAttribute("download", getFileName());
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
+      metricKeys.forEach((metric) => {
+        const match = filtered.find(
+          (d) => d.recorded_at === timestamp && d.measurement_type === metric
+        );
+        row[metric] = match ? match.value.toFixed(2) : "";
+      });
 
+      return row;
+    });
+
+    // 5. Create CSV
+    const headers = ["ID", "Timestamp", ...metricKeys];
+    const csvLines = [headers.join(",")];
+
+    rows.forEach((row) => {
+      const line = headers.map((header) => row[header] ?? "").join(",");
+      csvLines.push(line);
+    });
+
+    const csvContent = csvLines.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", getFileName());
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   return (
     <button
