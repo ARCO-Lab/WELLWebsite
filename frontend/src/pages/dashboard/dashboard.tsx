@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [subFilters, setSubFilters] = useState({
     weather: [] as string[],
     quality: [] as string[],
+    gauges: [] as string[],
   });
   const [startDate, setStartDate] = useState<Date | null>(() => {
     const oneWeekAgo = new Date();
@@ -40,9 +41,9 @@ export default function Dashboard() {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   const cachedMetrics = {
-    weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} />,
-    quality: <QualityMetrics key="quality" />,
-    gauges: <LoggerMetrics key="gauges" />,
+    weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} activeGroups={activeGroups}/>,
+    quality: <QualityMetrics key="quality" activeKeys={subFilters.quality} activeGroups={activeGroups}/>,
+    gauges: <LoggerMetrics key="gauges" activeKeys={subFilters.gauges} activeGroups={activeGroups}/>,
   };
 
   const cachedGraphs = {
@@ -115,9 +116,12 @@ export default function Dashboard() {
                 <div className="mt-6 space-y-2">
                   <Download
                     activeGroups={activeGroups}
+                    subFilters={subFilters}
                     startDate={startDate}
                     endDate={endDate}
+                    data={data}
                   />
+
                 </div>
               </div>
             </div>

@@ -18,6 +18,7 @@ type Props = {
   setSubFilters: React.Dispatch<React.SetStateAction<{
     weather: string[];
     quality: string[];
+    gauges: string[]; 
   }>>;
 };
 
@@ -33,15 +34,13 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
     setOpen((prev) => ({ ...prev, [group]: !prev[group] }));
   };
 
-  const toggleSubFilter = (group: "weather" | "quality", label: string) => {
+  const toggleSubFilter = (group: "weather" | "quality" | "gauges", label: string) => {
     setSubFilters((prev) => {
         const selected = new Set(prev[group]);
         selected.has(label) ? selected.delete(label) : selected.add(label);
         return { ...prev, [group]: Array.from(selected) };
     });
   };
-
-  console.log("Active Groups:", activeGroups);
 
   return (
     <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow">

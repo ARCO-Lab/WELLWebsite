@@ -24,7 +24,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       params.append("group_type", group);
     }
 
-    const flaskUrl = `${process.env.FLASK_API_URL}?${params.toString()}`;
+    const flaskUrl = `${process.env.FLASK_API_URL}/api/data?${params.toString()}`;
     const response = await fetch(flaskUrl);
 
     if (!response.ok) {

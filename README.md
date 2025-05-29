@@ -40,3 +40,6 @@ have latest dat take full part when only 1 half when 2, third when 3 with scroll
 have pop up close on click off, take bigger part of page normally, and not recall api but open the existing metric or graph
 
 ensure calendar date start cant be higher than end, and default hours minutes seconds is 00:00:00 for the request
+
+fix download have header have units
+database in est while frontend in utc

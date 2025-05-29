@@ -1,51 +1,45 @@
-import { useEffect, useState } from "react";
-import { setFlagsFromString } from "v8";
-
-// CHANGE ONCE LOGGER API WORKING
-
+import { useMemo } from "react";
+import useLatestMetrics from "@/hooks/useLatestMetrics";
 
 interface LoggerMetric {
   label: string;
-  key: string; // this will match sensor_measurement_type
+  key: string; // this will match measurement_type
 }
 
 const metrics: LoggerMetric[] = [
-  { label: "Air Temperature", key: "Temperature" },
-  { label: "Relative Humidity", key: "RH" },
-  { label: "Wind Speed", key: "Wind Speed" },
-  { label: "Gust Speed", key: "Gust Speed" },
-  { label: "Wind Direction", key: "Wind Direction" },
-  { label: "Dew Point", key: "Dew Point" },
-  { label: "Rainfall", key: "Rain" },
-  { label: "Pressure", key: "Pressure" },
-  { label: "Solar Radiation", key: "Solar Radiation" },
-  { label: "Water Content", key: "Water Content" },
+  { label: "Water Level", key: "Water Level" },
+  { label: "Water Temperature", key: "Water Temperature" }
 ];
 
-const LoggerMetrics = () => {
-  const [loggerData, setLoggerData] = useState<any[]>([]);
+const LoggerMetrics = ({
+  activeKeys,
+  activeGroups,
+}: {
+  activeKeys: string[];
+  activeGroups: { weather: boolean; quality: boolean; gauges: boolean };
+}) => {
+  const { metrics: allData } = useLatestMetrics();
 
-  useEffect(() => {
-    fetch("/api/weather")
-      .then((res) => res.json())
-      .then((json) => setLoggerData(json))
-      .catch((err) => console.error("Failed to fetch weather data:", err));
-  }, []);
+  const loggerData = useMemo(() => {
+    return allData.filter((d) => d.group_type === "Logger");
+  }, [allData]);
 
   return (
     <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow">
       <h2 className="mb-2 text-lg font-semibold text-black">Water Logger Metrics</h2>
       <ul className="space-y-1 text-sm text-gray-800">
-        {metrics.map(({ label, key }) => {
-          const entry = loggerData.find((d) => d.sensor_measurement_type === key);
-          const value = entry?.value?.toFixed(2) ?? "--";
-          const unit = entry?.unit ?? "";
-          return (
-            <li key={key}>
-              <span className="font-medium">{label}:</span> {value} {unit}
-            </li>
-          );
-        })}
+        {metrics
+          .filter(({ label }) => activeKeys.includes(label))
+          .map(({ label, key }) => {
+            const entry = loggerData.find((d) => d.measurement_type === key);
+            const value = entry?.value?.toFixed(2) ?? "--";
+            const unit = entry?.unit ?? "";
+            return (
+              <li key={key}>
+                <span className="font-medium">{label}:</span> {value} {unit}
+              </li>
+            );
+          })}
       </ul>
     </div>
   );

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import useLatestMetrics from "@/hooks/useLatestMetrics";
 
 interface WeatherMetric {
   label: string;
@@ -16,17 +17,18 @@ const metrics: WeatherMetric[] = [
   { label: "Pressure", key: "Pressure" },
   { label: "Solar Radiation", key: "Solar Radiation" },
   { label: "Water Content", key: "Water Content" },
+  { label: "Soil Temperature", key: "Soil Temperature" },
 ];
 
-const WeatherMetrics = ({ activeKeys }: { activeKeys: string[] }) => {
-  const [weatherData, setWeatherData] = useState<any[]>([]);
+const WeatherMetrics = ({
+  activeKeys,
+  activeGroups,
+}: {
+  activeKeys: string[];
+  activeGroups: { weather: boolean; quality: boolean; gauges: boolean };
+}) => {
 
-  useEffect(() => {
-    fetch("/api/weather")
-      .then((res) => res.json())
-      .then((json) => setWeatherData(json))
-      .catch((err) => console.error("Failed to fetch weather data:", err));
-  }, []);
+  const { metrics: weatherData } = useLatestMetrics();
 
   return (
     <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow ">
@@ -35,7 +37,7 @@ const WeatherMetrics = ({ activeKeys }: { activeKeys: string[] }) => {
         {metrics
             .filter(({ label }) => activeKeys.includes(label))
             .map(({ label, key }) => {
-          const entry = weatherData.find((d) => d.sensor_measurement_type === key);
+          const entry = weatherData.find((d) => d.measurement_type === key);
           const value = entry?.value?.toFixed(2) ?? "--";
           const unit = entry?.unit ?? "";
           return (
