@@ -25,6 +25,8 @@ def parse_weather_entry(entry, logger_id):
             measurement_type = "Soil Temperature"
         elif sensor_sn == "22154270-1":
             measurement_type = "Air Temperature"
+    if measurement_type == "RH":
+        measurement_type = "Relative Humidity"
     return SensorMeasurement(
         station_id=logger_id,
         group_type="Weather",

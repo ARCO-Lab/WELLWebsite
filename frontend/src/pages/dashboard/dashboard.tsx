@@ -29,14 +29,24 @@ export default function Dashboard() {
     gauges: [] as string[],
   });
   const [startDate, setStartDate] = useState<Date | null>(() => {
+    const override = true; // temporary due to logger issues
+    if (override) return new Date("2025-05-20");
+    
     const oneWeekAgo = new Date();
     oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
     return oneWeekAgo;
   });
   const [endDate, setEndDate] = useState<Date | null>(() => {
+    const override = true; // temporary due to logger issues
+    if (override) return new Date("2025-05-21");
+
     const today = new Date();
     return today;
   });
+
+  // TEMPORARY OVERRIDE – REMOVE LATER
+  if (startDate) startDate.setTime(new Date("2025-05-20").getTime());
+  if (endDate) endDate.setTime(new Date("2025-05-21").getTime());
 
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
@@ -47,9 +57,9 @@ export default function Dashboard() {
   };
 
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} />,
-    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} />,
-    gauges: <LoggerGraph key="gauges" activeGroups={activeGroups} startDate={startDate} endDate={endDate} />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
+    gauges: <LoggerGraph key="gauges" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
   };
   
   const graphComponents = [];

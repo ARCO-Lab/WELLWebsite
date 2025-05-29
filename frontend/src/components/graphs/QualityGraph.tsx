@@ -7,16 +7,25 @@ interface Props {
     weather: boolean;
     quality: boolean;
   };
+  subFilters: {
+    gauges: string[];
+    weather: string[];
+    quality: string[];
+  };
   startDate: Date | null;
   endDate: Date | null;
 }
 
-const QualityGraph = ({ activeGroups, startDate, endDate }: Props) => {
+const QualityGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   const qualityData = useMemo(() => {
-    return data.filter((d) => d.group_type === "Quality");
-  }, [data]);
+    return data.filter(
+      (d) =>
+        d.group_type === "Quality" &&
+        subFilters.quality.includes(d.measurement_type)
+    );
+  }, [data, subFilters]);
 
   return (
     <div className="p-4 bg-white rounded shadow">

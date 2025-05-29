@@ -7,16 +7,25 @@ interface Props {
     weather: boolean;
     quality: boolean;
   };
+  subFilters: {
+    gauges: string[];
+    weather: string[];
+    quality: string[];
+  };
   startDate: Date | null;
   endDate: Date | null;
 }
 
-const LoggerGraph = ({ activeGroups, startDate, endDate }: Props) => {
+const LoggerGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   const loggerData = useMemo(() => {
-    return data.filter((d) => d.group_type === "Logger");
-  }, [data]);
+    return data.filter(
+      (d) =>
+        d.group_type === "Logger" &&
+        subFilters.gauges.includes(d.measurement_type)
+    );
+  }, [data, subFilters]);
 
   return (
     <div className="p-4 bg-white rounded shadow">

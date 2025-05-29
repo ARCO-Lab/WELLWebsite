@@ -7,16 +7,23 @@ interface Props {
     weather: boolean;
     quality: boolean;
   };
+  subFilters: {
+    weather: string[];
+    quality: string[];
+    gauges: string[];
+  };
   startDate: Date | null;
   endDate: Date | null;
 }
 
-const WeatherGraph = ({ activeGroups, startDate, endDate }: Props) => {
+const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   const weatherData = useMemo(() => {
-    return data.filter((d) => d.group_type === "Weather");
-  }, [data]);
+    return data.filter(
+      (d) => d.group_type === "Weather" && subFilters.weather.includes(d.measurement_type)
+    );
+  }, [data, subFilters.weather]);
 
   return (
     <div className="p-4 bg-white rounded shadow">
