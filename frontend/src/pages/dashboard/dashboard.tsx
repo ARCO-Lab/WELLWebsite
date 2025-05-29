@@ -58,18 +58,17 @@ export default function Dashboard() {
   };
   
   const graphComponents = [];
+  if (activeGroups.gauges) graphComponents.push(cachedGraphs.gauges);
   if (activeGroups.weather) graphComponents.push(cachedGraphs.weather);
   if (activeGroups.quality) graphComponents.push(cachedGraphs.quality);
-  if (activeGroups.gauges) graphComponents.push(cachedGraphs.gauges);
-
   const graphCols = graphComponents.length === 1 ? "grid-cols-1" :
                     graphComponents.length === 2 ? "grid-cols-2" :
                     graphComponents.length === 3 ? "grid-cols-3" : "";
                     
   const metricComponents = [];
+  if (activeGroups.gauges) metricComponents.push(cachedMetrics.gauges);
   if (activeGroups.weather) metricComponents.push(cachedMetrics.weather);
   if (activeGroups.quality) metricComponents.push(cachedMetrics.quality);
-  if (activeGroups.gauges) metricComponents.push(cachedMetrics.gauges);
 
   // Dynamic flex basis for metrics based on count
   const getMetricFlexBasis = (count: number) => {
@@ -156,7 +155,12 @@ export default function Dashboard() {
               <div className="col-span-2 p-4 bg-white rounded shadow h-96">
                 <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Map <Information id={2}/></h2>
                 <div className="h-full">
-                  <Map activeGroups={activeGroups} setActiveGroups={setActiveGroups} />
+                  <Map
+                    activeGroups={activeGroups}
+                    setActiveGroups={setActiveGroups}
+                    subFilters={subFilters}
+                    setSubFilters={setSubFilters}
+                  />
                 </div>
               </div>
             </div>

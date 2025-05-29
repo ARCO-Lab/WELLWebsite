@@ -14,6 +14,7 @@ type Props = {
   subFilters: {
     weather: string[];
     quality: string[];
+    gauges: string[];
   };
   setSubFilters: React.Dispatch<React.SetStateAction<{
     weather: string[];
@@ -36,9 +37,58 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
 
   const toggleSubFilter = (group: "weather" | "quality" | "gauges", label: string) => {
     setSubFilters((prev) => {
-        const selected = new Set(prev[group]);
-        selected.has(label) ? selected.delete(label) : selected.add(label);
-        return { ...prev, [group]: Array.from(selected) };
+      const selected = new Set(prev[group]);
+      const loggerLabels = ["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"];
+      const metricLabels = ["Water Level", "Water Temperature"];
+
+      const isLoggerLabel = group === "gauges" && loggerLabels.includes(label);
+      const isMetricLabel = group === "gauges" && metricLabels.includes(label);
+      const isAllLoggers = group === "gauges" && label === "All Loggers";
+
+      // Toggle value
+      if (selected.has(label)) {
+        selected.delete(label);
+      } else {
+        selected.add(label);
+      }
+
+      // Handle All Loggers toggle
+      if (isAllLoggers) {
+        const preserved = [...selected].filter((l) => metricLabels.includes(l));
+
+        return {
+          ...prev,
+          gauges: selected.has("All Loggers")
+            ? [...preserved, "All Loggers"]
+            : [...preserved],
+        };
+      }
+
+
+      // If toggling a logger and all loggers are now selected, convert to All Loggers
+      if (isLoggerLabel) {
+        const selectedLoggers = [...selected].filter((l) => loggerLabels.includes(l));
+        const allSelected = loggerLabels.every((l) => selected.has(l));
+        const preserved = [...selected].filter((l) => metricLabels.includes(l));
+
+        if (allSelected) {
+          return {
+            ...prev,
+            gauges: [...preserved, "All Loggers"],
+          };
+        }
+
+        return {
+          ...prev,
+          gauges: [...preserved, ...selectedLoggers],
+        };
+      }
+
+      // Regular toggle for metrics or other groups
+      return {
+        ...prev,
+        [group]: Array.from(selected),
+      };
     });
   };
 
@@ -48,7 +98,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
       <div className="mb-4">
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
-            type="checkbox" className= "cursor-pointer"
+            type="checkbox" className="cursor-pointer"
             checked={activeGroups.gauges}
             onChange={() => toggleGroupMain("gauges")}
           />
@@ -56,8 +106,37 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
         </label>
         {open.gauges && (
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-            <li><input type="checkbox" className= "cursor-pointer"/> Water Level</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Water Temperature</li>
+            {["Water Level", "Water Temperature", "All Loggers"].map((label) => (
+              <li key={label}>
+                <label>
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer"
+                    checked={subFilters.gauges.includes(label)}
+                    onChange={() => toggleSubFilter("gauges", label)}
+                  />{" "}
+                  {label}
+                </label>
+              </li>
+            ))}
+
+            {!subFilters.gauges.includes("All Loggers") && (
+              <ul className="ml-6">
+                {["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"].map((label) => (
+                  <li key={label}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer"
+                        checked={subFilters.gauges.includes(label)}
+                        onChange={() => toggleSubFilter("gauges", label)}
+                      />{" "}
+                      {label}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
           </ul>
         )}
       </div>
@@ -66,36 +145,39 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
       <div className="mb-4">
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
-            type="checkbox" className= "cursor-pointer"
+            type="checkbox" className="cursor-pointer"
             checked={activeGroups.weather}
             onChange={() => toggleGroupMain("weather")}
           />
           <span>Weather Data</span>
         </label>
         {open.weather && (
-            <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-                {["Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction", "Relative Humidity", "Dew Point", "Rain", "Water Content", "Solar Radiation", "Soil Temperature"].map((label) => (
-                <li key={label}>
-                    <label>
-                    <input
-                        type="checkbox" className= "cursor-pointer"
-                        checked={subFilters.weather.includes(label)}
-                        onChange={() => toggleSubFilter("weather", label)}
-                    />{" "}
-                    {label}
-                    </label>
-                </li>
-                ))}
-            </ul>
-          )}
-
+          <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
+            {[
+              "Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction",
+              "Relative Humidity", "Dew Point", "Rain", "Water Content", "Solar Radiation", "Soil Temperature"
+            ].map((label) => (
+              <li key={label}>
+                <label>
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer"
+                    checked={subFilters.weather.includes(label)}
+                    onChange={() => toggleSubFilter("weather", label)}
+                  />{" "}
+                  {label}
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Water Quality */}
       <div>
         <label className="flex items-center space-x-2 font-semibold text-gray-800">
           <input
-            type="checkbox" className= "cursor-pointer"
+            type="checkbox" className="cursor-pointer"
             checked={activeGroups.quality}
             onChange={() => toggleGroupMain("quality")}
           />
@@ -103,14 +185,23 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
         </label>
         {open.quality && (
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-            <li><input type="checkbox" className= "cursor-pointer"/> Temperature</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Conductivity</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Salinity</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Total Dissolved Solids (TDS)</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Dissolved Oxygen (ODO)</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Dissolved Oxygen Saturation (ODOSat)</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Turbidity</li>
-            <li><input type="checkbox" className= "cursor-pointer"/> Total Suspended Solids (TSS)</li>
+            {[
+              "Temperature", "Conductivity", "Salinity", "Total Dissolved Solids (TDS)",
+              "Dissolved Oxygen (ODO)", "Dissolved Oxygen Saturation (ODOSat)",
+              "Turbidity", "Total Suspended Solids (TSS)"
+            ].map((label) => (
+              <li key={label}>
+                <label>
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer"
+                    checked={subFilters.quality.includes(label)}
+                    onChange={() => toggleSubFilter("quality", label)}
+                  />{" "}
+                  {label}
+                </label>
+              </li>
+            ))}
           </ul>
         )}
       </div>

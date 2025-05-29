@@ -34,11 +34,6 @@ WQDATA_DEVICE_ID=your-device-id-here
 TODO: 
 start with everything checked when page loads, then allow user to change (default date range being the last week)
 
-graphs mimic wqlive graph template
-
 make modal not recall but open existing one on bigger scale (Wait for graphs to be finished)
-
-fix download have header have units
-database in est while frontend in utc
 
 **AI Analysis of correlations between metrics in graphs?**

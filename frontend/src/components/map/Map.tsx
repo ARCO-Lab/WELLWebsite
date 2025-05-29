@@ -10,6 +10,16 @@ interface ActiveGroups {
 interface MapProps {
   activeGroups: ActiveGroups;
   setActiveGroups: React.Dispatch<React.SetStateAction<ActiveGroups>>;
+  subFilters: {
+    gauges: string[];
+    weather: string[]; 
+    quality: string[];
+  };
+  setSubFilters: React.Dispatch<React.SetStateAction<{
+    gauges: string[];
+    weather: string[];
+    quality: string[];
+  }>>;
 }
 
 const center = { lat: 43.260456, lng: -79.932517 };
@@ -29,7 +39,7 @@ const containerStyle = {
   height: "300px",
 };
 
-const Map: FC<MapProps> = ({ activeGroups, setActiveGroups }) => {
+const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters }) => {
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!,
   });
@@ -42,7 +52,24 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups }) => {
   return (
     <GoogleMap mapContainerStyle={containerStyle} center={center} zoom={14}>
       {markers.map((marker, index) => {
-        const isActive = activeGroups[marker.group as keyof ActiveGroups] ?? false;
+        const isLogger = marker.group === "gauges";
+
+        let isActive = false;
+        if (isLogger) {
+          if (!activeGroups.gauges) {
+            isActive = false;
+          } else if (subFilters.gauges.includes("All Loggers")) {
+            isActive = true;
+          } else {
+            const loggerName = marker.label.replace("Water ", ""); // "Logger 1", etc.
+            isActive = subFilters.gauges.includes(loggerName);
+
+          }
+        } else {
+          isActive = activeGroups[marker.group as keyof ActiveGroups] ?? false;
+        }
+
+
 
         return (
           <Marker
@@ -64,11 +91,38 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups }) => {
               setHoverTimeout(timeout);
             }}
             onClick={() => {
-              const group = marker.group as keyof ActiveGroups;
-              setActiveGroups((prev) => ({
-                ...prev,
-                [group]: !prev[group],
-              }));
+              if (marker.group === "gauges") {
+                const loggerName = marker.label.replace("Water ", ""); // e.g., "Logger 1"
+
+                setSubFilters((prev) => {
+                  const selected = new Set(prev.gauges);
+                  const loggerLabels = ["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"];
+
+                  // Remove "All Loggers" if it's present
+                  selected.delete("All Loggers");
+
+                  // Toggle the clicked logger
+                  if (selected.has(loggerName)) {
+                    selected.delete(loggerName);
+                  } else {
+                    selected.add(loggerName);
+                  }
+
+                  // If all individual loggers are now selected, collapse back to "All Loggers"
+                  const allSelected = loggerLabels.every((l) => selected.has(l));
+                  if (allSelected) {
+                    return { ...prev, gauges: ["All Loggers"] };
+                  }
+
+                  return { ...prev, gauges: Array.from(selected) };
+                });
+              } else {
+                const group = marker.group as keyof ActiveGroups;
+                setActiveGroups((prev) => ({
+                  ...prev,
+                  [group]: !prev[group],
+                }));
+              }
             }}
           />
         );
