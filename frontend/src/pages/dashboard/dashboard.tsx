@@ -28,25 +28,20 @@ export default function Dashboard() {
     quality: [] as string[],
     gauges: [] as string[],
   });
+
   const [startDate, setStartDate] = useState<Date | null>(() => {
-    const override = true; // temporary due to logger issues
-    if (override) return new Date("2025-05-20");
-    
     const oneWeekAgo = new Date();
     oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-    return oneWeekAgo;
+    const estStart = new Date(oneWeekAgo.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+    return estStart;
   });
+
   const [endDate, setEndDate] = useState<Date | null>(() => {
-    const override = true; // temporary due to logger issues
-    if (override) return new Date("2025-05-21");
-
     const today = new Date();
-    return today;
+    const estEnd = new Date(today.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+    return estEnd;
   });
 
-  // TEMPORARY OVERRIDE – REMOVE LATER
-  if (startDate) startDate.setTime(new Date("2025-05-20").getTime());
-  if (endDate) endDate.setTime(new Date("2025-05-21").getTime());
 
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 

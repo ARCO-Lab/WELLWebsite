@@ -32,9 +32,15 @@ const useFilteredData = (
             setLoading(true);
             setError(null);
 
+            const start = new Date(startDate);
+            start.setHours(0, 0, 0, 0); // Normalize to start of day
+
+            const end = new Date(endDate);
+            end.setHours(23, 59, 59, 999); // Normalize to end of day
+
             const params = new URLSearchParams();
-            params.append("start", startDate.toISOString());
-            params.append("end", endDate.toISOString());
+            params.append("start", start.toISOString());
+            params.append("end", end.toISOString());
             if (activeGroups.weather) params.append("weather", "true");
             if (activeGroups.quality) params.append("quality", "true");
             if (activeGroups.gauges) params.append("gauges", "true");

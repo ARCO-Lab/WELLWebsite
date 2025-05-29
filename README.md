@@ -33,13 +33,14 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 TODO: 
 start with everything checked when page loads, then allow user to change (default date range being the last week)
+
 graphs mimic wqlive graph template
 
-have latest dat take full part when only 1 half when 2, third when 3 with scroll if needed:
-
-have pop up close on click off, take bigger part of page normally, and not recall api but open the existing metric or graph
+make modal not recall but open existing one on bigger scale (Wait for graphs to be finished)
 
 ensure calendar date start cant be higher than end, and default hours minutes seconds is 00:00:00 for the request
 
 fix download have header have units
 database in est while frontend in utc
+
+**AI Analysis of correlations between metrics in graphs?**
