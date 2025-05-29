@@ -156,7 +156,7 @@ export default function Dashboard() {
               <div className="col-span-2 p-4 bg-white rounded shadow h-96">
                 <h2 className="flex items-center justify-between mb-2 text-xl font-semibold">Map <Information id={2}/></h2>
                 <div className="h-full">
-                  <Map activeGroups={activeGroups} />
+                  <Map activeGroups={activeGroups} setActiveGroups={setActiveGroups} />
                 </div>
               </div>
             </div>

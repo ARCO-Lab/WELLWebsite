@@ -8,7 +8,8 @@ interface ActiveGroups {
 }
 
 interface MapProps {
-  activeGroups?: ActiveGroups;
+  activeGroups: ActiveGroups;
+  setActiveGroups: React.Dispatch<React.SetStateAction<ActiveGroups>>;
 }
 
 const center = { lat: 43.260456, lng: -79.932517 };
@@ -28,19 +29,21 @@ const containerStyle = {
   height: "300px",
 };
 
-const Map: FC<MapProps> = ({ activeGroups = { gauges: false, weather: false, quality: false } }) => {
+const Map: FC<MapProps> = ({ activeGroups, setActiveGroups }) => {
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!,
   });
 
   const [selectedMarker, setSelectedMarker] = useState<null | typeof markers[0]>(null);
+  const [hoverTimeout, setHoverTimeout] = useState<NodeJS.Timeout | null>(null);
 
   if (!isLoaded) return <div>Loading...</div>;
 
   return (
     <GoogleMap mapContainerStyle={containerStyle} center={center} zoom={14}>
       {markers.map((marker, index) => {
-        const isActive = activeGroups?.[marker.group as keyof ActiveGroups] ?? false;
+        const isActive = activeGroups[marker.group as keyof ActiveGroups] ?? false;
+
         return (
           <Marker
             key={index}
@@ -50,7 +53,23 @@ const Map: FC<MapProps> = ({ activeGroups = { gauges: false, weather: false, qua
               scaledSize: new google.maps.Size(32, 32),
             }}
             opacity={isActive ? 1.0 : 0.5}
-            onClick={() => setSelectedMarker(marker)}
+            onMouseOver={() => {
+              if (hoverTimeout) clearTimeout(hoverTimeout);
+              setSelectedMarker(marker);
+            }}
+            onMouseOut={() => {
+              const timeout = setTimeout(() => {
+                setSelectedMarker(null);
+              }, 300);
+              setHoverTimeout(timeout);
+            }}
+            onClick={() => {
+              const group = marker.group as keyof ActiveGroups;
+              setActiveGroups((prev) => ({
+                ...prev,
+                [group]: !prev[group],
+              }));
+            }}
           />
         );
       })}
@@ -59,8 +78,12 @@ const Map: FC<MapProps> = ({ activeGroups = { gauges: false, weather: false, qua
         <InfoWindow
           position={{ lat: selectedMarker.lat, lng: selectedMarker.lng }}
           onCloseClick={() => setSelectedMarker(null)}
+          options={{
+            pixelOffset: new google.maps.Size(0, -40),
+            disableAutoPan: true, 
+          }}
         >
-          <div>
+          <div style={{ opacity: 1 }}>
             <h1 className="font-semibold">{selectedMarker.label}</h1>
             <p>Latitude: {selectedMarker.lat}</p>
             <p>Longitude: {selectedMarker.lng}</p>

@@ -4,7 +4,7 @@ interface SensorData {
     sensor: string;
     value: number;
     unit: string;
-    timestamp: string;
+    recorded_at: string;
     group_type: string;
     measurement_type: string;
     station_id: string;
