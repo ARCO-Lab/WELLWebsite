@@ -22,6 +22,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
             selectsStart
             startDate={startDate}
             endDate={endDate}
+            maxDate={endDate || undefined}
             className="w-full p-2 border rounded"
           />
         </div>
