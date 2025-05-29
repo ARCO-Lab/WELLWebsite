@@ -65,44 +65,60 @@ const Download: React.FC<DownloadProps> = ({
       return false;
     });
 
-    // 2. Get unique timestamps
+    // 2. Identify unique timestamps and metrics
     const timestamps = [...new Set(filtered.map((d) => d.recorded_at))].sort();
+    const metricKeys = [
+      ...new Set(filtered.map((d) => d.measurement_type)),
+    ].sort();
 
-    // 3. Collect all metric keys based on activeGroups and subFilters
-    const metricKeys: string[] = [
-      ...(activeGroups.weather ? subFilters.weather : []),
-      ...(activeGroups.quality ? subFilters.quality : []),
-      ...(activeGroups.gauges ? subFilters.gauges : []),
-    ];
+    // 3. Build a map of metric name → unit-suffixed label
+    const metricLabelMap: Record<string, string> = {};
+    metricKeys.forEach((key) => {
+      const sample = filtered.find((d) => d.measurement_type === key);
+      const unit = sample?.unit ?? "";
+      metricLabelMap[key] = unit ? `${key}: ${unit}` : key;
+    });
 
-    // 4. Map rows
+    // 4. Build rows
     const rows = timestamps.map((timestamp, index) => {
       const row: any = {
-        ID: index + 1,
-        Timestamp: timestamp,
+        id: index + 1,
+        timestamp,
+        group_type:"",
       };
 
-      metricKeys.forEach((metric) => {
+      metricKeys.forEach((key) => {
         const match = filtered.find(
-          (d) => d.recorded_at === timestamp && d.measurement_type === metric
+          (d) => d.recorded_at === timestamp && d.measurement_type === key
         );
-        row[metric] = match ? match.value.toFixed(2) : "";
+        if(match) {
+        row[key] = match ? match.value.toFixed(2) : "";
+        if (!row.group_type) row.group_type = match.group_type;
+      } else {
+        row[key] = "";
+      }
       });
 
       return row;
     });
 
-    // 5. Create CSV
-    const headers = ["ID", "Timestamp", ...metricKeys];
-    const csvLines = [headers.join(",")];
+    // 5. Construct CSV headers and rows
+    const headers = ["ID", "Timestamp", "Sensor", ...metricKeys.map((key) => metricLabelMap[key])];
+    const csvRows = [headers.join(",")];
 
     rows.forEach((row) => {
-      const line = headers.map((header) => row[header] ?? "").join(",");
-      csvLines.push(line);
+      const csvRow = [
+        row.id,
+        row.timestamp,
+        row.group_type,
+        ...metricKeys.map((key) => row[key] ?? "")
+      ];
+      csvRows.push(csvRow.join(","));
     });
 
-    const csvContent = csvLines.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    // 6. Download as CSV
+    const csvContent = csvRows.join("\n");
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" }); 
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
