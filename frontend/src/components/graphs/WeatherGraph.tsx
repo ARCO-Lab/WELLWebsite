@@ -1,23 +1,33 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
+import useFilteredData from "@/hooks/useFilteredData";
 
-const WeatherGraph = () => {
-  const [weatherData, setWeatherData] = useState<any[]>([]);
+interface Props {
+  activeGroups: {
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  };
+  startDate: Date | null;
+  endDate: Date | null;
+}
 
-  useEffect(() => {
-    fetch("/api/weather")  // or "/api/weather" if using a Next.js proxy route
-      .then((res) => res.json())
-      .then((json) => {
-        setWeatherData(json);
-      })
-      .catch((err) => console.error("Failed to fetch weather data:", err));
-  }, []);
+const WeatherGraph = ({ activeGroups, startDate, endDate }: Props) => {
+  const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
+
+  const weatherData = useMemo(() => {
+    return data.filter((d) => d.group_type === "Weather");
+  }, [data]);
 
   return (
     <div className="p-4 bg-white rounded shadow">
       <h2 className="mb-2 text-lg font-semibold text-black">Weather Station</h2>
-      <pre className="overflow-x-auto text-sm text-gray-700 whitespace-pre-wrap">
-        {JSON.stringify(weatherData, null, 2)}
-      </pre>
+      {loading ? (
+        <p className="text-gray-500">Loading...</p>
+      ) : (
+        <pre className="overflow-x-auto text-sm text-gray-700 whitespace-pre-wrap">
+          {JSON.stringify(weatherData, null, 2)}
+        </pre>
+      )}
     </div>
   );
 };

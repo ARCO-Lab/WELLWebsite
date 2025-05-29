@@ -3,7 +3,7 @@ import Head from "next/head";
 import dynamic from "next/dynamic";
 import Header from "@/components/Header";
 import FilterPanel from "@/components/filters/FilterPanel";
-import WeatherChart from "@/components/graphs/WeatherGraph";
+import WeatherGraph from "@/components/graphs/WeatherGraph";
 import LoggerGraph from "@/components/graphs/LoggerGraph";
 import QualityGraph from "@/components/graphs/QualityGraph";
 import WeatherMetrics from "@/components/metrics/WeatherMetrics";
@@ -47,9 +47,9 @@ export default function Dashboard() {
   };
 
   const cachedGraphs = {
-    weather: <WeatherChart key="weather" />,
-    quality: <QualityGraph key="quality" />,
-    gauges: <LoggerGraph key="gauges" />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} />,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} />,
+    gauges: <LoggerGraph key="gauges" activeGroups={activeGroups} startDate={startDate} endDate={endDate} />,
   };
   
   const graphComponents = [];
