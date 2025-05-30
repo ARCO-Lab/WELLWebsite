@@ -1,12 +1,17 @@
 from flask import request, jsonify
+import pandas as pd
 from config import Config
 from db.database import db
 from db.models import SensorMeasurement
 from api.services import WeatherService
 from datetime import datetime
+from analysis.downsample import downsample
+import threading
+#from openai import OpenAI
 
 # Keep existing weather service endpoint (optional)
 weather_service = WeatherService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)
+latest_summaries = {}
 
 def register_routes(app):
     # Existing HOBO API passthrough
@@ -15,6 +20,8 @@ def register_routes(app):
     # ✅ New endpoint to query historical/filtered database data
     @app.route("/api/data", methods=["GET"])
     def get_filtered_data():
+        global latest_summaries
+
         start = request.args.get("start")
         end = request.args.get("end")
         group_types = request.args.getlist("group_type")
@@ -34,7 +41,7 @@ def register_routes(app):
             SensorMeasurement.recorded_at.between(start_dt, end_dt)
         )
 
-        results = [
+        data = [
             {
                 "station_id": r.station_id,
                 "group_type": r.group_type,
@@ -42,11 +49,32 @@ def register_routes(app):
                 "value": r.value,
                 "unit": r.unit,
                 "recorded_at": r.recorded_at.isoformat()
-            }
+            }            
             for r in query.order_by(SensorMeasurement.recorded_at).all()
         ]
 
-        return jsonify(results)
+        df = pd.DataFrame(data)
+
+        def background_summarize(df):
+            weather_df = df[df["group_type"] == "Weather"]
+            logger_df = df[df["group_type"] == "Logger"]
+            quality_df = df[df["group_type"] == "Quality"]
+
+            weather_summary, logger_summary, quality_summary = downsample(weather_df, logger_df, quality_df)
+
+            # Store latest summaries globally
+            global latest_summaries
+            latest_summaries = {
+                "weather": weather_summary,
+                "logger": logger_summary,
+                "quality": quality_summary
+            }
+
+        # Start background thread for summarization
+        threading.Thread(target=background_summarize, args=(df,)).start()
+
+        # Return the raw data immediately
+        return jsonify(data)
     
     @app.route("/api/latest", methods=["GET"])
     def get_latest_metrics():
@@ -75,3 +103,42 @@ def register_routes(app):
             for r in query.all()
         ]
         return jsonify(results)
+
+    @app.route("/api/analysis", methods=["GET"])
+    def analyze_data():
+        analysis_type = request.args.get("type")
+        subtypes = request.args.getlist("subtypes")  # Supports ?subtypes=A&subtypes=B
+
+        if analysis_type not in ["weather", "logger", "quality"]:
+            return jsonify({"error": "Invalid or missing type. Must be one of: weather, logger, quality."}), 400
+
+        summary = latest_summaries.get(analysis_type)
+        if not summary:
+            return jsonify({"error": f"No summary data available for {analysis_type}"}), 404
+
+        if subtypes:
+            # Return only selected subtypes (case-insensitive match)
+            filtered_summary = {
+                k: v for k, v in summary.items() if k.lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
+            }
+            return jsonify({analysis_type: filtered_summary})
+
+        return jsonify({analysis_type: summary})
+
+        # For future use with OpenAI:
+        # data = request.json.get("data", [])
+        # prompt = f"""
+        # You are an environmental science analyst. Analyze the following sensor data and identify:
+        # - Notable trends
+        # - Correlations
+        # - Anomalies
+        # Data:
+        # {data}
+        # """
+        # response = openai.ChatCompletion.create(
+        #     model="gpt-4",
+        #     messages=[{"role": "user", "content": prompt}],
+        #     max_tokens=500,
+        # )
+        # return jsonify({"analysis": response["choices"][0]["message"]["content"]})
+

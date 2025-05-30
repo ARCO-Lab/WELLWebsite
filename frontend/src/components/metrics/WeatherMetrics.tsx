@@ -3,7 +3,7 @@ import useLatestMetrics from "@/hooks/useLatestMetrics";
 
 interface WeatherMetric {
   label: string;
-  key: string; // this will match sensor_measurement_type
+  key: string; 
 }
 
 const metrics: WeatherMetric[] = [

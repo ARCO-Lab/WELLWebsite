@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import Header from "@/components/Header";
@@ -185,9 +185,33 @@ export default function Dashboard() {
       </main>
 
       {/* Modal for metrics/graphs */}
-      <Modal isOpen={isModalOpen} onClose={closeModal}>
+      <Modal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        type={
+          React.isValidElement(modalContent) && modalContent.key
+            ? modalContent.key === "weather"
+              ? "weather"
+              : modalContent.key === "quality"
+                ? "quality"
+                : modalContent.key === "gauges"
+                  ? "logger"
+                  : "weather"
+            : "weather"
+        }
+        subtypes={
+          React.isValidElement(modalContent) && modalContent.key === "weather"
+            ? subFilters.weather
+            : React.isValidElement(modalContent) && modalContent.key === "quality"
+              ? subFilters.quality
+              : React.isValidElement(modalContent) && modalContent.key === "gauges"
+                ? subFilters.gauges
+                : []
+        }
+      >
         {modalContent}
       </Modal>
+
     </>
   );
 }

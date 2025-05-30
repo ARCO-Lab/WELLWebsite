@@ -5,3 +5,4 @@ flask_cors
 routes
 flask_sqlalchemy
 psycopg2
+pandas

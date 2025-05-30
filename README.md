@@ -37,3 +37,5 @@ start with everything checked when page loads, then allow user to change (defaul
 make modal not recall but open existing one on bigger scale (Wait for graphs to be finished)
 
 **AI Analysis of correlations between metrics in graphs?**
+
+test in openAI api website or chatgpt itself.
