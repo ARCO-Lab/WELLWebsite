@@ -2,6 +2,16 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 
+
+METRIC_NAME_MAP = {
+    "RH": "Relative Humidity",
+    "ODO": "Dissolved Oxygen (ODO)",
+    "ODOSat": "Dissolved Oxygen Saturation (ODOSat)",
+    "TDS": "Total Dissolved Solids (TDS)",
+    "TSS": "Total Suspended Solids (TSS)",
+    "Rain": "Rainfall",
+}
+
 def summarize_metrics(data: pd.DataFrame, max_points=300):
     # Rename for internal consistency
     data = data.rename(columns={"measurement_type": "metric", "recorded_at": "timestamp"})
@@ -12,8 +22,7 @@ def summarize_metrics(data: pd.DataFrame, max_points=300):
     for metric, group in grouped:
         if metric == "Battery":
             continue
-        if metric == "RH":
-            metric = "Relative Humidity"
+        metric = METRIC_NAME_MAP.get(metric, metric)
         group_sorted = group.sort_values("timestamp")
         values = group_sorted["value"].values
         timestamps = pd.to_datetime(group_sorted["timestamp"]).values

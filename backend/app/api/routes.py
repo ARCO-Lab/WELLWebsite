@@ -1,4 +1,5 @@
 from flask import request, jsonify
+import json
 import pandas as pd
 from config import Config
 from db.database import db
@@ -8,7 +9,7 @@ from api.services.quality import QualityService
 from datetime import datetime
 from analysis.downsample import downsample
 import threading
-#from openai import OpenAI
+from openai import OpenAI 
 
 # Keep existing weather service endpoint (optional)
 weather_service = WeatherService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)
@@ -18,7 +19,6 @@ def register_routes(app):
     # Existing HOBO API passthrough
     app.add_url_rule("/api/weather", "get_weather", lambda: jsonify(weather_service.get_weather_data()))
 
-    # ✅ New endpoint to query historical/filtered database data
     @app.route("/api/data", methods=["GET"])
     def get_filtered_data():
         global latest_summaries
@@ -105,6 +105,8 @@ def register_routes(app):
         ]
         return jsonify(results)
 
+    client = OpenAI()
+
     @app.route("/api/analysis", methods=["GET"])
     def analyze_data():
         analysis_type = request.args.get("type")
@@ -117,44 +119,45 @@ def register_routes(app):
         if not summary:
             return jsonify({"error": f"No summary data available for {analysis_type}"}), 404
 
+        # Filter by subtypes if needed
         if subtypes:
-            # Return only selected subtypes (case-insensitive match)
-            filtered_summary = {
-                k: v for k, v in summary.items() if k.lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
+            summary = {
+                k: v for k, v in summary.items()
+                if k.lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
             }
-            return jsonify({analysis_type: filtered_summary})
 
-        return jsonify({analysis_type: summary})
-'''
-        data = request.json.get("data", [])
+        # Prepare JSON summary, truncate to ~1000 tokens
+        raw_data = json.dumps(summary)
+        if len(raw_data) > 4000:  # approx 4 chars per token
+            raw_data = raw_data[:4000]
+
+        # Construct prompt
         prompt = f"""
-        You are an expert environmental data analyst. Analyze the provided sensor data and identify:
+    You are an expert environmental data analyst. Analyze the provided sensor data and identify:
 
-        TRENDS (1-3 bullet points)
+    TRENDS (1-3 bullet points)
+    Key patterns over time (increasing/decreasing values, seasonal changes, etc.)
 
-        Key patterns over time (increasing/decreasing values, seasonal changes, etc.)
+    CORRELATIONS (1-3 bullet points)
+    Relationships between different parameters (temperature vs humidity, etc.)
 
-        CORRELATIONS (1-3 bullet points)
+    ANOMALIES (1-3 bullet points)
+    Unusual readings or sudden changes that deviate from normal patterns
 
-        Relationships between different parameters (temperature vs humidity, etc.)
+    SUMMARY (1-2 sentences)
+    Overall data health and key insights
 
-        ANOMALIES (1-3 bullet points)
+    Format as bullet points. Keep total response under 200 words. Focus on actionable insights relevant to environmental monitoring.
 
-        Unusual readings or sudden changes that deviate from normal patterns
+    Data:
+    {raw_data}
+    """
 
-        SUMMARY (1-2 sentences)
-
-        Overall data health and key insights
-
-        Format as bullet points. Keep total response under 200 words. Focus on actionable insights relevant to environmental monitoring.
-        Data:
-        {data}
-        """
-        response = openai.ChatCompletion.create(
-             model="gpt-4",
+        response = client.chat.completions.create(
+            model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=250,
+            temperature=0.3
         )
-        return jsonify({"analysis": response["choices"][0]["message"]["content"]})
 
-'''
+        return jsonify({"analysis": response.choices[0].message.content})

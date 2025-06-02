@@ -8,8 +8,10 @@ interface ModalProps {
   subtypes?: string[]; // optional, for future use
 }
 
+type AiAnalysisResponse = { analysis: string } | string | null;
+
 const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes }) => {
-  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisResponse>(null);
   const [loading, setLoading] = useState(false);
   const [analysisRequested, setAnalysisRequested] = useState(false);
 
@@ -52,6 +54,26 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
     setLoading(false);
   }, [type, subtypes]);
 
+  function renderFormattedAnalysis(analysis: string) {
+    // Split by headings like **TRENDS**
+    const sections = analysis.split(/\*\*(.*?)\*\*/g).filter(Boolean);
+
+    // sections will be like: ["TRENDS", "\n- ...", "CORRELATIONS", "\n- ...", ...]
+    const result = [];
+    for (let i = 0; i < sections.length; i += 2) {
+      const heading = sections[i]?.trim();
+      const content = sections[i + 1]?.trim();
+      if (heading && content) {
+        result.push(
+          <div key={heading} className="mb-4">
+            <h4 className="font-semibold text-black">{heading.charAt(0) + heading.slice(1).toLowerCase()}:</h4>
+            <pre className="whitespace-pre-wrap text-sm text-black">{content}</pre>
+          </div>
+        );
+      }
+    }
+    return result;
+  }
 
   if (!isOpen) return null;
 
@@ -74,7 +96,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
 
           {/* AI Analysis trigger & output */}
           <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded">
-            <h3 className="text-md font-bold mb-2">AI Analysis</h3>
+            <h3 className="text-md text-black font-bold mb-2">AI Analysis</h3>
 
             {!analysisRequested ? (
               <button
@@ -86,9 +108,9 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
             ) : loading ? (
               <p className="text-sm text-gray-600">Analyzing data...</p>
             ) : (
-              <pre className="text-sm text-gray-800 whitespace-pre-wrap">
-                {JSON.stringify(aiAnalysis, null, 2)}
-              </pre>
+              aiAnalysis && typeof aiAnalysis === "object" && aiAnalysis.analysis
+                ? renderFormattedAnalysis(aiAnalysis.analysis)
+                : <pre className="text-sm text-gray-800 whitespace-pre-wrap">{JSON.stringify(aiAnalysis, null, 2)}</pre>
             )}
           </div>
         </div>
