@@ -30,9 +30,9 @@ export default function Dashboard() {
   });
 
   const [startDate, setStartDate] = useState<Date | null>(() => {
-    const oneWeekAgo = new Date();
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-    const estStart = new Date(oneWeekAgo.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const estStart = new Date(yesterday.toLocaleString("en-US", { timeZone: "America/Toronto" }));
     return estStart;
   });
 

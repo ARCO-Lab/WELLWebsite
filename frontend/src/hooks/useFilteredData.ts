@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 export interface SensorData {
     sensor: string;
@@ -24,6 +24,9 @@ const useFilteredData = (
     const [data, setData] = useState<SensorData[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
+
+    const cache = useRef<Map<string, SensorData[]>>(new Map());
+
 
     useEffect(() => {
         const fetchData = async () => {
@@ -51,7 +54,24 @@ const useFilteredData = (
 
               const json = await res.json();
 
-              setData(json);         
+              const key = `${start.toISOString()}|${end.toISOString()}|${JSON.stringify(activeGroups)}`;
+              cache.current.set(key, json);
+
+              let merged: SensorData[] = [];
+              cache.current.forEach((value, k) => {
+                const [s, e, group] = k.split("|");
+                const sDate = new Date(s);
+                const eDate = new Date(e);
+
+                if (
+                    eDate >= start && sDate <= end && 
+                    Object.entries(activeGroups).some(([k,v]) => v && group.includes(`"${k}":true`))
+                ) {
+                    merged = merged.concat(value);
+                }
+              });
+
+              setData(merged);
             } catch (err: any) {
               setError(err);
             } finally {

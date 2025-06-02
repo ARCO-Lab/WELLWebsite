@@ -186,7 +186,7 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
         {open.quality && (
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
             {[
-              "Temperature", "Conductivity", "Salinity", "Total Dissolved Solids (TDS)",
+              "Water Temperature", "Conductivity", "Salinity", "Total Dissolved Solids (TDS)",
               "Dissolved Oxygen (ODO)", "Dissolved Oxygen Saturation (ODOSat)",
               "Turbidity", "Total Suspended Solids (TSS)"
             ].map((label) => (
