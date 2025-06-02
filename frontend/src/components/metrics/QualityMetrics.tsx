@@ -7,7 +7,7 @@ interface QualityMetric {
 }
 
 const metrics: QualityMetric[] = [
-  { label: "Temperature", key: "Temperature" },
+  { label: "Water Temperature", key: "Water Temperature" },
   { label: "Conductivity", key: "Conductivity" },
   { label: "Salinity", key: "Salinity" },
   { label: "Total Dissolved Solids (TDS)", key: "TDS" },

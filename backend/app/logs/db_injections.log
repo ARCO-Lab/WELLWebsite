@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/mnt/c/Users/lukhs/Documents/well/backend/app/scripts/inject_from_api.py", line 7, in <module>
+    from server import create_app
+  File "/mnt/c/Users/lukhs/Documents/well/backend/app/server.py", line 1, in <module>
+    from flask import Flask
+ModuleNotFoundError: No module named 'flask'

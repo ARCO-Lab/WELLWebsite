@@ -34,8 +34,12 @@ WQDATA_DEVICE_ID=your-device-id-here
 TODO: 
 start with everything checked when page loads, then allow user to change (default date range being the last week)
 
-make modal not recall but open existing one on bigger scale (Wait for graphs to be finished)
-
-**AI Analysis of correlations between metrics in graphs?**
+make sure modal doesnt re render to components, just opens them to bigger space (graphs dont have metrics on side when opened have metrics)
 
 test in openAI api website or chatgpt itself.
+email notifications for errors in logs
+
+add requirements.txt for frontend
+loading circle for data loading time in graphs, 
+
+*CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*

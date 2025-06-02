@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-interface SensorData {
+export interface SensorData {
     sensor: string;
     value: number;
     unit: string;
@@ -10,7 +10,7 @@ interface SensorData {
     station_id: string;
 }
 
-interface GroupSelection {
+export interface GroupSelection {
     gauges: boolean;
     weather: boolean;
     quality: boolean

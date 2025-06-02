@@ -1,5 +1,5 @@
 import requests, sys, pathlib
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
 from datetime import datetime, timedelta, timezone
 
@@ -20,12 +20,8 @@ class WeatherService:
     def get_weather_data(self, start_time=None, end_time=None):
         if not start_time or not end_time:
             now = datetime.now(timezone.utc)
-            # Temporary override: 
-            # Current all time as of May 27,2025:
-            # Start time is 2025-05-09 15:20:00
-            # End time is 2025-05-21 12:15:00
-            start_time = "2025-05-21 12:02:30"
-            end_time = "2025-05-21 12:12:30"
+            start_time = "2025-05-08 11:00:00"
+            end_time = now.strftime("%Y-%m-%d %H:%M:%S")
 
 
         params = {

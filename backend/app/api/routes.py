@@ -3,7 +3,8 @@ import pandas as pd
 from config import Config
 from db.database import db
 from db.models import SensorMeasurement
-from api.services import WeatherService
+from api.services.weather import WeatherService
+from api.services.quality import QualityService
 from datetime import datetime
 from analysis.downsample import downsample
 import threading
@@ -124,21 +125,36 @@ def register_routes(app):
             return jsonify({analysis_type: filtered_summary})
 
         return jsonify({analysis_type: summary})
+'''
+        data = request.json.get("data", [])
+        prompt = f"""
+        You are an expert environmental data analyst. Analyze the provided sensor data and identify:
 
-        # For future use with OpenAI:
-        # data = request.json.get("data", [])
-        # prompt = f"""
-        # You are an environmental science analyst. Analyze the following sensor data and identify:
-        # - Notable trends
-        # - Correlations
-        # - Anomalies
-        # Data:
-        # {data}
-        # """
-        # response = openai.ChatCompletion.create(
-        #     model="gpt-4",
-        #     messages=[{"role": "user", "content": prompt}],
-        #     max_tokens=500,
-        # )
-        # return jsonify({"analysis": response["choices"][0]["message"]["content"]})
+        TRENDS (1-3 bullet points)
 
+        Key patterns over time (increasing/decreasing values, seasonal changes, etc.)
+
+        CORRELATIONS (1-3 bullet points)
+
+        Relationships between different parameters (temperature vs humidity, etc.)
+
+        ANOMALIES (1-3 bullet points)
+
+        Unusual readings or sudden changes that deviate from normal patterns
+
+        SUMMARY (1-2 sentences)
+
+        Overall data health and key insights
+
+        Format as bullet points. Keep total response under 200 words. Focus on actionable insights relevant to environmental monitoring.
+        Data:
+        {data}
+        """
+        response = openai.ChatCompletion.create(
+             model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+        )
+        return jsonify({"analysis": response["choices"][0]["message"]["content"]})
+
+'''

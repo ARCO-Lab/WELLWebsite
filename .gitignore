@@ -43,6 +43,8 @@ build/
 # Virtual environments
 venv/
 .venv/
+venv_wsl/
+.venv_wsl/
 
 # JetBrains IDEs
 .idea/
@@ -50,4 +52,7 @@ venv/
 # Python
 __pycache__/
 *.pyc
+
+Makefile
+backend/app/scripts/run_scheduler.sh
 

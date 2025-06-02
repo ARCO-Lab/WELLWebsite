@@ -7,8 +7,8 @@ interface WeatherMetric {
 }
 
 const metrics: WeatherMetric[] = [
-  { label: "Air Temperature", key: "Temperature" },
-  { label: "Relative Humidity", key: "RH" },
+  { label: "Air Temperature", key: "Air Temperature" },
+  { label: "Relative Humidity", key: "Relative Humidity" },
   { label: "Wind Speed", key: "Wind Speed" },
   { label: "Gust Speed", key: "Gust Speed" },
   { label: "Wind Direction", key: "Wind Direction" },
