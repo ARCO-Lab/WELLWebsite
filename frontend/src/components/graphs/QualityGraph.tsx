@@ -1,5 +1,8 @@
-import { useMemo } from "react";
+import dynamic from 'next/dynamic';
 import useFilteredData from "@/hooks/useFilteredData";
+
+// Dynamically import MetricChart with SSR disabled
+const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 
 interface Props {
   activeGroups: {
@@ -19,24 +22,18 @@ interface Props {
 const QualityGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
-  const qualityData = useMemo(() => {
-    return data.filter(
-      (d) =>
-        d.group_type === "Quality" &&
-        subFilters.quality.includes(d.measurement_type)
-    );
-  }, [data, subFilters]);
-
   return (
     <div className="p-4 bg-white rounded shadow">
-      <h2 className="mb-2 text-lg font-semibold text-black">Water Quality</h2>
-      {loading ? (
-        <p className="text-gray-500">Loading...</p>
-      ) : (
-        <pre className="overflow-x-auto text-sm text-gray-700 whitespace-pre-wrap">
-          {JSON.stringify(qualityData, null, 2)}
-        </pre>
-      )}
+      <MetricChart
+        activeGroup="quality"
+        subFilters={subFilters.quality}
+        height={500}
+        startDate={startDate}
+        endDate={endDate}
+        data={data}
+        loading={loading}
+        error={error}
+      />
     </div>
   );
 };
