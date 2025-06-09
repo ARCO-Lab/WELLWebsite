@@ -61,6 +61,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       name: s.name,
       data: s.data.sort((a, b) => a[0] - b[0]),
       color: graphColors[index % graphColors.length],
+      yAxis: index, 
     }));
 
     const yAxes = Array.from(seriesMap.values()).map((s, index) => ({

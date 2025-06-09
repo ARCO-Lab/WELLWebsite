@@ -4,6 +4,14 @@ import useFilteredData from "@/hooks/useFilteredData";
 // Dynamically import MetricChart with SSR disabled
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 
+const QUALITY_METRIC_MAP: Record<string, string> = {
+  "Total Dissolved Solids (TDS)": "TDS",
+  "Dissolved Oxygen (ODO)": "ODO",
+  "Dissolved Oxygen Saturation (ODOSat)": "ODOSat",
+  "Total Suspended Solids (TSS)": "TSS",
+  // Add more if needed
+};
+
 interface Props {
   activeGroups: {
     gauges: boolean;
@@ -19,14 +27,19 @@ interface Props {
   endDate: Date | null;
 }
 
+
 const QualityGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
+
+  const mappedSubFilters = subFilters.quality.map(
+    label => QUALITY_METRIC_MAP[label] || label
+  );
 
   return (
     <div className="p-4 bg-white rounded shadow">
       <MetricChart
         activeGroup="quality"
-        subFilters={subFilters.quality}
+        subFilters={mappedSubFilters}
         height={500}
         startDate={startDate}
         endDate={endDate}

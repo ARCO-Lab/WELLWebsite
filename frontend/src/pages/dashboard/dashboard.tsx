@@ -23,11 +23,18 @@ export default function Dashboard() {
     weather: false,
     quality: false,
   });
+
   const [subFilters, setSubFilters] = useState({
     weather: [] as string[],
     quality: [] as string[],
     gauges: [] as string[],
   });
+
+  const [open, setOpen] = useState({
+    gauges: false,
+    weather: false,
+    quality: false,
+  });   
 
   const [startDate, setStartDate] = useState<Date | null>(() => {
     const yesterday = new Date();
@@ -110,6 +117,8 @@ export default function Dashboard() {
                   setActiveGroups={setActiveGroups}
                   subFilters={subFilters}
                   setSubFilters={setSubFilters}
+                  open={open}
+                  setOpen={setOpen}
                 />
                 <Calendar
                   startDate={startDate}
@@ -160,6 +169,8 @@ export default function Dashboard() {
                     setActiveGroups={setActiveGroups}
                     subFilters={subFilters}
                     setSubFilters={setSubFilters}
+                    open={open}
+                    setOpen={setOpen}
                   />
                 </div>
               </div>

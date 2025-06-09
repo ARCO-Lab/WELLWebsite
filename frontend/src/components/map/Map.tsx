@@ -20,6 +20,16 @@ interface MapProps {
     weather: string[];
     quality: string[];
   }>>;
+  open: {
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  };
+  setOpen: React.Dispatch<React.SetStateAction<{ 
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  }>>;
 }
 
 const center = { lat: 43.260456, lng: -79.932517 };
@@ -39,7 +49,7 @@ const containerStyle = {
   height: "300px",
 };
 
-const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters }) => {
+const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen }) => {
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!,
   });
@@ -92,29 +102,42 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
             }}
             onClick={() => {
               if (marker.group === "gauges") {
+                setOpen((prev) =>  ({ ...prev, gauges: true }));
                 const loggerName = marker.label.replace("Water ", ""); // e.g., "Logger 1"
+
 
                 setSubFilters((prev) => {
                   const selected = new Set(prev.gauges);
                   const loggerLabels = ["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"];
 
-                  // Remove "All Loggers" if it's present
-                  selected.delete("All Loggers");
-
-                  // Toggle the clicked logger
-                  if (selected.has(loggerName)) {
-                    selected.delete(loggerName);
+                  let newSelected: Set<string>;
+                  if (selected.has("All Loggers")) {
+                    // If "All Loggers" is selected, deselect the clicked logger and select all others
+                    newSelected = new Set(["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"]);
+                    newSelected.delete(loggerName);
                   } else {
-                    selected.add(loggerName);
+                    // Normal toggle
+                    newSelected = new Set(selected);
+                    if (newSelected.has(loggerName)) {
+                      newSelected.delete(loggerName);
+                    } else {
+                      newSelected.add(loggerName);
+                    }
                   }
-
                   // If all individual loggers are now selected, collapse back to "All Loggers"
-                  const allSelected = loggerLabels.every((l) => selected.has(l));
+                  const allSelected = loggerLabels.every((l) => newSelected.has(l));
                   if (allSelected) {
+                    setActiveGroups((prevGroups) => ({ ...prevGroups, gauges: true }));
+                
                     return { ...prev, gauges: ["All Loggers"] };
                   }
 
-                  return { ...prev, gauges: Array.from(selected) };
+                  // If at least one logger is selected, ensure group is active
+                  if (newSelected.size > 0) {
+                    setActiveGroups((prevGroups) => ({ ...prevGroups, gauges: true }));
+                  } 
+
+                  return { ...prev, gauges: Array.from(newSelected) };
                 });
               } else {
                 const group = marker.group as keyof ActiveGroups;

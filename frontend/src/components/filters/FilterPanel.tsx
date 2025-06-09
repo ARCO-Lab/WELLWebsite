@@ -21,18 +21,32 @@ type Props = {
     quality: string[];
     gauges: string[]; 
   }>>;
+  open: {
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  };
+  setOpen: React.Dispatch<React.SetStateAction<{ 
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+  }>>;
 };
 
-const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters }) => {
-  const [open, setOpen] = useState({
-    gauges: false,
-    weather: false,
-    quality: false,
-  });
+const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen }) => {
 
   const toggleGroupMain = (group: keyof typeof activeGroups) => {
     setActiveGroups((prev) => ({ ...prev, [group]: !prev[group] }));
     setOpen((prev) => ({ ...prev, [group]: !prev[group] }));
+
+    if (group === "gauges") {
+      setSubFilters((prev) => ({
+        ...prev,
+        gauges: !activeGroups.gauges
+          ? ["All Loggers"] // all on
+          : [],            // all off
+      }));
+    }
   };
 
   const toggleSubFilter = (group: "weather" | "quality" | "gauges", label: string) => {

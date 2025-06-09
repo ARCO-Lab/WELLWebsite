@@ -48,6 +48,13 @@ const useFilteredData = (
             if (activeGroups.quality) params.append("quality", "true");
             if (activeGroups.gauges) params.append("gauges", "true");
 
+            const key = `${start.toISOString()}|${end.toISOString()}|${JSON.stringify(activeGroups)}`;
+            if (cache.current.has(key)) {
+              setData(cache.current.get(key)!);
+              setLoading(false);
+              return;
+            }
+
             try {
               const res = await fetch(`/api/data?${params.toString()}`);
               if (!res.ok) throw new Error(`Failed to fetch sensor data: ${res.status}`);
@@ -56,22 +63,7 @@ const useFilteredData = (
 
               const key = `${start.toISOString()}|${end.toISOString()}|${JSON.stringify(activeGroups)}`;
               cache.current.set(key, json);
-
-              let merged: SensorData[] = [];
-              cache.current.forEach((value, k) => {
-                const [s, e, group] = k.split("|");
-                const sDate = new Date(s);
-                const eDate = new Date(e);
-
-                if (
-                    eDate >= start && sDate <= end && 
-                    Object.entries(activeGroups).some(([k,v]) => v && group.includes(`"${k}":true`))
-                ) {
-                    merged = merged.concat(value);
-                }
-              });
-
-              setData(merged);
+              setData(json);
             } catch (err: any) {
               setError(err);
             } finally {

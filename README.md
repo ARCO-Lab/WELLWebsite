@@ -36,10 +36,14 @@ start with everything checked when page loads, then allow user to change (defaul
 
 make sure modal doesnt re render to components, just opens them to bigger space (graphs dont have metrics on side when opened have metrics)
 
-test in openAI api website or chatgpt itself.
 email notifications for errors in logs
 
-add requirements.txt for frontend
 loading circle for data loading time in graphs, 
 
 *CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
+
+rate limiting api, bugs, caching fixes. 
+windrose tab
+
+exact date time feature on graph?
+make modal not show y-axis until opened, allow hover and date, and fix modal width
