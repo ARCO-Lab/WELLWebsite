@@ -100,6 +100,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       tooltip: {
         shared: true,
         followPointer: true,
+        valueDecimals: 2,
       },
       xAxis: {
         type: 'datetime',

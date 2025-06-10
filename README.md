@@ -31,21 +31,17 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
 
-TODO: 
+June 10th TODO:
+windrose tab
+exact date time feature on graph?
+add X to modal 
+make sure modal doesnt re render components and recall api, just opens them to bigger space (graphs dont have metrics on side when opened have metrics)
 start with everything checked when page loads, then allow user to change (default date range being the last week)
 
-make sure modal doesnt re render to components, just opens them to bigger space (graphs dont have metrics on side when opened have metrics)
+
+After: 
 
 email notifications for errors in logs
 
-loading circle for data loading time in graphs, 
-
+rate limiting api, bugs, caching fixes.
 *CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
-
-rate limiting api, bugs, caching fixes. 
-windrose tab
-
-exact date time feature on graph?
-make modal not show y-axis until opened, allow hover and date, and fix modal width
-make sure responsive
-add X to modal 

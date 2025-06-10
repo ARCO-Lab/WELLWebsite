@@ -6,11 +6,12 @@ interface ModalProps {
   children: React.ReactNode;
   type: "weather" | "logger" | "quality"; // to pass to the analysis API
   subtypes?: string[]; // optional, for future use
+  analysisType: "recent" | "alltime"
 }
 
 type AiAnalysisResponse = { analysis: string } | string | null;
 
-const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes }) => {
+const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes, analysisType}) => {
   const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisResponse>(null);
   const [loading, setLoading] = useState(false);
   const [analysisRequested, setAnalysisRequested] = useState(false);
@@ -27,7 +28,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
         subtypes.forEach((s) => params.append("subtypes", s));
       }
 
-      const res = await fetch(`/api/analysis?${params.toString()}`);
+      const res = await fetch(`/api/analysis/${analysisType}?${params.toString()}`);
       const json = await res.json();
       setAiAnalysis(json);
     } catch (err) {
@@ -55,25 +56,33 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
   }, [type, subtypes]);
 
   function renderFormattedAnalysis(analysis: string) {
-    // Split by headings like **TRENDS**
-    const sections = analysis.split(/\*\*(.*?)\*\*/g).filter(Boolean);
+  // Normalize headings: ensure all headings are surrounded by **
+  let normalized = analysis.replace(
+    /^([A-Z ]{3,}):/gm,
+    (_, heading) => `**${heading.trim()}**:`
+  );
 
-    // sections will be like: ["TRENDS", "\n- ...", "CORRELATIONS", "\n- ...", ...]
-    const result = [];
-    for (let i = 0; i < sections.length; i += 2) {
-      const heading = sections[i]?.trim();
-      const content = sections[i + 1]?.trim();
-      if (heading && content) {
-        result.push(
-          <div key={heading} className="mb-4">
-            <h4 className="font-semibold text-black">{heading.charAt(0) + heading.slice(1).toLowerCase()}:</h4>
-            <pre className="whitespace-pre-wrap text-sm text-black">{content}</pre>
-          </div>
-        );
-      }
-    }
-    return result;
+  // Match headings like **ALERTS:** or **KEY FINDINGS:** and their content
+  const regex = /\*\*(.+?)\*\*\s*:?([\s\S]*?)(?=(\*\*|$))/g;
+  const result = [];
+  let match;
+  while ((match = regex.exec(normalized)) !== null) {
+    const headingRaw = match[1].trim().replace(/:$/, "");
+    const heading = headingRaw.charAt(0).toUpperCase() + headingRaw.slice(1).toLowerCase();
+    const content = match[2].trim();
+    result.push(
+      <div key={heading} className="mb-4">
+        <h4 className="font-bold text-base text-black">{heading}</h4>
+        <pre className="whitespace-pre-wrap text-sm text-black">{content}</pre>
+      </div>
+    );
   }
+  // If nothing matched, just show the raw analysis
+  if (result.length === 0) {
+    return <pre className="whitespace-pre-wrap text-sm text-black">{analysis}</pre>;
+  }
+  return result;
+}
 
   if (!isOpen) return null;
 

@@ -49,6 +49,7 @@ export default function Dashboard() {
     return estEnd;
   });
 
+  const [analysisType, setAnalysisType] = useState<"recent" | "alltime">("alltime");
 
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
@@ -88,8 +89,9 @@ export default function Dashboard() {
   const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const openModal = (content: React.ReactNode) => {
+  const openModal = (content: React.ReactNode, analysisType: "recent" | "alltime") => {
     setModalContent(content);
+    setAnalysisType(analysisType)
     setIsModalOpen(true);
   };
 
@@ -151,7 +153,7 @@ export default function Dashboard() {
                   {metricComponents.map((comp, index) => (
                     <div
                       key={index}
-                      onClick={() => openModal(comp)}
+                      onClick={() => openModal(comp, "recent")}
                       className={`${getMetricFlexBasis(metricComponents.length)} overflow-y-auto transition cursor-pointer hover:shadow-lg rounded p-2 min-h-0`}
                     >
                       {comp}
@@ -183,7 +185,7 @@ export default function Dashboard() {
                 {graphComponents.map((comp, index) => (
                   <div
                     key={index}
-                    onClick={() => openModal(comp)}
+                    onClick={() => openModal(comp, "alltime")}
                     className="transition cursor-pointer hover:shadow-lg"
                   >
                     {comp}
@@ -199,6 +201,7 @@ export default function Dashboard() {
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
+        analysisType={analysisType}
         type={
           React.isValidElement(modalContent) && modalContent.key
             ? modalContent.key === "weather"

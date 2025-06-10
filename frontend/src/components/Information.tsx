@@ -3,9 +3,9 @@ import Image from "next/image";
 
 const infoMap: Record<number, string> = {
   1: "The filter panel lets you toggle sensor categories, select individual metrics, and adjust date ranges. You can also download filtered data as a CSV. Clicking a group or marker updates the filters in real time.",
-  2: "The map displays sensor locations: blue droplets for water loggers, a pink droplet for the water quality sensor, and a gray cloud for the weather station. Hovering on a marker shows more information. Click markers to toggle sensors on or off",
-  3: "This section shows the most recent readings for your selected metrics. Click any metric to view it in a fullscreen modal for detailed analysis.",
-  4: "Graph visualizations update based on your filters and date range. Click a graph to open it fullscreen, revealing detailed X and Y axes. The modal also provides an AI-generated analysis of the displayed data.",
+  2: "The map displays sensor locations: blue droplets for water loggers, a pink droplet for the water quality sensor, and a gray cloud for the weather station. Hovering on a marker shows more information. Click markers to toggle sensors on or off.",
+  3: "This section shows the most recent readings for your selected metrics. Click any metric to view it in a fullscreen modal for detailed analysis, including an AI-generated summary of alerts, key findings, and correlations.",
+  4: "Graph visualizations update based on your filters and date range. Click a graph to open it fullscreen, revealing detailed X and Y axes. The modal also provides an AI-generated analysis of trends, correlations, and anomalies in the data.",
 };
 
 const Information: React.FC<{ id: number }> = ({ id }) => {

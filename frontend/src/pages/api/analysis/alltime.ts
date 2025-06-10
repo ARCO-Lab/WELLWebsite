@@ -18,7 +18,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       params.append("subtypes", subtypes as string);
     }
 
-    const flaskUrl = `${process.env.FLASK_API_URL}/api/analysis?${params.toString()}`;
+    const flaskUrl = `${process.env.FLASK_API_URL}/api/analysis/alltime?${params.toString()}`;
     const response = await fetch(flaskUrl);
 
     if (!response.ok) {

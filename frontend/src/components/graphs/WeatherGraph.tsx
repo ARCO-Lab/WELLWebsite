@@ -22,12 +22,13 @@ interface Props {
 
 const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
+  const mappedWeather = subFilters.weather.map(m => m === "Rainfall" ? "Rain" : m);
 
   return (
     <div className="p-4 bg-white rounded shadow">
       <MetricChart
         activeGroup="weather"
-        subFilters={subFilters.weather}
+        subFilters={mappedWeather}
         height={500}
         startDate={startDate}
         endDate={endDate}
