@@ -7,6 +7,7 @@ interface ModalProps {
   type: "weather" | "logger" | "quality"; // to pass to the analysis API
   subtypes?: string[]; // optional, for future use
   analysisType: "recent" | "alltime"
+  data: any;
 }
 
 type AiAnalysisResponse = { analysis: string } | string | null;

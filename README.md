@@ -30,18 +30,24 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
-
 June 10th TODO:
 windrose tab
-exact date time feature on graph?
 add X to modal 
-make sure modal doesnt re render components and recall api, just opens them to bigger space (graphs dont have metrics on side when opened have metrics)
-start with everything checked when page loads, then allow user to change (default date range being the last week)
+make sure modal doesnt re render components and recall api, just opens them to bigger space
+make sure marker info pop up doesn't disspear when hover on it
+make sure new active group doesn't recall latest, latest is only recalled whenever page loads, and every 10 minutes, stored in latest hook until showed on filters
+make latestmetrics be a bit shorter so that ai analysis has some space at the bottom
 
 
 After: 
-
 email notifications for errors in logs
-
+start with everything checked when page loads, then allow user to change (default date range being the last week)
 rate limiting api, bugs, caching fixes.
+have hooks already ready to go on index page.
+add pictures of each station on info pop up
 *CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
+
+logger graph:
+similar to metric resizing, have y axis cuts that go from same range to same range essentially 5 different graphs(or less depending on how mnay loggers clicked) but hovering shows all metrics for all loggers, water level blue, temp red, same for all loggers, same legend, just resizing similar to latestmetrics with cuts so that y axis has the same stuff
+
+make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent

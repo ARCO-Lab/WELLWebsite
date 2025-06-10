@@ -26,12 +26,13 @@ interface Props {
   startDate: Date | null;
   endDate: Date | null;
   modalOpen?: boolean;
+  data: any;
+  loading?: boolean;
+  error?: any;
 }
 
 
-const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen }: Props) => {
-  const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
-
+const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen, data, loading = false, error = null, }: Props) => {
   const mappedSubFilters = subFilters.quality.map(
     label => QUALITY_METRIC_MAP[label] || label
   );

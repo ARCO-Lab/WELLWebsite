@@ -18,10 +18,12 @@ interface Props {
   startDate: Date | null;
   endDate: Date | null;
   modalOpen?: boolean;
+  data: any;
+  loading?: boolean;
+  error?: any;
 }
 
-const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen }: Props) => {
-  const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
+const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen, data, loading = false, error = null }: Props) => {
   const mappedWeather = subFilters.weather.map(m => m === "Rainfall" ? "Rain" : m);
 
   return (

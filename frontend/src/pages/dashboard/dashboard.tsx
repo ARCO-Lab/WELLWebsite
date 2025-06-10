@@ -60,8 +60,8 @@ export default function Dashboard() {
   };
 
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
-    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data} />,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data}/>,
     gauges: <LoggerGraph key="gauges" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
   };
   
@@ -88,10 +88,12 @@ export default function Dashboard() {
                    
   const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalData, setModalData] = useState<any>(null);
 
   const openModal = (content: React.ReactNode, analysisType: "recent" | "alltime") => {
     setModalContent(content);
     setAnalysisType(analysisType)
+    setModalData(data);
     setIsModalOpen(true);
   };
 
@@ -185,7 +187,10 @@ export default function Dashboard() {
                 {graphComponents.map((comp, index) => (
                   <div
                     key={index}
-                    onClick={() => openModal(comp, "alltime")}
+                    onClick={() => openModal(
+                      React.cloneElement(comp, { data, loading, error }),
+                      "alltime"
+                    )}
                     className="transition cursor-pointer hover:shadow-lg"
                   >
                     {comp}
@@ -222,8 +227,11 @@ export default function Dashboard() {
                 ? subFilters.gauges
                 : []
         }
+        data={modalData}
       >
-        {modalContent}
+         {React.isValidElement(modalContent) && modalContent.props && typeof modalContent.props === "object" && "data" in modalContent.props
+          ? React.cloneElement(modalContent as React.ReactElement<any>, { data: modalData }) // Pass data to child
+          : modalContent}
       </Modal>
 
     </>
