@@ -89,10 +89,13 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
       <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
         <div
           onClick={(e) => e.stopPropagation()}
-          className="relative pointer-events-auto w-[90%] max-w-4xl h-[90vh] max-h-[90vh] overflow-auto bg-white p-6 rounded-lg shadow-lg border border-gray-300"
+          className="relative pointer-events-auto bg-white p-6 rounded-lg shadow-lg border border-gray-300
+          w-full h-full max-w-[calc(100vw-40px)] max-h-[calc(100vh-40px)] m-0 overflow-y-auto"
         >
           {/* Main content */}
-          {children}
+          {React.isValidElement(children)
+            ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen })
+            : children}
 
           {/* AI Analysis trigger & output */}
           <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded">

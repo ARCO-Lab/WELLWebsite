@@ -22,6 +22,15 @@ interface DownloadProps {
   }[];
 }
 
+const METRIC_NAME_MAP: Record<string, string> = {
+  "Rainfall": "Rain",
+  "Total Dissolved Solids (TDS)": "TDS",
+  "Dissolved Oxygen (ODO)": "ODO",
+  "Dissolved Oxygen Saturation (ODOSat)": "ODOSat",
+  "Total Suspended Solids (TSS)": "TSS",
+  // Add more as needed
+};
+
 const formatDate = (date: Date) => {
   return date.toISOString().split("T")[0].replace(/-/g, "");
 };
@@ -51,25 +60,37 @@ const Download: React.FC<DownloadProps> = ({
       return;
     }
 
+  const mappedSubFilters = {
+    weather: subFilters.weather.map(label => METRIC_NAME_MAP[label] || label),
+    quality: subFilters.quality.map(label => METRIC_NAME_MAP[label] || label),
+    gauges: subFilters.gauges.map(label => METRIC_NAME_MAP[label] || label),
+  };
+
     // 1. Filter based on activeGroups and subFilters
     const filtered = data.filter((entry) => {
       if (entry.group_type === "Weather" && activeGroups.weather) {
-        return subFilters.weather.includes(entry.measurement_type);
+        return mappedSubFilters.weather.includes(entry.measurement_type);
       }
       if (entry.group_type === "Quality" && activeGroups.quality) {
-        return subFilters.quality.includes(entry.measurement_type);
+        return mappedSubFilters.quality.includes(entry.measurement_type);
       }
       if (entry.group_type === "Logger" && activeGroups.gauges) {
-        return subFilters.gauges.includes(entry.measurement_type);
+        return mappedSubFilters.gauges.includes(entry.measurement_type);
       }
       return false;
     });
-
+    const weatherKeys = [
+      ...new Set(filtered.filter(d => d.group_type === "Weather").map(d => d.measurement_type))
+    ].sort();
+    const qualityKeys = [
+      ...new Set(filtered.filter(d => d.group_type === "Quality").map(d => d.measurement_type))
+    ].sort();
+    const loggerKeys = [
+      ...new Set(filtered.filter(d => d.group_type === "Logger").map(d => d.measurement_type))
+    ].sort();
     // 2. Identify unique timestamps and metrics
     const timestamps = [...new Set(filtered.map((d) => d.recorded_at))].sort();
-    const metricKeys = [
-      ...new Set(filtered.map((d) => d.measurement_type)),
-    ].sort();
+    const metricKeys = [...weatherKeys, ...qualityKeys, ...loggerKeys];
 
     // 3. Build a map of metric name → unit-suffixed label
     const metricLabelMap: Record<string, string> = {};
@@ -92,27 +113,47 @@ const Download: React.FC<DownloadProps> = ({
           (d) => d.recorded_at === timestamp && d.measurement_type === key
         );
         if(match) {
-        row[key] = match ? match.value.toFixed(2) : "";
-        if (!row.group_type) row.group_type = match.group_type;
-      } else {
-        row[key] = "";
-      }
+          row[key] = match ? match.value.toFixed(2) : "";
+          if (!row.group_type) row.group_type = match.group_type;
+        } else {
+          row[key] = "";
+        }
       });
 
       return row;
     });
 
     // 5. Construct CSV headers and rows
-    const headers = ["ID", "Timestamp", "Sensor", ...metricKeys.map((key) => metricLabelMap[key])];
+    const headers = ["ID", "Timestamp"];
+    const sensorSections: Array<{
+      active: boolean;
+      label: string;
+      keys: string[];
+    }> = [
+      { active: activeGroups.weather, label: "Weather", keys: weatherKeys },
+      { active: activeGroups.quality, label: "Quality", keys: qualityKeys },
+      { active: activeGroups.gauges, label: "Logger", keys: loggerKeys },
+    ];
+
+    sensorSections.forEach((section, idx) => {
+      if (section.active) {
+        if (idx !== 0) headers.push(""); // Blank before each section except the first
+        headers.push("Sensor");
+        headers.push(...section.keys.map((key) => metricLabelMap[key]));
+      }
+    });
+
     const csvRows = [headers.join(",")];
 
     rows.forEach((row) => {
-      const csvRow = [
-        row.id,
-        row.timestamp,
-        row.group_type,
-        ...metricKeys.map((key) => row[key] ?? "")
-      ];
+      const csvRow = [row.id, row.timestamp];
+      sensorSections.forEach((section, idx) => {
+        if (section.active) {
+          if (idx !== 0) csvRow.push(""); // Blank before each section except the first
+          csvRow.push(section.label);
+          csvRow.push(...section.keys.map((key) => row[key] ?? ""));
+        }
+      });
       csvRows.push(csvRow.join(","));
     });
 

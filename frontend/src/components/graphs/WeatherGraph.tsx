@@ -17,9 +17,10 @@ interface Props {
   };
   startDate: Date | null;
   endDate: Date | null;
+  modalOpen?: boolean;
 }
 
-const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
+const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   return (
@@ -33,6 +34,7 @@ const WeatherGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) =
         data={data}
         loading={loading}
         error={error}
+        modalOpen={modalOpen}
       />
     </div>
   );

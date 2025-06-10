@@ -25,10 +25,11 @@ interface Props {
   };
   startDate: Date | null;
   endDate: Date | null;
+  modalOpen?: boolean;
 }
 
 
-const QualityGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) => {
+const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen }: Props) => {
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
 
   const mappedSubFilters = subFilters.quality.map(
@@ -46,6 +47,7 @@ const QualityGraph = ({ activeGroups, subFilters, startDate, endDate }: Props) =
         data={data}
         loading={loading}
         error={error}
+        modalOpen={modalOpen}
       />
     </div>
   );

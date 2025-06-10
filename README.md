@@ -47,3 +47,5 @@ windrose tab
 
 exact date time feature on graph?
 make modal not show y-axis until opened, allow hover and date, and fix modal width
+make sure responsive
+add X to modal 

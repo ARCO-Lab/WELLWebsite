@@ -18,6 +18,7 @@ interface MetricChartProps {
   data: SensorData[];
   loading: boolean;
   error: Error | null;
+  modalOpen?: boolean;
 }
 
 const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
@@ -31,6 +32,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
   data,
   loading,
   error,
+  modalOpen= false,
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
   const [chartOptions, setChartOptions] = useState<any>({});
@@ -39,6 +41,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
     if (!data || loading) return;
 
     const seriesMap: Map<string, { name: string; unit: string; data: [number, number][] }> = new Map();
+    const unitMap: Map<string, number> = new Map(); // To track the index of each unique unit
 
     data.forEach((item) => {
       if (subFilters.includes(item.measurement_type)) {
@@ -53,22 +56,31 @@ const MetricChart: React.FC<MetricChartProps> = ({
         const series = seriesMap.get(key)!;
         const timestamp = new Date(item.recorded_at).getTime();
         series.data.push([timestamp, item.value]);
+
+        // Check if the unit is already in the unitMap
+        if (!unitMap.has(item.unit)) {
+          unitMap.set(item.unit, unitMap.size); // Assign a unique index for this unit
+        }
       }
     });
 
-    const series = Array.from(seriesMap.values()).map((s, index) => ({
+    const series = Array.from(seriesMap.values()).map((s) => ({
       type: 'line' as const,
       name: s.name,
       data: s.data.sort((a, b) => a[0] - b[0]),
-      color: graphColors[index % graphColors.length],
-      yAxis: index, 
+      color: graphColors[unitMap.get(s.unit)! % graphColors.length],
+      yAxis: unitMap.get(s.unit), // Associate each series with its corresponding Y-axis
     }));
 
-    const yAxes = Array.from(seriesMap.values()).map((s, index) => ({
+    const yAxes = Array.from(unitMap.keys()).map((unit, index) => ({
       title: {
-        text: s.unit,
+        text: null,
+      },
+      labels: {
+        format: `{value} ${unit}`, // Append the unit to the label
       },
       opposite: index % 2 === 1,
+      visible: modalOpen, // make visible on modal open
     }));
 
     setChartOptions({
@@ -91,6 +103,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       },
       xAxis: {
         type: 'datetime',
+        visible: modalOpen,
       },
       yAxis: yAxes,
       series,
