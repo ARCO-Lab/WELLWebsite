@@ -15,6 +15,7 @@ import Download from "@/components/Download";
 import Modal from "@/components/Modal";
 import useFilteredData from "@/hooks/useFilteredData";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
+import FadeAnimation from "@/components/animations/FadeAnimation";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
@@ -119,12 +120,12 @@ export default function Dashboard() {
               <h2 className="flex items-center justify-between mb-4 text-xl font-semibold">Filters <Information id={1}/></h2>
               <div className="space-y-2">
                 <FilterPanel
-                  activeGroups={activeGroups}
-                  setActiveGroups={setActiveGroups}
-                  subFilters={subFilters}
-                  setSubFilters={setSubFilters}
-                  open={open}
-                  setOpen={setOpen}
+                    activeGroups={activeGroups}
+                    setActiveGroups={setActiveGroups}
+                    subFilters={subFilters}
+                    setSubFilters={setSubFilters}
+                    open={open}
+                    setOpen={setOpen}
                 />
                 <Calendar
                   startDate={startDate}
@@ -140,7 +141,6 @@ export default function Dashboard() {
                     endDate={endDate}
                     data={data}
                   />
-
                 </div>
               </div>
             </div>

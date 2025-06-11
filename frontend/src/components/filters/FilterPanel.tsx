@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import Collapsible from "@/components/animations/Collapsible";
+import FadeAnimation from "@/components/animations/FadeAnimation";
 
 type Props = {
   activeGroups: {
@@ -118,10 +120,18 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
           />
           <span>Water Loggers</span>
         </label>
-        {open.gauges && (
+        <Collapsible open={open.gauges} >
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
-            {["Water Level", "Water Temperature", "All Loggers"].map((label) => (
-              <li key={label}>
+            {["Water Level", "Water Temperature", "All Loggers"].map((label, idx) => (
+              <FadeAnimation
+                key={label}
+                delay={idx * 30}
+                duration = {400}
+                initialOpacity={0}
+                blur={false}
+                resetKey={open.gauges}
+              >
+                <li>
                 <label>
                   <input
                     type="checkbox"
@@ -132,27 +142,37 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
                   {label}
                 </label>
               </li>
+              </FadeAnimation>
             ))}
 
-            {!subFilters.gauges.includes("All Loggers") && (
+            <Collapsible open={!subFilters.gauges.includes("All Loggers")} duration = {700}>
               <ul className="ml-6">
-                {["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"].map((label) => (
-                  <li key={label}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        className="cursor-pointer"
-                        checked={subFilters.gauges.includes(label)}
-                        onChange={() => toggleSubFilter("gauges", label)}
-                      />{" "}
-                      {label}
-                    </label>
-                  </li>
+                {["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"].map((label, idx) => (
+                  <FadeAnimation
+                    key={label}
+                    delay={idx * 60}
+                    duration={400}
+                    initialOpacity={0}
+                    blur={false}
+                    resetKey={!subFilters.gauges.includes("All Loggers")}
+                  >
+                    <li>
+                      <label>
+                        <input
+                          type="checkbox"
+                          className="cursor-pointer"
+                          checked={subFilters.gauges.includes(label)}
+                          onChange={() => toggleSubFilter("gauges", label)}
+                        />{" "}
+                        {label}
+                      </label>
+                    </li>
+                  </FadeAnimation>
                 ))}
               </ul>
-            )}
+            </Collapsible>
           </ul>
-        )}
+        </Collapsible>
       </div>
 
       {/* Weather Data */}
@@ -165,26 +185,35 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
           />
           <span>Weather Data</span>
         </label>
-        {open.weather && (
+        <Collapsible open={open.weather}>
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
             {[
               "Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction",
               "Relative Humidity", "Dew Point", "Rainfall", "Water Content", "Solar Radiation", "Soil Temperature"
-            ].map((label) => (
-              <li key={label}>
-                <label>
-                  <input
-                    type="checkbox"
-                    className="cursor-pointer"
-                    checked={subFilters.weather.includes(label)}
-                    onChange={() => toggleSubFilter("weather", label)}
-                  />{" "}
-                  {label}
-                </label>
-              </li>
+            ].map((label, idx) => (
+              <FadeAnimation
+                key={label}
+                delay={idx * 60}
+                duration={400}
+                initialOpacity={0}
+                blur={false}
+                resetKey={open.weather}
+              >
+                <li>
+                  <label>
+                    <input
+                      type="checkbox"
+                      className="cursor-pointer"
+                      checked={subFilters.weather.includes(label)}
+                      onChange={() => toggleSubFilter("weather", label)}
+                    />{" "}
+                    {label}
+                  </label>
+                </li>
+              </FadeAnimation>
             ))}
           </ul>
-        )}
+        </Collapsible>
       </div>
 
       {/* Water Quality */}
@@ -197,27 +226,36 @@ const FilterPanel: React.FC<Props> = ({ activeGroups, setActiveGroups, subFilter
           />
           <span>Water Quality</span>
         </label>
-        {open.quality && (
+        <Collapsible open={open.quality}>
           <ul className="mt-2 ml-6 space-y-1 text-sm text-gray-700">
             {[
               "Water Temperature", "Conductivity", "Salinity", "Total Dissolved Solids (TDS)",
               "Dissolved Oxygen (ODO)", "Dissolved Oxygen Saturation (ODOSat)",
               "Turbidity", "Total Suspended Solids (TSS)"
-            ].map((label) => (
-              <li key={label}>
-                <label>
-                  <input
-                    type="checkbox"
-                    className="cursor-pointer"
-                    checked={subFilters.quality.includes(label)}
-                    onChange={() => toggleSubFilter("quality", label)}
-                  />{" "}
-                  {label}
-                </label>
-              </li>
+            ].map((label, idx) => (
+                <FadeAnimation
+                  key={label}
+                  delay={idx * 60}
+                  duration={400}
+                  initialOpacity={0}
+                  blur={false}
+                  resetKey={open.quality}
+                >
+                <li>
+                  <label>
+                    <input
+                      type="checkbox"
+                      className="cursor-pointer"
+                      checked={subFilters.quality.includes(label)}
+                      onChange={() => toggleSubFilter("quality", label)}
+                    />{" "}
+                    {label}
+                  </label>
+                </li>
+              </FadeAnimation>
             ))}
           </ul>
-        )}
+        </Collapsible>
       </div>
     </div>
   );

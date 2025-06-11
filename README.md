@@ -32,9 +32,11 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 June 10th TODO:
 windrose tab
-add X to modal 
 make sure marker info pop up doesn't disspear when hover on it
 make latestmetrics be a bit shorter so that ai analysis has some space at the bottom
+UI fade in, fade filterpanel, carousel for latest metrics, spinning animation while graphs load
+Rolling Gallery
+Icons for download, X on modal, animation on home page like shadow, 
 
 
 After: 
