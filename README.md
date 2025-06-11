@@ -30,12 +30,14 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
-June 10th TODO:
+June 11th TODO:
+Fix reset key on checkboxes as fades in properly when loading in, but doesnt after, and fix sublogger animation
+LatestMetrics and Graphs should use Collapsible and fade in new components, and opposite, modal should fade in, 
+Apply Metrics Gallery Code to latest metrics to view each metric add images and pictures related to it
 windrose tab
 make sure marker info pop up doesn't disspear when hover on it
 make latestmetrics be a bit shorter so that ai analysis has some space at the bottom
-UI fade in, fade filterpanel, carousel for latest metrics, spinning animation while graphs load
-Rolling Gallery
+spinning animation while graphs load
 Icons for download, X on modal, animation on home page like shadow, 
 
 
