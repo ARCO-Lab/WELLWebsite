@@ -33,9 +33,7 @@ WQDATA_DEVICE_ID=your-device-id-here
 June 10th TODO:
 windrose tab
 add X to modal 
-make sure modal doesnt re render components and recall api, just opens them to bigger space
 make sure marker info pop up doesn't disspear when hover on it
-make sure new active group doesn't recall latest, latest is only recalled whenever page loads, and every 10 minutes, stored in latest hook until showed on filters
 make latestmetrics be a bit shorter so that ai analysis has some space at the bottom
 
 

@@ -1,38 +1,30 @@
-import { useMemo } from "react";
-import useLatestMetrics from "@/hooks/useLatestMetrics";
-
 interface QualityMetric {
   label: string;
-  key: string; // this will match measurement_type
+  key: string;
 }
 
 const metrics: QualityMetric[] = [
-  { label: "Water Temperature", key: "Water Temperature" },
-  { label: "Conductivity", key: "Conductivity" },
-  { label: "Salinity", key: "Salinity" },
   { label: "Total Dissolved Solids (TDS)", key: "TDS" },
   { label: "Dissolved Oxygen (ODO)", key: "ODO" },
   { label: "Dissolved Oxygen Saturation (ODOSat)", key: "ODOSat" },
-  { label: "Turbidity", key: "Turbidity" },
   { label: "Total Suspended Solids (TSS)", key: "TSS" },
+  // Add more as needed
 ];
 
 const QualityMetrics = ({
   activeKeys,
   activeGroups,
+  metrics: qualityData = [],
+  loading = false,
 }: {
   activeKeys: string[];
   activeGroups: { weather: boolean; quality: boolean; gauges: boolean };
+  metrics?: any[];
+  loading?: boolean;
 }) => {
-  const { metrics: allData } = useLatestMetrics();
-
-  const qualityData = useMemo(() => {
-    return allData.filter((d) => d.group_type === "Quality");
-  }, [allData]);
-
   return (
-    <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow">
-      <h2 className="mb-2 text-lg font-semibold text-black">Water Quality Metrics</h2>
+    <div className="w-full h-full p-4 overflow-y-auto bg-white rounded shadow ">
+      <h2 className="mb-2 text-lg font-semibold text-black">Quality Metrics</h2>
       <ul className="space-y-1 text-sm text-gray-800">
         {metrics
           .filter(({ label }) => activeKeys.includes(label))

@@ -14,6 +14,7 @@ import Information from "@/components/Information";
 import Download from "@/components/Download";
 import Modal from "@/components/Modal";
 import useFilteredData from "@/hooks/useFilteredData";
+import useLatestMetrics from "@/hooks/useLatestMetrics";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
@@ -52,11 +53,12 @@ export default function Dashboard() {
   const [analysisType, setAnalysisType] = useState<"recent" | "alltime">("alltime");
 
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
+  const { metrics: latestMetrics, loading: latestLoading } = useLatestMetrics();
 
   const cachedMetrics = {
-    weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} activeGroups={activeGroups}/>,
-    quality: <QualityMetrics key="quality" activeKeys={subFilters.quality} activeGroups={activeGroups}/>,
-    gauges: <LoggerMetrics key="gauges" activeKeys={subFilters.gauges} activeGroups={activeGroups}/>,
+    weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} activeGroups={activeGroups} metrics={latestMetrics} loading={latestLoading} />,
+    quality: <QualityMetrics key="quality" activeKeys={subFilters.quality} activeGroups={activeGroups} metrics={latestMetrics} loading={latestLoading} />,
+    gauges: <LoggerMetrics key="gauges" activeKeys={subFilters.gauges} activeGroups={activeGroups} metrics={latestMetrics} loading={latestLoading} />,
   };
 
   const cachedGraphs = {
@@ -155,7 +157,10 @@ export default function Dashboard() {
                   {metricComponents.map((comp, index) => (
                     <div
                       key={index}
-                      onClick={() => openModal(comp, "recent")}
+                      onClick={() => openModal(
+                        React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
+                        "recent"
+                      )}
                       className={`${getMetricFlexBasis(metricComponents.length)} overflow-y-auto transition cursor-pointer hover:shadow-lg rounded p-2 min-h-0`}
                     >
                       {comp}

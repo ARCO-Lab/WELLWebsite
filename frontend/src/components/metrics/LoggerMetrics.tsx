@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import useLatestMetrics from "@/hooks/useLatestMetrics";
 
 interface LoggerMetric {
   label: string;
@@ -14,12 +13,14 @@ const metricOptions: LoggerMetric[] = [
 const LoggerMetrics = ({
   activeKeys,
   activeGroups,
+  metrics: allData = [],
+  loading = false,
 }: {
   activeKeys: string[];
   activeGroups: { weather: boolean; quality: boolean; gauges: boolean };
+  metrics?: any[];
+  loading?: boolean;
 }) => {
-  const { metrics: allData } = useLatestMetrics();
-
   const loggerData = useMemo(() => {
     return allData.filter((d) => d.group_type === "Logger");
   }, [allData]);
@@ -51,7 +52,7 @@ const LoggerMetrics = ({
                 (d) =>
                   d.measurement_type === key &&
                   d.group_type === "Logger" &&
-                  d.group_type === logger
+                  d.group_name === logger // <-- likely should be group_name, not group_type
               );
               const value = match?.value?.toFixed(2) ?? "--";
               const unit = match?.unit ?? "";
