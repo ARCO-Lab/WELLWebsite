@@ -44,6 +44,16 @@ def register_analysis_alltime_route(app, latest_summaries, client):
 
             Format as bullet points. Keep total response under 200 words. Focus on actionable insights relevant to environmental monitoring.
 
+            **STRICT FORMATTING REQUIREMENTS:**
+                - Use exactly this structure: **SECTION NAME:** followed by content
+                - For bullet points, use format: - **Subsection name:** description
+                - Always use double asterisks (**) for all headings and subheadings
+                - Use single line breaks (\n) between bullet points
+                - Use double line breaks (\n\n) between major sections
+                - Do not use extra spacing or special characters
+                - End each bullet point description on the same line (no line breaks within descriptions)
+                - Ensure consistent capitalization: **SECTION NAME:** (all caps for main sections)
+                
             Data:
             {raw_data}
         """

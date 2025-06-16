@@ -3,7 +3,7 @@ import pandas as pd
 from db.database import db
 from db.models import SensorMeasurement
 from datetime import datetime
-from analysis.downsample import downsample
+from scripts.downsample import downsample
 import threading
 
 def register_data_route(app, latest_summaries):

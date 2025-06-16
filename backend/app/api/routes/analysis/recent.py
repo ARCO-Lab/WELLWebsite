@@ -1,6 +1,6 @@
 from flask import request, jsonify
 import json
-from analysis.downsample import METRIC_NAME_MAP
+from scripts.downsample import METRIC_NAME_MAP
 
 def register_analysis_recent_route(app, latest_metrics_cache, client):
     @app.route("/api/analysis/recent", methods=["GET"])
@@ -60,6 +60,16 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
             Numbers with context (e.g., "16°C water temp, normal for season")
             Flag unusual values clearly
             Be concise but actionable
+
+            **STRICT FORMATTING REQUIREMENTS:**
+                - Use exactly this structure: **SECTION NAME:** followed by content
+                - For bullet points, use format: - **Subsection name:** description
+                - Always use double asterisks (**) for all headings and subheadings
+                - Use single line breaks (\n) between bullet points
+                - Use double line breaks (\n\n) between major sections
+                - Do not use extra spacing or special characters
+                - End each bullet point description on the same line (no line breaks within descriptions)
+                - Ensure consistent capitalization: **SECTION NAME:** (all caps for main sections)
 
             Data:
             {raw_data}

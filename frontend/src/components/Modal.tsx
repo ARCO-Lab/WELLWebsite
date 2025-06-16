@@ -15,32 +15,46 @@ interface ModalProps {
 type AiAnalysisResponse = { analysis: string } | string | null;
 
 const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes, analysisType, weatherTab, setWeatherTab}) => {
-  const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisResponse>(null);
-  const [loading, setLoading] = useState(false);
-  const [analysisRequested, setAnalysisRequested] = useState(false);
+  const [tabAnalysis, setTabAnalysis] = useState<{ [tab: string]: AiAnalysisResponse }>({});
+  const [tabLoading, setTabLoading] = useState<{ [tab: string]: boolean }>({});
+  const [tabRequested, setTabRequested] = useState<{ [tab: string]: boolean }>({});
 
   const fetchAnalysis = async () => {
+    const tab = weatherTab || "graph";
     try {
-      setLoading(true);
-      setAnalysisRequested(true);
+      setTabLoading(prev => ({ ...prev, [tab]: true }));
+      setTabRequested(prev => ({ ...prev, [tab]: true }));
 
       // Build URL
       const params = new URLSearchParams();
       params.append("type", type);
-      if (subtypes && subtypes.length > 0) {
+
+      let endpoint = `/api/analysis/${analysisType}`;
+      if (
+        analysisType === "alltime" &&
+        type === "weather" &&
+        weatherTab === "windrose"
+      ) {
+        endpoint = "/api/analysis/wind";
+        // Only send wind/gust as subtypes
+        const hasWind = subtypes?.some(s => s.toLowerCase().includes("wind speed"));
+        const hasGust = subtypes?.some(s => s.toLowerCase().includes("gust speed"));
+        if (hasWind) params.append("subtypes", "wind");
+        if (hasGust) params.append("subtypes", "gust");
+      } else if (subtypes && subtypes.length > 0) {
         subtypes.forEach((s) => params.append("subtypes", s));
       }
 
-      const res = await fetch(`/api/analysis/${analysisType}?${params.toString()}`);
+      const res = await fetch(`${endpoint}?${params.toString()}`);
       const json = await res.json();
-      setAiAnalysis(json);
+      setTabAnalysis(prev => ({ ...prev, [tab]: json }));
     } catch (err) {
-      console.error("Failed to fetch AI analysis:", err);
-      setAiAnalysis("Failed to load analysis.");
+      setTabAnalysis(prev => ({ ...prev, [tab]: "Failed to load analysis." }));
     } finally {
-      setLoading(false);
+      setTabLoading(prev => ({ ...prev, [tab]: false }));
     }
   };
+
 
 
   useEffect(() => {
@@ -52,42 +66,91 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
   }, [onClose]);
 
   useEffect(() => {
-    // Reset analysis state whenever the type or selected metrics change
-    setAiAnalysis(null);
-    setAnalysisRequested(false);
-    setLoading(false);
-  }, [type, subtypes]);
+    if (!isOpen) {
+      setTabAnalysis({});
+      setTabLoading({});
+      setTabRequested({});
+    }
+  }, [isOpen]);
+
 
   function renderFormattedAnalysis(analysis: string) {
-  // Normalize headings: ensure all headings are surrounded by **
-  let normalized = analysis.replace(
-    /^([A-Z ]{3,}):/gm,
-    (_, heading) => `**${heading.trim()}**:`
-  );
-
-  // Match headings like **ALERTS:** or **KEY FINDINGS:** and their content
-  const regex = /\*\*(.+?)\*\*\s*:?([\s\S]*?)(?=(\*\*|$))/g;
-  const result = [];
-  let match;
-  while ((match = regex.exec(normalized)) !== null) {
-    const headingRaw = match[1].trim().replace(/:$/, "");
-    const heading = headingRaw.charAt(0).toUpperCase() + headingRaw.slice(1).toLowerCase();
-    const content = match[2].trim();
-    result.push(
-      <div key={heading} className="mb-4">
-        <h4 className="font-bold text-base text-black">{heading}</h4>
-        <pre className="whitespace-pre-wrap text-sm text-black">{content}</pre>
-      </div>
+    // Normalize headings: ensure all are surrounded by ** and end with :
+    let normalized = analysis.replace(
+      /^([A-Za-z ]+):/gm,
+      (_, heading) => `**${heading.trim()}**:`
     );
+
+    // Match sections like **HEADER:** followed by content, up until the next **HEADER:**
+    const regex = /\*\*(.+?)\*\*\s*:?([\s\S]*?)(?=(\*\*[^*]+\*\*:|$))/g;
+    const result = [];
+    let match;
+
+    while ((match = regex.exec(normalized)) !== null) {
+      const headingRaw = match[1].trim().replace(/:$/, "");
+      const heading = headingRaw.charAt(0).toUpperCase() + headingRaw.slice(1);
+      const content = match[2].trim();
+
+      result.push(
+        <div key={heading} className="mb-4">
+          <h4 className="font-bold text-base text-black">{heading}</h4>
+          {content.split("\n").map((line, idx) => {
+            const trimmed = line.trim();
+            if (!trimmed) return null;
+
+            // Handle bullet points with **bold label**: description
+            const bulletMatch = /^\s*-\s*\*\*(.+?)\*\*\s*:?(.+)?$/.exec(trimmed);
+            if (bulletMatch) {
+              return (
+                <div key={idx} className="flex items-start text-sm text-black mb-1">
+                  <span className="mr-2">•</span>
+                  <span>
+                    <span className="font-semibold">{bulletMatch[1].trim()}:</span>
+                    {bulletMatch[2] ? ` ${bulletMatch[2].trim()}` : ""}
+                  </span>
+                </div>
+              );
+            }
+
+            // Handle regular bullet points
+            const simpleBullet = /^\s*-\s*(.+)$/.exec(trimmed);
+            if (simpleBullet) {
+              const html = simpleBullet[1].replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+              return (
+                <div key={idx} className="flex items-start text-sm text-black mb-1">
+                  <span className="mr-2">•</span>
+                  <span dangerouslySetInnerHTML={{ __html: html }} />
+                </div>
+              );
+            }
+
+            // Handle regular lines with **bold** text
+            const html = trimmed.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+            return (
+              <div key={idx} className="text-sm text-black mb-1" dangerouslySetInnerHTML={{ __html: html }} />
+            );
+          })}
+        </div>
+      );
+    }
+
+    // Fallback if no sections matched
+    if (result.length === 0) {
+      const html = analysis.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+      return (
+        <pre className="whitespace-pre-wrap text-sm text-black" dangerouslySetInnerHTML={{ __html: html }} />
+      );
+    }
+
+    return result;
   }
-  // If nothing matched, just show the raw analysis
-  if (result.length === 0) {
-    return <pre className="whitespace-pre-wrap text-sm text-black">{analysis}</pre>;
-  }
-  return result;
-}
 
   if (!isOpen) return null;
+
+  const tab = weatherTab || "graph";
+  const aiAnalysis = tabAnalysis[tab];
+  const loading = tabLoading[tab];
+  const analysisRequested = tabRequested[tab];
 
   return (
     <>
