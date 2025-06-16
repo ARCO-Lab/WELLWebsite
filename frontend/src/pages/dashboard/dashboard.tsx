@@ -32,6 +32,8 @@ export default function Dashboard() {
     gauges: [] as string[],
   });
 
+  const [weatherTab, setWeatherTab] = useState<"graph" | "windrose">("graph");
+
   const [open, setOpen] = useState({
     gauges: false,
     weather: false,
@@ -63,7 +65,7 @@ export default function Dashboard() {
   };
 
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data} />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
     quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data}/>,
     gauges: <LoggerGraph key="gauges" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
   };
@@ -233,9 +235,11 @@ export default function Dashboard() {
                 : []
         }
         data={modalData}
+        weatherTab={weatherTab}
+        setWeatherTab={setWeatherTab}
       >
          {React.isValidElement(modalContent) && modalContent.props && typeof modalContent.props === "object" && "data" in modalContent.props
-          ? React.cloneElement(modalContent as React.ReactElement<any>, { data: modalData }) // Pass data to child
+          ? React.cloneElement(modalContent as React.ReactElement<any>, { data: modalData, inModal: true, weatherTab, setWeatherTab }) // Pass data to child
           : modalContent}
       </Modal>
 

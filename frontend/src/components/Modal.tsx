@@ -8,11 +8,13 @@ interface ModalProps {
   subtypes?: string[]; // optional, for future use
   analysisType: "recent" | "alltime"
   data: any;
+  weatherTab?: "graph" | "windrose";
+  setWeatherTab?: (tab: "graph" | "windrose") => void;
 }
 
 type AiAnalysisResponse = { analysis: string } | string | null;
 
-const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes, analysisType}) => {
+const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes, analysisType, weatherTab, setWeatherTab}) => {
   const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisResponse>(null);
   const [loading, setLoading] = useState(false);
   const [analysisRequested, setAnalysisRequested] = useState(false);
@@ -104,7 +106,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
         >
           {/* Main content */}
           {React.isValidElement(children)
-            ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen })
+            ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })
             : children}
 
           {/* AI Analysis trigger & output */}

@@ -53,3 +53,7 @@ logger graph:
 similar to metric resizing, have y axis cuts that go from same range to same range essentially 5 different graphs(or less depending on how mnay loggers clicked) but hovering shows all metrics for all loggers, water level blue, temp red, same for all loggers, same legend, just resizing similar to latestmetrics with cuts so that y axis has the same stuff
 
 make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
+
+when other tab for other smaple data is ready make all filters and stuff flip to show other options
+
+add ai analysis for cross sensor stuff, and wind

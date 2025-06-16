@@ -104,7 +104,6 @@ const MetricChart: React.FC<MetricChartProps> = ({
       },
       xAxis: {
         type: 'datetime',
-        visible: modalOpen,
       },
       yAxis: yAxes,
       series,
