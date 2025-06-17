@@ -30,7 +30,7 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
-June 11th TODO:
+June 18th TODO:
 Fix reset key on checkboxes as fades in properly when loading in, but doesnt after, and fix sublogger animation
 LatestMetrics and Graphs should use Collapsible and fade in new components, and opposite, modal should fade in, 
 Apply Metrics Gallery Code to latest metrics to view each metric add images and pictures related to it
@@ -38,7 +38,10 @@ windrose tab
 make sure marker info pop up doesn't disspear when hover on it
 make latestmetrics be a bit shorter so that ai analysis has some space at the bottom
 spinning animation while graphs load
-Icons for download, X on modal, animation on home page like shadow, 
+Icons for download, X on modal, animation on home page icon like shadow, 
+fix header
+
+
 
 
 After: 
@@ -47,6 +50,7 @@ start with everything checked when page loads, then allow user to change (defaul
 rate limiting api, bugs, caching fixes.
 have hooks already ready to go on index page.
 add pictures of each station on info pop up
+multi sensor ai analysis that only compares sensor to sensor data
 *CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
 
 logger graph:
@@ -55,5 +59,7 @@ similar to metric resizing, have y axis cuts that go from same range to same ran
 make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
 
 when other tab for other smaple data is ready make all filters and stuff flip to show other options
+borealis api pull
+monthly sharepoint and borealis push database
 
-add ai analysis for cross sensor stuff, and wind
+

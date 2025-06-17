@@ -92,12 +92,12 @@ const WeatherGraph = ({
           <div className={`flex w-full ${hasWindSpeed && hasGustSpeed ? "flex-row gap-4" : "flex-col"}`}>
             {hasWindSpeed && (
               <div className={hasWindSpeed && hasGustSpeed ? "w-1/2" : "w-full"}>
-                <WindRose data={windSpeedRoseData} title = "Wind Speed" />
+                <WindRose data={windSpeedRoseData} title = "Wind Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
               </div>
             )}
             {hasGustSpeed && (
               <div className={hasWindSpeed && hasGustSpeed ? "w-1/2" : "w-full"}>
-                <WindRose data={gustSpeedRoseData} title = "Gust Speed"/>
+                <WindRose data={gustSpeedRoseData} title = "Gust Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
               </div>
             )}
           </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import Highcharts from 'highcharts/highcharts-more';
 import HighchartsReact from 'highcharts-react-official';
+import { fabClasses } from '@mui/material';
 
 const directions16 = [
   "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
@@ -63,9 +64,10 @@ function getWindRoseSeries(data: WindDataPoint[]): WindRoseSeries[] {
 interface WindRoseProps {
   data: WindDataPoint[];
   title?: string;
+  showLegend?: boolean;
 }
 
-const WindRose: React.FC<WindRoseProps> = ({ data, title }) => {
+const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
   const series = getWindRoseSeries(data);
 
   const options = {
@@ -84,6 +86,7 @@ const WindRose: React.FC<WindRoseProps> = ({ data, title }) => {
       size: '85%' 
     },
     legend: {
+      enabled: showLegend !== false,
       align: 'right',
       verticalAlign: 'top',
       y: 100,
@@ -100,8 +103,9 @@ const WindRose: React.FC<WindRoseProps> = ({ data, title }) => {
       showLastLabel: true,
       title: { text: 'Frequency (%)' },
       labels: { format: '{value}%' },
-      reversedStacks: false
-      
+      reversedStacks: false,
+      visible: showLegend !== false,
+
     },
     tooltip: { 
       valueSuffix: '%',
