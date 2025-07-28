@@ -30,7 +30,8 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
-June 18th TODO:
+
+AFTER:
 Fix reset key on checkboxes as fades in properly when loading in, but doesnt after, and fix sublogger animation
 LatestMetrics and Graphs should use Collapsible and fade in new components, and opposite, modal should fade in, 
 Apply Metrics Gallery Code to latest metrics to view each metric add images and pictures related to it
@@ -42,6 +43,7 @@ Icons for download, X on modal, animation on home page icon like shadow,
 fix header
 
 
+CHEK IF BEST PRACTISE TO HAVE AI IN ENDPOINT
 
 
 After: 

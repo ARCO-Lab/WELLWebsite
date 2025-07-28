@@ -79,9 +79,11 @@ const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
     title: {
       text: title || 'Wind Rose'
     },
-    subtitle: {
-      text: data.length > 0 ? `Based on ${data.length} observations` : 'No data available'
-    },
+    subtitle: showLegend !== false
+      ? {
+          text: data.length > 0 ? `Based on ${data.length} observations` : 'No data available'
+        }
+      : { text: "" },
     pane: { 
       size: '85%' 
     },
