@@ -74,40 +74,41 @@ const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
     chart: { 
       polar: true, 
       type: 'column',
-      height: 400
+      height: 400,
+      style: { fontFamily: "'Poppins', Arial, sans-serif" }
     },
     title: {
-      text: title || 'Wind Rose'
+      text: title || 'Wind Rose',
+      style: { fontFamily: "'Poppins', Arial, sans-serif" }
     },
     subtitle: showLegend !== false
       ? {
-          text: data.length > 0 ? `Based on ${data.length} observations` : 'No data available'
+          text: data.length > 0 ? `Based on ${data.length} observations` : 'No data available',
+          style: { fontFamily: "'Poppins', Arial, sans-serif" }
         }
-      : { text: "" },
-    pane: { 
-      size: '85%' 
+      : { text: "", style: { fontFamily: "'Poppins', Arial, sans-serif" } },
+    xAxis: {
+      categories: directions16,
+      tickmarkPlacement: 'on',
+      lineWidth: 0,
+      labels: { style: { fontFamily: "'Poppins', Arial, sans-serif" } }
+    },
+    yAxis: {
+      min: 0,
+      endOnTick: false,
+      showLastLabel: true,
+      title: { text: 'Frequency (%)', style: { fontFamily: "'Poppins', Arial, sans-serif" } },
+      labels: { format: '{value}%', style: { fontFamily: "'Poppins', Arial, sans-serif" } },
+      reversedStacks: false,
+      visible: showLegend !== false,
     },
     legend: {
       enabled: showLegend !== false,
       align: 'right',
       verticalAlign: 'top',
       y: 100,
-      layout: 'vertical'
-    },
-    xAxis: {
-      categories: directions16,
-      tickmarkPlacement: 'on',
-      lineWidth: 0
-    },
-    yAxis: {
-      min: 0,
-      endOnTick: false,
-      showLastLabel: true,
-      title: { text: 'Frequency (%)' },
-      labels: { format: '{value}%' },
-      reversedStacks: false,
-      visible: showLegend !== false,
-
+      layout: 'vertical',
+      itemStyle: { fontFamily: "'Poppins', Arial, sans-serif" }
     },
     tooltip: { 
       valueSuffix: '%',

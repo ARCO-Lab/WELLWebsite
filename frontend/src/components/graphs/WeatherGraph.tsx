@@ -1,4 +1,5 @@
 import dynamic from 'next/dynamic';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 const WindRose = dynamic(() => import("@/components/graphs/highcharts/WindRose"), { ssr: false });
@@ -23,7 +24,7 @@ interface Props {
   error?: any;
   weatherTab: "graph" | "windrose";
   setWeatherTab: (tab: "graph" | "windrose") => void;
-  inModal?: boolean; // <-- add this prop
+  inModal?: boolean;
 }
 
 // Helper to pair direction and speed by timestamp
@@ -65,39 +66,35 @@ const WeatherGraph = ({
   const showTabSwitcher = inModal && canShowWindrose;
   const windSpeedRoseData = getWindRoseData(data, "Wind Speed");
   const gustSpeedRoseData = getWindRoseData(data, "Gust Speed");
-  console.log(windSpeedRoseData);
 
   return (
     <div className="p-4 bg-white rounded shadow">
       {/* Tab Switcher only in modal */}
       {showTabSwitcher && (
-        <div className="flex mb-4">
-          <button
-            className={`px-4 py-2 rounded-l cursor-pointer ${weatherTab === "graph" ? "bg-blue-600 text-white" : "bg-gray-200 text-black"}`}
-            onClick={() => setWeatherTab("graph")}
-          >
-            Weather Graph
-          </button>
-          <button
-            className={`px-4 py-2 rounded-r cursor-pointer ${weatherTab === "windrose" ? "bg-blue-600 text-white" : "bg-gray-200 text-black"}`}
-            onClick={() => setWeatherTab("windrose")}
-          >
-            Windrose
-          </button>
-        </div>
+        <Tabs value={weatherTab} onValueChange={(value) => setWeatherTab(value as "graph" | "windrose")} className="mb-10">
+          <TabsList className="inline-flex h-10 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground w-full grid grid-cols-2">
+            <TabsTrigger value="graph" className="font-poppins cursor-pointer">
+              Weather Graph
+            </TabsTrigger>
+            <TabsTrigger value="windrose" className="font-poppins cursor-pointer">
+              Wind Rose
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
       )}
-      {/* Show windrose if selected, otherwise always show graph */}
+
+      {/* The rest of the content remains the same */}
       {weatherTab === "windrose" && canShowWindrose
         ? (
           <div className={`flex w-full ${hasWindSpeed && hasGustSpeed ? "flex-row gap-4" : "flex-col"}`}>
             {hasWindSpeed && (
               <div className={hasWindSpeed && hasGustSpeed ? "w-1/2" : "w-full"}>
-                <WindRose data={windSpeedRoseData} title = "Wind Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
+                <WindRose data={windSpeedRoseData} title="Wind Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
               </div>
             )}
             {hasGustSpeed && (
               <div className={hasWindSpeed && hasGustSpeed ? "w-1/2" : "w-full"}>
-                <WindRose data={gustSpeedRoseData} title = "Gust Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
+                <WindRose data={gustSpeedRoseData} title="Gust Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
               </div>
             )}
           </div>

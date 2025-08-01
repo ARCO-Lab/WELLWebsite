@@ -78,7 +78,7 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=250,
+            max_tokens=400,
             temperature=0.3
         )
 

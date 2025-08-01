@@ -1,4 +1,6 @@
 import React from "react";
+import { Download as DownloadIcon } from "lucide-react";
+import { Button } from "@/components/animations/button";
 
 interface DownloadProps {
   activeGroups: {
@@ -169,13 +171,22 @@ const Download: React.FC<DownloadProps> = ({
     document.body.removeChild(link);
   };
 
+  const hasActiveData =
+    !!startDate &&
+    !!endDate &&
+    (Object.keys(activeGroups) as Array<keyof typeof activeGroups>).some(
+      (group) => activeGroups[group] && subFilters[group].length > 0
+    );
+
   return (
-    <button
+    <Button
       onClick={handleDownload}
-      className="w-full py-2 text-white bg-yellow-500 rounded cursor-pointer hover:bg-green-600"
+      disabled={!hasActiveData}
+      className="btn-mcmaster-primary w-full"
     >
-      Download
-    </button>
+      <DownloadIcon className="h-4 w-4 mr-2" />
+      Download Data
+    </Button>
   );
 };
 

@@ -61,7 +61,7 @@ def register_analysis_alltime_route(app, latest_summaries, client):
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=250,
+            max_tokens=400,
             temperature=0.3
         )
 

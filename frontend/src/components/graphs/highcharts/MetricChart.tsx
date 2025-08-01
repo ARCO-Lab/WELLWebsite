@@ -87,25 +87,46 @@ const MetricChart: React.FC<MetricChartProps> = ({
       chart: {
         zoomType: 'x',
         height,
+        style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
       title: {
         text: `${activeGroup.charAt(0).toUpperCase() + activeGroup.slice(1)} Data`,
+        style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "16px", color: "#333" }, // <-- Add this
       },
       credits: {
         enabled: false,
       },
       legend: {
         enabled: series.length > 1,
+        itemStyle: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
       tooltip: {
         shared: true,
         followPointer: true,
         valueDecimals: 2,
+        style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
       xAxis: {
         type: 'datetime',
+        title: {
+          text: null,
+          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "12px" }, // <-- Add this
+        },
+        labels: {
+          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "10px" }, // <-- Add this
+        },
       },
-      yAxis: yAxes,
+      yAxis: yAxes.map((axis, index) => ({
+        ...axis,
+        title: {
+          ...axis.title,
+          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "12px" }, // <-- Add this
+        },
+        labels: {
+          ...axis.labels,
+          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "10px" }, // <-- Add this
+        },
+      })),
       series,
     });
   }, [data, loading, activeGroup, subFilters]);

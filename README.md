@@ -31,6 +31,20 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
 
+Before August 4:
+Finish UI upgrade for dashboard
+Add other page for sample points
+Borealis and Sharepoint uploads
+Make consistent formatting from ai analysis api to avoid issues
+fix readme todo
+when logger added, get name for Logger(last digit in alphabet (L = 2)) and then number of logger for station id db wise (parse in the loggerservice itself)
+create new table for sample data using same encoding for each creek 
+
+After august 4:
+
+
+
+
 AFTER:
 Fix reset key on checkboxes as fades in properly when loading in, but doesnt after, and fix sublogger animation
 LatestMetrics and Graphs should use Collapsible and fade in new components, and opposite, modal should fade in, 
@@ -42,7 +56,7 @@ spinning animation while graphs load
 Icons for download, X on modal, animation on home page icon like shadow, 
 fix header
 
-
+CHANGE API LINK IT IS NEW
 CHEK IF BEST PRACTISE TO HAVE AI IN ENDPOINT
 
 
@@ -54,6 +68,7 @@ have hooks already ready to go on index page.
 add pictures of each station on info pop up
 multi sensor ai analysis that only compares sensor to sensor data
 *CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
+
 
 logger graph:
 similar to metric resizing, have y axis cuts that go from same range to same range essentially 5 different graphs(or less depending on how mnay loggers clicked) but hovering shows all metrics for all loggers, water level blue, temp red, same for all loggers, same legend, just resizing similar to latestmetrics with cuts so that y axis has the same stuff

@@ -1,26 +1,464 @@
 @import "tailwindcss";
+@plugin "tailwindcss-animate";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* McMaster University Design System
+Based on official branding guidelines
+All colors MUST be HSL for proper shadcn/ui integration.
+*/
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* McMaster Brand Colors */
+    --mcmaster-maroon: 336 100% 24%;          /* #7A003C */
+    --mcmaster-gold: 45 97% 67%;              /* #FDBF57 */
+    --mcmaster-grey: 205 16% 37%;             /* #495965 */
+    
+    /* Background & Foreground */
+    --background: 0 0% 100%;                  /* White */
+    --foreground: 0 0% 0%;                    /* Black */
+
+    /* Card System */
+    --card: 0 0% 100%;                        /* White */
+    --card-foreground: 0 0% 0%;               /* Black */
+
+    /* Popover System */
+    --popover: 0 0% 100%;                     /* White */
+    --popover-foreground: 0 0% 0%;            /* Black */
+
+    /* Primary System - McMaster Maroon */
+    --primary: 336 100% 24%;                  /* McMaster Maroon */
+    --primary-foreground: 0 0% 100%;          /* White */
+    --primary-hover: 45 97% 67%;              /* McMaster Gold */
+
+    /* Secondary System - McMaster Gold */
+    --secondary: 45 97% 67%;                  /* McMaster Gold */
+    --secondary-foreground: 0 0% 0%;          /* Black */
+
+    /* Muted System - McMaster Grey */
+    --muted: 205 16% 37%;                     /* McMaster Grey */
+    --muted-foreground: 0 0% 100%;            /* White */
+
+    /* Accent System - Gold for checkboxes */
+    --accent: 45 97% 67%;                     /* McMaster Gold */
+    --accent-foreground: 0 0% 0%;             /* Black */
+
+    /* Destructive System */
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Form Elements */
+    --border: 205 16% 37%;                    /* McMaster Grey for borders */
+    --input: 0 0% 100%;                       /* White */
+    --input-border: 0 0% 86%;                 /* Light grey - #DBDBDD */
+    --ring: 336 100% 24%;                     /* McMaster Maroon for focus rings */
+
+    /* Component Styling */
+    --radius: 4px;                            /* McMaster standard 4px border radius */
+    
+    /* Animation Variables */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-spring: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+    /* Sidebar (if needed) */
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@theme {
+  /* === COLORS === */
+  /* Map Tailwind color names to your CSS variables */
+  
+  /* Primary colors (McMaster Maroon) */
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  
+  /* Secondary colors (McMaster Gold) */
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  
+  /* Accent colors (McMaster Gold) */
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  
+  /* Muted colors (McMaster Grey) */
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  
+  /* Card colors */
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  
+  /* Base colors */
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  
+  /* Form colors */
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  
+  /* Destructive colors */
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  
+  /* Popover colors */
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  
+  /* McMaster brand colors for direct use */
+  --color-mcmaster-maroon: hsl(var(--mcmaster-maroon));
+  --color-mcmaster-gold: hsl(var(--mcmaster-gold));
+  --color-mcmaster-grey: hsl(var(--mcmaster-grey));
+  
+  /* === FONT FAMILIES === */
+  --font-family-poppins: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --font-family-arial: "Arial", ui-sans-serif, system-ui, sans-serif;
+  --font-family-sans: "Arial", ui-sans-serif, system-ui, sans-serif;
+  
+  /* === BORDER RADIUS === */
+  --radius: 4px;
+  --border-radius-lg: var(--radius);
+  --border-radius-md: calc(var(--radius) - 2px);
+  --border-radius-sm: calc(var(--radius) - 4px);
+  
+  /* === SPACING === */
+  --spacing: 0.25rem;
+  
+  /* === ANIMATIONS === */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-scroll: scroll 20s linear infinite;
+  --animate-fade-in-up: fadeInUp 0.5s ease-out forwards;
+  --animate-scale-in: scaleIn 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-family-arial);
+  }
+  
+  /* McMaster Typography Classes */
+  h1 {
+    font-weight: 700;
+    font-size: 2.25rem;
+    line-height: 1.2;
+    font-family: var(--font-family-poppins);
+    color: hsl(var(--primary));
+  }
+  
+  h2 {
+    font-weight: 700;
+    font-size: 1.125rem;
+    line-height: 1.5;
+    font-family: var(--font-family-poppins);
+    color: hsl(var(--primary));
+  }
+  
+  h3 {
+    font-weight: 700;
+    font-size: 0.875rem;
+    line-height: 1.25;
+    font-family: var(--font-family-poppins);
+    color: hsl(var(--primary));
+  }
+  
+  .mcmaster-body {
+    font-family: var(--font-family-arial);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: hsl(var(--foreground));
+  }
+  
+  .mcmaster-intro {
+    font-family: var(--font-family-poppins);
+    font-size: 0.75rem;
+    line-height: 1.625;
+  }
+  
+  .mcmaster-notes {
+    font-family: var(--font-family-arial);
+    font-size: 0.75rem;
+    line-height: 1.25;
+  }
+
+  /* Font utility classes */
+  .font-poppins {
+    font-family: var(--font-family-poppins);
+  }
+
+  .font-arial {
+    font-family: var(--font-family-arial);
+  }
+
+  .text-primary {
+    color: hsl(var(--primary));
+  }
+
+  .text-accent {
+    color: hsl(var(--accent));
+  }
+
+  .text-muted {
+    color: hsl(var(--muted));
+  }
+}
+
+@layer components {
+  /* McMaster Button Variants */
+  .btn-mcmaster-primary {
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    font-weight: 600;
+    font-size: 1.125rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--radius);
+    transition: all 0.3s ease;
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    font-family: var(--font-family-poppins);
+  }
+
+  .btn-mcmaster-primary:hover {
+    background-color: hsl(var(--primary-hover));
+    color: hsl(var(--accent-foreground));
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    transform: scale(0.98);
+  }
+  
+  .btn-mcmaster-secondary {
+    background-color: hsl(var(--secondary));
+    color: hsl(var(--secondary-foreground));
+    font-weight: 600;
+    font-size: 1.125rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--radius);
+    transition: all 0.3s ease;
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    font-family: var(--font-family-poppins);
+  }
+
+  .btn-mcmaster-secondary:hover {
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    transform: scale(0.98);
+  }
+  
+  /* McMaster Card Animations */
+  .mcmaster-card {
+    background-color: hsl(var(--card));
+    color: hsl(var(--card-foreground));
+    border-color: hsl(var(--input-border));
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+    border-width: 1px;
+    transition: all 0.3s ease;
+  }
+
+  .mcmaster-card:hover {
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    transform: scale(1.02);
+  }
+  
+  /* McMaster Form Elements */
+  .mcmaster-input {
+    background-color: hsl(var(--input));
+    border-color: hsl(var(--input-border));
+    color: hsl(var(--foreground));
+    border-width: 1px;
+    border-radius: var(--radius);
+    transition: all 0.2s ease;
+  }
+
+  .mcmaster-input:focus {
+    border-color: hsl(var(--primary));
+    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.2);
+  }
+  
+  /* Animation Classes */
+  .animate-metric-expand {
+    animation: metricExpand 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+  }
+  
+  .animate-metric-contract {
+    animation: metricContract 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+  }
+  
+  .animate-fade-in-up {
+    animation: fadeInUp 0.5s ease-out forwards;
+  }
+  
+  .animate-scale-in {
+    animation: scaleIn 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+  }
+
+  .animate-accordion-down {
+    animation: accordion-down 0.2s ease-out;
+  }
+
+  .animate-accordion-up {
+    animation: accordion-up 0.2s ease-out;
+  }
+
+  .rdp-day_disabled {
+    opacity: 0.5;
+  }
+}
+
+@layer utilities {
+  /* Grid responsive utilities for McMaster responsive design */
+  .grid-mcmaster-mobile {
+    display: grid;
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+    gap: 1rem;
+    padding: 1rem;
+  }
+  
+  .grid-mcmaster-tablet {
+    @media (min-width: 768px) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.5rem;
+      padding: 1.5rem;
+    }
+  }
+  
+  .grid-mcmaster-desktop {
+    @media (min-width: 1024px) {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 2rem;
+      padding: 2rem;
+      max-width: 80rem;
+      margin-left: auto;
+      margin-right: auto;
+    }
+  }
+}
+
+@keyframes metricExpand {
+  from {
+    flex: 0.33;
+    opacity: 0.8;
+    transform: scale(0.95);
+  }
+  to {
+    flex: 1;
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes metricContract {
+  from {
+    flex: 1;
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    flex: 0.33;
+    opacity: 0.8;
+    transform: scale(0.95);
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+@keyframes scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-33.333%);
+  }
+}
+
+.animate-scroll {
+  animation: scroll 30s linear infinite;
+}
+
+.pause-animation {
+  animation-play-state: paused;
+}
+
+.hover\:pause-animation:hover {
+  animation-play-state: paused;
 }
