@@ -1,101 +1,154 @@
 import { GoogleMap, Marker, useLoadScript, InfoWindow } from "@react-google-maps/api";
 import { FC, useState } from "react";
-import { MapPin, ExternalLink, Navigation } from "lucide-react"; // Import necessary icons
-import { Button } from "@/components/animations/button"; // Import Button component
+import { MapPin, ExternalLink, Navigation } from "lucide-react";
+import { Button } from "@/components/animations/button";
 
-interface ActiveGroups {
-  gauges: boolean;
-  weather: boolean;
-  quality: boolean;
-}
+// --- PROPS ---
 
 interface MapProps {
-  activeGroups: ActiveGroups;
-  setActiveGroups: React.Dispatch<React.SetStateAction<ActiveGroups>>;
-  subFilters: {
-    gauges: string[];
-    weather: string[];
-    quality: string[];
-  };
-  setSubFilters: React.Dispatch<React.SetStateAction<{
-    gauges: string[];
-    weather: string[];
-    quality: string[];
-  }>>;
-  open: {
-    gauges: boolean;
-    weather: boolean;
-    quality: boolean;
-  };
-  setOpen: React.Dispatch<React.SetStateAction<{
-    gauges: boolean;
-    weather: boolean;
-    quality: boolean;
-  }>>;
+  activeGroups: { [key: string]: boolean };
+  setActiveGroups: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  subFilters: { [key: string]: string[] };
+  setSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
+  open: { [key: string]: boolean };
+  setOpen: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  isSampling?: boolean; // Flag to switch between sensor and sampling data
 }
 
-const center = { lat: 43.260456, lng: -79.932517 };
+// --- DATA DEFINITIONS ---
 
-const markers = [
-  { lat: 43.2671, lng: -79.928828, label: "Water Logger 1", icon: "/icons/loggerIcon.png", group: "gauges" },
-  { lat: 43.264372, lng: -79.928956, label: "Water Logger 2", icon: "/icons/loggerIcon.png", group: "gauges" },
-  { lat: 43.260456, lng: -79.932517, label: "Water Logger 3", icon: "/icons/loggerIcon.png", group: "gauges" },
-  { lat: 43.258192, lng: -79.938394, label: "Water Logger 4", icon: "/icons/loggerIcon.png", group: "gauges" },
-  { lat: 43.253939, lng: -79.942208, label: "Water Logger 5", icon: "/icons/loggerIcon.png", group: "gauges" },
-  { lat: 43.260456, lng: -79.932812, label: "Water Quality Sensor", icon: "/icons/qualityIcon.png", group: "quality" },
-  { lat: 43.265686, lng: -79.929256, label: "Weather Station", icon: "/icons/weatherIcon.png", group: "weather" },
+const sensorCenter = { lat: 43.26, lng: -79.935 };
+const samplingCenter = { lat: 43.24, lng: -79.96 };
+
+const sensorMarkers = [
+  { id: "Logger 1", lat: 43.2671, lng: -79.928828, label: "Water Logger 1", group: "gauges" },
+  { id: "Logger 2", lat: 43.264372, lng: -79.928956, label: "Water Logger 2", group: "gauges" },
+  { id: "Logger 3", lat: 43.260456, lng: -79.932517, label: "Water Logger 3", group: "gauges" },
+  { id: "Logger 4", lat: 43.258192, lng: -79.938394, label: "Water Logger 4", group: "gauges" },
+  { id: "Logger 5", lat: 43.253939, lng: -79.942208, label: "Water Logger 5", group: "gauges" },
+  { id: "Water Quality Station", lat: 43.260456, lng: -79.932812, label: "Water Quality Sensor", group: "quality" },
+  { id: "Weather Station", lat: 43.265686, lng: -79.929256, label: "Weather Station", group: "weather" },
+];
+
+const samplingMarkers = [
+  { id: "1", lat: 43.2137431, lng: -79.9233981, label: "Site 1: Falkirk Forest", group: "tiffany" },
+  { id: "2", lat: 43.2055590, lng: -79.9741699, label: "Site 2: Maple Lane Pk", group: "ancaster" },
+  { id: "3", lat: 43.2193754, lng: -80.0000820, label: "Site 3: Jerseyville Rd", group: "sulphur" },
+  { id: "4", lat: 43.2416900, lng: -80.0005500, label: "Site 4: Sulphur Springs", group: "sulphur" },
+  { id: "5", lat: 43.2389100, lng: -79.9732900, label: "Site 5: Sherman Falls", group: "ancaster" },
+  { id: "6", lat: 43.2400000, lng: -79.9600500, label: "Site 6: Tiffany Falls", group: "tiffany" },
+  { id: "8", lat: 43.2581980, lng: -79.9383952, label: "Site 8: Osler Dr", group: "coldwater" },
+  { id: "9", lat: 43.2651150, lng: -79.9429224, label: "Site 9: McMaster Lot P", group: "coldwater" },
+  { id: "10", lat: 43.2664186, lng: -79.9293879, label: "Site 10: Cootes Dr", group: "spencer" },
 ];
 
 const containerStyle = {
   width: "100%",
-  height: "300px",
+  height: "100%", // Use full height of parent
 };
 
-const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen }) => {
+// --- COMPONENT ---
+
+const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen, isSampling = false }) => {
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!,
   });
 
-  const [selectedMarker, setSelectedMarker] = useState<null | typeof markers[0]>(null);
+  const [selectedMarker, setSelectedMarker] = useState<any>(null);
   const [hoverTimeout, setHoverTimeout] = useState<NodeJS.Timeout | null>(null);
-  // State to track if the InfoWindow itself is being hovered over
   const [isInfoWindowHovered, setIsInfoWindowHovered] = useState(false);
-
 
   if (!isLoaded) return <div>Loading...</div>;
 
-  // Helper function to determine marker-specific styling based on its group
+  const markersToDisplay = isSampling ? samplingMarkers : sensorMarkers;
+  const mapCenter = isSampling ? samplingCenter : sensorCenter;
+  const mapZoom = isSampling ? 12 : 14;
+  
   const getMarkerTypeInfo = (group: string) => {
     switch (group) {
-      case "weather":
-        return { color: "text-blue-600", bgColor: "bg-blue-50 border-blue-200" };
-      case "quality":
-        return { color: "text-pink-600", bgColor: "bg-pink-50 border-pink-200" };
-      case "gauges":
-        return { color: "text-blue-500", bgColor: "bg-blue-50 border-blue-200" };
-      default:
-        return { color: "text-muted-foreground", bgColor: "bg-muted border-border" };
+      // Sensor groups
+      case "weather": return { color: "text-blue-600", bgColor: "bg-blue-50 border-blue-200" };
+      case "quality": return { color: "text-pink-600", bgColor: "bg-pink-50 border-pink-200" };
+      case "gauges": return { color: "text-cyan-600", bgColor: "bg-cyan-50 border-cyan-200" };
+      // Sampling groups (creeks)
+      case "ancaster": return { color: "text-red-600", bgColor: "bg-red-50 border-red-200" };
+      case "tiffany": return { color: "text-green-600", bgColor: "bg-green-50 border-green-200" };
+      case "sulphur": return { color: "text-yellow-600", bgColor: "bg-yellow-50 border-yellow-200" };
+      case "coldwater": return { color: "text-indigo-600", bgColor: "bg-indigo-50 border-indigo-200" };
+      case "spencer": return { color: "text-purple-600", bgColor: "bg-purple-50 border-purple-200" };
+      default: return { color: "text-muted-foreground", bgColor: "bg-muted border-border" };
     }
   };
 
+  const handleMarkerClick = (marker: typeof markersToDisplay[0]) => {
+    const group = marker.group;
+    const id = marker.id;
+
+    // For single-item groups, just toggle the main active state.
+    if (group === 'weather' || group === 'quality') {
+      setActiveGroups(prev => ({ ...prev, [group]: !prev[group] }));
+      setOpen(prev => ({ ...prev, [group]: !prev[group] }));
+      return;
+    }
+
+    // For multi-item groups, apply the advanced logic
+    setOpen(prev => ({ ...prev, [group]: true }));
+    setActiveGroups(prev => ({ ...prev, [group]: true }));
+
+    setSubFilters(prev => {
+      const currentSubs = new Set(prev[group] || []);
+      
+      // Get all item IDs for the current group from the full marker list
+      const allItemsInGroup = (isSampling ? samplingMarkers : sensorMarkers)
+          .filter(m => m.group === group)
+          .map(m => m.id);
+      
+      const allItemsLabel = isSampling ? "All Sites" : "All Loggers";
+
+      // If "All" is currently checked, we need to expand it first
+      if (currentSubs.has(allItemsLabel)) {
+        currentSubs.delete(allItemsLabel); // Uncheck "All"
+        allItemsInGroup.forEach(item => currentSubs.add(item)); // and check all individuals
+      }
+
+      // Now, toggle the specific item that was clicked
+      currentSubs.has(id) ? currentSubs.delete(id) : currentSubs.add(id);
+
+      // After toggling, check if all individual items are now selected
+      const allIndividualItemsSelected = allItemsInGroup.length > 0 && allItemsInGroup.every(item => currentSubs.has(item));
+
+      // If they are, switch to the "All" state
+      if (allIndividualItemsSelected) {
+        currentSubs.add(allItemsLabel); // Check "All"
+        allItemsInGroup.forEach(item => currentSubs.delete(item)); // and uncheck all individuals
+      }
+
+      // If this action resulted in no selected items for this group, deactivate the main group
+      if (currentSubs.size === 0) {
+        setActiveGroups(prevActive => ({ ...prevActive, [group]: false }));
+      }
+
+      return { ...prev, [group]: Array.from(currentSubs) };
+    });
+  };
+
+
   return (
-    <GoogleMap mapContainerStyle={containerStyle} center={center} zoom={14}>
-      {markers.map((marker, index) => {
-        const isLogger = marker.group === "gauges";
-
-        let isActive = false;
-        if (isLogger) {
-          if (!activeGroups.gauges) {
-            isActive = false;
-          } else if (subFilters.gauges.includes("All Loggers")) {
-            isActive = true;
-          } else {
-            const loggerName = marker.label.replace("Water ", ""); // "Logger 1", etc.
-            isActive = subFilters.gauges.includes(loggerName);
-
-          }
+    <GoogleMap mapContainerStyle={containerStyle} center={mapCenter} zoom={mapZoom}>
+      {markersToDisplay.map((marker, index) => {
+        const groupIsActive = activeGroups[marker.group] ?? false;
+        const groupSubFilters = subFilters[marker.group] || [];
+        
+        let isActive;
+        // Special handling for single-item groups
+        if (marker.group === 'weather' || marker.group === 'quality') {
+          isActive = groupIsActive;
         } else {
-          isActive = activeGroups[marker.group as keyof ActiveGroups] ?? false;
+          // Standard logic for multi-item groups (gauges and sampling sites)
+          const allItemsLabel = isSampling ? "All Sites" : "All Loggers";
+          const isAllSelected = groupSubFilters.includes(allItemsLabel);
+          const isIndividuallySelected = groupSubFilters.includes(marker.id);
+          isActive = groupIsActive && (isAllSelected || isIndividuallySelected);
         }
 
         return (
@@ -103,74 +156,21 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
             key={index}
             position={{ lat: marker.lat, lng: marker.lng }}
             icon={{
-              url: marker.icon,
+              url: `/icons/${marker.group}Icon.png`,
               scaledSize: new google.maps.Size(32, 32),
             }}
-            opacity={isActive ? 1.0 : 0.5}
+            opacity={isActive ? 1.0 : 0.4}
             onMouseOver={() => {
               if (hoverTimeout) clearTimeout(hoverTimeout);
               setSelectedMarker(marker);
             }}
             onMouseOut={() => {
               const timeout = setTimeout(() => {
-                // Only close if InfoWindow is not being hovered
-                if (!isInfoWindowHovered) {
-                  setSelectedMarker(null);
-                }
-              }, 200); // Increased delay to allow moving mouse to InfoWindow
+                if (!isInfoWindowHovered) setSelectedMarker(null);
+              }, 200);
               setHoverTimeout(timeout);
             }}
-            onClick={() => {
-              if (marker.group === "gauges") {
-                setOpen((prev) => ({ ...prev, gauges: true }));
-                const loggerName = marker.label.replace("Water ", ""); // e.g., "Logger 1"
-
-                setSubFilters((prev) => {
-                  const selected = new Set(prev.gauges);
-                  const loggerLabels = ["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"];
-
-                  let newSelected: Set<string>;
-                  if (selected.has("All Loggers")) {
-                    // If "All Loggers" is selected, deselect the clicked logger and select all others
-                    newSelected = new Set(["Logger 1", "Logger 2", "Logger 3", "Logger 4", "Logger 5"]);
-                    newSelected.delete(loggerName);
-                  } else {
-                    // Normal toggle
-                    newSelected = new Set(selected);
-                    if (newSelected.has(loggerName)) {
-                      newSelected.delete(loggerName);
-                    } else {
-                      newSelected.add(loggerName);
-                    }
-                  }
-                  // If all individual loggers are now selected, collapse back to "All Loggers"
-                  const allSelected = loggerLabels.every((l) => newSelected.has(l));
-                  if (allSelected) {
-                    setActiveGroups((prevGroups) => ({ ...prevGroups, gauges: true }));
-
-                    return { ...prev, gauges: ["All Loggers"] };
-                  }
-
-                  // If at least one logger is selected, ensure group is active
-                  if (newSelected.size > 0) {
-                    setActiveGroups((prevGroups) => ({ ...prevGroups, gauges: true }));
-                  }
-
-                  return { ...prev, gauges: Array.from(newSelected) };
-                });
-              } else {
-                const group = marker.group as keyof ActiveGroups;
-                const newActiveState = !activeGroups[group];
-                setActiveGroups((prev) => ({
-                  ...prev,
-                  [group]: newActiveState,
-                }));
-                setOpen((prev) => ({
-                  ...prev,
-                  [group]: newActiveState,
-                }));
-              }
-            }}
+            onClick={() => handleMarkerClick(marker)}
           />
         );
       })}
@@ -179,12 +179,8 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
         <InfoWindow
           position={{ lat: selectedMarker.lat, lng: selectedMarker.lng }}
           onCloseClick={() => setSelectedMarker(null)}
-          options={{
-            pixelOffset: new google.maps.Size(0, -40),
-            disableAutoPan: true,
-          }}
+          options={{ pixelOffset: new google.maps.Size(0, -40), disableAutoPan: true }}
         >
-          {/* InfoWindow content with new UI styling */}
           <div
             className="p-0 m-0 min-w-[280px]"
             onMouseEnter={() => {
@@ -193,22 +189,17 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
             }}
             onMouseLeave={() => {
               setIsInfoWindowHovered(false);
-              const timeout = setTimeout(() => {
-                setSelectedMarker(null);
-              }, 100); // 500ms delay to allow moving mouse to InfoWindow
+              const timeout = setTimeout(() => setSelectedMarker(null), 100);
               setHoverTimeout(timeout);
             }}
           >
             <div className={`rounded-lg border shadow-lg bg-card overflow-hidden animate-in fade-in-0 zoom-in-95 duration-200 ${getMarkerTypeInfo(selectedMarker.group).bgColor}`}>
-              {/* Header section of the InfoWindow */}
               <div className={`p-4 border-b ${getMarkerTypeInfo(selectedMarker.group).bgColor}`}>
                 <div className="flex items-center space-x-2">
                   <MapPin className={`h-5 w-5 ${getMarkerTypeInfo(selectedMarker.group).color}`} />
                   <h3 className="font-semibold text-lg text-foreground">{selectedMarker.label}</h3>
                 </div>
               </div>
-
-              {/* Content section of the InfoWindow */}
               <div className="p-4 bg-card space-y-3">
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
@@ -220,24 +211,11 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
                     <p className="font-mono text-foreground">{selectedMarker.lng.toFixed(6)}</p>
                   </div>
                 </div>
-
-                <div className="text-sm">
-                  <span className="text-muted-foreground">Location:</span>
-                  <p className="text-foreground">Hamilton, ON, Canada</p>
-                </div>
-
-                {/* Action Button to view on Google Maps */}
                 <Button
                   variant="outline"
                   size="sm"
                   className="w-full hover-scale"
-                  onClick={() => {
-                    window.open(
-                      `https://maps.google.com/?q=${selectedMarker.lat},${selectedMarker.lng}`,
-                      '_blank',
-                      'noopener,noreferrer'
-                    );
-                  }}
+                  onClick={() => window.open(`https://maps.google.com/?q=${selectedMarker.lat},${selectedMarker.lng}`, '_blank', 'noopener,noreferrer')}
                 >
                   <Navigation className="h-4 w-4 mr-2" />
                   View on Google Maps

@@ -38,7 +38,9 @@ Borealis and Sharepoint uploads
 Make consistent formatting from ai analysis api to avoid issues
 fix readme todo
 when logger added, get name for Logger(last digit in alphabet (L = 2)) and then number of logger for station id db wise (parse in the loggerservice itself)
-create new table for sample data using same encoding for each creek 
+create new table for sample data using same encoding for each creek
+make download also have longtitude and latitude 
+remove legends on same things, like loggers and sites in the same creek to save space
 
 After august 4:
 

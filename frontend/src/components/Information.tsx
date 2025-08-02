@@ -3,13 +3,23 @@ import { Info } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/animations/popover";
 
+
 const infoMap: Record<number, string> = {
-  1: "The filter panel lets you toggle sensor categories, select individual metrics, and adjust date ranges. You can also download filtered data as a CSV. Clicking a group or marker updates the filters in real time.",
-  2: "The map displays sensor locations: blue droplets for water loggers, a pink droplet for the water quality sensor, and a gray cloud for the weather station. Hovering on a marker shows more information. Click markers to toggle sensors on or off.",
-  3: "This section shows the most recent readings for your selected metrics. Click any metric to view it in a fullscreen modal for detailed analysis, including an AI-generated summary of alerts, key findings, and correlations.",
-  4: "Graph visualizations update based on your filters and date range. Click a graph to open it fullscreen, revealing detailed X and Y axes. The modal also provides an AI-generated analysis of trends, correlations, and anomalies in the data.",
-  5: "The AI Analysis section provides insights into your data. It generates summaries of trends, anomalies, and correlations based on the selected metrics and date range. You can switch between recent and all-time analyses.",
+  // --- Sensor Tab ---
+  1: "Filter sensor data by category (Loggers, Weather, Quality), select individual metrics, and adjust date ranges. Your selections here and on the map are synchronized.",
+  2: "The map displays sensor locations. Blue droplets are water loggers, the pink droplet is the water quality sensor, and the gray cloud is the weather station. Click markers to toggle them.",
+  3: "This section shows the most recent readings for your selected sensor metrics. Click any metric to view it in a fullscreen modal for detailed analysis.",
+  4: "Graph visualizations for sensor data update based on your filters. Click a graph to open it fullscreen, revealing an AI-generated analysis of trends, correlations, and anomalies.",
+  5: "The AI generates insights from your selected sensor data. It summarizes trends, anomalies, and correlations, helping you understand the relationships between different sensor readings.",
+
+  // --- Sampling Tab ---
+  6: "Filter sampling data by creek, select metrics like E. coli or pH, and choose specific sampling sites. Your selections here and on the map are synchronized.",
+  7: "The map displays sampling site locations, color-coded by creek. Hovering on a marker shows its name. Click markers to toggle individual sites on or off.",
+  8: "This section shows the latest measurements for your selected sampling metrics and sites. Click any metric to view it in a fullscreen modal for detailed analysis.",
+  9: "Graphs are grouped first by creek, then by individual sampling site. Click a graph to open it fullscreen and view an AI-generated analysis of water quality trends over time.",
+  10: "The AI generates insights from your selected sampling data. It summarizes trends and potential issues based on the selected metrics, sites, and date range."
 };
+
 
 interface InformationProps {
   id: number;

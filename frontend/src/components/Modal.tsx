@@ -11,7 +11,8 @@ interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   children: React.ReactNode;
-  type: "weather" | "logger" | "quality";
+  // 1. Add 'sampling' to the allowed types
+  type: "weather" | "logger" | "quality" | "sampling";
   subtypes?: string[];
   analysisType: "recent" | "alltime";
   data: any;
@@ -28,8 +29,6 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  // All AI analysis state and functions have been moved to the AIAnalysis component.
-
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-[90vw] max-h-[95vh] overflow-y-auto mcmaster-card">
@@ -45,14 +44,16 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
             ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })
             : children}
 
-          {/* AI Analysis is now a self-contained component */}
-          <AIAnalysis 
-            type={type}
-            subtypes={subtypes}
-            analysisType={analysisType}
-            weatherTab={weatherTab}
-            modalOpen={isOpen}
-          />
+          {/* 2. Conditionally render AI Analysis only if type is NOT 'sampling' */}
+          {type !== 'sampling' && (
+            <AIAnalysis 
+              type={type}
+              subtypes={subtypes}
+              analysisType={analysisType}
+              weatherTab={weatherTab}
+              modalOpen={isOpen}
+            />
+          )}
         </div>
       </DialogContent>
     </Dialog>

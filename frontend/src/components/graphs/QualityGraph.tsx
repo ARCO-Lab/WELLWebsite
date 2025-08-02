@@ -1,6 +1,4 @@
 import dynamic from 'next/dynamic';
-import useFilteredData from "@/hooks/useFilteredData";
-
 // Dynamically import MetricChart with SSR disabled
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 

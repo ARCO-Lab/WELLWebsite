@@ -56,3 +56,4 @@ __pycache__/
 Makefile
 backend/app/scripts/run_scheduler.sh
 backend/app/logs/db_injections.log
+backend/app/samplingExcel/

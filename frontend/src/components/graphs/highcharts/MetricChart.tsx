@@ -19,6 +19,7 @@ interface MetricChartProps {
   loading: boolean;
   error: Error | null;
   modalOpen?: boolean;
+  showLegend?: boolean;
 }
 
 const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
@@ -33,6 +34,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
   loading,
   error,
   modalOpen= false,
+  showLegend = true,
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
   const [chartOptions, setChartOptions] = useState<any>({});
@@ -97,7 +99,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
         enabled: false,
       },
       legend: {
-        enabled: series.length > 1,
+        enabled: showLegend && series.length > 1,
         itemStyle: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
       tooltip: {
@@ -129,7 +131,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       })),
       series,
     });
-  }, [data, loading, activeGroup, subFilters]);
+  }, [data, loading, activeGroup, subFilters, showLegend]);
 
   return (
     <div className="relative">
