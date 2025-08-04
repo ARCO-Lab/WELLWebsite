@@ -7,14 +7,23 @@ from db.models import SensorMeasurement
 def register_latest_route(app, latest_metrics_cache):
     @app.route("/api/latest", methods=["GET"])
     def get_latest_metrics():
+        # This subquery now finds the latest timestamp for each unique
+        # combination of station_id and measurement_type.
         subquery = db.session.query(
+            SensorMeasurement.station_id,
             SensorMeasurement.measurement_type,
             db.func.max(SensorMeasurement.recorded_at).label("max_time")
-        ).group_by(SensorMeasurement.measurement_type).subquery()
+        ).group_by(
+            SensorMeasurement.station_id, 
+            SensorMeasurement.measurement_type
+        ).subquery()
 
+        # The join now matches on station_id as well, ensuring we get the
+        # correct record for each station's latest measurement.
         query = db.session.query(SensorMeasurement).join(
             subquery,
             db.and_(
+                SensorMeasurement.station_id == subquery.c.station_id,
                 SensorMeasurement.measurement_type == subquery.c.measurement_type,
                 SensorMeasurement.recorded_at == subquery.c.max_time
             )

@@ -7,7 +7,7 @@ class SamplingService:
         # TEMPORARY: Load from local file
         self.excel_path = os.path.join(
             os.path.dirname(__file__),
-            "../../samplingExcel/SampleData_Weekly.xlsx"
+            "../../samplingExcel/SampleData_Weekly_Expanded_Corrected.xlsx"
         )
 
         # FUTURE: Replace this with a call to the Borealis API

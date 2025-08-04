@@ -1,11 +1,23 @@
 from flask import request, jsonify
 import json
 
+# Configuration for loggers, embedded directly in the file.
+LOGGER_CONFIG = {
+    'sites': {
+        "2577531": "Logger 1",
+        "2577532": "Logger 2",
+        "2577533": "Logger 3",
+        "2577534": "Logger 4",
+        "2577535": "Logger 5",
+    },
+    'metrics': ["Water Surface Elevation", "Water Temperature"],
+}
+
 def register_analysis_alltime_route(app, latest_summaries, client):
     @app.route("/api/analysis/alltime", methods=["GET"])
     def analyze_data():
         analysis_type = request.args.get("type")
-        subtypes = request.args.getlist("subtypes")  # Supports ?subtypes=A&subtypes=B
+        subtypes = request.args.getlist("subtypes")
 
         if analysis_type not in ["weather", "logger", "quality"]:
             return jsonify({"error": "Invalid or missing type. Must be one of: weather, logger, quality."}), 400
@@ -14,21 +26,55 @@ def register_analysis_alltime_route(app, latest_summaries, client):
         if not summary:
             return jsonify({"error": f"No summary data available for {analysis_type}"}), 404
 
-        # Filter by subtypes if needed
-        if subtypes:
+        station_context = ""
+        if analysis_type == "logger":
+            all_logger_ids = list(LOGGER_CONFIG['sites'].keys())
+            all_logger_metrics = LOGGER_CONFIG['metrics']
+            
+            # 1. Determine which station IDs to analyze
+            selected_stations = [s for s in subtypes if s in all_logger_ids]
+            if "All Loggers" in subtypes or not selected_stations:
+                selected_stations = all_logger_ids
+
+            # 2. Determine which metrics to analyze
+            selected_metrics = [s for s in subtypes if s in all_logger_metrics]
+            if not selected_metrics:
+                selected_metrics = all_logger_metrics
+
+            # 3. Build the final summary by filtering both stations and their metrics
+            filtered_summary = {}
+            for station_id in selected_stations:
+                if station_id in summary:
+                    station_data = summary[station_id]
+                    filtered_metrics = {
+                        metric_name: metric_data for metric_name, metric_data in station_data.items()
+                        if metric_name in selected_metrics
+                    }
+                    if filtered_metrics:
+                        filtered_summary[station_id] = filtered_metrics
+            
+            summary = filtered_summary
+
+            # 4. Create context with friendly names
+            station_names = [LOGGER_CONFIG['sites'].get(sid, sid) for sid in selected_stations]
+            station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."
+        
+        elif subtypes:
+            # Original logic for weather and quality
             summary = {
                 k: v for k, v in summary.items()
                 if k.lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
             }
 
-        # Prepare JSON summary, truncate to ~1000 tokens
+        if not summary:
+            return jsonify({"analysis": "No data available for the selected filters. Please select at least one logger or metric."})
+
         raw_data = json.dumps(summary)
-        if len(raw_data) > 4000:  # approx 4 chars per token
+        if len(raw_data) > 4000:
             raw_data = raw_data[:4000]
 
-        # Construct prompt
         prompt = f"""
-            You are an expert environmental data analyst. Analyze the provided sensor data and identify:
+            You are an expert environmental data analyst. {station_context} Analyze the provided sensor data and identify:
 
             TRENDS (1-3 bullet points)
             Key patterns over time (increasing/decreasing values, seasonal changes, etc.)

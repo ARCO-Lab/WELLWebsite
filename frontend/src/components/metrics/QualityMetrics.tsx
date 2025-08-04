@@ -92,7 +92,9 @@ const QualityMetrics = ({
         >
           {infiniteMetrics.map((item, index) => {
             const Icon = item.icon;
-            const entry = qualityData.find((d) => d.measurement_type === item.key);
+            const entry = qualityData.find(
+              (d) => d.measurement_type === item.key && d.group_type === 'Quality'
+            );
             const value = entry?.value?.toFixed(2) ?? "--";
             const unit = entry?.unit ?? "";
             

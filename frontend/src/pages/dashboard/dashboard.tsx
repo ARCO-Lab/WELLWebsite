@@ -20,7 +20,7 @@ import useFilteredData from "@/hooks/useFilteredData";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
-import { SAMPLING_METRICS } from "@/components/config/filters";
+import { SAMPLING_METRICS, SENSOR_FILTER_CONFIG } from "@/components/config/filters";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
@@ -74,32 +74,56 @@ export default function Dashboard() {
   const isAnyGroupActive = activeGroups.gauges || activeGroups.weather || activeGroups.quality;
   const allSubFilters = [...subFilters.weather, ...subFilters.quality, ...subFilters.gauges];
 
+    // Create the activeFilters object for the SENSOR tab
+  const sensorActiveFilters = Object.entries(activeGroups)
+    .filter(([, isActive]) => isActive)
+    .reduce((acc, [groupKey]) => {
+      acc[groupKey] = subFilters[groupKey];
+      return acc;
+    }, {} as ActiveFilters);
 
+  // Create the activeFilters object for the SAMPLING tab
+  const samplingActiveFilters = Object.entries(activeCreeks)
+    .filter(([, isActive]) => isActive)
+    .reduce((acc, [creekKey]) => {
+      acc[creekKey] = samplingSubFilters[creekKey];
+      return acc;
+    }, {} as ActiveFilters);
+
+
+  // Dates for the SENSOR Tab
   const [startDate, setStartDate] = useState<Date | null>(() => {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
-    const estStart = new Date(yesterday.toLocaleString("en-US", { timeZone: "America/Toronto" }));
-    return estStart;
+    return new Date(yesterday.toLocaleString("en-US", { timeZone: "America/Toronto" }));
   });
-
   const [endDate, setEndDate] = useState<Date | null>(() => {
     const today = new Date();
-    const estEnd = new Date(today.toLocaleString("en-US", { timeZone: "America/Toronto" }));
-    return estEnd;
+    return new Date(today.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+  });
+
+  // Dates for the SAMPLING Tab
+  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => {
+    const twoMonthsAgo = new Date();
+    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+    return new Date(twoMonthsAgo.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+  });
+  const [samplingEndDate, setSamplingEndDate] = useState<Date | null>(() => {
+    const today = new Date();
+    return new Date(today.toLocaleString("en-US", { timeZone: "America/Toronto" }));
   });
 
   const [analysisType, setAnalysisType] = useState<"recent" | "alltime">("alltime");
   const [previousActiveCount, setPreviousActiveCount] = useState(0);
   const [previousActiveCreekCount, setPreviousActiveCreekCount] = useState(0);
 
-
   const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
   const { metrics: latestMetrics, loading: latestLoading } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
     activeCreeks,
-    startDate,
-    endDate
+    samplingStartDate,
+    samplingEndDate
   );
   
   const { samples: recentSamples, loading: recentSamplesLoading } = useRecentSamples();
@@ -131,8 +155,8 @@ export default function Dashboard() {
         key={key}
         creekKey={key as keyof typeof activeCreeks}
         subFilters={samplingSubFilters[key] || []}
-        startDate={startDate}
-        endDate={endDate}
+        startDate={samplingStartDate}
+        endDate={samplingEndDate}
         data={samplingData}
         loading={isSamplingLoading}
         error={samplingError}
@@ -163,7 +187,7 @@ export default function Dashboard() {
   const cachedGraphs = {
     weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
     quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data}/>,
-    gauges: <LoggerGraph key="gauges" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters}/>,
+    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} />,
   };
   
   const graphComponents = [];
@@ -348,36 +372,84 @@ export default function Dashboard() {
                       </div>
                     </div>
                   </div>
-                  
+
                   {/* Graphs */}
                   <div className="mcmaster-card p-6">
                     <h2 className="flex items-center justify-between mb-6 text-xl font-poppins font-bold text-primary">
                       Graphs 
                       <Information id={4} />
                     </h2>
-                    <div className={`grid gap-6 ${getGraphGridClass(graphComponents.length)}`}>
-                      {graphComponents.map((comp, index) => (
-                        <div
-                          key={index}
-                          onClick={() => openModal(
-                            React.cloneElement(comp, { data, loading, error }),
-                            "alltime",
-                            comp.key as any, // 'weather', 'quality', or 'gauges'
-                            subFilters[comp.key as string] || []
-                          )}
-                          className={`
-                            transition-all duration-500 ease-out cursor-pointer hover:shadow-lg 
-                            mcmaster-card p-4 animate-fade-in-up
-                            ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}
-                          `}
-                          style={{
-                            animationDelay: `${index * 150}ms`
-                          }}
-                        >
-                          {comp}
+                    
+                    {(() => {
+                      // --- START: NEW DYNAMIC LAYOUT LOGIC ---
+
+                      // 1. Calculate how many loggers are actually selected
+                      const loggerConfig = SENSOR_FILTER_CONFIG.gauges;
+                      const allLoggerIds = Object.keys(loggerConfig.sites);
+                      let selectedLoggerCount = 0;
+                      if (subFilters.gauges?.includes('All Loggers')) {
+                        selectedLoggerCount = allLoggerIds.length;
+                      } else {
+                        selectedLoggerCount = subFilters.gauges?.filter(id => allLoggerIds.includes(id)).length || 0;
+                      }
+
+                      // 2. Get the graph components that are currently active
+                      const loggerGraph = activeGroups.gauges ? cachedGraphs.gauges : null;
+                      const weatherGraph = activeGroups.weather ? cachedGraphs.weather : null;
+                      const qualityGraph = activeGroups.quality ? cachedGraphs.quality : null;
+
+                      // 3. RENDER SPECIAL LAYOUT: If more than 2 loggers are selected
+                      if (selectedLoggerCount > 2) {
+                        const otherGraphs = [weatherGraph, qualityGraph].filter(Boolean);
+                        return (
+                          <div className="space-y-6">
+                            {/* Row 1: Logger Graph takes the full width */}
+                            {loggerGraph && (
+                              <div
+                                onClick={() => openModal(loggerGraph, "alltime", "gauges", subFilters.gauges || [])}
+                                className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
+                              >
+                                {loggerGraph}
+                              </div>
+                            )}
+                            {/* Row 2: Weather and Quality graphs in a responsive grid below */}
+                            <div className={`grid gap-6 ${getGraphGridClass(otherGraphs.length)}`}>
+                              {otherGraphs.map((comp) => (
+                                <div
+                                  key={comp.key}
+                                  onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                  className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
+                                >
+                                  {comp}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      // 4. RENDER NORMAL LAYOUT: If 2 or fewer loggers are selected
+                      const allGraphs = [loggerGraph, weatherGraph, qualityGraph].filter(Boolean);
+                      return (
+                        <div className={`grid gap-6 ${getGraphGridClass(allGraphs.length)}`}>
+                          {allGraphs.map((comp, index) => (
+                            <div
+                              key={comp.key}
+                              onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                              className={`
+                                transition-all duration-500 ease-out cursor-pointer hover:shadow-lg 
+                                mcmaster-card p-4 animate-fade-in-up
+                                ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}
+                              `}
+                              style={{ animationDelay: `${index * 150}ms` }}
+                            >
+                              {comp}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      );
+                      // --- END: NEW DYNAMIC LAYOUT LOGIC ---
+                    })()}
                   </div>
 
                   {/* AI Analysis Section */}
@@ -388,10 +460,9 @@ export default function Dashboard() {
                       </h2>
                       <div className="space-y-6">
                         <AIAnalysis
-                          key="complete-analysis"
-                          type="weather" // Type is a placeholder, not used by the 'complete' endpoint
-                          analysisType="alltime" // Also a placeholder
-                          subtypes={allSubFilters} // Pass all subfilters to trigger reset on any change
+                          key="sensor-analysis"
+                          activeFilters={sensorActiveFilters}
+                          dashboardTab="sensors"
                           disabled={!isAnyGroupActive}
                         />
                       </div>
@@ -430,17 +501,17 @@ export default function Dashboard() {
                         setOpen={setOpen}
                       />
                       <Calendar
-                        startDate={startDate}
-                        endDate={endDate}
-                        onStartChange={setStartDate}
-                        onEndChange={setEndDate}
+                        startDate={samplingStartDate}
+                        endDate={samplingEndDate}
+                        onStartChange={setSamplingStartDate}
+                        onEndChange={setSamplingEndDate}
                       />
                       <div className="mt-6 space-y-2">
                         <Download
                           activeGroups={activeCreeks}
                           subFilters={samplingSubFilters}
-                          startDate={startDate}
-                          endDate={endDate}
+                          startDate={samplingStartDate}
+                          endDate={samplingEndDate}
                           data={samplingData}
                           isSampling={true}
                         />
@@ -593,11 +664,10 @@ export default function Dashboard() {
                       </h2>
                       <div className="space-y-6">
                         <AIAnalysis
-                          key="complete-analysis"
-                          type="weather" // Type is a placeholder, not used by the 'complete' endpoint
-                          analysisType="alltime" // Also a placeholder
-                          subtypes={allSubFilters} // Pass all subfilters to trigger reset on any change
-                          disabled={!isAnyGroupActive}
+                          key="sampling-analysis"
+                          activeFilters={samplingActiveFilters}
+                          dashboardTab="sampling"
+                          disabled={!isAnyCreekActive}
                         />
                       </div>
                     </div>

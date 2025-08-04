@@ -2,10 +2,22 @@ import React, { useState, useEffect } from "react";
 import { Button } from "@/components/animations/button";
 import { Brain, Loader2 } from "lucide-react";
 
+// Define a type for the complex filter state for the 'complete' analysis
+export interface ActiveFilters {
+  [group: string]: string[]; // e.g., { gauges: ["All Loggers", "Logger 1"], weather: ["All Weather"] }
+}
+
 interface AIAnalysisProps {
-  type: "weather" | "logger" | "quality";
+  // Props for 'complete' analysis
+  analysisType: "recent" | "alltime" | "complete";
+  activeFilters?: ActiveFilters;
+  dashboardTab?: "sensors" | "sampling";
+
+  // Props for simple 'alltime'/'recent' analysis (used in modals)
+  type?: "weather" | "logger" | "quality";
   subtypes?: string[];
-  analysisType: "recent" | "alltime";
+  
+  // Other props
   weatherTab?: "graph" | "windrose";
   modalOpen?: boolean;
   disabled?: boolean;
@@ -13,10 +25,21 @@ interface AIAnalysisProps {
 
 type AiAnalysisResponse = { analysis: string } | string | null;
 
-const AIAnalysis: React.FC<AIAnalysisProps> = ({ type, subtypes, analysisType, weatherTab, modalOpen, disabled }) => {
+const AIAnalysis: React.FC<AIAnalysisProps> = ({
+  analysisType: initialAnalysisType,
+  activeFilters,
+  dashboardTab,
+  type,
+  subtypes,
+  weatherTab,
+  modalOpen,
+  disabled,
+}) => {
   const [tabAnalysis, setTabAnalysis] = useState<{ [tab: string]: AiAnalysisResponse }>({});
   const [tabLoading, setTabLoading] = useState<{ [tab: string]: boolean }>({});
   const [tabRequested, setTabRequested] = useState<{ [tab: string]: boolean }>({});
+
+  const analysisType = !modalOpen ? 'complete' : initialAnalysisType;
 
   const tab = weatherTab || "graph";
 
@@ -24,21 +47,47 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ type, subtypes, analysisType, w
     setTabAnalysis({});
     setTabLoading({});
     setTabRequested({});
-  }, [type, subtypes, analysisType, weatherTab, modalOpen]);
+  }, [type, subtypes, analysisType, weatherTab, modalOpen, activeFilters]);
 
   const fetchAnalysis = async () => {
     try {
       setTabLoading(prev => ({ ...prev, [tab]: true }));
       setTabRequested(prev => ({ ...prev, [tab]: true }));
 
-      let endpoint = '';
       const params = new URLSearchParams();
+      let endpoint = '';
 
-      if (!modalOpen) {
+      if (analysisType === 'complete') {
         endpoint = '/api/analysis/complete';
+        if (!activeFilters || Object.keys(activeFilters).length === 0) {
+          // This prevents the "No active groups" error by checking before fetching
+          throw new Error("No active filters provided for complete analysis.");
+        }
+
+        // Add the dashboard tab state
+        if (dashboardTab) {
+          params.append('dashboardTab', dashboardTab);
+        }
+
+        // Build the new, robust URL
+        for (const group in activeFilters) {
+          // Append the active group type (e.g., 'type=gauges')
+          params.append('type', group);
+          
+          // Append the subtypes for that specific group with a unique key
+          const groupSubtypes = activeFilters[group];
+          if (groupSubtypes && groupSubtypes.length > 0) {
+            groupSubtypes.forEach(subtype => {
+              params.append(`${group}_subtypes`, subtype); // e.g., 'gauges_subtypes=All Loggers'
+            });
+          }
+        }
       } else {
-        params.append("type", type);
+        // --- Existing logic for simple analysis (alltime, recent) ---
         endpoint = `/api/analysis/${analysisType}`;
+        if (type) {
+          params.append("type", type);
+        }
         if (
           analysisType === "alltime" &&
           type === "weather" &&
@@ -55,17 +104,21 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ type, subtypes, analysisType, w
       }
 
       const res = await fetch(`${endpoint}?${params.toString()}`);
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Analysis request failed");
+      }
       const json = await res.json();
       setTabAnalysis(prev => ({ ...prev, [tab]: json }));
-    } catch (err) {
-      setTabAnalysis(prev => ({ ...prev, [tab]: "Failed to load analysis." }));
+    } catch (err: any) {
+      setTabAnalysis(prev => ({ ...prev, [tab]: err.message || "Failed to load analysis." }));
     } finally {
       setTabLoading(prev => ({ ...prev, [tab]: false }));
     }
   };
 
   function renderFormattedAnalysis(analysis: string) {
-    const sectionRegex = /\*\*([A-Z ]+):\*\*\s*([\s\S]*?)(?=\n\*\*|$)/g;
+    const sectionRegex = /\*\*([A-Z -]+):\*\*\s*([\s\S]*?)(?=\n\*\*|$)/g;
     const result = [];
     let match;
   
@@ -107,7 +160,8 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ type, subtypes, analysisType, w
     }
   
     if (result.length === 0) {
-      let html = analysis.replace(/\*\*([A-Z ]+):\*\*/g, '<strong class="text-accent">$1:</strong>');
+      // FIX: Update the fallback regex to match the main one for consistency
+      let html = analysis.replace(/\*\*([A-Z &\\-]+):\*\*/g, '<strong class="text-accent">$1:</strong>');
       html = html.replace(/\*\*(.+?):\*\*/g, "<b>$1:</b>");
       return (
         <pre className="whitespace-pre-wrap text-sm text-white font-poppins" dangerouslySetInnerHTML={{ __html: html }} />
@@ -116,7 +170,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ type, subtypes, analysisType, w
   
     return result;
   }
-
+  
   const aiAnalysis = tabAnalysis[tab];
   const loading = tabLoading[tab];
   const analysisRequested = tabRequested[tab];

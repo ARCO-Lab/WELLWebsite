@@ -17,17 +17,17 @@ interface MapProps {
 
 // --- DATA DEFINITIONS ---
 
-const sensorCenter = { lat: 43.26, lng: -79.935 };
+const sensorCenter = { lat: 43.2655, lng: -79.9291 };
 const samplingCenter = { lat: 43.24, lng: -79.96 };
 
 const sensorMarkers = [
-  { id: "Logger 1", lat: 43.2671, lng: -79.928828, label: "Water Logger 1", group: "gauges" },
-  { id: "Logger 2", lat: 43.264372, lng: -79.928956, label: "Water Logger 2", group: "gauges" },
-  { id: "Logger 3", lat: 43.260456, lng: -79.932517, label: "Water Logger 3", group: "gauges" },
-  { id: "Logger 4", lat: 43.258192, lng: -79.938394, label: "Water Logger 4", group: "gauges" },
-  { id: "Logger 5", lat: 43.253939, lng: -79.942208, label: "Water Logger 5", group: "gauges" },
-  { id: "Water Quality Station", lat: 43.260456, lng: -79.932812, label: "Water Quality Sensor", group: "quality" },
-  { id: "Weather Station", lat: 43.265686, lng: -79.929256, label: "Weather Station", group: "weather" },
+  { id: "2577531", lat: 43.267100, lng: -79.928830, label: "Water Logger 1", group: "gauges" },
+  { id: "2577532", lat: 43.266390, lng: -79.929400, label: "Water Logger 2", group: "gauges" },
+  { id: "2577533", lat: 43.264720, lng: -79.928440, label: "Water Logger 3", group: "gauges" },
+  { id: "2577534", lat: 43.264140, lng: -79.928310, label: "Water Logger 4", group: "gauges" },
+  { id: "2577535", lat: 43.263850, lng: -79.929850, label: "Water Logger 5", group: "gauges" },
+  { id: "Water Quality Station", lat: 43.264700, lng: -79.928400, label: "Water Quality Sensor", group: "quality" },
+  { id: "Weather Station", lat: 43.266110, lng: -79.928660, label: "Weather Station", group: "weather" },
 ];
 
 const samplingMarkers = [
@@ -62,7 +62,7 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
 
   const markersToDisplay = isSampling ? samplingMarkers : sensorMarkers;
   const mapCenter = isSampling ? samplingCenter : sensorCenter;
-  const mapZoom = isSampling ? 12 : 14;
+  const mapZoom = isSampling ? 12 : 16;
   
   const getMarkerTypeInfo = (group: string) => {
     switch (group) {

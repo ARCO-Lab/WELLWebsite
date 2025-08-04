@@ -1,4 +1,5 @@
 import dynamic from 'next/dynamic';
+import { useMemo } from 'react';
 // Dynamically import MetricChart with SSR disabled
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 
@@ -35,6 +36,12 @@ const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen,
     label => QUALITY_METRIC_MAP[label] || label
   );
 
+  const qualityData = useMemo(() => {
+    if (!data || !Array.isArray(data)) return [];
+    return data.filter(item => item.group_type === 'Quality');
+  }, [data]);
+
+
   return (
     <div className="p-4 bg-white rounded shadow">
       <MetricChart
@@ -43,7 +50,7 @@ const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen,
         height={500}
         startDate={startDate}
         endDate={endDate}
-        data={data}
+        data={qualityData}
         loading={loading}
         error={error}
         modalOpen={modalOpen}

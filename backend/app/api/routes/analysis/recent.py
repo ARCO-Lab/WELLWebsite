@@ -1,6 +1,17 @@
 from flask import request, jsonify
 import json
-from scripts.downsample import METRIC_NAME_MAP
+
+# Embedded config for loggers
+LOGGER_CONFIG = {
+    'sites': {
+        "2577531": "Logger 1",
+        "2577532": "Logger 2",
+        "2577533": "Logger 3",
+        "2577534": "Logger 4",
+        "2577535": "Logger 5",
+    },
+    'metrics': ["Water Surface Elevation", "Water Temperature"],
+}
 
 def register_analysis_recent_route(app, latest_metrics_cache, client):
     @app.route("/api/analysis/recent", methods=["GET"])
@@ -11,20 +22,46 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
         if analysis_type not in ["weather", "logger", "quality"]:
             return jsonify({"error": "Invalid or missing type. Must be one of: weather, logger, quality."}), 400
 
-        # Use cached latest metrics
+        # Use cached latest metrics as the data source
         results = [
             r for r in latest_metrics_cache["data"]
             if r["group_type"].lower() == analysis_type.lower()
         ]
 
-        # Filter by subtypes if needed
-        if subtypes:
+        station_context = ""
+        if analysis_type == "logger":
+            all_logger_ids = list(LOGGER_CONFIG['sites'].keys())
+            all_logger_metrics = LOGGER_CONFIG['metrics']
+            
+            # 1. Determine which station IDs to analyze
+            selected_stations = [s for s in subtypes if s in all_logger_ids]
+            if "All Loggers" in subtypes or not selected_stations:
+                selected_stations = all_logger_ids
+
+            # 2. Determine which metrics to analyze
+            selected_metrics = [s for s in subtypes if s in all_logger_metrics]
+            if not selected_metrics:
+                selected_metrics = all_logger_metrics
+
+            # 3. Filter the results based on selected stations and metrics
+            results = [
+                r for r in results 
+                if str(r['station_id']) in selected_stations and r['measurement_type'] in selected_metrics
+            ]
+            
+            # 4. Create context with friendly names
+            station_names = [LOGGER_CONFIG['sites'].get(sid, sid) for sid in selected_stations]
+            station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."
+        
+        elif subtypes:
+            # Original logic for weather and quality
             results = [
                 r for r in results
                 if r["measurement_type"].lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
             ]
-        for r in results:
-            r["measurement_type"] = METRIC_NAME_MAP.get(r["measurement_type"], r["measurement_type"])
+
+        if not results:
+            return jsonify({"analysis": "No data available for the selected filters."})
 
         raw_data = json.dumps(results)
         if len(raw_data) > 4000:
@@ -32,34 +69,60 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
 
         prompt = f"""
             You are an environmental data analyst. Analyze monitoring station data and provide a concise report focusing on anomalies and key insights.
+
             Data Format
             JSON records with: group_type, measurement_type, recorded_at, station_id, unit, value
-            Analysis Priorities
+
+            Analysis Priorities by Group Type
             CRITICAL ALERTS (mention first):
+            Water Quality:
 
             Dissolved oxygen <5 mg/L (fish kill risk)
-            Extreme temperature deviations (air/water)
+            Extreme water temperature deviations (>25°C or <5°C)
             High turbidity spikes (>50 NTU)
-            Severe weather: wind >15 m/s, pressure drops >10 mbar/hr
+            Conductivity anomalies indicating pollution events
+            Total suspended solids exceeding normal ranges
+            Weather Station:
+
+            Severe weather: wind speed >15 m/s, gust speed >20 m/s
+            Barometric pressure drops >10 mbar/hr (storm systems)
             Heavy precipitation events (>25 mm/hr)
+            Extreme air temperature deviations (>35°C or <-20°C)
+            Solar radiation anomalies during daylight hours
+            Water Loggers:
 
-            KEY PARAMETERS:
+            Rapid water surface elevation changes (>0.5m/hr)
+            Water temperature spikes or drops (>5°C change/hr)
+            Equipment malfunction indicators (data gaps, sensor drift)
+            KEY PARAMETERS TO MONITOR:
+            Water Quality Group:
 
-            Water Quality: Temperature, DO, conductivity, turbidity, salinity
-            Weather: Air temp, humidity, pressure, wind, precipitation
-            Equipment: Battery levels, data gaps, sensor issues
+            Dissolved Oxygen (ODO) & Saturation (ODOSat): Fish habitat viability
+            Water Temperature: Ecosystem health indicator
+            Turbidity & Total Suspended Solids: Water clarity and sediment load
+            Conductivity & Salinity: Chemical composition changes
+            Total Dissolved Solids: Overall water quality
+            Weather Station Group:
 
+            Air Temperature & Dew Point: Atmospheric conditions
+            Barometric Pressure: Weather system tracking
+            Wind Speed, Gust Speed & Direction: Storm monitoring
+            Rainfall: Precipitation patterns and flood risk
+            Relative Humidity & Vapor Pressure: Moisture conditions
+            Solar Radiation: Energy input and weather patterns
+            Water Loggers Group:
+
+            Water Surface Elevation: Water level trends and flood risk
+            Water Temperature: Thermal conditions in water bodies
             Output Format (250 tokens max)
-            ALERTS: List any critical issues first
-            KEY FINDINGS: 2-3 most significant observations
-            CORRELATIONS: Notable relationships between parameters
-            SUMMARY: 1-2 brief jot notes on overall conditions
-            Style
+            ALERTS: List any critical issues first by group type KEY FINDINGS: 2-3 most significant observations across all groups CORRELATIONS: Notable relationships between parameters (e.g., rainfall vs water elevation) SUMMARY: 1-2 brief jot notes on overall environmental conditions
 
+            Style Guidelines
             Bullet points for efficiency
             Numbers with context (e.g., "16°C water temp, normal for season")
-            Flag unusual values clearly
+            Flag unusual values clearly with group context
             Be concise but actionable
+            Prioritize immediate safety/environmental concerns
 
             **STRICT FORMATTING REQUIREMENTS:**
                 - Use exactly this structure: **SECTION NAME:** followed by content

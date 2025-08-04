@@ -1,16 +1,23 @@
-// pages/api/analysis.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     const { type, subtypes } = req.query;
 
-    if (!type || !["weather", "quality", "logger"].includes(type as string)) {
+    // FIX: Map the frontend 'gauges' type to the backend 'logger' type.
+    let backendType = type;
+    if (type === 'gauges') {
+      backendType = 'logger';
+    }
+
+    // Now, validate the mapped type.
+    if (!backendType || !["weather", "quality", "logger"].includes(backendType as string)) {
       return res.status(400).json({ error: "Missing or invalid 'type' parameter" });
     }
 
     const params = new URLSearchParams();
-    params.append("type", type as string);
+    // Use the potentially mapped type when forwarding the request.
+    params.append("type", backendType as string);
 
     if (Array.isArray(subtypes)) {
       subtypes.forEach((sub) => params.append("subtypes", sub));
@@ -22,7 +29,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const response = await fetch(flaskUrl);
 
     if (!response.ok) {
-      throw new Error(`Flask backend returned status ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`Flask backend returned status ${response.status}: ${errorText}`);
     }
 
     const data = await response.json();

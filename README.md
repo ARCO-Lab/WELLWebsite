@@ -31,54 +31,31 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
 
-Before August 4:
-Finish UI upgrade for dashboard
-Add other page for sample points
-Borealis and Sharepoint uploads
-Make consistent formatting from ai analysis api to avoid issues
-fix readme todo
-when logger added, get name for Logger(last digit in alphabet (L = 2)) and then number of logger for station id db wise (parse in the loggerservice itself)
-create new table for sample data using same encoding for each creek
+Todo:
+finish samp and complete ai analysis
+fix downsample probably just run a for loop through station ids should work as the others are just 1
+change google maps api to new long term one
+make start with everything clicked, and clicking an active group also starts with everything clicked
 make download also have longtitude and latitude 
-remove legends on same things, like loggers and sites in the same creek to save space
+borealis api pull weekly sample data
+Borealis and Sharepoint uploads
+make everything use config/filters.py 
+documentation
+dew point, relative humidty, solar radition arent being shown on wetaher graph anymore
+change hover:text-black to accent on download button
+make legend show regardless on modal open
+convert everything to est
 
-After august 4:
+UNIT TEST EVERYTHING
 
+if active group not open, and you press dropdown arrow, then press subfilter should turn on active group. In short if active group is clicked on, then chevron should always be down (whether its alreayd down or not), if its off then chevron shuld always be right (wheterh its already right or not) but pressing the checvron individually doesnt change it (and make hover effect on chevron)
 
+Home page
 
-
-AFTER:
-Fix reset key on checkboxes as fades in properly when loading in, but doesnt after, and fix sublogger animation
-LatestMetrics and Graphs should use Collapsible and fade in new components, and opposite, modal should fade in, 
-Apply Metrics Gallery Code to latest metrics to view each metric add images and pictures related to it
-windrose tab
-make sure marker info pop up doesn't disspear when hover on it
-make latestmetrics be a bit shorter so that ai analysis has some space at the bottom
-spinning animation while graphs load
-Icons for download, X on modal, animation on home page icon like shadow, 
-fix header
-
-CHANGE API LINK IT IS NEW
-CHEK IF BEST PRACTISE TO HAVE AI IN ENDPOINT
-
-
-After: 
+Additional:
 email notifications for errors in logs
-start with everything checked when page loads, then allow user to change (default date range being the last week)
 rate limiting api, bugs, caching fixes.
-have hooks already ready to go on index page.
-add pictures of each station on info pop up
 multi sensor ai analysis that only compares sensor to sensor data
 *CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
-
-
-logger graph:
-similar to metric resizing, have y axis cuts that go from same range to same range essentially 5 different graphs(or less depending on how mnay loggers clicked) but hovering shows all metrics for all loggers, water level blue, temp red, same for all loggers, same legend, just resizing similar to latestmetrics with cuts so that y axis has the same stuff
-
 make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
-
-when other tab for other smaple data is ready make all filters and stuff flip to show other options
-borealis api pull
-monthly sharepoint and borealis push database
-
 

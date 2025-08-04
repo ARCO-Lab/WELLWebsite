@@ -1,6 +1,7 @@
 import os
 import sys
 import pathlib
+import math
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -9,6 +10,7 @@ from db.database import db
 from db.models import SensorMeasurement
 from api.services.weather import WeatherService
 from api.services.quality import QualityService
+from api.services.loggers import LoggerService
 from config import Config
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 app = create_app()
 weather_service = WeatherService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)
 quality_service = QualityService(Config.WQ_API_URL, Config.WQ_API_KEY, Config.WQ_DEVICE_ID)
+logger_service = LoggerService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)
 
 QUALITY_PARAM_ID_MAP = {
     125001: {"key": "Water Temperature", "unit": "°C"},
@@ -27,6 +30,16 @@ QUALITY_PARAM_ID_MAP = {
     125008: {"key": "Turbidity", "unit": "NTU"},
     125009: {"key": "TSS", "unit": "mg/L"}
 }
+
+LOGGER_CONFIG = {
+    # sensor_sn_base: { "logger_num": #, "station_id": #, "z": #, "L": #, "theta": # }
+    "22168653": { "logger_num": 1, "station_id": 2577531, "z": 39.701, "L": 1.525, "theta": 57.7 },
+    "22168654": { "logger_num": 2, "station_id": 2577532, "z": 39.767, "L": 1.781, "theta": 46.5 },
+    "22168655": { "logger_num": 3, "station_id": 2577533, "z": 39.711, "L": 1.685, "theta": 49.1 },
+    "22168656": { "logger_num": 4, "station_id": 2577534, "z": 39.736, "L": 1.62, "theta": 55.2 },
+    "22168657": { "logger_num": 5, "station_id": 2577535, "z": 39.568, "L": 1.75, "theta": 48.4 },
+}
+
 
 def parse_weather_entry(entry, logger_id):
     sensor_sn = entry.get("sensor_sn")
@@ -50,6 +63,48 @@ def parse_weather_entry(entry, logger_id):
         unit=unit,
         recorded_at=timestamp
     )
+
+def parse_logger_entry(entry):
+    sensor_sn = entry.get("sensor_sn", "")
+    sn_parts = sensor_sn.split('-')
+    if len(sn_parts) != 2:
+        return None
+
+    base_sn, metric_suffix = sn_parts
+    if base_sn not in LOGGER_CONFIG:
+        return None
+
+    config = LOGGER_CONFIG[base_sn]
+    station_id = config["station_id"]
+    h = float(entry.get("value", 0))
+    recorded_at = datetime.fromisoformat(entry.get("timestamp"))
+    
+    measurement = None
+    
+    if metric_suffix == '1':
+        z = config["z"]
+        L = config["L"]
+        theta = config["theta"]
+        wse = z - L * math.cos(math.radians(theta)) + h
+        measurement = SensorMeasurement(
+            station_id=station_id,
+            group_type="Logger",
+            measurement_type="Water Surface Elevation",
+            value=wse,
+            unit="m",
+            recorded_at=recorded_at
+        )
+    elif metric_suffix == '3':
+        measurement = SensorMeasurement(
+            station_id=station_id,
+            group_type="Logger",
+            measurement_type="Water Temperature",
+            value=h,
+            unit=entry.get("unit"),
+            recorded_at=recorded_at
+        )
+        
+    return measurement
 
 def parse_quality_entry(entry, station_id):
     timestamp = datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -146,12 +201,48 @@ def inject_new_quality_data(return_only=False):
 
     print(f"[INFO] Inserted {inserted} new quality records.")
 
+def inject_new_logger_data(return_only=False):
+    latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
+        group_type="Logger"
+    ).order_by(SensorMeasurement.recorded_at.desc()).first()
+
+    start_time = latest[0].isoformat() if latest else None
+    entries = logger_service.get_logger_data(start_time=start_time)
+
+    logger_data = []
+    for entry in entries:
+        try:
+            obj = parse_logger_entry(entry)
+            if obj:
+                logger_data.append(obj)
+        except Exception as e:
+            print(f"[ERROR] Failed to parse logger entry: {e}")
+
+    if return_only:
+        return logger_data
+
+    inserted = 0
+    for obj in sorted(logger_data, key=lambda x: x.recorded_at):
+        try:
+            db.session.add(obj)
+            db.session.commit()
+            inserted += 1
+            print(f"[NEW] Inserted: {obj.measurement_type} = {obj.recorded_at} with value {obj.value} {obj.unit}")
+        except IntegrityError:
+            db.session.rollback()
+        except Exception as e:
+            print(f"[ERROR] Failed to insert logger record: {e}")
+            db.session.rollback()
+    
+    print(f"[INFO] Inserted {inserted} new logger records.")
+
 def inject_all_new_data():
     with app.app_context():
         weather_data = inject_new_weather_data(return_only=True)
         quality_data = inject_new_quality_data(return_only=True)
+        logger_data = inject_new_logger_data(return_only=True)
 
-        all_data = sorted(weather_data + quality_data, key=lambda x: x.recorded_at)
+        all_data = sorted(weather_data + quality_data + logger_data, key=lambda x: x.recorded_at)
 
         inserted = 0
         for obj in all_data:
@@ -167,6 +258,8 @@ def inject_all_new_data():
                 db.session.rollback()
 
         print(f"[INFO] Inserted {inserted} new total records.")
+
+
 
 if __name__ == "__main__":
     print("[INFO] Starting new data injection...")
