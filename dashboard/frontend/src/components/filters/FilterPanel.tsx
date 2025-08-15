@@ -12,6 +12,12 @@ import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG, SAMPLING_METRICS } from "
 
 // --- PROPS ---
 
+
+// ADD M asl (Metres above sea level) for water surface elevation
+// Sensor change to west campus . Sampling change to Ancaster Watershed
+
+
+
 type Props = {
   activeTab: "sensor" | "sampling";
 

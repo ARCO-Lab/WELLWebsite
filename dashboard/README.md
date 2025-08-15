@@ -32,16 +32,14 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 
 Todo:
-finish samp and complete ai analysis
-fix downsample probably just run a for loop through station ids should work as the others are just 1
-change google maps api to new long term one
+dew point, relative humidty, solar radition arent being shown on wetaher graph anymore
 make start with everything clicked, and clicking an active group also starts with everything clicked
+change google maps api to new long term one
 make download also have longtitude and latitude 
 borealis api pull weekly sample data
 Borealis and Sharepoint uploads
 make everything use config/filters.py 
 documentation
-dew point, relative humidty, solar radition arent being shown on wetaher graph anymore
 change hover:text-black to accent on download button
 make legend show regardless on modal open
 convert everything to est

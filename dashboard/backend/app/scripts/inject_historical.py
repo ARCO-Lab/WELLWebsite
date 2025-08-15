@@ -1,5 +1,5 @@
 import os, sys, pathlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
 import math
 
@@ -159,14 +159,39 @@ def parse_quality_entry(entry, station_id):
 
 def inject_all_quality_history():
     station_id = Config.WQ_DEVICE_ID
-    entries = quality_service.get_quality_data(START_DATE, END_DATE)
     all_quality = []
-    for entry in entries:
-        try:
-            objs = parse_quality_entry(entry, station_id)
-            all_quality.extend(objs)
-        except Exception as e:
-            print(f"[ERROR] Failed to parse quality entry: {e}")
+    
+    # --- NEW CHUNKING LOGIC ---
+    date_format = "%Y-%m-%d %H:%M:%S"
+    current_start_dt = datetime.strptime(START_DATE, date_format)
+    final_end_dt = datetime.strptime(END_DATE, date_format)
+
+    print("[INFO] Fetching historical quality data in chunks...")
+    while current_start_dt < final_end_dt:
+        # Calculate the end of the 90-day chunk
+        chunk_end_dt = current_start_dt + timedelta(days=89)
+        if chunk_end_dt > final_end_dt:
+            chunk_end_dt = final_end_dt
+
+        start_str = current_start_dt.strftime(date_format)
+        end_str = chunk_end_dt.strftime(date_format)
+        
+        print(f"  - Fetching quality data from {start_str} to {end_str}")
+        
+        # Fetch data for the current chunk
+        entries = quality_service.get_quality_data(start_str, end_str)
+        
+        for entry in entries:
+            try:
+                objs = parse_quality_entry(entry, station_id)
+                all_quality.extend(objs)
+            except Exception as e:
+                print(f"[ERROR] Failed to parse quality entry: {e}")
+        
+        # Move to the start of the next chunk
+        current_start_dt = chunk_end_dt + timedelta(seconds=1)
+    # --- END CHUNKING LOGIC ---
+    
     return all_quality
 
 def inject_all_history():

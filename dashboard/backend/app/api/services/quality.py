@@ -16,7 +16,7 @@ class QualityService:
         now = datetime.now(timezone.utc)
         end_time = now.strftime("%Y-%m-%d %H:%M:%S")
         # Adjust this to fit your project-specific time range
-        start_time = "2025-05-08 11:00:00"
+        start_time = "2025-05-08 11:00:00" # start_time = "2025-05-08 11:00:00"
         return start_time, end_time
 
     def get_quality_data(self, start_time=None, end_time=None):

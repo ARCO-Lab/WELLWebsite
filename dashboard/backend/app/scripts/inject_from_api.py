@@ -164,19 +164,42 @@ def inject_new_weather_data(return_only=False):
 
     print(f"[INFO] Inserted {inserted} new weather records.")
 
+
 def inject_new_quality_data(return_only=False):
     station_id = Config.WQ_DEVICE_ID
 
-    # Get the most recent timestamp for quality data
     latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
         group_type="Quality"
     ).order_by(SensorMeasurement.recorded_at.desc()).first()
 
-    start_time = latest[0].strftime("%Y-%m-%d %H:%M:%S") if latest else None
-    entries = quality_service.get_quality_data(start_time=start_time)
+    all_quality_entries = []
     
+    # --- NEW CHUNKING LOGIC ---
+    date_format = "%Y-%m-%d %H:%M:%S"
+    # Start from the latest record, or a default if none exist
+    start_dt = latest[0] if latest else datetime.strptime("2025-05-08 11:00:00", date_format)
+    final_end_dt = datetime.now(timezone.utc)
+
+    print("[INFO] Fetching new quality data in chunks if necessary...")
+    current_start_dt = start_dt
+    while current_start_dt < final_end_dt:
+        chunk_end_dt = current_start_dt + timedelta(days=89)
+        if chunk_end_dt > final_end_dt:
+            chunk_end_dt = final_end_dt
+
+        start_str = current_start_dt.strftime(date_format)
+        end_str = chunk_end_dt.strftime(date_format)
+
+        print(f"  - Fetching quality data from {start_str} to {end_str}")
+        
+        entries = quality_service.get_quality_data(start_str, end_str)
+        all_quality_entries.extend(entries)
+        
+        current_start_dt = chunk_end_dt + timedelta(seconds=1)
+    # --- END CHUNKING LOGIC ---
+
     quality_data = []
-    for entry in entries:
+    for entry in all_quality_entries:
         try:
             objs = parse_quality_entry(entry, station_id)
             quality_data.extend(objs)
@@ -185,21 +208,6 @@ def inject_new_quality_data(return_only=False):
 
     if return_only:
         return quality_data
-
-    inserted = 0
-    for obj in sorted(quality_data, key=lambda x: x.recorded_at):
-        try:
-            db.session.add(obj)
-            db.session.commit()
-            inserted += 1
-            print(f"[NEW] Inserted: {obj.measurement_type} = {obj.recorded_at} with value {obj.value} {obj.unit}")
-        except IntegrityError:
-            db.session.rollback()
-        except Exception as e:
-            print(f"[ERROR] Failed to insert quality record: {e}")
-            db.session.rollback()
-
-    print(f"[INFO] Inserted {inserted} new quality records.")
 
 def inject_new_logger_data(return_only=False):
     latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
