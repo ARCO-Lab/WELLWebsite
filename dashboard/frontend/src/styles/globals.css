@@ -462,3 +462,19 @@ All colors MUST be HSL for proper shadcn/ui integration.
 .hover\:pause-animation:hover {
   animation-play-state: paused;
 }
+
+html, body {
+  height: auto !important;
+  min-height: 100vh;
+}
+
+#__next {
+  height: auto !important;
+  min-height: 100vh;
+}
+
+/* Ensure containers don't have fixed heights that interfere */
+.main-container,
+.dashboard-container {
+  height: auto !important;
+}

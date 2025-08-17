@@ -1,0 +1,26 @@
+/* Focus Fix */
+
+*:focus,
+.card-hover a:focus::after {
+    outline: 2px solid #007FFF !important;
+    box-shadow: none !important;
+    outline-offset: 2px;
+    transition: none !important;
+}
+
+.content-area.grey *:focus,
+.content-area.maroon *:focus,
+.carousel-cell.grey *:focus,
+.carousel-cell.maroon *:focus,
+#site-navbar .menu-item *:focus,
+#site-footer *:focus,
+#mps-footer *:focus,
+#mac-footer *:focus,
+.thumbnail-cards.grey .card-hover a:focus::after {
+    outline: 2px solid #00BFFF !important;
+}
+
+.accordion *:focus {
+    outline: 3px solid #007FFF !important;
+    outline-offset: -5px;
+}

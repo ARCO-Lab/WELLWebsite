@@ -2,6 +2,7 @@ import { GoogleMap, Marker, useLoadScript, InfoWindow } from "@react-google-maps
 import { FC, useState } from "react";
 import { MapPin, ExternalLink, Navigation } from "lucide-react";
 import { Button } from "@/components/animations/button";
+import getConfig from "next/config";
 
 // --- PROPS ---
 
@@ -50,6 +51,9 @@ const containerStyle = {
 // --- COMPONENT ---
 
 const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen, isSampling = false }) => {
+  const { publicRuntimeConfig } = getConfig();
+  const { basePath } = publicRuntimeConfig;
+
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!,
   });
@@ -156,7 +160,7 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
             key={index}
             position={{ lat: marker.lat, lng: marker.lng }}
             icon={{
-              url: `/icons/${marker.group}Icon.png`,
+              url: `${basePath || ''}/icons/${marker.group}Icon.png`,
               scaledSize: new google.maps.Size(32, 32),
             }}
             opacity={isActive ? 1.0 : 0.4}

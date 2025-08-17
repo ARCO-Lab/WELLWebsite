@@ -1,0 +1,30 @@
+/* Four Dots */
+.loader {
+  width: 0.75em;
+  height: 0.75em;
+  border-radius: 50%;
+  display: none;
+  margin: 0.9375em auto;
+  position: relative;
+  color: var(--primary-colour);
+  box-sizing: border-box;
+  animation: animloader 2s linear infinite;
+}
+
+@keyframes animloader {
+  0% {
+    box-shadow: 0.875em 0 0 -0.125em, 2.375em 0 0 -0.125em, -0.875em 0 0 -0.125em, -2.375em 0 0 -0.125em;
+  }
+  25% {
+    box-shadow: 0.875em 0 0 -0.125em, 2.375em 0 0 -0.125em, -0.875em 0 0 -0.125em, -2.375em 0 0 0.125em;
+  }
+  50% {
+    box-shadow: 0.875em 0 0 -0.125em, 2.375em 0 0 -0.125em, -0.875em 0 0 0.125em, -2.375em 0 0 -0.125em;
+  }
+  75% {
+    box-shadow: 0.875em 0 0 0.125em, 2.375em 0 0 -0.125em, -0.875em 0 0 -0.125em, -2.375em 0 0 -0.125em;
+  }
+  100% {
+    box-shadow: 0.875em 0 0 -0.125em, 2.375em 0 0 0.125em, -0.875em 0 0 -0.125em, -2.375em 0 0 -0.125em;
+  }
+}

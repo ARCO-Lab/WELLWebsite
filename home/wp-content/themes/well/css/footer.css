@@ -1,0 +1,20 @@
+#mac-footer>a {
+  display: block;
+  background-image: url('../img/m24-bw_left-rev.svg') !important;
+  background-repeat: no-repeat;
+  background-position: center;
+  height: 114px;
+  width: 360px;
+  margin: 0 auto;
+}
+
+#mps-footer {
+  background-color: var(--footer-colour);
+}
+
+#mps-footer p,
+#mps-footer a:link,
+#mps-footer a:visited,
+#mps-footer em {
+  color: var(--footer-text-colour);
+}

@@ -1,0 +1,502 @@
+/* =Fonts
+================================================== 
+.poppins-regular {
+  font-family: "Poppins", sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+.poppins-semibold {
+  font-family: "Poppins", sans-serif;
+  font-weight: 600;
+  font-style: normal;
+}
+.poppins-bold {
+  font-family: "Poppins", sans-serif;
+  font-weight: 700;
+  font-style: normal;
+}
+*/
+
+/* =Colour updates
+================================================== 
+495965
+*/
+
+.grey {
+    background-color: var(--grey);
+    color: #fff;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    color: var(--grey);
+    font-weight: normal;
+    font-style: normal;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.h1,
+.h2,
+.h3,
+.h4,
+.h5,
+.h6 {
+    font-family: "Poppins", sans-serif;
+    font-weight: 600;
+    color: #000000;
+}
+
+strong {
+    font-weight: bold;
+}
+
+
+/* =Typographic Grid
+================================================== */
+
+html,
+.root {
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+body,
+.article {
+    font-size: 16px;
+    margin: auto;
+    line-height: 1.5;
+}
+
+h1,
+.h1 {
+    font-size: 50px;
+    line-height: 55px;
+    margin-bottom: 48px;
+}
+
+.lead {
+    font-size: 24px;
+    line-height: 1.375;
+    margin-bottom: 36px;
+    color: var(--grey);
+}
+
+h2,
+.h2 {
+    font-size: 28px;
+    line-height: 34px;
+    margin-bottom: 24px;
+}
+
+h3,
+.h3 {
+    font-size: 24px;
+    line-height: 28px;
+    margin-bottom: 24px;
+
+}
+
+h4,
+.h4 {
+    font-size: 20px;
+    line-height: 24px;
+    margin-bottom: 24px;
+}
+
+h5,
+.h5 {
+    font-size: 16px;
+    line-height: 20px;
+    margin-bottom: 0px;
+}
+
+h6,
+.h6 {
+    font-size: 14px;
+    line-height: 20px;
+    margin-bottom: 0px;
+}
+
+p {
+    line-height: 1.5;
+}
+
+p,
+ul,
+ol,
+pre,
+table,
+blockquote {
+    margin-top: 0px;
+    margin-bottom: 24px;
+}
+
+ul ul,
+ol ol,
+ul ol,
+ol ul {
+    margin-top: 0px;
+    margin-bottom: 0px;
+}
+
+.small,
+small {
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.badge {
+    font-size: 14px;
+}
+
+
+/* Let's make sure all's aligned */
+
+hr,
+.hr {
+    border: 1px solid #eee;
+    margin: -1px 0;
+    margin-bottom: 24px;
+}
+
+.accordion .card-body hr,
+.light-grey hr {
+    border-color: #ccc;
+}
+
+sub,
+sup {
+    position: relative;
+    vertical-align: baseline;
+}
+
+sup {
+    top: -0.5em;
+}
+
+sub {
+    bottom: -0.25em;
+}
+
+/* Site Header */
+header#mcmaster-header .mcmaster-header__department,
+header#mcmaster-header .mcmaster-header__tagline,
+header#mcmaster-header .mcmaster-header__header-title {
+    font-family: "Poppins", sans-serif !important;
+    font-weight: 600 !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+}
+
+header#mcmaster-header .mcmaster-header__department {
+    color: var(--primary-colour-on-white);
+}
+
+/* Misc Elements */
+
+.card-title,
+.modal-title {
+    font-size: 24px;
+    margin-bottom: 12px;
+    line-height: 1.25;
+    font-weight: 600;
+}
+
+#people-row .card-title {
+    font-size: 21px;
+}
+
+.card-title.no-line {
+    line-height: 1.25;
+}
+
+.card-subtitle {
+    font-size: 16px;
+    line-height: 1.25;
+    margin-bottom: 6px;
+    font-weight: 600;
+    color: #5e6a71;
+}
+
+.card-subtitle.text-maroon {
+    color: var(--primary-colour-on-white);
+}
+
+.dropdown-item {
+    font-size: 14px;
+    line-height: 18px;
+    font-weight: 400;
+    letter-spacing: 0.5px;
+}
+
+.banner-title {
+    font-size: 24px;
+    line-height: 28px;
+    margin-bottom: 12px;
+    position: relative;
+    color: #222;
+}
+
+.banner-title-lg {
+    font-size: 2.63rem;
+    line-height: 1.125;
+    font-weight: 600;
+}
+
+.gold .banner-title,
+.gold .banner-text {
+    color: var(--secondary-text);
+}
+
+.hero-carousel .narrow .banner-title-lg {
+    text-align: center;
+}
+
+.banner-title-lg {
+    margin-bottom: 18px;
+}
+
+.banner-text {
+    font-size: 18px;
+    line-height: 26px;
+    font-weight: 500;
+    margin-bottom: 36px;
+    color: #383838;
+}
+
+banner div.banner-carousel p.banner-text {
+    margin-bottom: 0;
+}
+
+banner div.banner-carousel p.banner-textbanner-text-rev {
+    font-weight: 600;
+    margin-bottom: 0;
+    letter-spacing: 1px;
+    color: #fff;
+    text-shadow: 0px 1px 3px rgba(0, 0, 0, 1), 0px 8px 13px rgba(0, 0, 0, 0.1),
+        0px 18px 23px rgba(0, 0, 0, 0.1);
+}
+
+/* Banner Text and Button updates */
+.banner-title.banner-text-rev {
+    font-weight: 600;
+}
+
+.banner-text-rev,
+.banner-text-rev a {
+    color: #ffffff;
+}
+
+.banner-title.banner-title-lg.banner-title-line.banner-text-rev {
+    @media (min-width: 991.98px) {
+        margin-bottom: 42px;
+    }
+}
+
+.banner-carousel .blue .banner-title,
+.banner-carousel .blue .banner-text,
+.banner-carousel .red .banner-title,
+.banner-carousel .red .banner-text,
+.banner-carousel .green .banner-title,
+.banner-carousel .green .banner-text,
+.banner-carousel .maroon .banner-title,
+.banner-carousel .maroon .banner-text {
+    color: var(--primary-text);
+}
+
+.icon-circle .icon-text {
+    font-weight: 600;
+    font-size: 30px;
+    line-height: 36px;
+}
+
+.card .event-date-location .media-body {
+    font-size: 12px;
+    line-height: 18px;
+    letter-spacing: 2px;
+}
+
+.navbar-site .nav-link {
+    line-height: 44px;
+    font-family: "Poppins", sans-serif;
+    font-size: 18px;
+    font-weight: 400;
+}
+
+.navbar-toggler.tab-toggler,
+.navbar-toggler.jump-toggler,
+.navbar-toggler.site-toggler {
+    font-weight: 300;
+    font-size: 18px;
+    line-height: 18px;
+    letter-spacing: 0.5px;
+}
+
+.nav.nav-pills .nav-link,
+.nav.nav-pills .dropdown-toggle,
+.nav.nav-pills>span {
+    font-family: "Poppins", sans-serif;
+    font-weight: 600;
+    font-size: 18px;
+    line-height: 24px;
+}
+
+.nav.nav-pills .nav-link:hover,
+.nav.nav-pills .dropdown-toggle:hover {
+    background-color: var(--secondary-colour);
+    border-color: var(--secondary-colour);
+    color: var(--secondary-text);
+}
+
+form.wpforms-form input[type=number] {
+    font-size: 18px;
+    line-height: 24px;
+}
+
+#site-footer .footer-links {
+    letter-spacing: 1px;
+}
+
+form[data-container="true"] div[data-editorblocktype="Text"] p {
+    font-family: Arial, sans-serif;
+    font-weight: bold;
+}
+
+form[data-container="true"] .lp-form-field label {
+    font-family: Arial, sans-serif;
+    font-weight: bold;
+    color: #000;
+}
+
+form[data-container="true"] div[data-editorblocktype="Text"] p span b {
+    font-family: Arial, sans-serif !important;
+    font-weight: 700;
+}
+
+form[data-container="true"] div[data-editorblocktype="Text"] p span span {
+    font-family: 'Arial', sans-serif !important;
+    font-weight: 300;
+    font-size: 16px;
+}
+
+div.form_page input[type=password],
+div.form_page input[type=text],
+div.form_page input[type=email],
+div.form_page input[type=tel],
+div.form_page input:not([type]),
+div.form_page select,
+div.form_page textarea,
+form[data-container="true"] input[type=password],
+form[data-container="true"] input[type=text],
+form[data-container="true"] input[type=email],
+form[data-container="true"] input[type=tel],
+form[data-container="true"] input:not([type]),
+form[data-container="true"] select,
+form[data-container="true"] input[type=date],
+form[data-container="true"] textarea {
+    font-family: Arial, sans-serif;
+    font-size: 18px;
+    line-height: 24px;
+}
+
+.action.form_action button.default,
+form[data-container="true"] div[data-editorblocktype="SubmitButtonBlock"] button.lp-form-button,
+form[data-container="true"] div[data-editorblocktype="ResetButtonBlock"] button.lp-form-button {
+    font-family: Arial, sans-serif;
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 18px;
+    letter-spacing: 1px;
+}
+
+div.form_page .form_header .form_label {
+    font-family: Arial, sans-serif;
+    font-weight: 400;
+    font-size: 24px;
+    line-height: 36px;
+}
+
+#___gcse_0>div *,
+#site-footer #site-name a {
+    font-family: Arial, sans-serif;
+}
+
+#___gcse_0 .gsc-cursor-page {
+    font-family: 'RegCon';
+}
+
+#___gcse_0 .gsc-cursor-page.gsc-cursor-current-page {
+    font-family: 'LightCon';
+}
+
+/*All caps fixes*/
+
+.navbar-site .nav-link,
+.banner-title,
+#site-footer h2 a.tier1 {
+    text-transform: none;
+}
+
+#site-footer h3 {
+    text-transform: none;
+    font-size: 20px;
+    letter-spacing: 0.5px;
+}
+
+#site-name,
+.accordion .card-header .card-title {
+    font-weight: 600;
+}
+
+.sidebar-title {
+    text-align: center;
+    font-size: 24px;
+    line-height: 1.125;
+    font-weight: 600;
+    margin-bottom: 24px;
+    margin-top: 24px;
+}
+
+.accordion .card-header .card-title a .container {
+    letter-spacing: 0;
+}
+
+header#mcmaster-header .mcmaster-header__department,
+header#mcmaster-header .mcmaster-header__tagline {
+    text-transform: none !important;
+    letter-spacing: 0.5px !important;
+    font-size: 2.25em !important;
+    line-height: 1.125 !important;
+    color: var(--primary-colour-on-white) !important;
+}
+
+#site-footer h2 a.tier1 {
+    text-transform: none;
+}
+
+#mcmaster--links li a {
+    text-transform: none !important;
+    font-size: 16px;
+}
+
+header#mcmaster-header #mcmaster-search:before,
+header#mcmaster-header #mcmenu:before {
+    text-transform: none !important;
+    font-size: 16px !important;
+}
+
+
+footer#mac-footer ul#mcmaster--links li a,
+footer#mac-footer * {
+    font-family: "Poppins", sans-serif !important;
+    font-weight: 400 !important;
+}
+
+.banner-text-rev {
+    text-shadow: 0px 2px 18px rgba(0, 0, 0, 1);
+}

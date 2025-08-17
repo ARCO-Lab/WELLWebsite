@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import Header from "@/components/Header";
+import Footer from "@/components/Footer";
 import FilterPanel from "@/components/filters/FilterPanel";
 import WeatherGraph from "@/components/graphs/WeatherGraph";
 import LoggerGraph from "@/components/graphs/LoggerGraph";
@@ -27,13 +28,16 @@ const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
 export default function Dashboard() {
 
+  const [inIframe, setInIframe] = useState(false);
+
   const [activeTab, setActiveTab] = useState<"sensor" | "sampling">("sensor");
   
-    const [activeGroups, setActiveGroups] = useState({
+  const [activeGroups, setActiveGroups] = useState({
     gauges: false,
     weather: false,
     quality: false,
   });
+
   const [subFilters, setSubFilters] = useState<{ [key: string]: string[] }>({
     gauges: [],
     weather: [],
@@ -177,6 +181,15 @@ export default function Dashboard() {
     setPreviousActiveCreekCount(activeCreekCount);
   }, [activeCreekCount]);
 
+  useEffect(() => {
+    try {
+      setInIframe(window.self !== window.top);
+    } catch {
+      setInIframe(true);
+    }
+  }, []);
+
+
 
   const cachedMetrics = {
     weather: <WeatherMetrics key="weather" activeKeys={subFilters.weather} activeGroups={activeGroups} metrics={latestMetrics} loading={latestLoading} />,
@@ -253,7 +266,8 @@ export default function Dashboard() {
 
   return (
     <>
-      <Header />
+
+      {!inIframe && <Header />}
       <main className="min-h-screen bg-background text-foreground">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
@@ -693,6 +707,7 @@ export default function Dashboard() {
            {modalContent}
         </Modal>
       </main>
+      {!inIframe && <Footer />}
     </>
   );
 }
