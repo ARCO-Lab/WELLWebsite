@@ -277,8 +277,8 @@ export default function Dashboard() {
               WELL Dashboard
             </h1>
             <TabsList>
-              <TabsTrigger value="sensor">Sensor</TabsTrigger>
-              <TabsTrigger value="sampling">Sampling</TabsTrigger>
+              <TabsTrigger value="sensor">West Campus</TabsTrigger>
+              <TabsTrigger value="sampling">Ancaster Watershed</TabsTrigger>
             </TabsList>
           </div>
 

@@ -21,8 +21,13 @@
                 <div class="card-body pb-0">
                   <h3 class="card-title no-line p-0"><a href="http://localhost/dashboard/" ><span class="sr-only">The SEES Dashboard</span></a></h3>
                   <div class="card-text mb-0">
-                    <p>Explore the <strong>WELL Dashboard</strong> for real-time environmental data from across McMaster and the Ancaster watershed.
-Access live readings from weather stations, water quality sensors, water loggers, and sampling points —. Dive deeper with AI-powered analysis tools that help you uncover trends, compare metrics, and make sense of the ecosystem around you.</p>
+                    <p>Explore the <strong>WELL Dashboard</strong> to view and download current and historical data. All data is freely available to all for teaching, research, and outreach applications. </p>
+                    <p><strong>Data Available:</strong></p>
+                    <ul>
+                      <li><strong>West Campus (near parking Lot P):</strong> Real-time and continuous (10-minutes sampling interval) readings from the weather station, a water quality sensor, and five water level loggers.</li>
+                      <li><strong>Ancaster Creek Watershed Monitoring Sites:</strong> Bi-weekly water quality data and seasonal geomorphic data collected at nine sampling sites across the Ancaster Creek Watershed.</li>
+                    </ul>
+                    <p><strong>WELL is growing!</strong> WELL is an ever-evolving space and we have hope to expand the instrumentation and data collection in the future. If there is something we can add to WELL to support a course or outreach initiative, such as adding additional sensors or sampling sites, purchasing lab equipment, or integrating your data into the WELL network, please connect with the team and we can make it happen!</p>
                   </div>
                 </div>
                 <div class="card-footer border-top-0 p-0" aria-hidden="true">

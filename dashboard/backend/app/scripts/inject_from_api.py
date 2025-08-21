@@ -30,6 +30,7 @@ QUALITY_PARAM_ID_MAP = {
     125008: {"key": "Turbidity", "unit": "NTU"},
     125009: {"key": "TSS", "unit": "mg/L"}
 }
+# add M asl as unit for water surface elevation
 
 LOGGER_CONFIG = {
     # sensor_sn_base: { "logger_num": #, "station_id": #, "z": #, "L": #, "theta": # }
@@ -179,6 +180,10 @@ def inject_new_quality_data(return_only=False):
     # Start from the latest record, or a default if none exist
     start_dt = latest[0] if latest else datetime.strptime("2025-05-08 11:00:00", date_format)
     final_end_dt = datetime.now(timezone.utc)
+
+    # Ensure start_dt is timezone-aware
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
 
     print("[INFO] Fetching new quality data in chunks if necessary...")
     current_start_dt = start_dt
