@@ -321,6 +321,7 @@ export default function Dashboard() {
                           startDate={startDate}
                           endDate={endDate}
                           data={data}
+                          isSampling={false}
                         />
                       </div>
                     </div>
