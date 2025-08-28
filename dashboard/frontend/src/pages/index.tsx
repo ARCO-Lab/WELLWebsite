@@ -263,6 +263,15 @@ export default function Dashboard() {
     setIsModalOpen(false);
   };
 
+  console.log("Index debug", {
+  activeTab,
+  activeGroups,
+  subFilters,
+  activeCreeks,
+  samplingSubFilters,
+  samplingStartDate,
+  samplingEndDate
+});
 
   return (
     <>
@@ -504,14 +513,14 @@ export default function Dashboard() {
                     <div className="space-y-4">
                       <FilterPanel
                         activeTab={activeTab}
-                        activeGroups={activeCreeks}
-                        setActiveGroups={setActiveCreeks}
-                        subFilters={samplingSubFilters}
-                        setSubFilters={setSamplingSubFilters}
-                        activeCreeks={activeCreeks}
-                        setActiveCreeks={setActiveCreeks}
-                        samplingSubFilters={samplingSubFilters}
-                        setSamplingSubFilters={setSamplingSubFilters}
+                        activeGroups={{}}  // Empty object for sampling mode
+                        setActiveGroups={() => {}}  // Empty function for sampling mode
+                        subFilters={{}}  // Empty object for sampling mode
+                        setSubFilters={() => {}}  // Empty function for sampling mode
+                        activeCreeks={activeCreeks}  // ✅ Correct
+                        setActiveCreeks={setActiveCreeks}  // ✅ Correct
+                        samplingSubFilters={samplingSubFilters}  // ✅ Correct
+                        setSamplingSubFilters={setSamplingSubFilters}  // ✅ Correct
                         open={open}
                         setOpen={setOpen}
                       />
@@ -522,14 +531,16 @@ export default function Dashboard() {
                         onEndChange={setSamplingEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                        <Download
-                          activeGroups={activeCreeks}
-                          subFilters={samplingSubFilters}
-                          startDate={samplingStartDate}
-                          endDate={samplingEndDate}
-                          data={samplingData}
-                          isSampling={true}
-                        />
+                      <Download
+                        activeGroups={{}}  // Empty for sampling mode
+                        subFilters={{ weather: [], quality: [], gauges: [] }}  // Empty for sampling mode
+                        activeCreeks={activeCreeks}  // ✅ Correct prop name
+                        samplingSubFilters={samplingSubFilters}  // ✅ Correct prop name
+                        startDate={samplingStartDate}
+                        endDate={samplingEndDate}
+                        data={samplingData}
+                        isSampling={true}
+                      />
                       </div>
                     </div>
                   </div>

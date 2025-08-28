@@ -133,7 +133,7 @@ get_header();
               <div class="modal-content">
                 <div class="modal-header">
                   <div>
-                    <h3 class="card-title no-line p-0 pb-2">Elli Papangelakis</h3>
+                    <h3 class="card-title no-line p-0 pb-2">Dr. Elli Papangelakis</h3>
                     <div class="card-text mb-0">
                       <p id="modal_elli-label">Director</p>
                     </div>
@@ -167,7 +167,7 @@ get_header();
                     <img width="150" height="150" src="/wp-content/uploads/2025/08/ellipapangelakis.jpg" class="rounded-circle wp-post-image" alt="Elli Papangelakis" decoding="async">
                   </div>
                   <div>
-                    <h3 class="card-title no-line p-0 pb-2">Elli Papangelakis</h3>
+                    <h3 class="card-title no-line p-0 pb-2">Dr. Elli Papangelakis</h3>
                   </div>
                   <div class="card-text mb-0">
                     <p class="mb-0"><strong>Director</strong></p>
@@ -233,7 +233,7 @@ get_header();
                     <h3 class="card-title no-line p-0 pb-2">Dr. James Michael Waddington</h3>
                   </div>
                   <div class="card-text mb-0">
-                    <p class="mb-0"><strong>Scientific Committee Advisory Member</strong></p>
+                    <p class="mb-0"><strong>Scientific Advisory Committee Member</strong></p>
                   </div>
                   <div class="list-group list-group-flush small mt-2">
                     <a href="mailto:jmw@mcmaster.ca" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0">
@@ -596,7 +596,7 @@ get_header();
                     <h3 class="card-title no-line p-0 pb-2">Dr. Matthew Giamou</h3>
                   </div>
                   <div class="card-text mb-0">
-                    <p class="mb-0"><strong>Technical Director</strong></p>
+                    <p class="mb-0"><strong>Collaborator</strong></p>
                   </div>
                   <div class="list-group list-group-flush small mt-2">
                     <a href="tel:+19055259140,67890" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0" aria-label="Primary phone number for Dr. Jane Doe">

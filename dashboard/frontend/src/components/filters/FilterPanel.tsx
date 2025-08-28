@@ -195,6 +195,16 @@ const FilterPanel: React.FC<Props> = ({
       </Collapsible>
     );
   };
+  
+  console.log("FilterPanel debug", {
+  activeTab,
+  activeGroups,
+  subFilters,
+  activeCreeks,
+  samplingSubFilters,
+  open
+});
+
 
   return (
     <div className="space-y-4">
@@ -207,5 +217,7 @@ const FilterPanel: React.FC<Props> = ({
     </div>
   );
 };
+
+
 
 export default FilterPanel;

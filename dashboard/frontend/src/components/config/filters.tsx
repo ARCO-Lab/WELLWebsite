@@ -59,3 +59,16 @@ export const SAMPLING_FILTER_CONFIG = {
   coldwater: { label: "Coldwater Creek", sites: { "8": "Osler Dr", "9": "McMaster Lot P" } },
   spencer: { label: "Spencer's Creek", sites: { "10": "Cootes Dr" } },
 };
+
+export const CREEK_ID_MAP = {
+  "ancaster": "19431905",
+  "tiffany": "20962187",
+  "sulphur": "3212839",
+  "coldwater": "336415129",
+  "spencer": "19755185"
+};
+
+// And the reverse for lookup by numeric ID:
+export const CREEK_ID_MAP_REVERSE = Object.fromEntries(
+  Object.entries(CREEK_ID_MAP).map(([k, v]) => [v, k])
+);
