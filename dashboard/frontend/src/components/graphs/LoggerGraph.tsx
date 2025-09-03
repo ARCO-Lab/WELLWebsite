@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SENSOR_FILTER_CONFIG } from '@/components/config/filters';
-import SharedChartContainer from './highcharts/SharedChartContainer';
 
 const MetricChart = dynamic(() => import('./highcharts/MetricChart'), {
   ssr: false,

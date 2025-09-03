@@ -169,7 +169,7 @@ const Download: React.FC<DownloadProps> = ({
     const timestamps = [...new Set(filtered.map((d) => d.recorded_at))].sort();
 
     // --- SECTION CONFIGURATION ---
-    let sectionConfigs: Array<{
+    const sectionConfigs: Array<{
       label: string;
       type: "weather" | "quality" | "logger" | "sampling";
       metrics: string[];

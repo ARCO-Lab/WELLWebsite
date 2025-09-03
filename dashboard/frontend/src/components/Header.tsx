@@ -4,8 +4,8 @@ import Link from "next/link";
 const Header = () => {
   const navItems = [
     { label: "Home", href: "/" },
-    { label: "About", href: "/about" },
     { label: "Dashboard", href: "/dashboard", active: true },
+    { label: "About", href: "/about" },
     { label: "News", href: "/news" },
 
   ];

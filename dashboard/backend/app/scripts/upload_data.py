@@ -52,6 +52,20 @@ def get_station_coords(station_id):
             return s["lat"], s["lng"]
     return "", ""
 
+def get_weather_station_coords():
+    """Get coordinates for the weather station"""
+    for s in SENSOR_STATION_COORDINATES:
+        if s["group"] == "weather":
+            return s["lat"], s["lng"]
+    return "", ""
+
+def get_quality_station_coords():
+    """Get coordinates for the quality station"""
+    for s in SENSOR_STATION_COORDINATES:
+        if s["group"] == "quality":
+            return s["lat"], s["lng"]
+    return "", ""
+
 def get_logger_label(station_id):
     """Replicate frontend getLoggerLabel function"""
     return SENSOR_FILTER_CONFIG["gauges"]["sites"].get(str(station_id), f"Logger {station_id}")
@@ -83,7 +97,7 @@ def get_first_10_hours_of_last_month():
 
 def build_csv_frontend_style(data_list, file_obj):
     """
-    Replicate EXACT frontend CSV building logic
+    Replicate EXACT frontend CSV building logic with coordinates for all groups
     """
     print(f"DEBUG: Starting CSV build with {len(data_list)} measurements")
     
@@ -155,7 +169,7 @@ def build_csv_frontend_style(data_list, file_obj):
     
     print(f"DEBUG: Section keys: {[s['label'] for s in section_keys]}")
     
-    # 6. Build headers EXACTLY like frontend
+    # 6. Build headers with coordinates for ALL groups
     headers = ["ID", "Timestamp"]
     
     active_sections = section_keys
@@ -166,7 +180,19 @@ def build_csv_frontend_style(data_list, file_obj):
         
         headers.append("Group")  # Group header
         
-        if section["label"] == "Logger":
+        if section["label"] == "Weather":
+            headers.append("Latitude") 
+            headers.append("Longitude")
+            for metric in section["keys"]:
+                headers.append(metric_label_map.get(metric, metric))
+                
+        elif section["label"] == "Quality":
+            headers.append("Latitude")
+            headers.append("Longitude")
+            for metric in section["keys"]:
+                headers.append(metric_label_map.get(metric, metric))
+                
+        elif section["label"] == "Logger":
             headers.append("Sensor")
             headers.append("Latitude")
             headers.append("Longitude")
@@ -178,18 +204,12 @@ def build_csv_frontend_style(data_list, file_obj):
                     headers.append("Sensor")
                     headers.append("Latitude")
                     headers.append("Longitude")
-        else:
-            # Weather/Quality - add Latitude and Longitude after Group
-            headers.append("Latitude")
-            headers.append("Longitude")
-            for metric in section["keys"]:
-                headers.append(metric_label_map.get(metric, metric))
     
     print(f"DEBUG: Headers built: {len(headers)} columns")
     print("DEBUG: First 10 headers:", headers[:10])
     print("DEBUG: Last 10 headers:", headers[-10:])
     
-    # 7. Build rows EXACTLY like frontend
+    # 7. Build rows with coordinates for ALL groups
     rows = []
     for idx, timestamp in enumerate(timestamps, 1):
         print(f"DEBUG: Processing row {idx} for timestamp {timestamp}")
@@ -231,7 +251,7 @@ def build_csv_frontend_style(data_list, file_obj):
                     if value != "":
                         print(f"DEBUG:   {key}: {value}")
         
-        # 8. Build CSV row EXACTLY like frontend
+        # 8. Build CSV row with coordinates for ALL groups
         csv_row = [row_data["id"], row_data["timestamp"]]
         
         for section_idx, section in enumerate(active_sections):
@@ -240,8 +260,28 @@ def build_csv_frontend_style(data_list, file_obj):
             
             csv_row.append(section["label"])  # Group name (Weather/Quality/Logger)
             
-            if section["label"] == "Logger":
-                # Add first logger name
+            if section["label"] == "Weather":
+                # Add weather station coordinates (no sensor name)
+                weather_lat, weather_lng = get_weather_station_coords()
+                csv_row.append(weather_lat)
+                csv_row.append(weather_lng)
+                # Add metric values
+                for metric in section["keys"]:
+                    key = f"{section['label']}_West Campus_{metric}"
+                    csv_row.append(row_data.get(key, ""))
+                    
+            elif section["label"] == "Quality":
+                # Add quality station coordinates (no sensor name)
+                quality_lat, quality_lng = get_quality_station_coords()
+                csv_row.append(quality_lat)
+                csv_row.append(quality_lng)
+                # Add metric values
+                for metric in section["keys"]:
+                    key = f"{section['label']}_West Campus_{metric}"
+                    csv_row.append(row_data.get(key, ""))
+                    
+            elif section["label"] == "Logger":
+                # Add first logger name and coordinates
                 if selected_logger_ids:
                     first_site_label = get_logger_label(selected_logger_ids[0])
                     csv_row.append(first_site_label)
@@ -262,19 +302,6 @@ def build_csv_frontend_style(data_list, file_obj):
                         lat, lng = get_station_coords(selected_logger_ids[site_idx + 1])
                         csv_row.append(lat)
                         csv_row.append(lng)
-                else:
-                    # Weather/Quality - add coordinates after Group
-                    if section["label"] == "Weather":
-                        lat, lng = get_station_coords("Weather Station")
-                    elif section["label"] == "Quality":
-                        lat, lng = get_station_coords("Water Quality Station")
-                    else:
-                        lat, lng = "", ""
-                    csv_row.append(lat)
-                    csv_row.append(lng)
-                    for metric in section["keys"]:
-                        key = f"{section['label']}_West Campus_{metric}"
-                        csv_row.append(row_data.get(key, ""))
         
         rows.append(csv_row)
         print(f"DEBUG:   Row {idx} complete with {len(csv_row)} columns (expected {len(headers)})")

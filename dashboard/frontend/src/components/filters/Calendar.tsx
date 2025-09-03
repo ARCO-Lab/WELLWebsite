@@ -40,8 +40,9 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
           <PopoverContent className="w-auto p-0" align="start">
             <CalendarComponent
               mode="single"
+              required={false}
               selected={startDate || undefined}
-              onSelect={onStartChange}
+              onSelect={(date) => onStartChange(date ?? null)}
               disabled={(date) => (endDate ? date > endDate : false)}
               modifiersStyles={disabledStyles}
               initialFocus
@@ -66,8 +67,9 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
           <PopoverContent className="w-auto p-0" align="start">
             <CalendarComponent
               mode="single"
+              required={false}
               selected={endDate || undefined}
-              onSelect={onEndChange}
+              onSelect={(date) => onEndChange(date ?? null)}
               disabled={(date) => (startDate ? date < startDate : false)}
               modifiersStyles={disabledStyles}
               initialFocus

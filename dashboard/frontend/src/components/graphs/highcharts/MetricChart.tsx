@@ -131,7 +131,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       })),
       series,
     });
-  }, [data, loading, activeGroup, subFilters, showLegend]);
+  }, [data, loading, activeGroup, subFilters, showLegend, height, modalOpen]);
 
   return (
     <div className="relative">

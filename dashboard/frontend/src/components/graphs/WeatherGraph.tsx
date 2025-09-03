@@ -72,7 +72,7 @@ const WeatherGraph = ({
       {/* Tab Switcher only in modal */}
       {showTabSwitcher && (
         <Tabs value={weatherTab} onValueChange={(value) => setWeatherTab(value as "graph" | "windrose")} className="mb-10">
-          <TabsList className="inline-flex h-10 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground w-full grid grid-cols-2">
+          <TabsList className="grid h-10 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground w-full grid-cols-2">
             <TabsTrigger value="graph" className="font-poppins cursor-pointer">
               Weather Graph
             </TabsTrigger>

@@ -9,11 +9,20 @@ import { SENSOR_FILTER_CONFIG, SAMPLING_METRICS, SENSOR_STATION_COORDINATES, SAM
 
 interface MapProps {
   activeGroups: { [key: string]: boolean };
-  setActiveGroups: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  setActiveGroups: React.Dispatch<React.SetStateAction<{ gauges: boolean; weather: boolean; quality: boolean }>>;
   subFilters: { [key: string]: string[] };
   setSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
   open: { [key: string]: boolean };
-  setOpen: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  setOpen: React.Dispatch<React.SetStateAction<{
+    gauges: boolean;
+    weather: boolean;
+    quality: boolean;
+    ancaster: boolean;
+    tiffany: boolean;
+    sulphur: boolean;
+    coldwater: boolean;
+    spencer: boolean;
+  }>>
   chevronState: { [key: string]: boolean };
   setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
   isSampling?: boolean; // Flag to switch between sensor and sampling data
@@ -122,7 +131,7 @@ const Map: FC<MapProps> = ({
       // Only select the metrics and the clicked logger
       const allMetrics = isSampling
         ? SAMPLING_METRICS
-        : SENSOR_FILTER_CONFIG[group]?.metrics || [];
+        : SENSOR_FILTER_CONFIG[group as keyof typeof SENSOR_FILTER_CONFIG]?.metrics || [];
       setSubFilters(prev => ({
         ...prev,
         [group]: [...allMetrics, id], // Only the clicked logger, not "All Loggers"
@@ -146,7 +155,11 @@ const Map: FC<MapProps> = ({
         }
 
         // Now, toggle the specific item that was clicked
-        currentSubs.has(id) ? currentSubs.delete(id) : currentSubs.add(id);
+        if (currentSubs.has(id)) {
+          currentSubs.delete(id);
+        } else {
+          currentSubs.add(id);
+        }
 
         // After toggling, check if all individual items are now selected
         const allIndividualItemsSelected = allItemsInGroup.length > 0 && allItemsInGroup.every(item => currentSubs.has(item));

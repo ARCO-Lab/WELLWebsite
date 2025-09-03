@@ -76,7 +76,7 @@ const QualityMetrics = ({
 
   return (
     <div className="space-y-3">
-      <h4 className="font-poppins font-semibold text-sm text-primary">Water Quality</h4>
+      <h4 className="font-poppins font-semibold text-sm text-primary">Water Quality Metrics</h4>
       <div 
         ref={containerRef}
         className="relative overflow-hidden"

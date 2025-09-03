@@ -24,6 +24,8 @@ import useRecentSamples from "@/hooks/useRecentSamples";
 import { SAMPLING_METRICS, SENSOR_FILTER_CONFIG } from "@/components/config/filters";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
+type ActiveFilters = { [key: string]: string[] };
+
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
 
 export default function Dashboard() {
@@ -198,10 +200,18 @@ export default function Dashboard() {
     gauges: <LoggerMetrics key="gauges" activeKeys={subFilters.gauges} activeGroups={activeGroups} metrics={latestMetrics} loading={latestLoading} />,
   };
 
+  const normalizedSubFilters = {
+    weather: subFilters.weather || [],
+    quality: subFilters.quality || [],
+    gauges: subFilters.gauges || [],
+  };
+  
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
-    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={subFilters} data={data}/>,
-    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data}/>,
+    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} modalOpen={isModalOpen} />,
   };
   
   const graphComponents = [];
@@ -231,7 +241,6 @@ export default function Dashboard() {
   };
 
   const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalData, setModalData] = useState<any>(null);
   const [modalType, setModalType] = useState<"weather" | "logger" | "quality" | "sampling">("weather");
   const [modalSubtypes, setModalSubtypes] = useState<string[]>([]);
@@ -317,7 +326,11 @@ export default function Dashboard() {
                         activeTab={activeTab}
                         activeGroups={activeGroups}
                         setActiveGroups={setActiveGroups}
-                        subFilters={subFilters}
+                        subFilters={{
+                          weather: subFilters.weather || [],
+                          quality: subFilters.quality || [],
+                          gauges: subFilters.gauges || [],
+                        }}
                         setSubFilters={setSubFilters}
                         activeCreeks={activeCreeks}
                         setActiveCreeks={setActiveCreeks}
@@ -337,7 +350,11 @@ export default function Dashboard() {
                       <div className="mt-6 space-y-2">
                         <Download
                           activeGroups={activeGroups}
-                          subFilters={subFilters}
+                          subFilters={{
+                            weather: subFilters.weather || [],
+                            quality: subFilters.quality || [],
+                            gauges: subFilters.gauges || [],
+                          }}
                           startDate={startDate}
                           endDate={endDate}
                           data={data}
@@ -443,7 +460,7 @@ export default function Dashboard() {
                             {/* Row 1: Logger Graph takes the full width */}
                             {loggerGraph && (
                               <div
-                                onClick={() => openModal(loggerGraph, "alltime", "gauges", subFilters.gauges || [])}
+                                onClick={() => openModal(loggerGraph, "alltime", "logger", subFilters.gauges || [])}
                                 className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
                               >
                                 {loggerGraph}
@@ -451,15 +468,17 @@ export default function Dashboard() {
                             )}
                             {/* Row 2: Weather and Quality graphs in a responsive grid below */}
                             <div className={`grid gap-6 ${getGraphGridClass(otherGraphs.length)}`}>
-                              {otherGraphs.map((comp) => (
-                                <div
-                                  key={comp.key}
-                                  onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
-                                  className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
-                                >
-                                  {comp}
-                                </div>
-                              ))}
+                              {otherGraphs.map((comp) =>
+                                comp && (
+                                  <div
+                                    key={comp.key}
+                                    onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                    className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
+                                  >
+                                    {comp}
+                                  </div>
+                                )
+                              )}
                             </div>
                           </div>
                         );
@@ -470,18 +489,20 @@ export default function Dashboard() {
                       return (
                         <div className={`grid gap-6 ${getGraphGridClass(allGraphs.length)}`}>
                           {allGraphs.map((comp, index) => (
-                            <div
-                              key={comp.key}
-                              onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
-                              className={`
-                                transition-all duration-500 ease-out cursor-pointer hover:shadow-lg 
-                                mcmaster-card p-4 animate-fade-in-up
-                                ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}
-                              `}
-                              style={{ animationDelay: `${index * 150}ms` }}
-                            >
-                              {comp}
-                            </div>
+                            comp ? (
+                              <div
+                                key={comp.key}
+                                onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                className={`
+                                  transition-all duration-500 ease-out cursor-pointer hover:shadow-lg 
+                                  mcmaster-card p-4 animate-fade-in-up
+                                  ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}
+                                `}
+                                style={{ animationDelay: `${index * 150}ms` }}
+                              >
+                                {comp}
+                              </div>
+                            ) : null
                           ))}
                         </div>
                       );
@@ -500,6 +521,7 @@ export default function Dashboard() {
                           key="sensor-analysis"
                           activeFilters={sensorActiveFilters}
                           dashboardTab="sensors"
+                          analysisType={analysisType}
                           disabled={!isAnyGroupActive}
                         />
                       </div>
@@ -547,7 +569,7 @@ export default function Dashboard() {
                       />
                       <div className="mt-6 space-y-2">
                       <Download
-                        activeGroups={{}}  // Empty for sampling mode
+                        activeGroups={{ gauges: false, weather: false, quality: false }}  // All false for sampling mode
                         subFilters={{ weather: [], quality: [], gauges: [] }}  // Empty for sampling mode
                         activeCreeks={activeCreeks}  // ✅ Correct prop name
                         samplingSubFilters={samplingSubFilters}  // ✅ Correct prop name
@@ -611,7 +633,7 @@ export default function Dashboard() {
                         <div className="flex-1">
                           <Map
                             activeGroups={activeCreeks}
-                            setActiveGroups={setActiveCreeks}
+                            setActiveGroups={() => {}} // No-op to satisfy type, since Map expects sensor groups setter
                             subFilters={samplingSubFilters}
                             setSubFilters={setSamplingSubFilters}
                             open={open}
@@ -710,6 +732,7 @@ export default function Dashboard() {
                           key="sampling-analysis"
                           activeFilters={samplingActiveFilters}
                           dashboardTab="sampling"
+                          analysisType={analysisType}
                           disabled={!isAnyCreekActive}
                         />
                       </div>

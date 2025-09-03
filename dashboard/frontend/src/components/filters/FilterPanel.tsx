@@ -10,38 +10,27 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import FadeAnimation from "@/components/animations/FadeAnimation";
 import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG, SAMPLING_METRICS } from "@/components/config/filters";
 
-// --- PROPS ---
-
-
 // ADD M asl (Metres above sea level) for water surface elevation
 
-type Props = {
+// --- PROPS ---
+interface FilterPanelProps {
   activeTab: "sensor" | "sampling";
-
-  // Sensor Props
   activeGroups: { [key: string]: boolean };
   setActiveGroups: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
   subFilters: { [key: string]: string[] };
   setSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
-  
-  // Sampling Props
   activeCreeks: { [key: string]: boolean };
   setActiveCreeks: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
   samplingSubFilters: { [key: string]: string[] };
   setSamplingSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
-
-  // UI State
   open: { [key: string]: boolean };
   setOpen: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
-  
   chevronState: { [key: string]: boolean };
   setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
-
-};
+}
 
 // --- COMPONENT ---
-
-const FilterPanel: React.FC<Props> = ({
+const FilterPanel: React.FC<FilterPanelProps> = ({
   activeTab,
   activeGroups, setActiveGroups, subFilters, setSubFilters,
   activeCreeks, setActiveCreeks, samplingSubFilters, setSamplingSubFilters,
@@ -80,12 +69,12 @@ const FilterPanel: React.FC<Props> = ({
 
     const isOpening = !currentlyActive;
 
-    setActive(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
+    setActive((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
 
     // When opening a group, select all metrics and "All Items" (if it exists)
     if (isOpening) {
       const allMetrics = config.metrics || [];
-      const itemsLabel = config.itemsLabel;
+      const itemsLabel = (config as any).itemsLabel;
       const allFilters = itemsLabel ? [...allMetrics, itemsLabel] : allMetrics;
       
       setSubs(prev => ({
@@ -101,7 +90,6 @@ const FilterPanel: React.FC<Props> = ({
     }
   };
 
-
   const handleSubToggle = (groupKey: string, value: string) => {
     const isSensor = activeTab === 'sensor';
     const setSubs = isSensor ? setSubFilters : setSamplingSubFilters;
@@ -112,15 +100,20 @@ const FilterPanel: React.FC<Props> = ({
           ...SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG], 
           metrics: SAMPLING_METRICS, 
           itemsLabel: "All Sites",
-          items: Object.keys(SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG].sites) 
+          items: Object.keys((SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG] as any).sites || {})
         };
 
     setSubs(prev => {
       const currentSubs = new Set(prev[groupKey] || []);
-      const allItems = config.items && config.items.length > 0
+      
+      // Use type-safe property access
+      const allItems = 'items' in config && config.items && config.items.length > 0
         ? config.items
-        : Object.keys(config.sites || {});
-      const itemsLabel = config.itemsLabel;
+        : 'sites' in config && config.sites 
+          ? Object.keys(config.sites)
+          : [];
+      
+      const itemsLabel = 'itemsLabel' in config ? config.itemsLabel : undefined;
       const isMetric = config.metrics.includes(value);
 
       // Case 1: Toggling a metric (e.g., "Water Level", "E. coli")
@@ -132,7 +125,7 @@ const FilterPanel: React.FC<Props> = ({
         }
       }
       // Case 2: Toggling the "All Items" checkbox itself
-      else if (value === itemsLabel) {
+      else if (itemsLabel && value === itemsLabel) {
         if (currentSubs.has(itemsLabel)) {
           currentSubs.delete(itemsLabel); // Uncheck "All"
         } else {
@@ -143,7 +136,7 @@ const FilterPanel: React.FC<Props> = ({
       // Case 3: Toggling an individual item (e.g., "Logger 4", "Site 2")
       else {
         // If "All" is currently checked, we need to expand it first
-        if (currentSubs.has(itemsLabel)) {
+        if (itemsLabel && currentSubs.has(itemsLabel)) {
           currentSubs.delete(itemsLabel); // Uncheck "All"
           allItems.forEach(item => currentSubs.add(item)); // and check all individuals
         }
@@ -159,7 +152,7 @@ const FilterPanel: React.FC<Props> = ({
         const allIndividualItemsSelected = allItems.length > 0 && allItems.every(item => currentSubs.has(item));
 
         // If they are, switch to the "All" state
-        if (allIndividualItemsSelected) {
+        if (allIndividualItemsSelected && itemsLabel) {
           allItems.forEach(item => currentSubs.delete(item));
           currentSubs.add(itemsLabel);
         }
@@ -169,22 +162,31 @@ const FilterPanel: React.FC<Props> = ({
     });
   };
 
-
   const renderFilterGroup = (groupKey: string, config: any, subs: string[]) => {
-    // Determine if we should show sub-items (loggers, sites).
-    const items = config.items || Object.keys(config.sites || {});
+    // Use type-safe property access
+    const items = 'items' in config && config.items 
+      ? config.items 
+      : 'sites' in config && config.sites 
+        ? Object.keys(config.sites) 
+        : [];
+    
     const showSubItems = items.length > 1;
 
     // Create a unified list of [id, name] pairs for rendering.
-    const itemsToRender = config.items 
+    const itemsToRender = 'items' in config && config.items 
       ? config.items.map((item: string) => [item, item]) 
-      : Object.entries(config.sites || {});
+      : 'sites' in config && config.sites
+        ? Object.entries(config.sites)
+        : [];
 
     // Get current chevron state
     const currentChevron = chevronState[groupKey] || false; // false = right, true = down
 
+    const itemsLabel = 'itemsLabel' in config ? config.itemsLabel : undefined;
+
     return (
-      <Collapsible key={groupKey} open={open[groupKey]} onOpenChange={(isOpen) => handleChevronClick(groupKey)}>        <div className="flex items-center space-x-2">
+      <Collapsible key={groupKey} open={open[groupKey]} onOpenChange={(isOpen) => handleChevronClick(groupKey)}>
+        <div className="flex items-center space-x-2">
           <Checkbox
             id={groupKey}
             checked={activeTab === 'sensor' ? activeGroups[groupKey] : activeCreeks[groupKey]}
@@ -207,22 +209,22 @@ const FilterPanel: React.FC<Props> = ({
             </FadeAnimation>
           ))}
           
-          {/* Only show "All Loggers" and individual loggers if it's a multi-item group */}
-          {showSubItems && (
+          {/* Only show "All Items" and individual items if it's a multi-item group */}
+          {showSubItems && itemsLabel && (
             <>
-              {/* "All Loggers" Toggle */}
+              {/* "All Items" Toggle */}
               <FadeAnimation delay={config.metrics.length * 30} duration={400} resetKey={open[groupKey]}>
                 <div className="flex items-center space-x-2">
-                  <Checkbox id={`${groupKey}-${config.itemsLabel}`} checked={subs.includes(config.itemsLabel)} onCheckedChange={() => handleSubToggle(groupKey, config.itemsLabel)} className="data-[state=checked]:bg-accent" />
-                  <Label htmlFor={`${groupKey}-${config.itemsLabel}`} className="mcmaster-body cursor-pointer">{config.itemsLabel}</Label>
+                  <Checkbox id={`${groupKey}-${itemsLabel}`} checked={subs.includes(itemsLabel)} onCheckedChange={() => handleSubToggle(groupKey, itemsLabel)} className="data-[state=checked]:bg-accent" />
+                  <Label htmlFor={`${groupKey}-${itemsLabel}`} className="mcmaster-body cursor-pointer">{itemsLabel}</Label>
                 </div>
               </FadeAnimation>
 
               {/* Individual Items (Loggers or Sites) */}
-              {!subs.includes(config.itemsLabel) && (
+              {!subs.includes(itemsLabel) && (
                 <div className="ml-6 space-y-2 mt-2">
                   {itemsToRender.map(([id, name]: [string, string], idx: number) => (
-                    <FadeAnimation key={id} delay={idx * 30} duration={400} resetKey={!subs.includes(config.itemsLabel)}>
+                    <FadeAnimation key={id} delay={idx * 30} duration={400} resetKey={!subs.includes(itemsLabel)}>
                       <div className="flex items-center space-x-2">
                         <Checkbox id={`${groupKey}-${id}`} checked={subs.includes(id)} onCheckedChange={() => handleSubToggle(groupKey, id)} className="data-[state=checked]:bg-accent" />
                         <Label htmlFor={`${groupKey}-${id}`} className="mcmaster-body cursor-pointer text-sm">{name}</Label>
@@ -239,14 +241,13 @@ const FilterPanel: React.FC<Props> = ({
   };
   
   console.log("FilterPanel debug", {
-  activeTab,
-  activeGroups,
-  subFilters,
-  activeCreeks,
-  samplingSubFilters,
-  open
-});
-
+    activeTab,
+    activeGroups,
+    subFilters,
+    activeCreeks,
+    samplingSubFilters,
+    open
+  });
 
   return (
     <div className="space-y-4">

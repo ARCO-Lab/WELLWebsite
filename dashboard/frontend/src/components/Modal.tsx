@@ -34,7 +34,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
       <DialogContent className="max-w-[90vw] max-h-[95vh] overflow-y-auto mcmaster-card">
         <DialogHeader>
           <DialogTitle className="text-2xl font-poppins font-bold text-primary flex items-center justify-between">
-            {type.charAt(0).toUpperCase() + type.slice(1)} Analysis ({analysisType})
+            {`${type === "gauges" ? "Logger" : type.charAt(0).toUpperCase() + type.slice(1)} ${analysisType === "recent" ? "Metrics" : "Graph"}`}
           </DialogTitle>
         </DialogHeader>
         
