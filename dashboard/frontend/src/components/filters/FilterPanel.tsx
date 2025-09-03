@@ -14,9 +14,6 @@ import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG, SAMPLING_METRICS } from "
 
 
 // ADD M asl (Metres above sea level) for water surface elevation
-// Sensor change to west campus . Sampling change to Ancaster Watershed
-
-
 
 type Props = {
   activeTab: "sensor" | "sampling";
@@ -36,6 +33,10 @@ type Props = {
   // UI State
   open: { [key: string]: boolean };
   setOpen: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  
+  chevronState: { [key: string]: boolean };
+  setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+
 };
 
 // --- COMPONENT ---
@@ -44,8 +45,15 @@ const FilterPanel: React.FC<Props> = ({
   activeTab,
   activeGroups, setActiveGroups, subFilters, setSubFilters,
   activeCreeks, setActiveCreeks, samplingSubFilters, setSamplingSubFilters,
-  open, setOpen
+  open, setOpen,
+  chevronState, setChevronState
 }) => {
+
+  const handleChevronClick = (groupKey: string) => {
+    const newChevronState = !chevronState[groupKey];
+    setChevronState(prev => ({ ...prev, [groupKey]: newChevronState }));
+    setOpen(prev => ({ ...prev, [groupKey]: newChevronState }));
+  };
 
   const handleMainToggle = (groupKey: string) => {
     const isSensor = activeTab === 'sensor';
@@ -55,20 +63,42 @@ const FilterPanel: React.FC<Props> = ({
     // Correctly get config based on tab
     const config = isSensor 
       ? SENSOR_FILTER_CONFIG[groupKey as keyof typeof SENSOR_FILTER_CONFIG] 
-      : { ...SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG], itemsLabel: "All Sites" };
+      : { ...SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG], metrics: SAMPLING_METRICS, itemsLabel: "All Sites" };
+
+    const currentlyActive = isSensor ? activeGroups[groupKey] : activeCreeks[groupKey];
+
+    // Update chevron based on your cases
+    if (!currentlyActive) {
+      // Case 1 & 2: active group = false -> chevron = true
+      setChevronState(prev => ({ ...prev, [groupKey]: true }));
+      setOpen(prev => ({ ...prev, [groupKey]: true }));
+    } else {
+      // Case 3 & 4: active group = true -> chevron = false
+      setChevronState(prev => ({ ...prev, [groupKey]: false }));
+      setOpen(prev => ({ ...prev, [groupKey]: false }));
+    }
+
+    const isOpening = !currentlyActive;
 
     setActive(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
-    setOpen(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
 
-    // When toggling a main group on, select "All Items" by default (if it exists)
-    setSubs(prev => {
-      const currentSubs = prev[groupKey] || [];
-      const isAllSelected = config.itemsLabel && currentSubs.includes(config.itemsLabel);
-      return {
+    // When opening a group, select all metrics and "All Items" (if it exists)
+    if (isOpening) {
+      const allMetrics = config.metrics || [];
+      const itemsLabel = config.itemsLabel;
+      const allFilters = itemsLabel ? [...allMetrics, itemsLabel] : allMetrics;
+      
+      setSubs(prev => ({
         ...prev,
-        [groupKey]: isAllSelected ? [] : (config.itemsLabel ? [config.itemsLabel] : []),
-      };
-    });
+        [groupKey]: allFilters,
+      }));
+    } else {
+      // When closing, clear all filters
+      setSubs(prev => ({
+        ...prev,
+        [groupKey]: [],
+      }));
+    }
   };
 
 
@@ -87,13 +117,19 @@ const FilterPanel: React.FC<Props> = ({
 
     setSubs(prev => {
       const currentSubs = new Set(prev[groupKey] || []);
-      const allItems = config.items || [];
+      const allItems = config.items && config.items.length > 0
+        ? config.items
+        : Object.keys(config.sites || {});
       const itemsLabel = config.itemsLabel;
       const isMetric = config.metrics.includes(value);
 
       // Case 1: Toggling a metric (e.g., "Water Level", "E. coli")
       if (isMetric) {
-        currentSubs.has(value) ? currentSubs.delete(value) : currentSubs.add(value);
+        if (currentSubs.has(value)) {
+          currentSubs.delete(value);
+        } else {
+          currentSubs.add(value);
+        }
       }
       // Case 2: Toggling the "All Items" checkbox itself
       else if (value === itemsLabel) {
@@ -113,15 +149,19 @@ const FilterPanel: React.FC<Props> = ({
         }
 
         // Now, toggle the specific item that was clicked
-        currentSubs.has(value) ? currentSubs.delete(value) : currentSubs.add(value);
+        if (currentSubs.has(value)) {
+          currentSubs.delete(value);
+        } else {
+          currentSubs.add(value);
+        }
 
         // After toggling, check if all individual items are now selected
         const allIndividualItemsSelected = allItems.length > 0 && allItems.every(item => currentSubs.has(item));
 
         // If they are, switch to the "All" state
         if (allIndividualItemsSelected) {
-          currentSubs.add(itemsLabel); // Check "All"
-          allItems.forEach(item => currentSubs.delete(item)); // and uncheck all individuals
+          allItems.forEach(item => currentSubs.delete(item));
+          currentSubs.add(itemsLabel);
         }
       }
       
@@ -140,9 +180,11 @@ const FilterPanel: React.FC<Props> = ({
       ? config.items.map((item: string) => [item, item]) 
       : Object.entries(config.sites || {});
 
+    // Get current chevron state
+    const currentChevron = chevronState[groupKey] || false; // false = right, true = down
+
     return (
-      <Collapsible key={groupKey} open={open[groupKey]} onOpenChange={(isOpen) => setOpen(prev => ({ ...prev, [groupKey]: isOpen }))}>
-        <div className="flex items-center space-x-2">
+      <Collapsible key={groupKey} open={open[groupKey]} onOpenChange={(isOpen) => handleChevronClick(groupKey)}>        <div className="flex items-center space-x-2">
           <Checkbox
             id={groupKey}
             checked={activeTab === 'sensor' ? activeGroups[groupKey] : activeCreeks[groupKey]}
@@ -151,7 +193,7 @@ const FilterPanel: React.FC<Props> = ({
           />
           <CollapsibleTrigger className="flex items-center space-x-2 flex-1 text-left">
             <Label htmlFor={groupKey} className="font-poppins font-semibold text-primary cursor-pointer">{config.label}</Label>
-            {open[groupKey] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            {currentChevron ? <ChevronDown className="h-4 w-4 cursor-pointer" /> : <ChevronRight className="h-4 w-4 cursor-pointer" />}
           </CollapsibleTrigger>
         </div>
         <CollapsibleContent className="ml-6 mt-2 space-y-2 animate-accordion-down">
@@ -217,7 +259,5 @@ const FilterPanel: React.FC<Props> = ({
     </div>
   );
 };
-
-
 
 export default FilterPanel;

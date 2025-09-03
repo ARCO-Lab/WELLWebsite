@@ -10,3 +10,4 @@ pandas
 openai
 schedule
 openpyxl
+pyDataverse

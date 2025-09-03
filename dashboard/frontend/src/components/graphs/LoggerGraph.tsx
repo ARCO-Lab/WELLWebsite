@@ -124,7 +124,7 @@ const LoggerGraph = ({
                 loading={loading}
                 error={error}
                 modalOpen={modalOpen}
-                showLegend={index === legendIndex}
+                showLegend={modalOpen ? true : index === legendIndex}
               />
             </div>
           );

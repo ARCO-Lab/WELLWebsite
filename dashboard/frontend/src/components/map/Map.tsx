@@ -3,6 +3,7 @@ import { FC, useState } from "react";
 import { MapPin, ExternalLink, Navigation } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import getConfig from "next/config";
+import { SENSOR_FILTER_CONFIG, SAMPLING_METRICS, SENSOR_STATION_COORDINATES, SAMPLING_SITE_COORDINATES } from "@/components/config/filters";
 
 // --- PROPS ---
 
@@ -13,6 +14,8 @@ interface MapProps {
   setSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
   open: { [key: string]: boolean };
   setOpen: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  chevronState: { [key: string]: boolean };
+  setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
   isSampling?: boolean; // Flag to switch between sensor and sampling data
 }
 
@@ -21,27 +24,9 @@ interface MapProps {
 const sensorCenter = { lat: 43.2655, lng: -79.9291 };
 const samplingCenter = { lat: 43.24, lng: -79.96 };
 
-const sensorMarkers = [
-  { id: "2577531", lat: 43.267100, lng: -79.928830, label: "Water Logger 1", group: "gauges" },
-  { id: "2577532", lat: 43.266390, lng: -79.929400, label: "Water Logger 2", group: "gauges" },
-  { id: "2577533", lat: 43.264720, lng: -79.928440, label: "Water Logger 3", group: "gauges" },
-  { id: "2577534", lat: 43.264140, lng: -79.928310, label: "Water Logger 4", group: "gauges" },
-  { id: "2577535", lat: 43.263850, lng: -79.929850, label: "Water Logger 5", group: "gauges" },
-  { id: "Water Quality Station", lat: 43.264700, lng: -79.928400, label: "Water Quality Sensor", group: "quality" },
-  { id: "Weather Station", lat: 43.266110, lng: -79.928660, label: "Weather Station", group: "weather" },
-];
+const sensorMarkers = SENSOR_STATION_COORDINATES;
 
-const samplingMarkers = [
-  { id: "1", lat: 43.2137431, lng: -79.9233981, label: "Site 1: Falkirk Forest", group: "tiffany" },
-  { id: "2", lat: 43.2055590, lng: -79.9741699, label: "Site 2: Maple Lane Pk", group: "ancaster" },
-  { id: "3", lat: 43.2193754, lng: -80.0000820, label: "Site 3: Jerseyville Rd", group: "sulphur" },
-  { id: "4", lat: 43.2416900, lng: -80.0005500, label: "Site 4: Sulphur Springs", group: "sulphur" },
-  { id: "5", lat: 43.2389100, lng: -79.9732900, label: "Site 5: Sherman Falls", group: "ancaster" },
-  { id: "6", lat: 43.2400000, lng: -79.9600500, label: "Site 6: Tiffany Falls", group: "tiffany" },
-  { id: "8", lat: 43.2581980, lng: -79.9383952, label: "Site 8: Osler Dr", group: "coldwater" },
-  { id: "9", lat: 43.2651150, lng: -79.9429224, label: "Site 9: McMaster Lot P", group: "coldwater" },
-  { id: "10", lat: 43.2664186, lng: -79.9293879, label: "Site 10: Cootes Dr", group: "spencer" },
-];
+const samplingMarkers = SAMPLING_SITE_COORDINATES
 
 const containerStyle = {
   width: "100%",
@@ -50,7 +35,10 @@ const containerStyle = {
 
 // --- COMPONENT ---
 
-const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen, isSampling = false }) => {
+const Map: FC<MapProps> = ({ 
+  activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen, 
+  chevronState, setChevronState, isSampling = false 
+}) => {
   const { publicRuntimeConfig } = getConfig();
   const { basePath } = publicRuntimeConfig;
 
@@ -87,53 +75,98 @@ const Map: FC<MapProps> = ({ activeGroups, setActiveGroups, subFilters, setSubFi
   const handleMarkerClick = (marker: typeof markersToDisplay[0]) => {
     const group = marker.group;
     const id = marker.id;
+    const currentlyActive = activeGroups[group];
 
-    // For single-item groups, just toggle the main active state.
+    // For single-item groups, apply chevron logic and toggle the main active state
     if (group === 'weather' || group === 'quality') {
+      // Update chevron based on your cases
+      if (!currentlyActive) {
+        // Case 1 & 2: active group = false -> chevron = true
+        setChevronState(prev => ({ ...prev, [group]: true }));
+        setOpen(prev => ({ ...prev, [group]: true }));
+      } else {
+        // Case 3 & 4: active group = true -> chevron = false
+        setChevronState(prev => ({ ...prev, [group]: false }));
+        setOpen(prev => ({ ...prev, [group]: false }));
+      }
+
+      const isOpening = !currentlyActive;
       setActiveGroups(prev => ({ ...prev, [group]: !prev[group] }));
-      setOpen(prev => ({ ...prev, [group]: !prev[group] }));
+
+      // When opening, select all metrics; when closing, clear all filters
+      if (isOpening) {
+        // Get config to determine all metrics for this group
+        const config = isSampling 
+          ? { metrics: ["E. coli", "Phosphorus", "Nitrates"], itemsLabel: "All Sites" }
+          : (group === 'weather' 
+              ? { metrics: ["Air Temperature", "Pressure", "Wind Speed", "Gust Speed", "Wind Direction", "Relative Humidity", "Dew Point", "Rainfall", "Water Content", "Solar Radiation", "Soil Temperature"] }
+              : { metrics: ["Water Temperature", "Conductivity", "Salinity", "Total Dissolved Solids (TDS)", "Dissolved Oxygen (ODO)", "Dissolved Oxygen Saturation (ODOSat)", "Turbidity", "Total Suspended Solids (TSS)"] });
+        
+        const allMetrics = config.metrics || [];
+        setSubFilters(prev => ({ ...prev, [group]: allMetrics }));
+      } else {
+        setSubFilters(prev => ({ ...prev, [group]: [] }));
+      }
       return;
     }
 
-    // For multi-item groups, apply the advanced logic
-    setOpen(prev => ({ ...prev, [group]: true }));
-    setActiveGroups(prev => ({ ...prev, [group]: true }));
-
-    setSubFilters(prev => {
-      const currentSubs = new Set(prev[group] || []);
+    // For multi-item groups, apply the advanced logic with chevron updates
+    const isOpening = !currentlyActive;
       
-      // Get all item IDs for the current group from the full marker list
-      const allItemsInGroup = (isSampling ? samplingMarkers : sensorMarkers)
-          .filter(m => m.group === group)
-          .map(m => m.id);
-      
-      const allItemsLabel = isSampling ? "All Sites" : "All Loggers";
+    if (isOpening) {
+      // Open the group and chevron
+      setChevronState(prev => ({ ...prev, [group]: true }));
+      setOpen(prev => ({ ...prev, [group]: true }));
+      setActiveGroups(prev => ({ ...prev, [group]: true }));
 
-      // If "All" is currently checked, we need to expand it first
-      if (currentSubs.has(allItemsLabel)) {
-        currentSubs.delete(allItemsLabel); // Uncheck "All"
-        allItemsInGroup.forEach(item => currentSubs.add(item)); // and check all individuals
-      }
+      // Only select the metrics and the clicked logger
+      const allMetrics = isSampling
+        ? SAMPLING_METRICS
+        : SENSOR_FILTER_CONFIG[group]?.metrics || [];
+      setSubFilters(prev => ({
+        ...prev,
+        [group]: [...allMetrics, id], // Only the clicked logger, not "All Loggers"
+      }));
+    } else {
+      // For multi-item groups, just toggle the specific item without affecting group state
+      setSubFilters(prev => {
+        const currentSubs = new Set(prev[group] || []);
+        
+        // Get all item IDs for the current group from the full marker list
+        const allItemsInGroup = markersToDisplay
+            .filter(m => m.group === group)
+            .map(m => m.id);
+        
+        const allItemsLabel = isSampling ? "All Sites" : "All Loggers";
 
-      // Now, toggle the specific item that was clicked
-      currentSubs.has(id) ? currentSubs.delete(id) : currentSubs.add(id);
+        // If "All" is currently checked, we need to expand it first
+        if (currentSubs.has(allItemsLabel)) {
+          currentSubs.delete(allItemsLabel); // Uncheck "All"
+          allItemsInGroup.forEach(item => currentSubs.add(item)); // and check all individuals
+        }
 
-      // After toggling, check if all individual items are now selected
-      const allIndividualItemsSelected = allItemsInGroup.length > 0 && allItemsInGroup.every(item => currentSubs.has(item));
+        // Now, toggle the specific item that was clicked
+        currentSubs.has(id) ? currentSubs.delete(id) : currentSubs.add(id);
 
-      // If they are, switch to the "All" state
-      if (allIndividualItemsSelected) {
-        currentSubs.add(allItemsLabel); // Check "All"
-        allItemsInGroup.forEach(item => currentSubs.delete(item)); // and uncheck all individuals
-      }
+        // After toggling, check if all individual items are now selected
+        const allIndividualItemsSelected = allItemsInGroup.length > 0 && allItemsInGroup.every(item => currentSubs.has(item));
 
-      // If this action resulted in no selected items for this group, deactivate the main group
-      if (currentSubs.size === 0) {
-        setActiveGroups(prevActive => ({ ...prevActive, [group]: false }));
-      }
+        // If they are, switch to the "All" state
+        if (allIndividualItemsSelected) {
+          currentSubs.add(allItemsLabel); // Check "All"
+          allItemsInGroup.forEach(item => currentSubs.delete(item)); // and uncheck all individuals
+        }
 
-      return { ...prev, [group]: Array.from(currentSubs) };
-    });
+        // If this action resulted in no selected items for this group, deactivate the main group and update chevron
+        if (currentSubs.size === 0) {
+          setActiveGroups(prevActive => ({ ...prevActive, [group]: false }));
+          setChevronState(prev => ({ ...prev, [group]: false }));
+          setOpen(prev => ({ ...prev, [group]: false }));
+        }
+
+        return { ...prev, [group]: Array.from(currentSubs) };
+      });
+    }
   };
 
 

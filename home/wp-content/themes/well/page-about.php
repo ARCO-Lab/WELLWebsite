@@ -79,7 +79,7 @@ get_header();
         <div class="col-12">
           <div class="row">
             <div class="col-md-8 pr-md-4 my-3 align-self-center">
-              <h2>What type of teaching will WELL support?</h2>
+              <h2>What type of teaching does WELL support?</h2>
               <p>With plans to expand the instrumentation, WELL is poised to become a cornerstone of environmental education at McMaster. It’s convenient on-campus location makes it easy to integrate into courses of all levels and has already been integrated into several courses across the Faculty of Science and the Faculty of Engineering. WELL has also been used for industry-focused workshops on river monitoring.</p>
               <p>WELL also serves as a unique experiential learning opportunity for students. The sensor network in West Campus was installed by a team of undergraduate and graduate students, providing them with hands-on site selection, instrumentation, and fieldwork experience. The sampling regime at the monitoring station across the watershed is also conducted by a team of students. Even this website was designed and built by an undergraduate student research assistant!</p>
             </div>
@@ -87,7 +87,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Watershed" src="/wp-content/uploads/2025/08/ancasterwatershed.jpg" class="img-fluid">
+                  <img alt="Ancaster Watershed" src="/wp-content/uploads/2025/09/TeachingPhoto.jpeg" class="img-fluid">
                   </div>
                 </figure>
               </div>
@@ -107,13 +107,13 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Creek" src="/wp-content/uploads/2025/08/ancastercreek.jpg" class="img-fluid">
+                  <img alt="Ancaster Creek" src="/wp-content/uploads/2025/09/wellresearch.png" class="img-fluid">
                   </div>
                 </figure>
               </div>
             </div>
             <div class="col-md-6 pl-md-4 my-3 align-self-center">
-              <h2>What type of research will WELL support?</h2>
+              <h2>What type of research does WELL support?</h2>
               <p>WELL is not connected to a single research project but is rather a shared data collection effort that can support a multitude of research projects in various fields. Some early examples include measuring stream health indicators to assess the success of naturalization projects in West Campus and serving as a testing ground for new sensor technology and geomorphic monitoring techniques.</p>
             </div>
           </div>

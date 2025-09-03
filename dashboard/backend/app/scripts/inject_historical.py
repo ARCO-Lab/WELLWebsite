@@ -105,7 +105,7 @@ def parse_logger_entry(entry):
             group_type="Logger",
             measurement_type="Water Surface Elevation",
             value=wse,
-            unit="m", # Assuming meters for WSE
+            unit="m asl", # Assuming meters for WSE
             recorded_at=recorded_at
         )
     # Water Temperature

@@ -30,7 +30,6 @@ QUALITY_PARAM_ID_MAP = {
     125008: {"key": "Turbidity", "unit": "NTU"},
     125009: {"key": "TSS", "unit": "mg/L"}
 }
-# add M asl as unit for water surface elevation
 
 LOGGER_CONFIG = {
     # sensor_sn_base: { "logger_num": #, "station_id": #, "z": #, "L": #, "theta": # }
@@ -92,7 +91,7 @@ def parse_logger_entry(entry):
             group_type="Logger",
             measurement_type="Water Surface Elevation",
             value=wse,
-            unit="m",
+            unit="m asl",
             recorded_at=recorded_at
         )
     elif metric_suffix == '3':
@@ -156,7 +155,7 @@ def inject_new_weather_data(return_only=False):
             db.session.add(obj)
             db.session.commit()
             inserted += 1
-            print(f"[NEW] Inserted: {obj.measurement_type} = {obj.recorded_at} with value {obj.value} {obj.unit}")
+            print(f"[NEW] Inserted: {obj.measurement_type} from {obj.station_id} at {obj.recorded_at} with value {obj.value} {obj.unit}")
         except IntegrityError:
             db.session.rollback()
         except Exception as e:
@@ -240,7 +239,7 @@ def inject_new_logger_data(return_only=False):
             db.session.add(obj)
             db.session.commit()
             inserted += 1
-            print(f"[NEW] Inserted: {obj.measurement_type} = {obj.recorded_at} with value {obj.value} {obj.unit}")
+            print(f"[NEW] Inserted: {obj.measurement_type} from {obj.station_id} at {obj.recorded_at} with value {obj.value} {obj.unit}")
         except IntegrityError:
             db.session.rollback()
         except Exception as e:
@@ -263,18 +262,64 @@ def inject_all_new_data():
                 db.session.add(obj)
                 db.session.commit()
                 inserted += 1
-                print(f"[NEW] Inserted: {obj.measurement_type} = {obj.recorded_at} with value {obj.value} {obj.unit}")
+                print(f"[NEW] Inserted: {obj.measurement_type} from {obj.station_id} at {obj.recorded_at} with value {obj.value} {obj.unit}")
             except IntegrityError:
                 db.session.rollback()
             except Exception as e:
                 print(f"[ERROR] Failed to insert record: {e}")
                 db.session.rollback()
+                print(f"[SKIPPED - DUPLICATE] {obj.group_type} {obj.measurement_type} {obj.station_id} {obj.recorded_at}")
 
         print(f"[INFO] Inserted {inserted} new total records.")
+'''
+def debug_parsing_last_2_hours():
+    with app.app_context():
+        now = datetime.now(timezone.utc)
+        start_time = (now - timedelta(hours=2)).isoformat()
+        print(f"[DEBUG] Fetching and parsing data from {start_time} to {now.isoformat()} (last 2 hours)")
 
+        # Weather
+        logger_id = Config.HOBO_LOGGERS.split(",")[0]
+        weather_entries = weather_service.get_weather_data(start_time=start_time)
+        print(f"[DEBUG] Weather entries fetched: {len(weather_entries)}")
+        for entry in weather_entries:
+            try:
+                obj = parse_weather_entry(entry, logger_id)
+                print(f"[PARSE] Weather: {obj.measurement_type} @ {obj.recorded_at} = {obj.value} {obj.unit}")
+            except Exception as e:
+                print(f"[ERROR] Weather parse: {e} | Entry: {entry}")
 
+        # Logger
+        logger_entries = logger_service.get_logger_data(start_time=start_time)
+        print(f"[DEBUG] Logger entries fetched: {len(logger_entries)}")
+        for entry in logger_entries:
+            try:
+                obj = parse_logger_entry(entry)
+                if obj:
+                    print(f"[PARSE] Logger: {obj.measurement_type} @ {obj.recorded_at} = {obj.value} {obj.unit} (station {obj.station_id})")
+            except Exception as e:
+                print(f"[ERROR] Logger parse: {e} | Entry: {entry}")
 
+        # Quality
+        # For quality, you may need to adapt the API call to accept a time range
+        date_format = "%Y-%m-%d %H:%M:%S"
+        start_str = (now - timedelta(hours=2)).strftime(date_format)
+        end_str = now.strftime(date_format)
+        quality_entries = quality_service.get_quality_data(start_str, end_str)
+        print(f"[DEBUG] Quality entries fetched: {len(quality_entries)}")
+        for entry in quality_entries:
+            try:
+                objs = parse_quality_entry(entry, Config.WQ_DEVICE_ID)
+                for obj in objs:
+                    print(f"[PARSE] Quality: {obj.measurement_type} @ {obj.recorded_at} = {obj.value} {obj.unit}")
+            except Exception as e:
+                print(f"[ERROR] Quality parse: {e} | Entry: {entry}")
+'''
 if __name__ == "__main__":
+    '''
+    print("[INFO] Debugging parsing for last 2 hours (no DB insert)...")
+    debug_parsing_last_2_hours()
+'''
     print("[INFO] Starting new data injection...")
     try:
         inject_all_new_data()

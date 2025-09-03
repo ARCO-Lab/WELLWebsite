@@ -56,7 +56,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
           });
         }
         const series = seriesMap.get(key)!;
-        const timestamp = new Date(item.recorded_at).getTime();
+        const timestamp = new Date(item.recorded_at).getTime() - (new Date(item.recorded_at).getTimezoneOffset() * 60 * 1000);
         series.data.push([timestamp, item.value]);
 
         // Check if the unit is already in the unitMap

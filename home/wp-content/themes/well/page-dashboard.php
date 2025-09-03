@@ -27,6 +27,64 @@ get_header();
 </banner>
 <iframe src="http://localhost:3000/" style="width:100%;height:100vh;border:none;"></iframe>
 
+<section class="content-area cool-grey my-4">
+  <div class="container">
+    <div class="row">
+      <div class="col-12">
+        <div class="row">
+          <!-- Left image -->
+          <div class="col-md-4 pr-md-4 my-3 align-self-center">
+            <div class="text-center">
+              <figure class="mw-100">
+                <img 
+                  alt="Borealis Logo"
+                  srcset="
+                      /wp-content/uploads/2025/09/borealislogo.jpg 414w,
+                      /wp-content/uploads/2025/09/borealislogo.jpg 720w,
+                      /wp-content/uploads/2025/09/borealislogo.jpg 1080w,
+                      /wp-content/uploads/2025/09/borealislogo.jpg 1600w
+                  "
+                  sizes="(max-width: 480px) 150px, (max-width: 800px) 270px, 300px"
+                  src="/wp-content/uploads/2025/09/borealislogo.jpg"
+                  class="img-fluid d-block mx-auto"
+                  style="max-width: 200px; width: 100%; height: auto;"
+                />            
+              </figure>
+            </div>
+          </div>
+          <!-- Center text -->
+          <div class="col-md-4 pl-md-4 pr-md-4 my-3 align-self-center">
+            <h2>Archived Datasets</h2>
+            <p>For premade datasets uploaded monthly, visit the <strong>WELL</strong> data repositories:</p>
+            <p style="text-align: left;">
+              <a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://borealisdata.ca/dataverse/WELL" target="_blank" rel="noopener noreferrer">Borealis</a>
+              <a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://mcmasteru365.sharepoint.com/sites/WELL" target="_blank" rel="noopener noreferrer">Sharepoint</a>
+            </p>
+          </div>
+          <!-- Right image -->
+          <div class="col-md-4 pl-md-4 my-3 align-self-center">
+            <div class="text-center">
+              <figure class="mw-100">
+                <img 
+                  alt="SharePoint Logo"
+                  srcset="
+                      /wp-content/uploads/2025/09/sharepointlogo.png 414w,
+                      /wp-content/uploads/2025/09/sharepointlogo.png 720w,
+                      /wp-content/uploads/2025/09/sharepointlogo.png 1080w,
+                      /wp-content/uploads/2025/09/sharepointlogo.png 1600w
+                  "
+                  sizes="(max-width: 480px) 150px, (max-width: 800px) 270px, 300px"
+                  src="/wp-content/uploads/2025/09/sharepointlogo.png"
+                  class="img-fluid d-block mx-auto"
+                />            
+              </figure>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <?php
 get_footer();

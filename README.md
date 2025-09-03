@@ -34,6 +34,8 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
 
+python upload_data.py --year 2023 --month 7
+
 URGENT:
 dew point, relative humidty, solar radition arent being shown on older wetaher graph anymore
 - Relative Humidity/ water content in db from start
@@ -42,29 +44,22 @@ dew point, relative humidty, solar radition arent being shown on older wetaher g
 
 Large:
 Change hero section
+- responsiveness in mobile
 borealis api pull weekly sample data
 Borealis and Sharepoint uploads
 take out whatever files (css, js, etc ) from wordpress, remove unused classes, and chagne so it doesnt look like macsites theme
 
 Small:
-water quality metrics when downloading are 8 hours ahead, time zone diff? 
-download on logger side has extra columns
-change google maps api to new long term one
-make download also have longtitude and latitude 
-graphs are 4 hours ahead of download time, change that
+change google maps api to new long term one without dev purposes
+openai api too under matt
 make everything use config/filters.py 
-make legend show regardless on modal open
-convert everything to est
-update information icon texts to match info from home page
-make start with everything clicked, and clicking an active group also starts with everything clicked
 use webhooks with flask to automate redployments on push to repo
 documentation
 check if sees/macsites/lovable is present anywhere
 cron job for inputting to database (add once a month retrieval of borealis as well in same script)
 cron job for updating to borealis and sharepoint (use download feature from frontend)
-if active group not open, and you press dropdown arrow, then press subfilter should turn on active group. In short if active group is clicked on, then chevron should always be down (whether its alreayd down or not), if its off then chevron shuld always be right (wheterh its already right or not) but pressing the checvron individually doesnt change it (and make hover effect on chevron)
 make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
-fix all type errors, eslint, typescript etc.
+fix all type errors, eslint, typescript etc. by removing the pass in config
 CHECK IF MUTLIPLE PEOPLE ON WEBSITE CAN HANDLE
 HOST ON VM (DASHBOARD ON dashboard.well.mcmaster.ca) WP on well.mcmaster.ca
 

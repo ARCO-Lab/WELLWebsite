@@ -77,8 +77,9 @@ export default function Dashboard() {
 
   const isAnyGroupActive = activeGroups.gauges || activeGroups.weather || activeGroups.quality;
   const allSubFilters = [...subFilters.weather, ...subFilters.quality, ...subFilters.gauges];
-
-    // Create the activeFilters object for the SENSOR tab
+  const [chevronState, setChevronState] = useState<{ [key: string]: boolean }>({});
+  
+  // Create the activeFilters object for the SENSOR tab
   const sensorActiveFilters = Object.entries(activeGroups)
     .filter(([, isActive]) => isActive)
     .reduce((acc, [groupKey]) => {
@@ -285,6 +286,14 @@ export default function Dashboard() {
             <h1 className="text-3xl lg:text-4xl font-poppins font-bold text-primary">
               WELL Dashboard
             </h1>
+          {/* REMOVE ONCE REAL DATA IS AVAILABLE */}
+            {activeTab === "sampling" && (
+              <div className="flex-1 flex justify-center">
+                <div className="bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-2 rounded text-center font-semibold mx-4">
+                  NOTE: This is mock data at the moment, will be updated in the future with real data.
+                </div>
+              </div>
+            )}
             <TabsList>
               <TabsTrigger value="sensor">West Campus</TabsTrigger>
               <TabsTrigger value="sampling">Ancaster Watershed</TabsTrigger>
@@ -316,6 +325,8 @@ export default function Dashboard() {
                         setSamplingSubFilters={setSamplingSubFilters}
                         open={open}
                         setOpen={setOpen}
+                        chevronState={chevronState}
+                        setChevronState={setChevronState}
                       />
                       <Calendar
                         startDate={startDate}
@@ -391,6 +402,8 @@ export default function Dashboard() {
                             setSubFilters={setSubFilters}
                             open={open}
                             setOpen={setOpen}
+                            chevronState={chevronState}
+                            setChevronState={setChevronState}
                           />
                         </div>
                       </div>
@@ -523,6 +536,8 @@ export default function Dashboard() {
                         setSamplingSubFilters={setSamplingSubFilters}  // ✅ Correct
                         open={open}
                         setOpen={setOpen}
+                        chevronState={chevronState}
+                        setChevronState={setChevronState}
                       />
                       <Calendar
                         startDate={samplingStartDate}
@@ -602,6 +617,8 @@ export default function Dashboard() {
                             open={open}
                             setOpen={setOpen}
                             isSampling={true}
+                            chevronState={chevronState}
+                            setChevronState={setChevronState}
                           />
                         </div>
                       </div>

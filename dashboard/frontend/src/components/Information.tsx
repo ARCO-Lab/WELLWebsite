@@ -14,7 +14,7 @@ const infoMap: Record<number, string> = {
 
   // --- Sampling Tab ---
   6: "Filter sampling data by creek, select metrics like E. coli or pH, and choose specific sampling sites. Your selections here and on the map are synchronized.",
-  7: "The map displays sampling site locations, color-coded by creek. Hovering on a marker shows its name. Click markers to toggle individual sites on or off.",
+  7: "The map displays sampling site locations, color-coded by creek: orange for Ancaster Creek, yellow for Tiffany Creek, green for Sulphur Creek, black for Coldwater Creek, and white for Spencer’s Creek. Hover over a marker to see its name. Click markers to toggle individual sites on or off.",
   8: "This section shows the latest measurements for your selected sampling metrics and sites. Click any metric to view it in a fullscreen modal for detailed analysis.",
   9: "Graphs are grouped first by creek, then by individual sampling site. Click a graph to open it fullscreen and view an AI-generated analysis of water quality trends over time.",
   10: "The AI generates insights from your selected sampling data. It summarizes trends and potential issues based on the selected metrics, sites, and date range."

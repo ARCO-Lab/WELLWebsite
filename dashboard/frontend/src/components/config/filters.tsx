@@ -72,3 +72,25 @@ export const CREEK_ID_MAP = {
 export const CREEK_ID_MAP_REVERSE = Object.fromEntries(
   Object.entries(CREEK_ID_MAP).map(([k, v]) => [v, k])
 );
+
+export const SENSOR_STATION_COORDINATES = [
+  { id: "2577531", lat: 43.267100, lng: -79.928830, label: "Water Logger 1", group: "gauges" },
+  { id: "2577532", lat: 43.266390, lng: -79.929400, label: "Water Logger 2", group: "gauges" },
+  { id: "2577533", lat: 43.264720, lng: -79.928440, label: "Water Logger 3", group: "gauges" },
+  { id: "2577534", lat: 43.264140, lng: -79.928310, label: "Water Logger 4", group: "gauges" },
+  { id: "2577535", lat: 43.263850, lng: -79.929850, label: "Water Logger 5", group: "gauges" },
+  { id: "Water Quality Station", lat: 43.264700, lng: -79.928400, label: "Water Quality Sensor", group: "quality" },
+  { id: "Weather Station", lat: 43.266110, lng: -79.928660, label: "Weather Station", group: "weather" },
+];
+
+export const SAMPLING_SITE_COORDINATES = [
+  { id: "1", lat: 43.2137431, lng: -79.9233981, label: "Site 1: Falkirk Forest", group: "tiffany" },
+  { id: "2", lat: 43.2055590, lng: -79.9741699, label: "Site 2: Maple Lane Pk", group: "ancaster" },
+  { id: "3", lat: 43.2193754, lng: -80.0000820, label: "Site 3: Jerseyville Rd", group: "sulphur" },
+  { id: "4", lat: 43.2416900, lng: -80.0005500, label: "Site 4: Sulphur Springs", group: "sulphur" },
+  { id: "5", lat: 43.2389100, lng: -79.9732900, label: "Site 5: Sherman Falls", group: "ancaster" },
+  { id: "6", lat: 43.2400000, lng: -79.9600500, label: "Site 6: Tiffany Falls", group: "tiffany" },
+  { id: "8", lat: 43.2581980, lng: -79.9383952, label: "Site 8: Osler Dr", group: "coldwater" },
+  { id: "9", lat: 43.2651150, lng: -79.9429224, label: "Site 9: McMaster Lot P", group: "coldwater" },
+  { id: "10", lat: 43.2664186, lng: -79.9293879, label: "Site 10: Cootes Dr", group: "spencer" },
+];
