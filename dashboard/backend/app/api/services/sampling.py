@@ -1,23 +1,18 @@
 import pandas as pd
 from datetime import datetime
-import os
+import io
 
 class SamplingService:
-    def __init__(self):
-        # TEMPORARY: Load from local file
-        self.excel_path = os.path.join(
-            os.path.dirname(__file__),
-            "../../samplingExcel/SampleData_Weekly_Expanded_Corrected.xlsx"
-        )
-
-        # FUTURE: Replace this with a call to the Borealis API
-        # Example:
-        # response = requests.get(BOREALIS_API_URL, headers={...})
-        # df = pd.read_excel(BytesIO(response.content))
+    def __init__(self, excel_file: str):
+        # Load the Excel file from the provided path (temporary file from download_data.py)
+        self.excel_path = excel_file
+        print(f"[INFO] Loading file: {self.excel_path}")
 
     def get_sampling_data(self):
         try:
-            df = pd.read_excel(self.excel_path)
+            # Read the Excel file
+            df = pd.read_excel(self.excel_path, engine="openpyxl")
+            print("[INFO] Successfully read Excel file")
 
             # Define mappings for type and units
             metric_mappings = {
@@ -36,7 +31,9 @@ class SamplingService:
 
             records = []
             for _, row in df.iterrows():
-                date = datetime.strptime(str(row["Date"]), "%Y-%m-%d")
+                # Use pandas to_datetime for flexible date parsing
+                date = pd.to_datetime(str(row["Date"])).to_pydatetime()
+                
                 for metric_col, (metric_type, unit) in metric_mappings.items():
                     value = row[metric_col]
                     if pd.notna(value):
@@ -49,6 +46,7 @@ class SamplingService:
                             "recorded_at": date.isoformat()
                         })
 
+            print(f"[INFO] Parsed {len(records)} sampling records")
             return records
 
         except Exception as e:
@@ -56,7 +54,13 @@ class SamplingService:
             return []
 
 if __name__ == "__main__":
-    service = SamplingService()
+    # For testing: Use a local file path or the temporary file path
+    import sys
+    if len(sys.argv) < 2:
+        print("[ERROR] Please provide the path to the Excel file")
+        sys.exit(1)
+    excel_file = sys.argv[1]
+    service = SamplingService(excel_file)
     data = service.get_sampling_data()
     for record in data[:5]:  # show first few
         print(record)

@@ -18,7 +18,7 @@ load_dotenv()
 #temporarily demo
 BOREALIS_URL = os.getenv("DEMO_BOREALIS_URL")
 BOREALIS_API_TOKEN = os.getenv("BOREALIS_API_TOKEN")
-BOREALIS_PERSISTENT_ID = os.getenv("BOREALIS_PERSISTENT_ID")
+BOREALIS_WC_PERSISTENT_ID = os.getenv("DEMO_BOREALIS_WC_PERSISTENT_ID")
 SHAREPOINT_URL = os.getenv("SHAREPOINT_URL")
 SHAREPOINT_USER = os.getenv("SHAREPOINT_USER")
 SHAREPOINT_PASS = os.getenv("SHAREPOINT_PASS")
@@ -325,7 +325,7 @@ def upload_to_borealis(csv_content, csv_name):
         params = dict(description='Automated upload', categories=['Data'])
         payload = dict(jsonData=json.dumps(params))
         resp = requests.post(
-            f"{BOREALIS_URL}/api/datasets/:persistentId/add?persistentId={BOREALIS_PERSISTENT_ID}&key={BOREALIS_API_TOKEN}",
+            f"{BOREALIS_URL}/api/datasets/:persistentId/add?persistentId={BOREALIS_WC_PERSISTENT_ID}&key={BOREALIS_API_TOKEN}",
             data=payload,
             files=files
         )

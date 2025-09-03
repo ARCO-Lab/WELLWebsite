@@ -36,12 +36,6 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 python upload_data.py --year 2023 --month 7
 
-URGENT:
-dew point, relative humidty, solar radition arent being shown on older wetaher graph anymore
-- Relative Humidity/ water content in db from start
-- dew point / solar radiation only start at august 7?
-- Water Temperature stopped on august 14
-
 Large:
 Change hero section
 - responsiveness in mobile
@@ -52,7 +46,6 @@ take out whatever files (css, js, etc ) from wordpress, remove unused classes, a
 Small:
 change google maps api to new long term one without dev purposes
 openai api too under matt
-make everything use config/filters.py 
 use webhooks with flask to automate redployments on push to repo
 documentation
 check if sees/macsites/lovable is present anywhere
