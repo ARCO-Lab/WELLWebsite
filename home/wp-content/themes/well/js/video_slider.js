@@ -1,3 +1,5 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
 if (
   // !navigator.userAgent.match(
   //   /(iPod|iPhone|iPad|Android|webOS|BlackBerry|Windows Phone)/

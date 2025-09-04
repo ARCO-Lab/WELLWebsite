@@ -1,3 +1,5 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
 //changed to use a promise. had to use set timeout because json file was causing script to fail?
 //const headFootJSON = JSON.parse(headfoot_vars);
 const headFootScript = directory_uri.template_directory_uri + '/js/hfcopy.js';

@@ -8,6 +8,7 @@ import json
 import io
 import argparse
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+from config import Config
 import pandas as pd
 import csv
 import requests
@@ -19,12 +20,13 @@ from server import create_app
 
 load_dotenv()
 #temporarily demo
-BOREALIS_URL = os.getenv("DEMO_BOREALIS_URL")
-BOREALIS_API_TOKEN = os.getenv("BOREALIS_API_TOKEN")
-BOREALIS_WC_PERSISTENT_ID = os.getenv("DEMO_BOREALIS_WC_PERSISTENT_ID")
-SHAREPOINT_URL = os.getenv("SHAREPOINT_URL")
-SHAREPOINT_USER = os.getenv("SHAREPOINT_USER")
-SHAREPOINT_PASS = os.getenv("SHAREPOINT_PASS")
+BOREALIS_URL = Config.DEMO_BOREALIS_URL
+BOREALIS_API_TOKEN = Config.BOREALIS_API_TOKEN
+BOREALIS_WC_PERSISTENT_ID = Config.DEMO_BOREALIS_WC_PERSISTENT_ID
+SHAREPOINT_URL = Config.SHAREPOINT_URL
+SHAREPOINT_USER = Config.SHAREPOINT_USER
+SHAREPOINT_PASS = Config.SHAREPOINT_PASS
+
 
 # Frontend config replica
 SENSOR_FILTER_CONFIG = {

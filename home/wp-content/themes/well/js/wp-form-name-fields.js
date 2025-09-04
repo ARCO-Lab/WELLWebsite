@@ -1,3 +1,5 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
 /**
  * This file is used to fix the accessibility issue with the WP Forms name field.
  * The issue is that the name field is a single field and the label is not

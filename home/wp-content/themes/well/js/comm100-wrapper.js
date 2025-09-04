@@ -1,3 +1,5 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
 /**
  * Comm100 Live Chat Wrapper
  * This file is used to add skip link to the chat window

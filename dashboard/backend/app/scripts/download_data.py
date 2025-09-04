@@ -16,13 +16,15 @@ import tempfile
 import subprocess
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+from config import Config
 
 load_dotenv()
 
 # Environment variables
-BOREALIS_URL = os.getenv("DEMO_BOREALIS_URL")
-BOREALIS_API_TOKEN = os.getenv("BOREALIS_API_TOKEN")
-BOREALIS_AW_PERSISTENT_ID = os.getenv("BOREALIS_AW_PERSISTENT_ID")
+BOREALIS_URL = Config.DEMO_BOREALIS_URL
+BOREALIS_API_TOKEN = Config.BOREALIS_API_TOKEN
+BOREALIS_AW_PERSISTENT_ID = Config.DEMO_BOREALIS_AW_PERSISTENT_ID
+
 
 # Persistent state file to track all processed files
 STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "logs", "processed.json")

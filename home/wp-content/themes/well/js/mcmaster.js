@@ -1,3 +1,7 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
+/* This code was adapted from MacSites' WordPress Theme */
+
 /**
  *
  * @returns string selectId- The selector string

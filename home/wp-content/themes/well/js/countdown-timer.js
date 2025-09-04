@@ -1,3 +1,5 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
 (function () {
     // Initialize the count down date to last day of the year
     const countdownTimerCountdown = document.querySelector(".countdown-timer__countdown");

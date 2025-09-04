@@ -1,3 +1,5 @@
+/* This code was adapted from MacSites' WordPress Theme */
+
 !(function(c) {
     function e(a) {
         if (t[a])
