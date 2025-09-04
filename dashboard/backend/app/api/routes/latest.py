@@ -1,3 +1,6 @@
+# This file defines the /api/latest route for retrieving the most recent sensor measurement for each station and measurement type.
+# It queries the database for the latest values and updates the shared metrics cache.
+
 from flask import request, jsonify
 import pandas as pd
 from config import Config
@@ -29,6 +32,7 @@ def register_latest_route(app, latest_metrics_cache):
             )
         )
 
+        # Format query results as a list of dicts
         results = [
             {
                 "station_id": r.station_id,
@@ -41,6 +45,7 @@ def register_latest_route(app, latest_metrics_cache):
             for r in query.all()
         ]
 
+        # Update the shared cache with the latest metrics
         latest_metrics_cache["data"] = results
 
         return jsonify(results)

@@ -1,3 +1,6 @@
+// This file defines a Calendar component for selecting start and end dates with popover date pickers.
+// It uses custom Button, Popover, and Calendar components for consistent UI.
+
 import React from "react";
 import { CalendarIcon } from "lucide-react";
 import { Button } from "@/components/animations/button";

@@ -1,3 +1,6 @@
+// This file defines the Download component for exporting filtered sensor or sampling data as a CSV file.
+// It builds the CSV structure based on active filters, groups, and selected metrics/sites.
+
 import React from "react";
 import { Download as DownloadIcon } from "lucide-react";
 import { Button } from "@/components/animations/button";
@@ -128,6 +131,7 @@ const Download: React.FC<DownloadProps> = ({
   };
 
   const handleDownload = () => {
+    // Build and trigger CSV download based on current filters and data
     if (!data || data.length === 0) {
       console.warn("No data available to download.");
       return;

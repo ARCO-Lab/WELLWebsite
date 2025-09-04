@@ -1,3 +1,6 @@
+// This file defines the Next.js API route for proxying wind analysis requests to the Flask backend.
+// It forwards subtypes as query parameters and returns the backend response.
+
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

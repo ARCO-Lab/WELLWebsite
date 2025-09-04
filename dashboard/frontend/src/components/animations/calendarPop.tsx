@@ -1,3 +1,6 @@
+// This file defines a Calendar component and a custom CalendarDayButton for date selection UI.
+// It customizes the appearance and behavior of react-day-picker using Radix UI and Lucide icons.
+
 import * as React from "react"
 import {
   ChevronDownIcon,

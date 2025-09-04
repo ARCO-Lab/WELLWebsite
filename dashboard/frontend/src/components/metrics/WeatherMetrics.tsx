@@ -1,3 +1,6 @@
+// This file defines the WeatherMetrics component for displaying metric cards for weather data.
+// It supports horizontal scrolling, metric filtering, and dynamic value display.
+
 import React, { useRef, useState, useEffect } from "react";
 import { Thermometer, Droplets, Wind, CloudRain, Compass, Snowflake, Gauge, Sun, Waves, TreePine, Navigation } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/animations/card";
@@ -67,7 +70,8 @@ const WeatherMetrics = ({
   // Create infinite scrolling effect by duplicating metrics
   const infiniteMetrics = [...filteredMetrics, ...filteredMetrics, ...filteredMetrics];
 
-  useEffect(() => {
+  useEffect(() => { // Error necessary
+    // Attach horizontal scroll handler for mouse wheel
     const container = containerRef.current;
     if (!container) return;
 

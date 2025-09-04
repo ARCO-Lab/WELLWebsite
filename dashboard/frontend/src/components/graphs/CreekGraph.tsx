@@ -1,3 +1,6 @@
+// This file defines the CreekGraph component for rendering time series charts for creek sampling sites.
+// It groups data by site and displays a MetricChart for each selected site and metric.
+
 import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
 import { SAMPLING_METRICS, SAMPLING_FILTER_CONFIG } from '@/components/config/filters';

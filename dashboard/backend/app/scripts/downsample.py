@@ -1,3 +1,6 @@
+# This file provides functions for summarizing and downsampling sensor and sampling data.
+# It generates statistical summaries for weather, logger, quality, and creek sampling datasets.
+
 import numpy as np
 import pandas as pd
 from collections import defaultdict

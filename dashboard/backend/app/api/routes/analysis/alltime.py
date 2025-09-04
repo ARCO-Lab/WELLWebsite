@@ -1,3 +1,6 @@
+# This file defines the /api/analysis/alltime route for analyzing environmental sensor data.
+# It handles filtering, formatting, and summarizing logger, weather, and quality data for frontend consumption.
+
 from flask import request, jsonify
 import json
 
@@ -16,18 +19,22 @@ LOGGER_CONFIG = {
 def register_analysis_alltime_route(app, latest_summaries, client):
     @app.route("/api/analysis/alltime", methods=["GET"])
     def analyze_data():
+        # Get analysis type and subtypes from query parameters
         analysis_type = request.args.get("type")
         subtypes = request.args.getlist("subtypes")
 
+        # Validate analysis type
         if analysis_type not in ["weather", "logger", "quality"]:
             return jsonify({"error": "Invalid or missing type. Must be one of: weather, logger, quality."}), 400
 
+        # Retrieve the latest summary data for the requested type
         summary = latest_summaries["data"].get(analysis_type)
         if not summary:
             return jsonify({"error": f"No summary data available for {analysis_type}"}), 404
 
         station_context = ""
         if analysis_type == "logger":
+            # Prepare logger IDs and metrics
             all_logger_ids = list(LOGGER_CONFIG['sites'].keys())
             all_logger_metrics = LOGGER_CONFIG['metrics']
             
@@ -60,19 +67,22 @@ def register_analysis_alltime_route(app, latest_summaries, client):
             station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."
         
         elif subtypes:
-            # Original logic for weather and quality
+            # Filter summary for weather and quality types based on subtypes
             summary = {
                 k: v for k, v in summary.items()
                 if k.lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
             }
 
+        # If no data after filtering, return a message
         if not summary:
             return jsonify({"analysis": "No data available for the selected filters. Please select at least one logger or metric."})
 
+        # Prepare data for prompt (truncate if too long)
         raw_data = json.dumps(summary)
         if len(raw_data) > 4000:
             raw_data = raw_data[:4000]
 
+        # Build prompt for LLM analysis
         prompt = f"""
             You are an expert environmental data analyst. {station_context} Analyze the provided sensor data and identify:
 
@@ -104,6 +114,7 @@ def register_analysis_alltime_route(app, latest_summaries, client):
             {raw_data}
         """
 
+        # Call the LLM client to get analysis
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],

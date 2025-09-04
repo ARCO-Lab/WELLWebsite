@@ -1,3 +1,6 @@
+// This file defines the CreekMetrics component for displaying metric cards for creek sampling sites.
+// It supports horizontal scrolling, site/metric filtering, and dynamic value display.
+
 import React, { useRef, useState, useEffect, useMemo } from "react";
 import { Bug, Biohazard, Cloudy, FlaskConical, Zap, Atom, Flame, Leaf } from "lucide-react";
 import { Card, CardContent } from "@/components/animations/card";
@@ -90,12 +93,12 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
     if (!container) return;
 
     const handleScroll = (e: WheelEvent) => {
-      // This check is important: only scroll if the component is paused (hovered)
+      // Only scroll if the component is paused (hovered)
       if (!isPaused) return;
       
       e.preventDefault();
       setScrollPosition(prev => {
-        // 1. Using e.deltaX for standard horizontal scroll, multiplied for sensitivity
+        // Use e.deltaX for horizontal scroll, multiplied for sensitivity
         const newPos = prev + e.deltaX * 0.5; 
         const maxScroll = metricCombinations.length * 272;
         return Math.max(0, Math.min(newPos, maxScroll));
@@ -104,7 +107,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
 
     container.addEventListener('wheel', handleScroll, { passive: false });
     return () => container.removeEventListener('wheel', handleScroll);
-  }, [metricCombinations.length, isPaused]); // Added isPaused to dependency array
+  }, [metricCombinations.length, isPaused]);
 
   if (loading) {
     return (
@@ -123,7 +126,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
           ref={containerRef}
           className="relative overflow-hidden"
           onMouseEnter={() => setIsPaused(true)}
-          // 2. Reset scroll position on mouse leave
+          // Reset scroll position on mouse leave
           onMouseLeave={() => {
             setIsPaused(false);
             setScrollPosition(0);

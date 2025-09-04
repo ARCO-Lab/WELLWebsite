@@ -1,3 +1,6 @@
+// This file defines the Next.js API route for proxying sensor data requests to the Flask backend.
+// It translates frontend group toggles to backend group_type filters and forwards date range parameters.
+
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

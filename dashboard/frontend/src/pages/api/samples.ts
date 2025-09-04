@@ -1,3 +1,6 @@
+// This file defines the Next.js API route for proxying creek sampling data requests to the Flask backend.
+// It forwards all query parameters and disables caching to ensure fresh data.
+
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

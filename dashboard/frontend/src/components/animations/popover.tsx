@@ -1,3 +1,6 @@
+// This file defines Popover UI components using Radix UI primitives for displaying floating content.
+// Components include Popover, PopoverTrigger, and PopoverContent.
+
 import * as React from "react"
 import * as PopoverPrimitive from "@radix-ui/react-popover"
 
@@ -11,6 +14,7 @@ const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
 >(({ className, align = "center", sideOffset = 4, ...props }, ref) => (
+  // Content area for the popover, with animation and styling
   <PopoverPrimitive.Portal>
     <PopoverPrimitive.Content
       ref={ref}

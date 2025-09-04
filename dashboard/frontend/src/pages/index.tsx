@@ -1,3 +1,6 @@
+// This file defines the main dashboard page for the WELL project, including sensor and sampling tabs, filters, graphs, metrics, map, and AI analysis.
+// It manages all dashboard state, handles modal logic, and coordinates data fetching and UI layout.
+
 import React, { useState, useEffect } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
@@ -21,7 +24,7 @@ import useFilteredData from "@/hooks/useFilteredData";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
-import { SAMPLING_METRICS, SENSOR_FILTER_CONFIG } from "@/components/config/filters";
+import { SENSOR_FILTER_CONFIG } from "@/components/config/filters";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 type ActiveFilters = { [key: string]: string[] };
@@ -138,7 +141,7 @@ export default function Dashboard() {
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
     
   const cachedSamplingMetrics = {
-    creeks: <CreekMetrics key="creeks" subFilters={samplingSubFilters} metrics={recentSamples} loading={recentSamplesLoading} />
+    creeks: <CreekMetrics key="creeks" subFilters={samplingSubFilters} /* Error necessary */ metrics={recentSamples} loading={recentSamplesLoading} />
   };
   
 
@@ -273,24 +276,15 @@ export default function Dashboard() {
     setIsModalOpen(false);
   };
 
-  console.log("Index debug", {
-  activeTab,
-  activeGroups,
-  subFilters,
-  activeCreeks,
-  samplingSubFilters,
-  samplingStartDate,
-  samplingEndDate
-});
-
   return (
     <>
 
+      {/* Header is hidden in iframe mode */}
       {!inIframe && <Header />}
       <main className="min-h-screen bg-background text-foreground">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
-          {/* Title and Tab Triggers */}
+          {/* Title, tab triggers, and warning for sampling tab */}
           <div className="col-span-full mb-6 flex justify-between items-center">
             <h1 className="text-3xl lg:text-4xl font-poppins font-bold text-primary">
               WELL Dashboard
@@ -322,6 +316,7 @@ export default function Dashboard() {
                       <Information id={1} />
                     </h2>
                     <div className="space-y-4">
+                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={activeGroups}
@@ -546,6 +541,7 @@ export default function Dashboard() {
                       <Information id={6} />
                     </h2>
                     <div className="space-y-4">
+                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={{}}  // Empty object for sampling mode

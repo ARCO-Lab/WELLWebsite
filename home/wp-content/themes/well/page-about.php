@@ -1,4 +1,6 @@
 <?php
+// This is the "About Us" page template for the WELL WordPress theme.
+// It displays information about WELL, its team, and its activities.
 
 get_header();
 
@@ -87,7 +89,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Watershed" src="/wp-content/uploads/2025/09/TeachingPhoto.jpeg" class="img-fluid">
+                  <img alt="Ancaster Watershed" src="/wp-content/uploads/2025/09/InstallationPhoto1.jpeg" class="img-fluid">
                   </div>
                 </figure>
               </div>

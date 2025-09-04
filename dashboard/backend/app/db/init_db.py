@@ -1,4 +1,6 @@
-# backend/app/database/init_db.py
+# This script initializes the database tables for the WELL backend using SQLAlchemy.
+# It imports the Flask app and models, then creates all tables in the current app context.
+
 import sys
 import pathlib
 

@@ -1,3 +1,7 @@
+<?php
+// This section renders the "Latest News" carousel for the WELL WordPress theme.
+// It queries and displays the latest 6 blog posts as cards in a Flickity carousel.
+?>
 <section class="dynamic-content post white my-5">
   <div class="container">
     <h2 class="text-left">Latest News</h2>
@@ -5,6 +9,7 @@
       <div class="col-md-12 col-sm-10 col-xs-10 mx-auto">
         <div class="flickity-carousel multi-carousel multi-carousel-eq-height" data-flickity='{ "cellAlign": "left", "contain": true, "groupCells": "true" }'>
           <?php
+          // Query for the latest 6 posts
           $news_query = new WP_Query([
             'post_type' => 'post',
             'posts_per_page' => 6, // Show latest 6 posts

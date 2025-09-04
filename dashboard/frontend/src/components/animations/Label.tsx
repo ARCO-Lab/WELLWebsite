@@ -1,3 +1,6 @@
+// This file defines a styled Label component using Radix UI primitives for form labeling.
+// It ensures consistent label styling and accessibility across the app.
+
 "use client"
 
 import * as React from "react"
@@ -9,6 +12,7 @@ function Label({
   className,
   ...props
 }: React.ComponentProps<typeof LabelPrimitive.Root>) {
+  // Renders a label with custom styles and accessibility features
   return (
     <LabelPrimitive.Root
       data-slot="label"

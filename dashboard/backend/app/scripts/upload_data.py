@@ -1,3 +1,6 @@
+# This script exports WELL sensor data for a given month to CSV and uploads it to Borealis Dataverse.
+# It replicates frontend CSV formatting and supports both manual and automatic (last month) export.
+
 import os
 import sys
 import pathlib

@@ -1,3 +1,6 @@
+# This script runs scheduled jobs for API data injection, data download, and data upload.
+# It manages logging, thread scheduling, and invokes other scripts as subprocesses.
+
 import schedule
 import time
 import sys
@@ -207,6 +210,7 @@ def run_upload_scheduler():
         time.sleep(60)
 
 if __name__ == "__main__":
+    # Main entry point: starts all scheduler threads and logging
     # Ensure log directories exist
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
     os.makedirs(os.path.dirname(download_log_file_path), exist_ok=True)

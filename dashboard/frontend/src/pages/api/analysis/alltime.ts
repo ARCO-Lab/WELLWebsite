@@ -1,3 +1,6 @@
+// This file defines the Next.js API route for proxying 'alltime' analysis requests to the Flask backend.
+// It maps frontend group types to backend types and forwards query parameters.
+
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

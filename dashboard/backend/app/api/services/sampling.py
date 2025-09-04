@@ -1,3 +1,6 @@
+# This file defines the SamplingService class for loading and parsing creek/point sampling data from an Excel file.
+# It maps columns to standardized measurement types and units for downstream processing.
+
 import pandas as pd
 from datetime import datetime
 import io

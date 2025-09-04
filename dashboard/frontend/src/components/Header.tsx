@@ -1,7 +1,11 @@
+// This file defines the Header component for the WELL dashboard, including branding, navigation, and project titles.
+// It displays McMaster and WELL logos, project titles, and a navigation bar.
+
 import Image from "next/image";
 import Link from "next/link";
 
 const Header = () => {
+  // Navigation items for the main nav bar
   const navItems = [
     { label: "Home", href: "/" },
     { label: "Dashboard", href: "/dashboard", active: true },
@@ -18,6 +22,7 @@ const Header = () => {
           <div className="flex items-center justify-center h-24 relative">
             {/* Left side: Logos */}
             <div className="absolute left-0 flex items-center space-x-6">
+              {/* McMaster logo and WELL logo */}
               <a href="https://www.mcmaster.ca" className="flex items-center">
                 <Image
                   src="/logos/mcmaster-logo.png"
@@ -40,6 +45,7 @@ const Header = () => {
 
             {/* Center: Titles */}
             <div className="text-center w-full">
+              {/* School and project titles with links */}
               <h2 className="text-sm text-primary">
                 <a href="https://sees.mcmaster.ca/" className="hover:text-primary transition-colors">
                   School of Earth, Environment & Society
@@ -60,6 +66,7 @@ const Header = () => {
         <div className="container mx-auto px-4">
           <div className="flex items-center justify-center h-12">
             <div className="flex w-full max-w-4xl">
+              {/* Navigation links */}
               {navItems.map((item) => (
                 <a
                   key={item.label}

@@ -1,3 +1,7 @@
+<?php
+// This section renders the homepage hero carousel for the WELL WordPress theme.
+// It displays rotating banners with images and calls to action for WELL, Dashboard, and News.
+?>
 <banner>
   <section class="carousel">
     <div class="hero-carousel" data-flickity='{ "cellAlign": "left", "contain": true, "adaptiveHeight": true, "pageDots": true, "autoPlay": 15000, "wrapAround": true }'>

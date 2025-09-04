@@ -1,3 +1,6 @@
+// This file defines the FilterPanel component for rendering sensor and sampling filter groups with checkboxes and collapsible sections.
+// It manages filter state, group toggling, and sub-filter logic for the dashboard UI.
+
 import React from "react";
 import { Checkbox } from "@/components/animations/Checkbox";
 import { Label } from "@/components/animations/Label";
@@ -38,12 +41,14 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
   chevronState, setChevronState
 }) => {
 
+  // Handles chevron toggle for collapsible groups
   const handleChevronClick = (groupKey: string) => {
     const newChevronState = !chevronState[groupKey];
     setChevronState(prev => ({ ...prev, [groupKey]: newChevronState }));
     setOpen(prev => ({ ...prev, [groupKey]: newChevronState }));
   };
 
+  // Handles toggling the main group checkbox (select/deselect all)
   const handleMainToggle = (groupKey: string) => {
     const isSensor = activeTab === 'sensor';
     const setActive = isSensor ? setActiveGroups : setActiveCreeks;
@@ -90,6 +95,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
     }
   };
 
+  // Handles toggling individual sub-filters (metrics, items, "All" toggles)
   const handleSubToggle = (groupKey: string, value: string) => {
     const isSensor = activeTab === 'sensor';
     const setSubs = isSensor ? setSubFilters : setSamplingSubFilters;
@@ -162,6 +168,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
     });
   };
 
+  // Renders a filter group with metrics and item checkboxes
   const renderFilterGroup = (groupKey: string, config: any, subs: string[]) => {
     // Use type-safe property access
     const items = 'items' in config && config.items 
@@ -240,15 +247,6 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
     );
   };
   
-  console.log("FilterPanel debug", {
-    activeTab,
-    activeGroups,
-    subFilters,
-    activeCreeks,
-    samplingSubFilters,
-    open
-  });
-
   return (
     <div className="space-y-4">
       {activeTab === 'sensor' && Object.entries(SENSOR_FILTER_CONFIG).map(([key, config]) =>

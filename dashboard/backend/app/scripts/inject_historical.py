@@ -1,3 +1,6 @@
+# This script fetches and injects all historical weather, logger, and water quality data into the database.
+# It clears existing SensorMeasurement records, retrieves data in chunks, parses, and inserts them in timestamp order.
+
 import os, sys, pathlib
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
@@ -43,6 +46,7 @@ START_DATE = "2025-05-08 11:00:00"
 END_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def parse_weather_entry(entry, logger_id):
+    # Parse a single weather data entry into a SensorMeasurement object
     measurement_type = entry.get("sensor_measurement_type")
     sensor_sn = entry.get("sensor_sn")
     if measurement_type == "Temperature":
@@ -63,6 +67,7 @@ def parse_weather_entry(entry, logger_id):
     )
 
 def inject_all_weather_history():
+    # Fetch and parse all historical weather data
     logger_id = Config.HOBO_LOGGERS.split(",")[0]
     entries = weather_service.get_weather_data(START_DATE, END_DATE)
     all_weather = []
@@ -77,6 +82,7 @@ def inject_all_weather_history():
 
 # 4. Add a new function to parse logger entries
 def parse_logger_entry(entry):
+    # Parse a single logger data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn", "")
     sn_parts = sensor_sn.split('-')
     if len(sn_parts) != 2:
@@ -123,6 +129,7 @@ def parse_logger_entry(entry):
 
 # 5. Add a new function to fetch and process all logger history
 def inject_all_logger_history():
+    # Fetch and parse all historical logger data
     entries = logger_service.get_logger_data(START_DATE, END_DATE)
     all_logger_data = []
     for entry in entries:
@@ -137,6 +144,7 @@ def inject_all_logger_history():
 
 
 def parse_quality_entry(entry, station_id):
+    # Parse a single quality data entry into a list of SensorMeasurement objects
     timestamp = datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     results = []
     for reading in entry["values"]:
@@ -158,6 +166,7 @@ def parse_quality_entry(entry, station_id):
     return results
 
 def inject_all_quality_history():
+    # Fetch and parse all historical quality data in 90-day chunks
     station_id = Config.WQ_DEVICE_ID
     all_quality = []
     
@@ -199,6 +208,7 @@ def inject_all_quality_history():
     return all_quality
 
 def inject_all_history():
+    # Main function: clears DB, fetches, parses, and inserts all historical data
     with app.app_context():
         print("[INFO] Clearing existing SensorMeasurement records ...")
         SensorMeasurement.query.delete()

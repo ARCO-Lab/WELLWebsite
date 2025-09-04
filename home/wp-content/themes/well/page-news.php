@@ -1,4 +1,7 @@
 <?php
+// This is the "News" page template for the WELL WordPress theme.
+// It displays a list of recent news posts in a card layout.
+
 get_header();
 ?>
 <nav aria-label="breadcrumb" class="breadcrumb-nav">

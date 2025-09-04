@@ -1,3 +1,6 @@
+// This file defines the MetricChart component for rendering time series sensor data using Highcharts.
+// It supports multiple Y-axes for different units, dynamic series, and custom styling.
+
 import React, { useEffect, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
@@ -42,6 +45,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
   useEffect(() => {
     if (!data || loading) return;
 
+    // Build chart options and series from data and subFilters
     const seriesMap: Map<string, { name: string; unit: string; data: [number, number][] }> = new Map();
     const unitMap: Map<string, number> = new Map(); // To track the index of each unique unit
 
@@ -135,6 +139,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
 
   return (
     <div className="relative">
+      {/* Show error or loading state if needed */}
       {error && <div className="text-red-500">Error: {error.message}</div>}
       {loading && <div className="text-center"></div>}
       <HighchartsReact

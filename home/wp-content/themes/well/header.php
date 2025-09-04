@@ -1,11 +1,6 @@
 <?php
-/**
- * The header for the McMaster WELL theme.
- *
- * This file contains the <head> section and the site header with logo and navigation.
- *
- * @package McMaster_WELL_Theme
- */
+// This file renders the HTML <head> and site header for the WELL WordPress theme.
+// It includes meta tags, favicon links, accessibility skip links, McMaster and site navigation menus.
 ?>
 <!DOCTYPE html>
 <html <?php language_attributes(); ?>>
@@ -41,14 +36,74 @@
             </a>
             <div id="mcmaster-header__title">
                 <h2 class="mcmaster-header__department"><a href="https://sees.mcmaster.ca/">School of Earth, Environment & Society</a></h2>
-                <h1 class="mcmaster-header__header-title"><a href="<?php echo esc_url( home_url( '/' ) ); ?>">Watershed Ecosystems Living Lab</a></h1>
+                <h1 class="mcmaster-header__header-title"><a href="<?php echo esc_url( home_url( '/' ) ); ?>">Watershed and Ecosystems Living Lab</a></h1>
             </div>
         </div>
         <div id="navLinks" style="display: flex; align-items: center; width:160px; z-index:1200; transition: width 0s; margin-top: 24px;">
-            <a href="https://www.mcmaster.ca" id="mcmaster-search" class="nav-item"><span></span><span class="sr-only">Search button</span></a>
+            <a href="#" id="mcmaster-search" class="nav-item"><span></span><span class="sr-only">Search button</span></a>
             <a href="#" id="mcmenu" class="nav-item" role="button" aria-controls="mac_navigation" aria-expanded="false"><span></span><span class="sr-only">Menu button</span></a>
         </div>
     </header>
+
+    <!-- Search Overlay -->
+    <div id="mcmaster-search-overlay" aria-label="Site Search and Quick Links" role="dialog" style="display: none;">
+        <div class="search-container">
+            <button class="search-close" aria-label="Close search">&times;</button>
+            <h2>Search McMaster</h2>
+            <form role="search" method="get" action="<?php echo esc_url( home_url( '/' ) ); ?>">
+                <input type="search" name="s" class="search-input" placeholder="Search for pages, people, or resources..." value="<?php echo get_search_query(); ?>" />
+                <button type="submit" class="search-submit">Search</button>
+            </form>
+            <div class="search-results"></div>
+        </div>
+    </div>
+
+    <!-- Navigation Overlay -->
+    <div class="nav-overlay"></div>
+    
+    <!-- Navigation Menu -->
+    <ul id="mcmaster-nav" role="menubar" aria-label="McMaster menu" style="display: block; overflow-y: scroll;">
+        <li class="nav-header">
+            <span>McMaster Menu</span>
+            <button class="nav-close" aria-label="Close menu">&times;</button>
+        </li>
+        <li class="nav-content">
+            <ul role="none">
+                <?php 
+                $nav_menu = well_get_mcmaster_nav_menu();
+                foreach ($nav_menu as $item): 
+                    $expanded = isset($item['expanded']) && $item['expanded'] ? 'true' : 'false';
+                    $submenu_class = $expanded === 'true' ? 'sub-menu active' : 'sub-menu';
+                ?>
+                <li role="none">
+                    <a href="<?php echo esc_url($item['url']); ?>" 
+                       data-dparent="<?php echo esc_attr($item['id']); ?>" 
+                       aria-expanded="<?php echo $expanded; ?>" 
+                       aria-controls="<?php echo esc_attr($item['id']); ?>" 
+                       class="collapsed" 
+                       tabindex="0" 
+                       role="menuitem"><?php echo esc_html($item['title']); ?></a>
+                    
+                    <?php if (!empty($item['children'])): ?>
+                    <ul id="<?php echo esc_attr($item['id']); ?>" 
+                        aria-expanded="<?php echo $expanded; ?>" 
+                        aria-label="<?php echo esc_attr($item['title']); ?>" 
+                        role="menu" 
+                        class="<?php echo $submenu_class; ?>">
+                        <?php foreach ($item['children'] as $child): ?>
+                        <li role="none">
+                            <a href="<?php echo esc_url($child['url']); ?>" 
+                               role="menuitem"><?php echo esc_html($child['title']); ?></a>
+                        </li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <?php endif; ?>
+                </li>
+                <?php endforeach; ?>
+            </ul>
+        </li>
+    </ul>
+
     <nav id="site-navbar" class="navbar navbar-expand-lg navbar-dark navbar-site nav-fill navbar-lg level-three">
         <div class="container">
             <button class="navbar-toggler site-toggler collapsed" type="button" data-toggle="collapse" data-target="#siteMenu" aria-controls="siteMenu" aria-expanded="false" aria-label="Toggle navigation">

@@ -1,3 +1,6 @@
+// This file defines the QualityMetrics component for displaying metric cards for water quality data.
+// It supports horizontal scrolling, metric filtering, and dynamic value display.
+
 import React, { useRef, useState, useEffect } from "react";
 import { Beaker, Eye, Waves, Zap, Droplets, FlaskConical, Activity, Thermometer } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/animations/card";
@@ -58,7 +61,8 @@ const QualityMetrics = ({
   // Create infinite scrolling effect by duplicating metrics
   const infiniteMetrics = [...filteredMetrics, ...filteredMetrics, ...filteredMetrics];
 
-  useEffect(() => {
+  useEffect(() => { // Error Necessary
+    // Attach horizontal scroll handler for mouse wheel
     const container = containerRef.current;
     if (!container) return;
 

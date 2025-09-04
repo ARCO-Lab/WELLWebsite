@@ -1,3 +1,6 @@
+// This file defines the useFilteredData React hook for fetching and caching filtered sensor data from the API.
+// It manages loading, error, and caching state for efficient data retrieval.
+
 import { useEffect, useState, useRef } from "react";
 
 export interface SensorData {
@@ -35,12 +38,14 @@ const useFilteredData = (
             setLoading(true);
             setError(null);
 
+            // Normalize dates to cover the full selected range
             const start = new Date(startDate);
             start.setHours(0, 0, 0, 0); // Normalize to start of day
 
             const end = new Date(endDate);
             end.setHours(23, 59, 59, 999); // Normalize to end of day
 
+            // Build cache key based on date range and group selection
             const params = new URLSearchParams();
             params.append("start", start.toISOString());
             params.append("end", end.toISOString());
@@ -56,6 +61,7 @@ const useFilteredData = (
             }
 
             try {
+              // Fetch filtered sensor data from the backend API
               const res = await fetch(`/api/data?${params.toString()}`);
               if (!res.ok) throw new Error(`Failed to fetch sensor data: ${res.status}`);
 

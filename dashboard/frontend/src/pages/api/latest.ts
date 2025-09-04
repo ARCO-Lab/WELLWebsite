@@ -1,7 +1,11 @@
+// This file defines the Next.js API route for proxying requests to fetch the latest sensor metrics from the Flask backend.
+// It simply forwards the request and returns the backend response.
+
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     try {
+        // Forward the request to the Flask backend's /api/latest endpoint
         const flaskUrl = `${process.env.FLASK_API_URL}/api/latest`;
         const response = await fetch(flaskUrl);
 

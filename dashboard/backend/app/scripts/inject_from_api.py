@@ -1,3 +1,6 @@
+# This script fetches new weather, logger, and water quality data from external APIs and injects them into the database.
+# It handles parsing, deduplication, and chunked retrieval for large datasets.
+
 import os
 import sys
 import pathlib
@@ -42,6 +45,7 @@ LOGGER_CONFIG = {
 
 
 def parse_weather_entry(entry, logger_id):
+    # Parse a single weather data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn")
     measurement_type = entry.get("sensor_measurement_type")
     value = float(entry.get("value", 0))
@@ -65,6 +69,7 @@ def parse_weather_entry(entry, logger_id):
     )
 
 def parse_logger_entry(entry):
+    # Parse a single logger data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn", "")
     sn_parts = sensor_sn.split('-')
     if len(sn_parts) != 2:
@@ -107,6 +112,7 @@ def parse_logger_entry(entry):
     return measurement
 
 def parse_quality_entry(entry, station_id):
+    # Parse a single quality data entry into a list of SensorMeasurement objects
     timestamp = datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     results = []
     for reading in entry["values"]:
@@ -128,6 +134,7 @@ def parse_quality_entry(entry, station_id):
     return results
 
 def inject_new_weather_data(return_only=False):
+    # Fetch and insert new weather data into the database
     logger_id = Config.HOBO_LOGGERS.split(",")[0]
 
     # Get the most recent timestamp for weather data
@@ -166,6 +173,7 @@ def inject_new_weather_data(return_only=False):
 
 
 def inject_new_quality_data(return_only=False):
+    # Fetch and insert new water quality data into the database (with chunking)
     station_id = Config.WQ_DEVICE_ID
 
     latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
@@ -214,6 +222,7 @@ def inject_new_quality_data(return_only=False):
         return quality_data
 
 def inject_new_logger_data(return_only=False):
+    # Fetch and insert new logger data into the database
     latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
         group_type="Logger"
     ).order_by(SensorMeasurement.recorded_at.desc()).first()
@@ -249,6 +258,7 @@ def inject_new_logger_data(return_only=False):
     print(f"[INFO] Inserted {inserted} new logger records.")
 
 def inject_all_new_data():
+    # Inject all new weather, quality, and logger data in a single transaction
     with app.app_context():
         weather_data = inject_new_weather_data(return_only=True)
         quality_data = inject_new_quality_data(return_only=True)

@@ -1,3 +1,6 @@
+// This file defines the useSampledData React hook for fetching and caching filtered creek sampling data from the API.
+// It manages loading, error, and caching state, and only fetches data when dates and at least one creek are selected.
+
 import { useEffect, useState, useRef } from "react";
 
 export interface SampledData {
@@ -30,15 +33,13 @@ const useSampledData = (
 
   useEffect(() => {
     const fetchData = async () => {
-      // 1. Guard against null dates AND no active creeks. This is the key.
-      // If there are no dates OR no active creeks, do absolutely nothing.
+      // Guard against null dates AND no active creeks. Only fetch if both are set.
       const hasActiveCreeks = Object.values(activeCreeks).some(v => v);
       if (!startDate || !endDate || !hasActiveCreeks) {
         setData([]); // Ensure data is cleared if conditions aren't met
         return;
       }
 
-      // 2. Only now is it safe to proceed.
       setLoading(true);
       setError(null);
 

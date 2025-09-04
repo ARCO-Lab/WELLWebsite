@@ -1,5 +1,6 @@
 <?php
-// filepath: c:\Users\lukhs\Documents\well\home\wp-content\themes\well\functions.php
+// This file contains theme setup, asset loading, widget registration, and helper functions for the WELL WordPress theme.
+// It registers navigation menus, enqueues CSS/JS, sets up widget areas, and provides utility functions.
 
 /**
  * Register navigation menus and load the Navwalker.
@@ -16,7 +17,6 @@ function well_theme_setup() {
 }
 // This hook runs our setup function as WordPress loads.
 add_action( 'after_setup_theme', 'well_theme_setup' );
-
 
 /**
  * This function is the proper WordPress way to load all of our theme's
@@ -51,10 +51,17 @@ function well_theme_enqueue_assets() {
         );
     }
 
+    // 3. Enqueue McMaster header styles
+    wp_enqueue_style(
+        'well-mcmaster-header',
+        get_template_directory_uri() . '/css/mcmaster-header.css',
+        ['well-google-fonts'],
+        '1.0'
+    );
 
     // --- JAVASCRIPT (.js files) ---
 
-    // 3. Enqueue all the theme's JS files from the /js/ folder.
+    // 4. Enqueue all the theme's JS files from the /js/ folder.
     // We list 'jquery' as a dependency since many old themes use it.
     $js_files = [
         'popper.min', 'theme.min', 'ekko-lightbox.min', 'header_footer',
@@ -71,6 +78,15 @@ function well_theme_enqueue_assets() {
             true // Load the script in the footer
         );
     }
+
+    // 5. Enqueue McMaster header JavaScript
+    wp_enqueue_script(
+        'well-mcmaster-header-js',
+        get_template_directory_uri() . '/js/mcmaster-header.js',
+        ['jquery'],
+        '1.0',
+        true
+    );
 }
 
 // This is the WordPress "hook" that tells WordPress to run our function at the right time.
@@ -122,5 +138,51 @@ function well_enqueue_flickity_assets() {
     );
 }
 add_action('wp_enqueue_scripts', 'well_enqueue_flickity_assets');
+
+/**
+ * Add McMaster navigation menu items (as used in the original site)
+ */
+function well_get_mcmaster_nav_menu() {
+    return array(
+        array(
+            'title' => 'McMaster',
+            'url' => 'https://www.mcmaster.ca',
+            'id' => 'sub-macmain',
+            'children' => array(
+                array('title' => 'Overview', 'url' => 'https://www.mcmaster.ca/opr/html/academics/main/academics.html')
+            )
+        ),
+        array(
+            'title' => 'Discover McMaster',
+            'url' => '#',
+            'id' => 'sub-discover-mcmaster',
+            'children' => array(
+                array('title' => 'About McMaster', 'url' => 'https://www.mcmaster.ca/about'),
+                array('title' => 'Campus Tours', 'url' => 'https://www.mcmaster.ca/visit'),
+                array('title' => 'News & Events', 'url' => 'https://dailynews.mcmaster.ca')
+            )
+        ),
+        array(
+            'title' => 'Academics',
+            'url' => '#',
+            'id' => 'sub-academics',
+            'children' => array(
+                array('title' => 'Overview', 'url' => 'https://www.mcmaster.ca/opr/html/academics/main/academics.html'),
+                array('title' => 'Undergraduate Programs', 'url' => 'https://future.mcmaster.ca'),
+                array('title' => 'Graduate Programs', 'url' => 'https://gs.mcmaster.ca')
+            )
+        ),
+        array(
+            'title' => 'Library',
+            'url' => '#',
+            'id' => 'sub-library',
+            'expanded' => true,
+            'children' => array(
+                array('title' => 'Home', 'url' => 'https://library.mcmaster.ca'),
+                array('title' => 'Services', 'url' => 'https://library.mcmaster.ca/services')
+            )
+        )
+    );
+}
 
 ?>

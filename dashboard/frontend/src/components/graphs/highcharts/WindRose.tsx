@@ -1,3 +1,6 @@
+// This file defines the WindRose component for rendering wind rose diagrams using Highcharts.
+// It bins wind speed and direction data, then displays frequency distributions in a polar column chart.
+
 import React, { useEffect, useRef } from 'react';
 import Highcharts from 'highcharts/highcharts-more';
 import HighchartsReact from 'highcharts-react-official';
@@ -38,6 +41,7 @@ interface WindRoseSeries {
 }
 
 function getWindRoseSeries(data: WindDataPoint[]): WindRoseSeries[] {
+  // Bins wind data into direction and speed categories for charting
   const counts: number[][] = speedBins.map(() => Array(directions16.length).fill(0));
   let total = 0;
 

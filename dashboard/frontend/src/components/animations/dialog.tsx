@@ -1,3 +1,6 @@
+// This file defines Dialog UI components using Radix UI primitives for modal dialogs.
+// Components include Dialog, DialogTrigger, DialogContent, DialogHeader, DialogFooter, etc.
+
 import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
@@ -16,6 +19,7 @@ const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
 >(({ className, ...props }, ref) => (
+  // Overlay for the dialog background
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
@@ -31,6 +35,7 @@ const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> 
 >(({ className, children, ...props }, ref) => (
+  // Main content area for the dialog, includes close button
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -55,6 +60,7 @@ const DialogHeader = ({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
+  // Header section for dialog, typically for title and description
   <div
     className={cn(
       "flex flex-col space-y-1.5 text-center sm:text-left",
@@ -69,6 +75,7 @@ const DialogFooter = ({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
+  // Footer section for dialog, typically for actions
   <div
     className={cn(
       "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2",
@@ -83,6 +90,7 @@ const DialogTitle = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
+  // Title for the dialog
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
@@ -98,6 +106,7 @@ const DialogDescription = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Description>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
 >(({ className, ...props }, ref) => (
+  // Description text for the dialog
   <DialogPrimitive.Description
     ref={ref}
     className={cn("text-sm text-muted-foreground", className)}

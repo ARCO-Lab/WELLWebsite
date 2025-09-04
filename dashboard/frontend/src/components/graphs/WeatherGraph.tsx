@@ -1,3 +1,6 @@
+// This file defines the WeatherGraph component for rendering weather data as time series or wind rose charts.
+// It supports tab switching between graph and wind rose views, and handles wind data pairing for visualization.
+
 import dynamic from 'next/dynamic';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
@@ -55,8 +58,10 @@ const WeatherGraph = ({
   setWeatherTab,
   inModal = false,
 }: Props) => {
+  // Map frontend "Rainfall" to backend "Rain"
   const mappedWeather = subFilters.weather.map(m => m === "Rainfall" ? "Rain" : m);
 
+  // Determine if windrose can be shown
   const hasWindSpeed = mappedWeather.includes("Wind Speed");
   const hasGustSpeed = mappedWeather.includes("Gust Speed");
   const hasWindDirection = mappedWeather.includes("Wind Direction");
@@ -83,7 +88,7 @@ const WeatherGraph = ({
         </Tabs>
       )}
 
-      {/* The rest of the content remains the same */}
+      {/* Render wind rose or metric chart based on tab and filters */}
       {weatherTab === "windrose" && canShowWindrose
         ? (
           <div className={`flex w-full ${hasWindSpeed && hasGustSpeed ? "flex-row gap-4" : "flex-col"}`}>

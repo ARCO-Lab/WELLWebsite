@@ -1,3 +1,7 @@
+# This file defines the /api/analysis/complete route for comprehensive analysis of environmental sensor and sampling data.
+# It dynamically selects and filters data from multiple monitoring systems (loggers, weather, quality, and creek sampling),
+# builds a summary, and generates a structured analysis using an LLM.
+
 from flask import request, jsonify
 import json
 
@@ -101,6 +105,7 @@ SAMPLING_PROMPT_TEMPLATE = """
 def register_analysis_complete_route(app, latest_summaries, latest_sampling_summaries, client):
     @app.route("/api/analysis/complete", methods=["GET"])
     def analyze_complete_data():
+        # Get active groups and dashboard tab from query parameters
         active_groups = request.args.getlist("type")
         dashboard_tab = request.args.get("dashboardTab", "sensors")
         
@@ -160,9 +165,11 @@ def register_analysis_complete_route(app, latest_summaries, latest_sampling_summ
                     if filtered_data:
                         final_summary[group.title()] = filtered_data
 
+        # If no data after filtering, return a message
         if not final_summary:
             return jsonify({"analysis": "No data available for the selected filters. Please select at least one group or metric."})
 
+        # Prepare data for prompt (truncate if too long)
         raw_data = json.dumps(final_summary, default=str, indent=2)
         if len(raw_data) > 8000:
             raw_data = raw_data[:8000]
@@ -174,6 +181,7 @@ def register_analysis_complete_route(app, latest_summaries, latest_sampling_summ
         else:
             prompt_template_content = SENSORS_PROMPT_TEMPLATE
         
+        # Build prompt for LLM analysis
         prompt = f"""
         {prompt_template_content}
         
@@ -191,6 +199,7 @@ def register_analysis_complete_route(app, latest_summaries, latest_sampling_summ
         {raw_data}
 """
 
+        # Call the LLM client to get analysis
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],

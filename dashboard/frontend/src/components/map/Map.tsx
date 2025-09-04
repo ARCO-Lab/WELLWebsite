@@ -1,3 +1,6 @@
+// This file defines the Map component for displaying sensor and sampling site markers on a Google Map.
+// It handles marker selection, info windows, and filter state updates for the dashboard.
+
 import { GoogleMap, Marker, useLoadScript, InfoWindow } from "@react-google-maps/api";
 import { FC, useState } from "react";
 import { MapPin, ExternalLink, Navigation } from "lucide-react";
@@ -65,6 +68,7 @@ const Map: FC<MapProps> = ({
   const mapCenter = isSampling ? samplingCenter : sensorCenter;
   const mapZoom = isSampling ? 12 : 16;
   
+  // Helper to determine marker color and background based on group
   const getMarkerTypeInfo = (group: string) => {
     switch (group) {
       // Sensor groups
@@ -81,6 +85,7 @@ const Map: FC<MapProps> = ({
     }
   };
 
+  // Handles marker click: toggles group and subfilter state
   const handleMarkerClick = (marker: typeof markersToDisplay[0]) => {
     const group = marker.group;
     const id = marker.id;

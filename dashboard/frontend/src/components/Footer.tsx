@@ -1,6 +1,10 @@
+// This file defines the Footer component for the WELL dashboard, displaying McMaster branding, social links, and contact info.
+// It includes the university logo, navigation links, social media icons, and address details.
+
 import Image from "next/image";
 
 const Footer = () => {
+  // Social media links and SVG icons
   const socialLinks = [
     {
       name: "Instagram",

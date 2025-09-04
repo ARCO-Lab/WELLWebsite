@@ -1,3 +1,6 @@
+# This file defines the Config dataclass for loading environment variables and application settings.
+# It centralizes configuration for API endpoints, tokens, device IDs, and database URI.
+
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv

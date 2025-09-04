@@ -1,3 +1,6 @@
+// This file defines the LoggerMetrics component for displaying metric cards for selected water loggers.
+// It supports horizontal scrolling, logger/metric filtering, and dynamic value display.
+
 import React, { useRef, useState, useEffect, useMemo } from "react";
 import { Waves, Thermometer } from "lucide-react";
 import { Card, CardContent } from "@/components/animations/card";

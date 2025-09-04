@@ -49,6 +49,7 @@ docker compose
 python upload_data.py --year 2023 --month 7
 
 Large:
+update config.py to use os.get env for all borealis and sharepoint stuff instead of calling it there
 Sharepoint Uploads
 take out whatever files (css, js, etc ) from wordpress, remove unused classes, and chagne so it doesnt look like macsites theme
 
@@ -56,7 +57,6 @@ Small:
 change google maps api to new long term one without dev purposes
 openai api too under matt
 use webhooks with flask to automate redployments on push to repo
-documentation
 check if sees/macsites/lovable is present anywhere
 cron job for inputting to database (add once a month retrieval of borealis as well in same script)
 cron job for updating to borealis and sharepoint (use download feature from frontend)

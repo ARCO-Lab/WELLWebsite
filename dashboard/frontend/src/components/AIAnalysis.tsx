@@ -1,3 +1,6 @@
+// This file defines the AIAnalysis component for running and displaying AI-generated analysis of environmental data.
+// It handles API requests, loading state, and formatting of the AI response for display.
+
 import React, { useState, useEffect } from "react";
 import { Button } from "@/components/animations/button";
 import { Brain, Loader2 } from "lucide-react";
@@ -44,12 +47,14 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({
   const tab = weatherTab || "graph";
 
   useEffect(() => {
+    // Reset analysis state when dependencies change
     setTabAnalysis({});
     setTabLoading({});
     setTabRequested({});
   }, [type, subtypes, analysisType, weatherTab, modalOpen, activeFilters]);
 
   const fetchAnalysis = async () => {
+    // Build API request and handle loading/response state
     try {
       setTabLoading(prev => ({ ...prev, [tab]: true }));
       setTabRequested(prev => ({ ...prev, [tab]: true }));
@@ -118,6 +123,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({
   };
 
   function renderFormattedAnalysis(analysis: string) {
+    // Format the AI response into sections and bullet points for display
     const sectionRegex = /\*\*([A-Z -]+):\*\*\s*([\s\S]*?)(?=\n\*\*|$)/g;
     const result = [];
     let match;
@@ -177,8 +183,10 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({
 
   return (
     <div className="mt-6 p-4 bg-primary border border-muted rounded">
+      {/* Show heading in modal */}
       {modalOpen && <h3 className="text-lg text-white font-poppins font-bold mb-2">AI Analysis</h3>}
 
+      {/* Show analysis or button to trigger analysis */}
       {analysisRequested && !loading ? (
         aiAnalysis && typeof aiAnalysis === "object" && aiAnalysis.analysis
           ? renderFormattedAnalysis(aiAnalysis.analysis)

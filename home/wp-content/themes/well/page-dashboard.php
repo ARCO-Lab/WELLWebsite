@@ -1,4 +1,7 @@
 <?php
+// This is the "Dashboard" page template for the WELL WordPress theme.
+// It displays an embedded dashboard, links to archived datasets, and related resources.
+
 get_header();
 ?>
 

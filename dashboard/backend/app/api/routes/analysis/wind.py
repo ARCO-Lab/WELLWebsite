@@ -1,3 +1,6 @@
+# This file defines the /api/analysis/wind route for analyzing wind and gust data from weather station summaries.
+# It filters, formats, and summarizes wind-related metrics, then uses an LLM to generate a structured meteorological assessment.
+
 from flask import request, jsonify
 import json
 

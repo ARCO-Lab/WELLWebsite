@@ -1,3 +1,6 @@
+// This file defines a FadeAnimation component for animating the appearance of its children with fade and optional blur effects.
+// It uses IntersectionObserver to trigger the animation when the component enters the viewport.
+
 import { useRef, useEffect, useState, ReactNode } from "react";
 
 interface FadeAnimationProps {
@@ -23,6 +26,7 @@ const FadeAnimation: React.FC<FadeAnimationProps> = ({
   className = "",
   resetKey,
 }) => {
+  // Track if the element is in view
   const [inView, setInView] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -35,6 +39,7 @@ const FadeAnimation: React.FC<FadeAnimationProps> = ({
     const element = ref.current;
     if (!element) return;
 
+    // Observe when the element enters the viewport
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {

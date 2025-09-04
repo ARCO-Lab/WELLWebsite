@@ -1,3 +1,6 @@
+// This file defines configuration objects and constants for sensor and sampling filters, site/creek mappings, and coordinates.
+// Used throughout the frontend for filter UIs, map displays, and data lookups.
+
 export const SENSOR_FILTER_CONFIG = {
   gauges: {
     label: "Water Loggers",

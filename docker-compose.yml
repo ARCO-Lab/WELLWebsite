@@ -1,3 +1,5 @@
+# Docker Compose file to orchestrate WordPress, MySQL, a Next.js dashboard, and Nginx reverse proxy.
+
 version: '3.8'
 
 services:

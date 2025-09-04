@@ -1,3 +1,6 @@
+# This script downloads and processes new sampling data files from the Borealis Dataverse API.
+# It tracks processed files, downloads unprocessed ones, and invokes inject_sampling.py to import data.
+
 import os
 import sys
 import pathlib
@@ -203,6 +206,7 @@ def process_single_file(file_info):
     return tmp_file_path
 
 def main():
+    # Main entry point for downloading and processing files
     parser = argparse.ArgumentParser(description="Download all unprocessed files and process them sequentially.")
     parser.add_argument("--force", action="store_true", help="Force processing even if file is not new")
     parser.add_argument("--list-files", action="store_true", help="List all files in the dataset for debugging")

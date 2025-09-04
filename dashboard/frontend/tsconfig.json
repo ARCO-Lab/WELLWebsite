@@ -1,7 +1,10 @@
+// TypeScript configuration file for the frontend project.
+// Controls compiler options, file inclusion, and module resolution.
+
 {
   "compilerOptions": {
-    "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "target": "ES2017", // Set ECMAScript target version
+    "lib": ["dom", "dom.iterable", "esnext"], // Libraries to include
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -14,9 +17,9 @@
     "jsx": "preserve",
     "incremental": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"] // Path alias for cleaner imports
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules"]
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"], // Files to include in compilation
+  "exclude": ["node_modules"] // Exclude dependencies
 }

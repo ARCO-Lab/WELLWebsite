@@ -1,3 +1,6 @@
+// This file defines Tabs UI components using Radix UI primitives for tabbed navigation and content panels.
+// Components include Tabs, TabsList, TabsTrigger, and TabsContent.
+
 import * as React from "react"
 import * as TabsPrimitive from "@radix-ui/react-tabs"
 
@@ -9,6 +12,7 @@ const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(({ className, ...props }, ref) => (
+  // Container for tab triggers (the tab buttons)
   <TabsPrimitive.List
     ref={ref}
     className={cn(
@@ -24,6 +28,7 @@ const TabsTrigger = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
 >(({ className, ...props }, ref) => (
+  // Individual tab trigger/button
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
@@ -39,6 +44,7 @@ const TabsContent = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
 >(({ className, ...props }, ref) => (
+  // Content area for the selected tab
   <TabsPrimitive.Content
     ref={ref}
     className={cn(

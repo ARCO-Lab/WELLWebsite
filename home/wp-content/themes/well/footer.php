@@ -1,12 +1,6 @@
 <?php
-/**
- * CHANGE THE SVGS
- * The footer for the McMaster WELL theme.
- *
- * This file contains the site footer with McMaster links, social media links, and closing HTML tags.
- *
- * @package McMaster_WELL_Theme
- */
+// This file renders the footer for the WELL WordPress theme.
+// It includes McMaster University links, social media icons, and contact information.
 ?>
 <footer id="mac-footer" class="maroon" style="background:#7a003c;">
     <a style="text-decoration:none; color:#FFF" href="http://www.mcmaster.ca/">

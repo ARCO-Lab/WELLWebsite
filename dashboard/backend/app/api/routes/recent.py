@@ -1,3 +1,6 @@
+# This file defines the /api/recent route for retrieving the most recent sampling measurement for each measurement type.
+# It queries the database for the latest values from creek/point sampling data.
+
 from flask import request, jsonify
 from db.database import db
 from db.models import SamplingMeasurement
@@ -20,6 +23,7 @@ def register_recent_route(app):
             )
         )
 
+        # Format query results as a list of dicts
         results = [
             {
                 "site_id": r.site_id,

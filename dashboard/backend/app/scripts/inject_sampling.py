@@ -1,3 +1,6 @@
+# This script loads and injects creek/point sampling data from Excel files into the database.
+# It supports both incremental and full-reload modes for sampling data import.
+
 import os
 import sys
 import pathlib
@@ -232,6 +235,7 @@ def inject_all_sampling_history(file_path):
         sys.exit(1)
 
 if __name__ == "__main__":
+    # Main entry point for sampling data injection
     if len(sys.argv) < 2:
         print("[ERROR] Usage: python inject_sampling.py <file_path> [--full-reload]")
         print("  --full-reload: Replace all existing data (default: incremental)")

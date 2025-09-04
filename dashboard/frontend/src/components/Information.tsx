@@ -1,3 +1,6 @@
+// This file defines the Information component for displaying contextual help tooltips using a popover.
+// It shows an info icon that, when clicked, displays a description based on the provided id.
+
 import React, { useRef, useState, useEffect } from "react";
 import { Info } from "lucide-react";
 import { Button } from "@/components/animations/button";
@@ -30,6 +33,7 @@ const Information: React.FC<InformationProps> = ({ id }) => {
   const [alignRight, setAlignRight] = useState(true);
 
   useEffect(() => {
+    // Dynamically align the popover based on icon position in the viewport
     const handlePosition = () => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();

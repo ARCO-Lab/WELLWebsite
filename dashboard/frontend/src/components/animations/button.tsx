@@ -1,3 +1,6 @@
+// This file defines a customizable Button component using class-variance-authority and Radix UI Slot.
+// It supports multiple variants, sizes, and can be rendered as a native button or as a child component.
+
 import * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
@@ -42,6 +45,7 @@ export interface ButtonProps
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
+    // Use Slot for advanced composition, or a native button by default
     const Comp = asChild ? Slot : "button"
     return (
       <Comp

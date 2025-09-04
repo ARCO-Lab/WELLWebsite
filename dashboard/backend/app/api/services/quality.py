@@ -1,3 +1,6 @@
+# This file defines the QualityService class for fetching water quality data from an external API.
+# It handles API authentication, paginated data retrieval, and time range management.
+
 import requests, sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
@@ -5,14 +8,17 @@ from datetime import datetime, timezone, timedelta
 
 class QualityService:
     def __init__(self, api_url, api_key, device_id):
+        # Initialize with API URL, key, and device ID
         self.api_url = api_url
         self.api_key = api_key
         self.device_id = device_id
 
     def get_headers(self):
-        return {}  # WQData uses apiKey in query params, not headers
+        # WQData uses apiKey in query params, not headers
+        return {}  
 
     def get_default_time_range(self):
+        # Returns a default time range for data queries
         now = datetime.now(timezone.utc)
         end_time = now.strftime("%Y-%m-%d %H:%M:%S")
         # Adjust this to fit your project-specific time range
@@ -20,6 +26,7 @@ class QualityService:
         return start_time, end_time
 
     def get_quality_data(self, start_time=None, end_time=None):
+        # Fetch water quality data, handling pagination if needed
         if not start_time or not end_time:
             start_time, end_time = self.get_default_time_range()
 
@@ -84,6 +91,7 @@ class QualityService:
         return all_data
 
 if __name__ == "__main__":
+    # Example usage for testing: fetch and print water quality data
     service = QualityService(Config.WQ_API_URL, Config.WQ_API_KEY, Config.WQ_DEVICE_ID)
 
     data = service.get_quality_data()

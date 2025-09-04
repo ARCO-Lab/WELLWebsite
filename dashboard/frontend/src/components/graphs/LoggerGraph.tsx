@@ -1,3 +1,6 @@
+// This file defines the LoggerGraph component for rendering time series charts for selected water loggers.
+// It groups logger data by station and displays a MetricChart for each selected logger.
+
 import React, { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SENSOR_FILTER_CONFIG } from '@/components/config/filters';
@@ -114,7 +117,7 @@ const LoggerGraph = ({
           return (
             <div key={stationId}>
               <MetricChart
-                activeGroup={loggerName}
+                activeGroup={loggerName} // Error necessary
                 subFilters={metrics}
                 height={300}
                 startDate={startDate}

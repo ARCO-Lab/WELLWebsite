@@ -1,4 +1,7 @@
 <?php
+// This is the single post template for the WELL WordPress theme.
+// It displays a single news article, its metadata, and related news posts.
+
 get_header();
 ?>
 

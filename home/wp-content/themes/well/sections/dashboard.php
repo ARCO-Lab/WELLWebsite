@@ -1,3 +1,7 @@
+<?php
+// This section renders the "WELL Dashboard" card for the WELL WordPress theme.
+// It provides an overview and preview image of the dashboard, with a link to access it.
+?>
 <section class="thumbnail-cards white my-5">
   <div class="container">
     <h2 class="text-center">The WELL Dashboard</h2>

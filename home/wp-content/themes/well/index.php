@@ -1,7 +1,7 @@
 <?php
-// filepath: c:\Users\lukhs\Documents\well\home\wp-content\themes\well\index.php
+// Main template file for the WELL WordPress theme.
+// Loads the header, homepage sections, and footer in order.
 
-// 1. Get the header component
 get_header();
 
 get_template_part('sections/hero');

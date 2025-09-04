@@ -1,3 +1,6 @@
+# This file defines the /api/samples route for retrieving and filtering creek/point sampling data.
+# It also triggers background summarization of sampling data for selected creeks and date ranges.
+
 from flask import request, jsonify
 from db.database import db
 from db.models import SamplingMeasurement
@@ -17,6 +20,7 @@ CREEK_ID_MAP = {
 def register_samples_route(app, latest_sampling_summaries):
     @app.route("/api/samples", methods=["GET"])
     def get_filtered_samples():
+        # Parse query parameters for date range and selected creeks
         start = request.args.get("start")
         end = request.args.get("end")
 
@@ -35,6 +39,7 @@ def register_samples_route(app, latest_sampling_summaries):
         except ValueError:
             return jsonify({"error": "Invalid date format"}), 400
 
+        # Query the database for matching sampling measurements
         query = db.session.query(SamplingMeasurement).filter(
             SamplingMeasurement.recorded_at.between(start_dt, end_dt)
         )
@@ -42,6 +47,7 @@ def register_samples_route(app, latest_sampling_summaries):
         if selected_creek_ids:
             query = query.filter(SamplingMeasurement.creek_id.in_(selected_creek_ids))
 
+        # Format query results as a list of dicts
         data = [
             {
                 "site_id": r.site_id,

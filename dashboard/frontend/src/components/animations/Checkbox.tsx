@@ -1,3 +1,6 @@
+// This file defines a styled Checkbox component using Radix UI primitives and Lucide icons.
+// It provides a consistent, accessible checkbox UI for forms and filters.
+
 import * as React from "react"
 import * as CheckboxPrimitive from "@radix-ui/react-checkbox"
 import { CheckIcon } from "lucide-react"
@@ -8,6 +11,7 @@ function Checkbox({
   className,
   ...props
 }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
+  // Renders a checkbox with custom styles and a checkmark indicator
   return (
     <CheckboxPrimitive.Root
       data-slot="checkbox"

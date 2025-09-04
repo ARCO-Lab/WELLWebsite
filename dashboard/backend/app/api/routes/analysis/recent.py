@@ -1,3 +1,6 @@
+# This file defines the /api/analysis/recent route for generating concise, actionable summaries of the most recent environmental sensor readings.
+# It filters and formats logger, weather, and quality data, then uses an LLM to produce a structured analysis for frontend display.
+
 from flask import request, jsonify
 import json
 
@@ -16,9 +19,11 @@ LOGGER_CONFIG = {
 def register_analysis_recent_route(app, latest_metrics_cache, client):
     @app.route("/api/analysis/recent", methods=["GET"])
     def analyze_recent():
+        # Get analysis type and subtypes from query parameters
         analysis_type = request.args.get("type")
         subtypes = request.args.getlist("subtypes")
 
+        # Validate analysis type
         if analysis_type not in ["weather", "logger", "quality"]:
             return jsonify({"error": "Invalid or missing type. Must be one of: weather, logger, quality."}), 400
 
@@ -30,6 +35,7 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
 
         station_context = ""
         if analysis_type == "logger":
+            # Prepare logger IDs and metrics
             all_logger_ids = list(LOGGER_CONFIG['sites'].keys())
             all_logger_metrics = LOGGER_CONFIG['metrics']
             
@@ -54,19 +60,22 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
             station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."
         
         elif subtypes:
-            # Original logic for weather and quality
+            # Filter results for weather and quality types based on subtypes
             results = [
                 r for r in results
                 if r["measurement_type"].lower().replace(" ", "") in [s.lower().replace(" ", "") for s in subtypes]
             ]
 
+        # If no data after filtering, return a message
         if not results:
             return jsonify({"analysis": "No data available for the selected filters."})
 
+        # Prepare data for prompt (truncate if too long)
         raw_data = json.dumps(results)
         if len(raw_data) > 4000:
             raw_data = raw_data[:4000]
 
+        # Build prompt for LLM analysis
         prompt = f"""
             You are an environmental data analyst. Analyze monitoring station data and provide a concise report focusing on anomalies and key insights.
 
@@ -138,6 +147,7 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
             {raw_data}
         """
 
+        # Call the LLM client to get analysis
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],

@@ -1,3 +1,6 @@
+# This file defines the SQLAlchemy ORM models for sensor and sampling measurements.
+# It provides table schemas and utility methods for database operations.
+
 from db.database import db
 
 class SensorMeasurement(db.Model):
@@ -15,6 +18,7 @@ class SensorMeasurement(db.Model):
     )
 
     def to_dict(self):
+        # Convert model instance to dictionary for serialization
         return {
             "station_id", self.station_id,
             "group_type", self.group_type,
@@ -39,6 +43,7 @@ class SamplingMeasurement(db.Model):
     )
 
     def to_dict(self):
+        # Convert model instance to dictionary for serialization
         return {
             "id", self.id,
             "creek_id", self.creek_id,
