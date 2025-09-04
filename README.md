@@ -33,14 +33,23 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 ```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
+README checklist:
+Linux VM hosting stuff
+Backend Flask/WSGI and config, Routes, Services, DB, logs, all SCRIPTS, .env
+
+CRON
+frontend components, animations, config, filters metrics just an idea of the directory, hooks, api routes, index and styles, Dockerfile and CONFIG IGNORING ERRORS
+
+wordpress self explanatory
+nginx
+redeploy script
+docker compose
+
 
 python upload_data.py --year 2023 --month 7
 
 Large:
-Change hero section
-- responsiveness in mobile
-borealis api pull weekly sample data
-Borealis and Sharepoint uploads
+Sharepoint Uploads
 take out whatever files (css, js, etc ) from wordpress, remove unused classes, and chagne so it doesnt look like macsites theme
 
 Small:
@@ -55,16 +64,5 @@ make sure calling api/analysis or whatever on website itself doesnt call and onl
 fix all type errors, eslint, typescript etc. by removing the pass in config
 CHECK IF MUTLIPLE PEOPLE ON WEBSITE CAN HANDLE
 HOST ON VM (DASHBOARD ON dashboard.well.mcmaster.ca) WP on well.mcmaster.ca
-
-
-UNIT TEST EVERYTHING
-
-
-
-Additional:
-email notifications for errors in logs
-rate limiting api, bugs, caching fixes.
-*CHECK BEST PRACTISES AND SECURITY FOR ALL COMPONENTS*
-make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
 
 https://www.youtube.com/watch?v=-yIsQPp31L0&ab_channel=ByteGrad
