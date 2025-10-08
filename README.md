@@ -66,3 +66,76 @@ CHECK IF MUTLIPLE PEOPLE ON WEBSITE CAN HANDLE
 HOST ON VM (DASHBOARD ON dashboard.well.mcmaster.ca) WP on well.mcmaster.ca
 
 https://www.youtube.com/watch?v=-yIsQPp31L0&ab_channel=ByteGrad
+
+
+Great questions! Here’s a concise breakdown:
+
+---
+
+### 1. How does this config code work?
+
+```python
+BOREALIS_URL = Config.DEMO_BOREALIS_URL
+BOREALIS_API_TOKEN = Config.BOREALIS_API_TOKEN
+# etc.
+```
+- These lines **read environment variables** via your `Config` class.
+- On your Linux VM, you must set these environment variables (e.g., in your shell, .env file, or systemd service).
+- When your app starts, `Config` reads them and makes them available everywhere you use `Config`.
+
+---
+
+### 2. What is a WSGI server?
+
+- **WSGI** stands for **Web Server Gateway Interface**.
+- It’s a Python standard for running web apps in production.
+- **Flask’s built-in server** (`app.run(...)`) is for development only—**not safe or performant for production**.
+- **WSGI servers** (like **gunicorn**, **uWSGI**, or **mod_wsgi**) run your Flask app in a robust, multi-process, production-ready way.
+
+---
+
+### 3. What changes for production?
+
+- **You do NOT run `python server.py` directly in production.**
+- Instead, you run a WSGI server and point it at your Flask app’s entry point (the `create_app` function in server.py).
+- **No code changes are needed** if you use the `create_app` pattern (which you do).
+
+**Example with gunicorn:**
+```bash
+export DEMO_BOREALIS_URL=...
+export BOREALIS_API_TOKEN=...
+# etc.
+gunicorn --bind 0.0.0.0:5000 server:create_app
+```
+- This tells gunicorn to use the `create_app` function in server.py.
+
+---
+
+### 4. Can I run multiple processes and load-balance?
+
+- **Yes!** WSGI servers like gunicorn can run multiple worker processes:
+    ```bash
+    gunicorn --workers 4 --bind 0.0.0.0:5000 server:create_app
+    ```
+- Gunicorn will **split incoming requests among the workers** automatically.
+- For even more scalability, you can run multiple gunicorn instances behind a load balancer (like nginx).
+
+---
+
+### **Summary Table**
+
+| Environment | How to Run                | Handles Concurrency? | Production Ready? |
+|-------------|---------------------------|----------------------|-------------------|
+| Dev         | `python server.py`        | No                   | No                |
+| Prod        | `gunicorn server:create_app` | Yes (multi-worker)   | Yes               |
+
+---
+
+**TL;DR:**  
+- Set your environment variables on the VM.
+- Use a WSGI server like gunicorn for production.
+- No code changes needed for WSGI.
+- WSGI servers handle concurrency and load balancing for you.
+
+TODO:
+if hosting database on the linux doesn't work, we may need to use supabase

@@ -38,8 +38,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 
-EXPOSE 3000
-
-ENV PORT 3000
+# Switch application port to 8081
+EXPOSE 8081
+ENV PORT=8081
 
 CMD ["node", "server.js"]

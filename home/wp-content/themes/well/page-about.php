@@ -60,7 +60,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Creek" src="/wp-content/uploads/2025/08/ancastercreek.jpg" class="img-fluid">
+                  <img alt="Ancaster Creek" src="/wp-content/uploads/2025/09/weatherstation.jpeg" class="img-fluid">
                   </div>
                 </figure>
               </div>

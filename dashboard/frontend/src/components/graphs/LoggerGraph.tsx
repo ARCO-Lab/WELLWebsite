@@ -1,6 +1,9 @@
 // This file defines the LoggerGraph component for rendering time series charts for selected water loggers.
 // It groups logger data by station and displays a MetricChart for each selected logger.
 
+// ADD RATING CURVE FOR OTHER METRIC THAT JUST TAKES FROM WSE WHEN AVAILABLE
+
+
 import React, { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SENSOR_FILTER_CONFIG } from '@/components/config/filters';
