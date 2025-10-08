@@ -51,16 +51,17 @@ services:
   # for local development: visiting http://localhost will serve WordPress and
   # http://localhost/dashboard will proxy to the dashboard. For the VM requirement
   # (direct 8080/8081), this container is NOT required.
-  proxy:
-    image: nginx:latest
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - wordpress
-      - dashboard
-    restart: always
+
+  #proxy:
+  #  image: nginx:latest
+  #  ports:
+  #    - "80:80"
+  #  volumes:
+  #    - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #  depends_on:
+  #    - wordpress
+  #    - dashboard
+  #  restart: always
 
 volumes:
   db_data:
