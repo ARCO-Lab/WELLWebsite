@@ -14,9 +14,15 @@ def create_app():
     db.init_app(app)
     CORS(app)
     register_routes(app)
+
+    def health():
+        return {"status": "ok"}, 200
+
     return app
 
+# Expose a module-level WSGI app for Gunicorn
+app = create_app()
+
 if __name__ == "__main__":
-    # Run the Flask app in debug mode
-    app = create_app()
+    # Run the Flask app in debug mode DEV ONLY
     app.run(debug=True, host="0.0.0.0", port=5000)

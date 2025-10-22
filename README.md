@@ -139,3 +139,4 @@ gunicorn --bind 0.0.0.0:5000 server:create_app
 
 TODO:
 if hosting database on the linux doesn't work, we may need to use supabase
+chcek if can remove openai key from frontend
