@@ -1,50 +1,122 @@
 # Docker Compose file to orchestrate WordPress, MySQL, a Next.js dashboard, and Nginx reverse proxy.
+
+networks:
+  public_net: {}
+  private_net: {}
+
+volumes:
+  db_data:
+  pgdata:
+
 services:
+  # --- WordPress DB (unchanged, reads from root .env) ---
   db:
     image: mysql:5.7
     volumes:
       - db_data:/var/lib/mysql
     restart: always
+    env_file:
+      - ./.env
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+    networks: [public_net]
 
   wordpress:
     image: wordpress:latest
-    depends_on:
-      - db
+    depends_on: [db]
     volumes:
       - ./home:/var/www/html
-    # Always bind WordPress container port 80 to host 8080 (local dev & VM)
     ports:
-      - "8080:80"
+      - "${WORDPRESS_PORT}:80"
     restart: always
+    env_file:
+      - ./.env
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
       WORDPRESS_DB_NAME: wordpress
+    networks: [public_net]
 
+  # --- Dashboard Postgres (internal only) ---
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    env_file:
+      - ./.env                         # supplies POSTGRES_USER/DB/PASSWORD/PORT, etc.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [private_net]
+
+  # --- Flask backend via Gunicorn (no published port) ---
+  backend:
+    build:
+      context: ./dashboard/backend
+      # dockerfile: Dockerfile   # optional if named "Dockerfile"
+    env_file:
+      - ./.env                                  # gives POSTGRES_* host/port, BACKEND_PORT
+      - ./dashboard/backend/app/.env            # Flask/DB secrets (DATABASE_URL, OPENAI_API_KEY, etc.)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "${BACKEND_PORT}"                       # internal only
+    restart: unless-stopped
+    networks:
+      - private_net
+      - public_net                              # so frontend can resolve "backend"
+
+  # --- ETL/worker (same image, different command) ---
+  worker:
+    build:
+      context: ./dashboard/backend
+    command: ["python","app/scripts/scheduler_temp.py"]
+    env_file:
+      - ./.env
+      - ./dashboard/backend/app/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: unless-stopped
+    networks: [private_net]
+
+  # --- Next.js frontend (public) ---
   dashboard:
     build:
       context: ./dashboard/frontend
       dockerfile: Dockerfile
+      # Build-time args come from compose’s own env.
+      # We’ll source them from a per-dir file by telling Dockerfile to read .env.build.
       args:
-        FLASK_API_URL: ${FLASK_API_URL_DOCKER}
-        NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
-        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
-        OPENAI_API_KEY: ${OPENAI_API_KEY}
+        # these values are read by the Dockerfile from .env.build (see Dockerfile below)
+        DUMMY: "to-enable-args"  # no-op, allows ARGs block even if empty
+    env_file:
+      - ./.env                                  # ports etc.
+      - ./dashboard/frontend/.env.local       # server-side runtime secrets (NOT exposed)
     restart: always
-    # Bind dashboard internal port 8081 to host 8081
     ports:
-      - "8081:8081"
-    environment:
-      FLASK_API_URL: ${FLASK_API_URL_DOCKER}
-      NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
-      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      - "${DASHBOARD_PORT}:8081"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - public_net
+      - private_net
+
 
   # Optional internal reverse proxy. If the McMaster VM already has an external
   # reverse proxy, you can comment out or remove this service. Keeping it here
@@ -52,16 +124,13 @@ services:
   # http://localhost/dashboard will proxy to the dashboard. For the VM requirement
   # (direct 8080/8081), this container is NOT required.
 
-  #proxy:
-  #  image: nginx:latest
-  #  ports:
-  #    - "80:80"
-  #  volumes:
-  #    - ./nginx.conf:/etc/nginx/nginx.conf:ro
-  #  depends_on:
-  #    - wordpress
-  #    - dashboard
-  #  restart: always
-
-volumes:
-  db_data:
+  proxy:
+    image: nginx:latest
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - wordpress
+      - dashboard
+    restart: always
