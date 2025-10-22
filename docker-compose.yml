@@ -1,20 +1,15 @@
-version: "3.9"
-
-volumes:
-  db_data:
-
 services:
-  # --- WordPress + MySQL as you had ---
+  # --- MySQL + WordPress (unchanged logic, just hardcoded ports/env) ---
   db:
     image: mysql:5.7
     volumes:
       - db_data:/var/lib/mysql
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
-      MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      MYSQL_PASSWORD: wordpress
 
   wordpress:
     image: wordpress:latest
@@ -23,41 +18,38 @@ services:
     volumes:
       - ./home:/var/www/html
     ports:
-      - "${WORDPRESS_PORT}:80"
+      - "8080:80"      # WordPress exposed here
     restart: always
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
-      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      WORDPRESS_DB_PASSWORD: wordpress
       WORDPRESS_DB_NAME: wordpress
 
-  # --- Flask backend (Gunicorn), no public port ---
+  # --- Flask backend (Gunicorn, hardcoded port/env) ---
   backend:
     build:
       context: ./dashboard/backend
-      # dockerfile: Dockerfile   # optional if named "Dockerfile"
-    env_file:
-      - ./dashboard/backend/app/.env   # your existing backend .env (HOBOLINK, WQ, etc.)
-    environment:
-      # Override DB URL at runtime so you don't edit the backend .env for Docker
-      DATABASE_URL: ${BACKEND_DATABASE_URL}
-      # If you also want to drive the port via env:
-      BACKEND_PORT: ${BACKEND_PORT}
-    expose:
-      - "${BACKEND_PORT}"              # internal-only
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # lets container reach host/VM if needed
-    restart: unless-stopped
-
-  # --- Worker (same image), runs your Python script loop ---
-  worker:
-    build:
-      context: ./dashboard/backend
-    command: ["python","app/scripts/scheduler.py"]     # adjust path if different
     env_file:
       - ./dashboard/backend/app/.env
     environment:
-      DATABASE_URL: ${BACKEND_DATABASE_URL}
+      DATABASE_URL: "postgresql://welluser:YOUR_PASSWORD@host.docker.internal:5432/welldb"
+      BACKEND_PORT: 5000
+    expose:
+      - "5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # --- Worker (Python script) ---
+  worker:
+    build:
+      context: ./dashboard/backend
+    command: ["python","app/scripts/scheduler.py"]
+    env_file:
+      - ./dashboard/backend/app/.env
+    environment:
+      DATABASE_URL: "postgresql://welluser:YOUR_PASSWORD@host.docker.internal:5432/welldb"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -65,24 +57,27 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # --- Next.js frontend ---
+  # --- Next.js dashboard frontend ---
   dashboard:
     build:
       context: ./dashboard/frontend
       dockerfile: Dockerfile
       args:
-        # Build-time only (for next.config.js rewrites & public env)
-        BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
-        NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+        BACKEND_INTERNAL_URL: "http://backend:5000"
+        NEXT_PUBLIC_FLASK_API_URL: "/api"
     env_file:
-      - ./dashboard/frontend/.env.local  # runtime server-side vars if you have any
+      - ./dashboard/frontend/.env.local
     environment:
-      # Runtime (Node/SSR or API routes) can also use these:
-      FLASK_API_URL: ${BACKEND_INTERNAL_URL}
-      NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+      FLASK_API_URL: "http://backend:5000"
+      NEXT_PUBLIC_FLASK_API_URL: "/api"
+      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ""
+      OPENAI_API_KEY: ""
     depends_on:
       backend:
         condition: service_started
     ports:
-      - "${DASHBOARD_PORT}:8081"
+      - "8081:8081"
     restart: always
+
+volumes:
+  db_data:
