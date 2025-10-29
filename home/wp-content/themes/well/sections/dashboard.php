@@ -23,7 +23,8 @@
               </div>
               <div class="d-flex flex-column flex-grow-1 w-100 order-sm-2">
                 <div class="card-body pb-0">
-                  <h3 class="card-title no-line p-0"><a href="http://localhost/dashboard/" ><span class="sr-only">The SEES Dashboard</span></a></h3>
+                  <?php $dashboard_url = getenv('DASHBOARD_URL') ?: 'http://localhost:8081'; ?>
+                  <h3 class="card-title no-line p-0"><a href="<?php echo esc_url($dashboard_url); ?>" ><span class="sr-only">The SEES Dashboard</span></a></h3>
                   <div class="card-text mb-0">
                     <p>Explore the <strong>WELL Dashboard</strong> to view and download current and historical data. All data is freely available to all for teaching, research, and outreach applications. </p>
                     <p><strong>Data Available:</strong></p>

@@ -15,8 +15,9 @@ def create_app():
     CORS(app)
     register_routes(app)
 
+    @app.route('/health')
     def health():
-        return {"status": "ok"}, 200
+        return {"status": "ok", "message": "Backend is running"}, 200
 
     return app
 

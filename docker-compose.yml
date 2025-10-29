@@ -1,15 +1,24 @@
+volumes:
+  db_data:
+
+networks:
+  front:
+  internal_api:
+
 services:
-  # --- MySQL + WordPress (unchanged logic, just hardcoded ports/env) ---
+  # --- WordPress + MySQL as you had ---
   db:
     image: mysql:5.7
     volumes:
       - db_data:/var/lib/mysql
     restart: always
+    networks:
+      - front
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
-      MYSQL_PASSWORD: wordpress
+      MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
 
   wordpress:
     image: wordpress:latest
@@ -18,66 +27,104 @@ services:
     volumes:
       - ./home:/var/www/html
     ports:
-      - "8080:80"      # WordPress exposed here
+      - "8080:80"
     restart: always
+    networks:
+      - front
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
-      WORDPRESS_DB_PASSWORD: wordpress
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
       WORDPRESS_DB_NAME: wordpress
+      # Ensure site/home URLs point to the correct port to avoid redirects to :80
+      WP_HOME: ${WP_HOME}
+      WP_SITEURL: ${WP_SITEURL}
+      # External dashboard base URL for theme template embedding
+      DASHBOARD_URL: ${DASHBOARD_URL}
 
-  # --- Flask backend (Gunicorn, hardcoded port/env) ---
+  # --- Flask backend (Gunicorn), no public port ---
   backend:
     build:
       context: ./dashboard/backend
+      # dockerfile: Dockerfile   # optional if named "Dockerfile"
     env_file:
-      - ./dashboard/backend/app/.env
+      - ./dashboard/backend/app/.env   # your existing backend .env (HOBOLINK, WQ, etc.)
     environment:
-      DATABASE_URL: "postgresql://welluser:YOUR_PASSWORD@host.docker.internal:5432/welldb"
-      BACKEND_PORT: 5000
+      # Override DB URL at runtime so you don't edit the backend .env for Docker
+      DATABASE_URL: ${BACKEND_DATABASE_URL}
+      # If you also want to drive the port via env:
+      BACKEND_PORT: ${BACKEND_PORT}
     expose:
-      - "5000"
+      - "${BACKEND_PORT}"              # internal-only
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:host-gateway"   # lets container reach host/VM if needed
     restart: unless-stopped
+    networks:
+      - internal_api
 
-  # --- Worker (Python script) ---
+  # --- Worker (same image), runs your Python script loop ---
   worker:
     build:
       context: ./dashboard/backend
-    command: ["python","app/scripts/scheduler.py"]
+    command: ["python","scripts/scheduler_temp.py"]     # correct path from /app/app working directory
     env_file:
       - ./dashboard/backend/app/.env
     environment:
-      DATABASE_URL: "postgresql://welluser:YOUR_PASSWORD@host.docker.internal:5432/welldb"
+      DATABASE_URL: ${BACKEND_DATABASE_URL}
+      # Set to 1 to mirror logs to Docker stdout in addition to files
+      WORKER_LOG_TO_STDOUT: ${WORKER_LOG_TO_STDOUT}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       backend:
         condition: service_started
     restart: unless-stopped
+    networks:
+      - internal_api
+    volumes:
+      # Persist worker logs on host for easy access
+      - ./dashboard/backend/app/logs:/app/app/logs
 
-  # --- Next.js dashboard frontend ---
+  # --- Next.js frontend ---
   dashboard:
     build:
       context: ./dashboard/frontend
       dockerfile: Dockerfile
       args:
-        BACKEND_INTERNAL_URL: "http://backend:5000"
-        NEXT_PUBLIC_FLASK_API_URL: "/api"
+        # Build-time only (for next.config.js rewrites & public env)
+        FLASK_API_URL: ${BACKEND_INTERNAL_URL}
+        NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
     env_file:
-      - ./dashboard/frontend/.env.local
+      - ./dashboard/frontend/.env.local  # runtime server-side vars if you have any
     environment:
-      FLASK_API_URL: "http://backend:5000"
-      NEXT_PUBLIC_FLASK_API_URL: "/api"
-      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ""
-      OPENAI_API_KEY: ""
+      # Runtime (Node/SSR or API routes) can also use these:
+      FLASK_API_URL: ${BACKEND_INTERNAL_URL}
+      NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
     depends_on:
       backend:
         condition: service_started
     ports:
-      - "8081:8081"
+      - "${DASHBOARD_PORT}:8081"
     restart: always
+    networks:
+      - internal_api
 
-volumes:
-  db_data:
+  # Optional internal reverse proxy. If the McMaster VM already has an external
+  # reverse proxy, you can comment out or remove this service. Keeping it here
+  # for local development: visiting http://localhost will serve WordPress. For 
+  # the VM requirement (direct 8080/8081), this container is NOT required.
+
+  #proxy:
+  #  image: nginx:latest
+  #  ports:
+  #    - "80:80"
+  #  volumes:
+  #    - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #  depends_on:
+  #    - wordpress
+  #    - dashboard
+  #  restart: always
+  #  networks:
+  #    - front

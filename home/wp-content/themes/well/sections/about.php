@@ -32,7 +32,7 @@
             <h2>About Us</h2>
             <p>The <strong> Watershed and Ecosystems Living Lab (WELL) </strong> at McMaster University is an interdisciplinary initiative that brings together students, researchers, and the community to monitor and learn from real-time environmental data. <strong>WELL</strong> provides hands-on learning opportunities and valuable data through its network of real-time environmental sensors and comprehensive watershed-wide sampling regime within the Ancaster Creek watershed in Hamilton. </p>
             <p style="text-align: left;">
-              <a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="http://localhost/about">Learn More</a>
+              <a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="<?php echo esc_url( home_url('/about') ); ?>">Learn More</a>
             </p>
           </div>
         </div>

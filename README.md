@@ -138,5 +138,4 @@ gunicorn --bind 0.0.0.0:5000 server:create_app
 - WSGI servers handle concurrency and load balancing for you.
 
 TODO:
-if hosting database on the linux doesn't work, we may need to use supabase
-chcek if can remove openai key from frontend
+add shared-secret header between dashboard and backend (dashboard sends X-Internal-Auth; Flask validates) for extra protection

@@ -11,15 +11,24 @@ import os
 import re
 from inject_from_api import inject_all_new_data
 
-log_file_path = "app/logs/db_injections.log"
-download_log_file_path = "app/logs/download_injections.log"
-upload_log_file_path = "app/logs/db_uploads.log"
+log_file_path = "logs/db_injections.log"
+download_log_file_path = "logs/download_injections.log"
+upload_log_file_path = "logs/db_uploads.log"
 
-# Override print to add timestamps for API scheduler
+# Control whether to also mirror file logs to stdout (Docker logs)
+# Set WORKER_LOG_TO_STDOUT=1|true to enable
+LOG_TO_STDOUT = os.getenv("WORKER_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on")
+
+# Override print to add timestamps for API scheduler (file; optional stdout)
 def timestamped_print(*args, **kwargs):
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    builtins._original_print(timestamp, *args, **kwargs)
-    sys.stdout.flush()
+    # Always write to file
+    with open(log_file_path, "a") as f:
+        builtins._original_print(timestamp, *args, file=f, **kwargs)
+        f.flush()
+    # Optionally mirror to stdout for debugging/visibility
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
 
 # Override print for download scheduler
 def timestamped_print_download(*args, **kwargs):
@@ -27,6 +36,8 @@ def timestamped_print_download(*args, **kwargs):
     with open(download_log_file_path, "a") as f:
         builtins._original_print(timestamp, *args, file=f, **kwargs)
         f.flush()
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
 
 # Override print for upload scheduler
 def timestamped_print_upload(*args, **kwargs):
@@ -34,11 +45,13 @@ def timestamped_print_upload(*args, **kwargs):
     with open(upload_log_file_path, "a") as f:
         builtins._original_print(timestamp, *args, file=f, **kwargs)
         f.flush()
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
 
 def run_download_data(first_run=False):
     """Run download_data.py and return the temporary file path if new data was downloaded."""
     try:
-        cmd = [sys.executable, "app/scripts/download_data.py"]
+        cmd = [sys.executable, "scripts/download_data.py"]
         if first_run:
             cmd.append("--force")
             timestamped_print_download(f"Running command: {' '.join(cmd)}")
@@ -68,7 +81,7 @@ def run_download_data(first_run=False):
         timestamped_print_download(f"download_data.py stderr: {e.stderr}")
         # Run --list-files to debug dataset issues
         try:
-            list_cmd = [sys.executable, "app/scripts/download_data.py", "--list-files"]
+            list_cmd = [sys.executable, "scripts/download_data.py", "--list-files"]
             timestamped_print_download(f"Running debug command: {' '.join(list_cmd)}")
             list_result = subprocess.run(
                 list_cmd,
@@ -88,7 +101,7 @@ def run_download_data(first_run=False):
 def run_inject_sampling(tmp_file_path):
     """Run inject_sampling.py with the temporary file path."""
     try:
-        cmd = [sys.executable, "app/scripts/inject_sampling.py", tmp_file_path]
+        cmd = [sys.executable, "scripts/inject_sampling.py", tmp_file_path]
         timestamped_print_download(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(
             cmd,
@@ -119,7 +132,7 @@ def run_upload_data():
     """Run upload_data.py for the previous month's data."""
     try:
         # Run upload_data.py without arguments (defaults to last month)
-        cmd = [sys.executable, "app/scripts/upload_data.py"]
+        cmd = [sys.executable, "scripts/upload_data.py"]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(
             cmd,
@@ -140,29 +153,35 @@ def run_upload_data():
 
 def download_job(first_run=False):
     """Weekly job: run download_data.py and inject_sampling.py if new data is found."""
-    timestamped_print_download(f"Running download job (first_run={first_run})")
+    timestamped_print_download(f"========== DOWNLOAD JOB STARTED (first_run={first_run}) ==========")
     tmp_file_path = run_download_data(first_run=first_run)
     if tmp_file_path:
         timestamped_print_download(f"New data file downloaded. Running inject_sampling.py with {tmp_file_path}...")
         run_inject_sampling(tmp_file_path)
     else:
         timestamped_print_download("No new data file downloaded. Skipping inject_sampling.py.")
-    timestamped_print_download("Download job completed.")
+    timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
 def upload_job(first_run=False):
     """Monthly job: run upload_data.py for the previous month."""
-    timestamped_print_upload(f"Running upload job (first_run={first_run})")
+    timestamped_print_upload(f"========== UPLOAD JOB STARTED (first_run={first_run}) ==========")
     run_upload_data()
-    timestamped_print_upload("Upload job completed.")
+    timestamped_print_upload("========== UPLOAD JOB COMPLETED ==========")
 
 def api_injection_job():
     """Original job: run inject_all_new_data every 10 minutes."""
     try:
-        print("Starting inject_all_new_data")
+        print("========== API INJECTION STARTED ==========")
+        print("Calling inject_all_new_data() function...")
         inject_all_new_data()
-        print("Success: inject_all_new_data completed")
+        print("inject_all_new_data() function completed")
+        print("========== API INJECTION COMPLETED ==========")
     except Exception as e:
+        print(f"========== API INJECTION FAILED ==========")
         print(f"[ERROR] inject_all_new_data failed: {e}")
+        import traceback
+        print(f"[ERROR] Full traceback: {traceback.format_exc()}")
+        print("========== API INJECTION ERROR END ==========")
 
 def run_api_scheduler():
     """Run the original API injection scheduler (every 10 minutes)."""
@@ -191,19 +210,13 @@ def run_upload_scheduler():
     upload_job(first_run=True)
     timestamped_print_upload("Immediate upload job completed")
     
-    # Schedule monthly runs on the 1st at 2 AM (to avoid conflicts with other jobs)
-    schedule.every().month.do(upload_job, first_run=False)
-    
-    # Since schedule doesn't have built-in monthly support, we'll check daily
-    # and run on the 1st of each month
+    # Schedule daily check for monthly upload (since schedule doesn't have built-in monthly support)
     def check_monthly_upload():
         current_day = time.strftime("%d")
         if current_day == "01":
             upload_job(first_run=False)
     
-    # Clear the monthly schedule and use daily check instead
-    schedule.clear('upload')
-    schedule.every().day.at("02:00").do(check_monthly_upload).tag('upload')
+    schedule.every().day.at("02:00").do(check_monthly_upload)
     
     while True:
         schedule.run_pending()
@@ -211,21 +224,25 @@ def run_upload_scheduler():
 
 if __name__ == "__main__":
     # Main entry point: starts all scheduler threads and logging
+    # Save original stdout before any redirection
+    original_stdout = sys.stdout
+    
     # Ensure log directories exist
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
     os.makedirs(os.path.dirname(download_log_file_path), exist_ok=True)
     os.makedirs(os.path.dirname(upload_log_file_path), exist_ok=True)
 
-    # Redirect stdout and stderr for API scheduler to original log file
-    sys.stdout = open(log_file_path, "a")
-    sys.stderr = sys.stdout
-
     # Save original print and override for API scheduler
     builtins._original_print = builtins.print
     builtins.print = timestamped_print
 
-    # Log main thread start
+    # Initial startup message (file; optionally stdout)
+    print("WELL Scheduler Container Started!")
     print("Main thread started. Starting all schedulers...")
+    if LOG_TO_STDOUT:
+        builtins._original_print("[scheduler] Mirroring logs to stdout is ENABLED via WORKER_LOG_TO_STDOUT.")
+    else:
+        builtins._original_print("[scheduler] Logs are written to /app/app/logs/*. Set WORKER_LOG_TO_STDOUT=1 to mirror to stdout.")
 
     # Start API scheduler in one thread
     print("Starting API scheduler thread")

@@ -19,7 +19,8 @@ get_header();
                 <p class="banner-text">For smoother experience and quicker downloads, use the full dashboard site.</p>
               </div>
               <div class="col-lg-3 text-lg-right py-2">
-                <a class="btn my-0 focusable btn-secondary" href="http://localhost:8081" target="_blank">Dashboard</a>
+                <?php $dashboard_url = getenv('DASHBOARD_URL') ?: 'http://localhost:8081'; ?>
+                <a class="btn my-0 focusable btn-secondary" href="<?php echo esc_url($dashboard_url); ?>" target="_blank">Dashboard</a>
               </div>
             </div>
           </div>
@@ -28,7 +29,8 @@ get_header();
     </div>
   </div>
 </banner>
-<iframe src="http://localhost:8081/" style="width:100%;height:100vh;border:none;"></iframe>
+<?php $dashboard_url = isset($dashboard_url) ? $dashboard_url : (getenv('DASHBOARD_URL') ?: 'http://localhost:8081'); ?>
+<iframe src="<?php echo esc_url($dashboard_url); ?>/" style="width:100%;height:100vh;border:none;"></iframe>
 
 <section class="content-area cool-grey my-4">
   <div class="container">

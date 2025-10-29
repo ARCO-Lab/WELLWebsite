@@ -4,6 +4,10 @@
 import Image from "next/image";
 import Link from "next/link";
 
+// Base site URL for WordPress, provided via .env.local as NEXT_PUBLIC_WP_HOME
+// Falls back to localhost:8080 if not set
+const WP_HOME = (process.env.NEXT_PUBLIC_WP_HOME || "http://localhost:8080").replace(/\/$/, "");
+
 const Header = () => {
   // Navigation items for the main nav bar
   const navItems = [
@@ -52,9 +56,9 @@ const Header = () => {
                 </a>
               </h2>
               <h1 className="text-2xl font-bold text-black">
-                <Link href="localhost" className="hover:text-primary transition-colors">
+                <a href={WP_HOME} className="hover:text-primary transition-colors">
                   Watershed Ecosystems Living Lab
-                </Link>
+                </a>
               </h1>
             </div>
           </div>
@@ -67,17 +71,20 @@ const Header = () => {
           <div className="flex items-center justify-center h-12">
             <div className="flex w-full max-w-4xl">
               {/* Navigation links */}
-              {navItems.map((item) => (
-                <a
-                  key={item.label}
-                  href={`http://localhost${item.href}`}
-                  className={`flex-1 text-center py-3 px-4 transition-colors duration-200 hover:bg-white hover:text-primary ${
-                    item.active ? "font-bold" : ""
-                  }`}
-                >
-                  {item.label}
-                </a>
-              ))}
+              {navItems.map((item) => {
+                const href = `${WP_HOME}${item.href}`;
+                return (
+                  <a
+                    key={item.label}
+                    href={href}
+                    className={`flex-1 text-center py-3 px-4 transition-colors duration-200 hover:bg-white hover:text-primary ${
+                      item.active ? "font-bold" : ""
+                    }`}
+                  >
+                    {item.label}
+                  </a>
+                );
+              })}
             </div>
           </div>
         </div>
