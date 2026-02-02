@@ -60,11 +60,10 @@ backend/app/samplingExcel/
 backend/app/sampleUpload/
 
 
-# WordPress uploads and cache
-home/wp-content/uploads/
+# WordPress cache (runtime generated)
 home/wp-content/cache/
 home/wp-content/upgrade/
 
-# WordPress config and secrets
+# WordPress config and secrets (Docker creates from env vars)
 home/wp-config.php
 home/wp-config-docker.php
