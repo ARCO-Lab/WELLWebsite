@@ -5,8 +5,8 @@ import Image from "next/image";
 import Link from "next/link";
 
 // Base site URL for WordPress, provided via .env.local as NEXT_PUBLIC_WP_HOME
-// Falls back to localhost:8080 if not set
-const WP_HOME = (process.env.NEXT_PUBLIC_WP_HOME || "http://localhost:8080").replace(/\/$/, "");
+// Falls back to production URL if not set
+const WP_HOME = (process.env.NEXT_PUBLIC_WP_HOME || "https://well.mcmaster.ca").replace(/\/$/, "");
 
 const Header = () => {
   // Navigation items for the main nav bar
@@ -38,7 +38,7 @@ const Header = () => {
                 />
               </a>
               <Image
-                src="/logos/WELL_Logo&Title_TransparentBG.png"
+                src="/logos/WELL_LogoAndTitle_TransparentBG.png"
                 alt="Watershed Ecosystems Living Lab Logo"
                 width={128}
                 height={128}

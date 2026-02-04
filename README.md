@@ -139,3 +139,11 @@ gunicorn --bind 0.0.0.0:5000 server:create_app
 
 TODO:
 add shared-secret header between dashboard and backend (dashboard sends X-Internal-Auth; Flask validates) for extra protection
+Check all backend injection script (historical and scheduled), 
+Check CORS for backend API
+Setup Template for CSV Sampling uploads
+Check if loggers is being inputted
+Add indexes on DB for speed
+Highcharts Boost Module for faster rendering
+Upgrade backend API calls Data chunking, load balancing for multiple concurrent users
+Upgrade Frontend to not lag on 
