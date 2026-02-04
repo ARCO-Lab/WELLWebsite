@@ -175,9 +175,9 @@ def inject_all_quality_history():
     current_start_dt = datetime.strptime(START_DATE, date_format)
     final_end_dt = datetime.strptime(END_DATE, date_format)
 
-    # Ensure start_dt is timezone-aware
-    if start_dt.tzinfo is None:
-        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    # Ensure current_start_dt is timezone-aware
+    if current_start_dt.tzinfo is None:
+        current_start_dt = current_start_dt.replace(tzinfo=timezone.utc)
 
     print("[INFO] Fetching historical quality data in chunks...")
     while current_start_dt < final_end_dt:
