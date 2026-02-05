@@ -42,7 +42,7 @@ LOGGER_CONFIG = {
     "22168657": { "logger_num": 5, "station_id": 2577535, "z": 39.568, "L": 1.75, "theta": 48.4 },
 }
 
-START_DATE = "2025-10-01 00:00:00" #START_DATE = "2025-05-08 11:00:00"
+START_DATE = "2025-05-08 11:00:00" #START_DATE = "2025-05-08 11:00:00"
 END_DATE = "2026-01-01 00:00:00" # datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def parse_weather_entry(entry, logger_id):
