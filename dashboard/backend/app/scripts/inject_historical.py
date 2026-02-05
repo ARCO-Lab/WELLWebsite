@@ -42,13 +42,18 @@ LOGGER_CONFIG = {
     "22168657": { "logger_num": 5, "station_id": 2577535, "z": 39.568, "L": 1.75, "theta": 48.4 },
 }
 
-START_DATE = "2025-05-08 11:00:00"
-END_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+START_DATE = "2025-10-01 00:00:00" #START_DATE = "2025-05-08 11:00:00"
+END_DATE = "2026-01-01 00:00:00" # datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def parse_weather_entry(entry, logger_id):
     # Parse a single weather data entry into a SensorMeasurement object
-    measurement_type = entry.get("sensor_measurement_type")
     sensor_sn = entry.get("sensor_sn")
+    
+    # Skip battery sensors
+    if sensor_sn and sensor_sn.endswith("-B"):
+        return None
+    
+    measurement_type = entry.get("sensor_measurement_type")
     if measurement_type == "Temperature":
         if sensor_sn == "21948438-1":
             measurement_type = "Soil Temperature"
@@ -66,24 +71,33 @@ def parse_weather_entry(entry, logger_id):
         recorded_at=datetime.fromisoformat(entry.get("timestamp"))
     )
 
-def inject_all_weather_history():
-    # Fetch and parse all historical weather data
+def fetch_weather_chunk(start_str, end_str):
+    # Fetch and parse weather data for a specific date range
     logger_id = Config.HOBO_LOGGERS.split(",")[0]
-    entries = weather_service.get_weather_data(START_DATE, END_DATE)
+    entries = weather_service.get_weather_data(start_str, end_str)
     all_weather = []
+    skipped = 0
     for entry in entries:
         try:
             obj = parse_weather_entry(entry, logger_id)
-            all_weather.append(obj)
+            if obj:  # Only append if not filtered (battery)
+                all_weather.append(obj)
+            else:
+                skipped += 1
         except Exception as e:
             print(f"[ERROR] Failed to parse weather entry: {e}")
-    return all_weather
+    return all_weather, skipped
 
 
 # 4. Add a new function to parse logger entries
 def parse_logger_entry(entry):
     # Parse a single logger data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn", "")
+    
+    # Skip battery sensors
+    if sensor_sn.endswith("-B"):
+        return None
+    
     sn_parts = sensor_sn.split('-')
     if len(sn_parts) != 2:
         return None # Ignore entries with unexpected sensor_sn format
@@ -127,19 +141,22 @@ def parse_logger_entry(entry):
         
     return measurement
 
-# 5. Add a new function to fetch and process all logger history
-def inject_all_logger_history():
-    # Fetch and parse all historical logger data
-    entries = logger_service.get_logger_data(START_DATE, END_DATE)
+# 5. Add a new function to fetch and process logger data for a specific date range
+def fetch_logger_chunk(start_str, end_str):
+    # Fetch and parse logger data for a specific date range
+    entries = logger_service.get_logger_data(start_str, end_str)
     all_logger_data = []
+    skipped = 0
     for entry in entries:
         try:
             obj = parse_logger_entry(entry)
             if obj:
                 all_logger_data.append(obj)
+            else:
+                skipped += 1
         except Exception as e:
-            print(f"[ERROR] Failed to parse logger entry: {e} - {entry}")
-    return all_logger_data
+            print(f"[ERROR] Failed to parse logger entry: {e}")
+    return all_logger_data, skipped
 
 
 
@@ -165,78 +182,102 @@ def parse_quality_entry(entry, station_id):
         ))
     return results
 
-def inject_all_quality_history():
-    # Fetch and parse all historical quality data in 90-day chunks
+def fetch_quality_chunk(start_str, end_str):
+    # Fetch and parse quality data for a specific date range (simplified to 30 days)
     station_id = Config.WQ_DEVICE_ID
     all_quality = []
     
-    # --- NEW CHUNKING LOGIC ---
-    date_format = "%Y-%m-%d %H:%M:%S"
-    current_start_dt = datetime.strptime(START_DATE, date_format)
-    final_end_dt = datetime.strptime(END_DATE, date_format)
-
-    # Ensure datetimes are timezone-aware
-    if current_start_dt.tzinfo is None:
-        current_start_dt = current_start_dt.replace(tzinfo=timezone.utc)
-    if final_end_dt.tzinfo is None:
-        final_end_dt = final_end_dt.replace(tzinfo=timezone.utc)
-
-    print("[INFO] Fetching historical quality data in chunks...")
-    while current_start_dt < final_end_dt:
-        # Calculate the end of the 90-day chunk
-        chunk_end_dt = current_start_dt + timedelta(days=89)
-        if chunk_end_dt > final_end_dt:
-            chunk_end_dt = final_end_dt
-
-        start_str = current_start_dt.strftime(date_format)
-        end_str = chunk_end_dt.strftime(date_format)
-        
-        print(f"  - Fetching quality data from {start_str} to {end_str}")
-        
-        # Fetch data for the current chunk
-        entries = quality_service.get_quality_data(start_str, end_str)
-        
-        for entry in entries:
-            try:
-                objs = parse_quality_entry(entry, station_id)
-                all_quality.extend(objs)
-            except Exception as e:
-                print(f"[ERROR] Failed to parse quality entry: {e}")
-        
-        # Move to the start of the next chunk
-        current_start_dt = chunk_end_dt + timedelta(seconds=1)
-    # --- END CHUNKING LOGIC ---
+    # Directly fetch quality data for this range (no sub-chunking)
+    entries = quality_service.get_quality_data(start_str, end_str)
+    
+    for entry in entries:
+        try:
+            objs = parse_quality_entry(entry, station_id)
+            all_quality.extend(objs)
+        except Exception as e:
+            print(f"[ERROR] Failed to parse quality entry: {e}")
     
     return all_quality
 
 def inject_all_history():
-    # Main function: clears DB, fetches, parses, and inserts all historical data
+    # Main function: clears DB, fetches and inserts data in chunks to avoid API truncation
     with app.app_context():
         print("[INFO] Clearing existing SensorMeasurement records ...")
         SensorMeasurement.query.delete()
         db.session.commit()
 
-        print("[INFO] Fetching historical data...")
-        weather_data = inject_all_weather_history()
-        quality_data = inject_all_quality_history()
-        logger_data = inject_all_logger_history()
+        date_format = "%Y-%m-%d %H:%M:%S"
+        current_start_dt = datetime.strptime(START_DATE, date_format)
+        final_end_dt = datetime.strptime(END_DATE, date_format)
+        
+        # Ensure datetimes are timezone-aware
+        if current_start_dt.tzinfo is None:
+            current_start_dt = current_start_dt.replace(tzinfo=timezone.utc)
+        if final_end_dt.tzinfo is None:
+            final_end_dt = final_end_dt.replace(tzinfo=timezone.utc)
 
-        all_data = sorted(weather_data + quality_data + logger_data, key=lambda x: x.recorded_at)
-        print(f"[INFO] Inserting {len(all_data)} records sorted by timestamp...")
+        # Calculate total chunks for progress tracking
+        total_days = (final_end_dt - current_start_dt).days
+        total_chunks = (total_days // 30) + (1 if total_days % 30 > 0 else 0)
+        chunk_num = 0
+        
+        total_inserted = 0
+        total_duplicates = 0
+        
+        print(f"[INFO] Processing {total_chunks} 30-day chunks...")
+        
+        while current_start_dt < final_end_dt:
+            chunk_num += 1
+            # Calculate chunk end (30 days)
+            chunk_end_dt = current_start_dt + timedelta(days=30)
+            if chunk_end_dt > final_end_dt:
+                chunk_end_dt = final_end_dt
 
-        inserted = 0
-        for obj in all_data:
-            try:
-                db.session.add(obj)
-                db.session.commit()
-                inserted += 1
-            except IntegrityError:
-                db.session.rollback()
-            except Exception as e:
-                print(f"[ERROR] Failed to insert record: {e}")
-                db.session.rollback()
+            start_str = current_start_dt.strftime(date_format)
+            end_str = chunk_end_dt.strftime(date_format)
+            
+            print(f"\n[CHUNK {chunk_num}/{total_chunks}] Processing {start_str} to {end_str}")
+            
+            # Fetch data for this chunk
+            print(f"  - Fetching weather data...")
+            weather_data, weather_skipped = fetch_weather_chunk(start_str, end_str)
+            print(f"    Fetched {len(weather_data)} weather records (skipped {weather_skipped} battery)")
+            
+            print(f"  - Fetching logger data...")
+            logger_data, logger_skipped = fetch_logger_chunk(start_str, end_str)
+            print(f"    Fetched {len(logger_data)} logger records (skipped {logger_skipped} battery)")
+            
+            print(f"  - Fetching quality data...")
+            quality_data = fetch_quality_chunk(start_str, end_str)
+            print(f"    Fetched {len(quality_data)} quality records")
+            
+            # Combine and sort chunk data
+            chunk_data = sorted(weather_data + logger_data + quality_data, key=lambda x: x.recorded_at)
+            print(f"  - Inserting {len(chunk_data)} records...")
+            
+            # Insert chunk data
+            inserted = 0
+            duplicates = 0
+            for obj in chunk_data:
+                try:
+                    db.session.add(obj)
+                    db.session.commit()
+                    inserted += 1
+                except IntegrityError:
+                    db.session.rollback()
+                    duplicates += 1
+                except Exception as e:
+                    print(f"[ERROR] Failed to insert record: {e}")
+                    db.session.rollback()
+            
+            total_inserted += inserted
+            total_duplicates += duplicates
+            print(f"  - Inserted {inserted} records ({duplicates} duplicates skipped)")
+            
+            # Move to next chunk (no +1 second to prevent gaps/overlaps)
+            current_start_dt = chunk_end_dt
 
-        print(f"[DONE] Inserted {inserted} total records.")
+        print(f"\n[DONE] Inserted {total_inserted} total records ({total_duplicates} duplicates skipped).")
 
 if __name__ == "__main__":
     inject_all_history()

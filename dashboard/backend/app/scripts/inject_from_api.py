@@ -47,6 +47,11 @@ LOGGER_CONFIG = {
 def parse_weather_entry(entry, logger_id):
     # Parse a single weather data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn")
+    
+    # Skip battery sensors
+    if sensor_sn and sensor_sn.endswith("-B"):
+        return None
+    
     measurement_type = entry.get("sensor_measurement_type")
     value = float(entry.get("value", 0))
     unit = entry.get("unit", "")
@@ -71,6 +76,11 @@ def parse_weather_entry(entry, logger_id):
 def parse_logger_entry(entry):
     # Parse a single logger data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn", "")
+    
+    # Skip battery sensors
+    if sensor_sn.endswith("-B"):
+        return None
+    
     sn_parts = sensor_sn.split('-')
     if len(sn_parts) != 2:
         return None
@@ -134,24 +144,56 @@ def parse_quality_entry(entry, station_id):
     return results
 
 def inject_new_weather_data(return_only=False):
-    # Fetch and insert new weather data into the database
+    # Fetch and insert new weather data into the database (with 30-day chunking)
     logger_id = Config.HOBO_LOGGERS.split(",")[0]
 
-    # Get the most recent timestamp for weather data
-    latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
+    # Get the latest timestamp for each measurement_type, then take the MIN
+    # This ensures we catch gaps if any specific metric lags behind
+    from sqlalchemy import func
+    measurement_dates = db.session.query(
+        SensorMeasurement.measurement_type,
+        func.max(SensorMeasurement.recorded_at)
+    ).filter_by(
         group_type="Weather"
-    ).order_by(SensorMeasurement.recorded_at.desc()).first()
+    ).group_by(
+        SensorMeasurement.measurement_type
+    ).all()
 
-    start_time = latest[0].isoformat() if latest else None
-    entries = weather_service.get_weather_data(start_time=start_time)
-
+    date_format = "%Y-%m-%d %H:%M:%S"
+    if measurement_dates:
+        start_dt = min(date for _, date in measurement_dates)
+    else:
+        start_dt = datetime.strptime("2025-08-03 11:00:00", date_format)
+    
+    final_end_dt = datetime.now(timezone.utc)
+    
+    # Ensure start_dt is timezone-aware
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    
     weather_data = []
-    for entry in entries:
-        try:
-            obj = parse_weather_entry(entry, logger_id)
-            weather_data.append(obj)
-        except Exception as e:
-            print(f"[ERROR] Failed to parse weather entry: {e}")
+    
+    # Chunk into 30-day periods to avoid API truncation
+    current_start_dt = start_dt
+    while current_start_dt < final_end_dt:
+        chunk_end_dt = current_start_dt + timedelta(days=30)
+        if chunk_end_dt > final_end_dt:
+            chunk_end_dt = final_end_dt
+        
+        start_str = current_start_dt.strftime(date_format)
+        end_str = chunk_end_dt.strftime(date_format)
+        
+        entries = weather_service.get_weather_data(start_str, end_str)
+        
+        for entry in entries:
+            try:
+                obj = parse_weather_entry(entry, logger_id)
+                if obj:  # Only append if not filtered (battery)
+                    weather_data.append(obj)
+            except Exception as e:
+                print(f"[ERROR] Failed to parse weather entry: {e}")
+        
+        current_start_dt = chunk_end_dt
 
     if return_only:
         return weather_data
@@ -176,16 +218,27 @@ def inject_new_quality_data(return_only=False):
     # Fetch and insert new water quality data into the database (with chunking)
     station_id = Config.WQ_DEVICE_ID
 
-    latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
+    # Get the latest timestamp for each measurement_type, then take the MIN
+    # This ensures we catch gaps if any specific metric lags behind
+    from sqlalchemy import func
+    measurement_dates = db.session.query(
+        SensorMeasurement.measurement_type,
+        func.max(SensorMeasurement.recorded_at)
+    ).filter_by(
         group_type="Quality"
-    ).order_by(SensorMeasurement.recorded_at.desc()).first()
+    ).group_by(
+        SensorMeasurement.measurement_type
+    ).all()
 
     all_quality_entries = []
     
-    # --- NEW CHUNKING LOGIC ---
+    # --- CHUNKING LOGIC ---
     date_format = "%Y-%m-%d %H:%M:%S"
-    # Start from the latest record, or a default if none exist
-    start_dt = latest[0] if latest else datetime.strptime("2025-05-08 11:00:00", date_format)
+    if measurement_dates:
+        start_dt = min(date for _, date in measurement_dates)
+    else:
+        start_dt = datetime.strptime("2025-05-08 11:00:00", date_format)
+    
     final_end_dt = datetime.now(timezone.utc)
 
     # Ensure start_dt is timezone-aware
@@ -195,7 +248,7 @@ def inject_new_quality_data(return_only=False):
     print("[INFO] Fetching new quality data in chunks if necessary...")
     current_start_dt = start_dt
     while current_start_dt < final_end_dt:
-        chunk_end_dt = current_start_dt + timedelta(days=89)
+        chunk_end_dt = current_start_dt + timedelta(days=30)
         if chunk_end_dt > final_end_dt:
             chunk_end_dt = final_end_dt
 
@@ -207,7 +260,7 @@ def inject_new_quality_data(return_only=False):
         entries = quality_service.get_quality_data(start_str, end_str)
         all_quality_entries.extend(entries)
         
-        current_start_dt = chunk_end_dt + timedelta(seconds=1)
+        current_start_dt = chunk_end_dt
     # --- END CHUNKING LOGIC ---
 
     quality_data = []
@@ -221,23 +274,70 @@ def inject_new_quality_data(return_only=False):
     if return_only:
         return quality_data
 
-def inject_new_logger_data(return_only=False):
-    # Fetch and insert new logger data into the database
-    latest = db.session.query(SensorMeasurement.recorded_at).filter_by(
-        group_type="Logger"
-    ).order_by(SensorMeasurement.recorded_at.desc()).first()
-
-    start_time = latest[0].isoformat() if latest else None
-    entries = logger_service.get_logger_data(start_time=start_time)
-
-    logger_data = []
-    for entry in entries:
+    inserted = 0
+    for obj in sorted(quality_data, key=lambda x: x.recorded_at):
         try:
-            obj = parse_logger_entry(entry)
-            if obj:
-                logger_data.append(obj)
+            db.session.add(obj)
+            db.session.commit()
+            inserted += 1
+            print(f"[NEW] Inserted: {obj.measurement_type} from {obj.station_id} at {obj.recorded_at} with value {obj.value} {obj.unit}")
+        except IntegrityError:
+            db.session.rollback()
         except Exception as e:
-            print(f"[ERROR] Failed to parse logger entry: {e}")
+            print(f"[ERROR] Failed to insert quality record: {e}")
+            db.session.rollback()
+
+    print(f"[INFO] Inserted {inserted} new quality records.")
+
+def inject_new_logger_data(return_only=False):
+    # Fetch and insert new logger data into the database (with 30-day chunking)
+    # Get the latest timestamp for each measurement_type, then take the MIN
+    # This ensures we catch gaps if any specific metric lags behind
+    from sqlalchemy import func
+    measurement_dates = db.session.query(
+        SensorMeasurement.measurement_type,
+        func.max(SensorMeasurement.recorded_at)
+    ).filter_by(
+        group_type="Logger"
+    ).group_by(
+        SensorMeasurement.measurement_type
+    ).all()
+
+    date_format = "%Y-%m-%d %H:%M:%S"
+    if measurement_dates:
+        start_dt = min(date for _, date in measurement_dates)
+    else:
+        start_dt = datetime.strptime("2025-07-18 13:40:00", date_format)
+    
+    final_end_dt = datetime.now(timezone.utc)
+    
+    # Ensure start_dt is timezone-aware
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    
+    logger_data = []
+    
+    # Chunk into 30-day periods to avoid API truncation
+    current_start_dt = start_dt
+    while current_start_dt < final_end_dt:
+        chunk_end_dt = current_start_dt + timedelta(days=30)
+        if chunk_end_dt > final_end_dt:
+            chunk_end_dt = final_end_dt
+        
+        start_str = current_start_dt.strftime(date_format)
+        end_str = chunk_end_dt.strftime(date_format)
+        
+        entries = logger_service.get_logger_data(start_str, end_str)
+        
+        for entry in entries:
+            try:
+                obj = parse_logger_entry(entry)
+                if obj:
+                    logger_data.append(obj)
+            except Exception as e:
+                print(f"[ERROR] Failed to parse logger entry: {e}")
+        
+        current_start_dt = chunk_end_dt
 
     if return_only:
         return logger_data

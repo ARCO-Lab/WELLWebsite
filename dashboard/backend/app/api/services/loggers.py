@@ -27,8 +27,8 @@ class LoggerService:
         # Fetch logger data from the API, optionally for a time range
         if not start_time or not end_time:
             now = datetime.now(timezone.utc)
-            start_time = "2025-07-18 13:40:00"
-            end_time = now.strftime("%Y-%m-%d %H:%M:%S")
+            start_time = "2025-07-18 13:40:00" # "2025-07-18 13:40:00"
+            end_time = now.strftime("%Y-%m-%d %H:%M:%S") # now.strftime("%Y-%m-%d %H:%M:%S")
 
         params = {
             "loggers": self.get_logger_id(),

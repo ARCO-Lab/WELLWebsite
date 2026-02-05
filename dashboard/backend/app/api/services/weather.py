@@ -27,8 +27,8 @@ class WeatherService:
         # Fetch weather data from the API, optionally for a time range
         if not start_time or not end_time:
             now = datetime.now(timezone.utc)
-            start_time = "2025-08-03 11:00:00" # start_time = "2025-08-03 11:00:00"
-            end_time = now.strftime("%Y-%m-%d %H:%M:%S")
+            start_time = "2025-08-03 11:00:00" # "2025-08-03 11:00:00"
+            end_time = now.strftime("%Y-%m-%d %H:%M:%S")  # now.strftime("%Y-%m-%d %H:%M:%S")
 
 
         params = {
