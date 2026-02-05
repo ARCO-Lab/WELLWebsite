@@ -205,6 +205,11 @@ def inject_all_history():
         print("[INFO] Clearing existing SensorMeasurement records ...")
         SensorMeasurement.query.delete()
         db.session.commit()
+        
+        # Reset the ID sequence to start from 1
+        print("[INFO] Resetting ID sequence to 1...")
+        db.session.execute(db.text("ALTER SEQUENCE sensor_measurements_id_seq RESTART WITH 1;"))
+        db.session.commit()
 
         date_format = "%Y-%m-%d %H:%M:%S"
         current_start_dt = datetime.strptime(START_DATE, date_format)
