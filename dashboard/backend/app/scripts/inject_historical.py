@@ -43,7 +43,7 @@ LOGGER_CONFIG = {
 }
 
 START_DATE = "2025-05-08 11:00:00" #START_DATE = "2025-05-08 11:00:00"
-END_DATE = "2026-01-01 00:00:00" # datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+END_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") # datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def parse_weather_entry(entry, logger_id):
     # Parse a single weather data entry into a SensorMeasurement object

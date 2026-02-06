@@ -147,3 +147,6 @@ Add indexes on DB for speed
 Highcharts Boost Module for faster rendering
 Upgrade backend API calls Data chunking, load balancing for multiple concurrent users
 Upgrade Frontend to not lag on 
+Add script to remove logs from C:\Program Files\PostgreSQL\17\data\log that are a couple months old as storage builds up fast
+Add sampling template for researchers to follow
+Get proper google maps api 

@@ -38,7 +38,7 @@ const Header = () => {
                 />
               </a>
               <Image
-                src="/logos/WELL_LogoAndTitle_TransparentBG.png"
+                src="/logos/WELL_LogoAndTitle_TransparentBG.PNG"
                 alt="Watershed Ecosystems Living Lab Logo"
                 width={128}
                 height={128}
