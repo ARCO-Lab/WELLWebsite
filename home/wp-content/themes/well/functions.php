@@ -19,6 +19,24 @@ function well_theme_setup() {
 add_action( 'after_setup_theme', 'well_theme_setup' );
 
 /**
+ * Force HTTPS URLs for all assets and content
+ * This ensures all URLs are served over HTTPS regardless of what's in the database
+ */
+function well_force_https_urls($url) {
+    if (strpos($_SERVER['HTTP_HOST'], 'well.mcmaster.ca') !== false) {
+        return str_replace('http://', 'https://', $url);
+    }
+    return $url;
+}
+add_filter('option_home', 'well_force_https_urls');
+add_filter('option_siteurl', 'well_force_https_urls');
+add_filter('content_url', 'well_force_https_urls');
+add_filter('plugins_url', 'well_force_https_urls');
+add_filter('theme_root_uri', 'well_force_https_urls');
+add_filter('stylesheet_directory_uri', 'well_force_https_urls');
+add_filter('template_directory_uri', 'well_force_https_urls');
+
+/**
  * This function is the proper WordPress way to load all of our theme's
  * CSS stylesheets and JavaScript files.
  */
