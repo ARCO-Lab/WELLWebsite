@@ -23,11 +23,13 @@ add_action( 'after_setup_theme', 'well_theme_setup' );
  * This ensures all URLs are served over HTTPS regardless of what's in the database
  */
 function well_force_https_urls($url) {
-    if (strpos($_SERVER['HTTP_HOST'], 'well.mcmaster.ca') !== false) {
+    if (is_string($url)) {
         return str_replace('http://', 'https://', $url);
     }
     return $url;
 }
+
+// Apply to all possible URL filters
 add_filter('option_home', 'well_force_https_urls');
 add_filter('option_siteurl', 'well_force_https_urls');
 add_filter('content_url', 'well_force_https_urls');
@@ -35,6 +37,20 @@ add_filter('plugins_url', 'well_force_https_urls');
 add_filter('theme_root_uri', 'well_force_https_urls');
 add_filter('stylesheet_directory_uri', 'well_force_https_urls');
 add_filter('template_directory_uri', 'well_force_https_urls');
+add_filter('script_loader_src', 'well_force_https_urls');
+add_filter('style_loader_src', 'well_force_https_urls');
+add_filter('wp_get_attachment_url', 'well_force_https_urls');
+add_filter('wp_get_attachment_image_src', 'well_force_https_urls');
+add_filter('the_content', 'well_force_https_urls');
+add_filter('bloginfo_url', 'well_force_https_urls');
+
+// Force HTTPS in output buffer (catches everything)
+function well_force_https_output_buffer($buffer) {
+    return str_replace('http://well.mcmaster.ca', 'https://well.mcmaster.ca', $buffer);
+}
+add_action('template_redirect', function() {
+    ob_start('well_force_https_output_buffer');
+});
 
 /**
  * This function is the proper WordPress way to load all of our theme's
