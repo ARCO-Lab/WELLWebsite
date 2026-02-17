@@ -73,7 +73,7 @@ class QualityService:
 
             iteration += 1
 
-        # ✅ Final tail-fetch to capture any leftovers
+        # Final tail-fetch to capture any leftovers
         if last_ts:
             final_params = {
                 "apiKey": self.api_key,

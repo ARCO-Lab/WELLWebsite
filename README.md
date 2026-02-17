@@ -63,7 +63,7 @@ cron job for updating to borealis and sharepoint (use download feature from fron
 make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
 fix all type errors, eslint, typescript etc. by removing the pass in config
 CHECK IF MUTLIPLE PEOPLE ON WEBSITE CAN HANDLE
-HOST ON VM (DASHBOARD ON dashboard.well.mcmaster.ca) WP on well.mcmaster.ca
+HOST ON VM (DASHBOARD ON welldash.mcmaster.ca) WP on well.mcmaster.ca
 
 https://www.youtube.com/watch?v=-yIsQPp31L0&ab_channel=ByteGrad
 

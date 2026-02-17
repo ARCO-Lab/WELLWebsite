@@ -30,7 +30,7 @@ const Footer = () => {
     },
     {
       name: "Twitter",
-      href: "http://www.x.com/mcmasteru",
+      href: "https://www.x.com/mcmasteru",
       className: "twitter twitter-x",
       icon: (
         <svg
@@ -46,7 +46,7 @@ const Footer = () => {
     },
     {
       name: "Facebook",
-      href: "http://www.facebook.com/mcmasteruniversity",
+      href: "https://www.facebook.com/mcmasteruniversity",
       className: "facebook",
       icon: (
         <svg
@@ -68,7 +68,7 @@ const Footer = () => {
     },
     {
       name: "YouTube",
-      href: "http://www.youtube.com/mcmasterutv",
+      href: "https://www.youtube.com/mcmasterutv",
       className: "youtube",
       icon: (
         <svg
@@ -119,7 +119,7 @@ const Footer = () => {
           {/* McMaster University Logo */}
           <div className="flex justify-center">
             <a
-              href="http://www.mcmaster.ca/"
+              href="https://www.mcmaster.ca/"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -137,7 +137,7 @@ const Footer = () => {
           {/* Links */}
           <div className="flex justify-center space-x-8 text-sm">
             <a
-              href="http://www.mcmaster.ca/opr/html/opr/contact_us/main/contact_us.html"
+              href="https://www.mcmaster.ca/opr/html/opr/contact_us/main/contact_us.html"
               className="hover:text-secondary transition-colors"
               target="_blank"
               rel="noopener noreferrer"
@@ -145,7 +145,7 @@ const Footer = () => {
               Contact
             </a>
             <a
-              href="http://www.mcmaster.ca/opr/html/footer/main/terms_of_use.html"
+              href="https://www.mcmaster.ca/opr/html/footer/main/terms_of_use.html"
               className="hover:text-secondary transition-colors"
               target="_blank"
               rel="noopener noreferrer"
@@ -153,7 +153,7 @@ const Footer = () => {
               Terms & Conditions
             </a>
             <a
-              href="http://www.mcmaster.ca/privacy/"
+              href="https://www.mcmaster.ca/privacy/"
               className="hover:text-secondary transition-colors"
               target="_blank"
               rel="noopener noreferrer"
@@ -201,7 +201,7 @@ const Footer = () => {
             </div>
             <div className="pt-2">
               <a
-                href="http://www.mcmaster.ca/"
+                href="https://www.mcmaster.ca/"
                 className="font-semibold hover:text-secondary transition-colors"
               >
                 © 2025 McMaster University

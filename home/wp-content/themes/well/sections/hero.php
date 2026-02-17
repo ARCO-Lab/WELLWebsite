@@ -52,7 +52,7 @@
                 <div class="col-lg-10 ml-auto d-lg-flex flex-lg-column align-items-lg-end justify-content-lg-center carousel-text text-lg-right">
                   <h2 class="banner-title banner-title-lg">Dashboard</h2>
                   <p class="banner-text">The WELL Dashboard displays real-time and historical environmental data from across McMaster and the Ancaster watershed.</p>
-                  <?php $dashboard_url = getenv('DASHBOARD_URL') ?: 'https://dashboard.well.mcmaster.ca'; ?>
+                  <?php $dashboard_url = getenv('DASHBOARD_URL') ?: 'https://welldash.mcmaster.ca'; ?>
                   <a class="btn btn-primary btn-lg" href="<?php echo esc_url( $dashboard_url ); ?>"><span>Explore the Dashboard</span></a>
                 </div>
               </div>
