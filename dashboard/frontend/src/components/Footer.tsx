@@ -15,7 +15,7 @@ const Footer = () => {
           id="social-instagram"
           className="social"
           style={{ maxWidth: "20px", height: "28px", fill: "#fff" }}
-          xmlns="http://www.w3.org/2000/svg"
+          xmlns="https://www.w3.org/2000/svg"
           width="17.14"
           height="17.14"
           viewBox="0 0 17.14 17.14"
@@ -37,7 +37,7 @@ const Footer = () => {
           id="social-x"
           className="social"
           style={{ maxWidth: "20px", height: "28px", fill: "#fff" }}
-          xmlns="http://www.w3.org/2000/svg"
+          xmlns="https://www.w3.org/2000/svg"
           viewBox="0 0 512 512"
         >
           <path d="M389.2 48h70.6L305.6 224.2 487 464H345L233.7 318.6 106.5 464H35.8L200.7 275.5 26.8 48H172.4L272.9 180.9 389.2 48zM364.4 421.8h39.1L151.1 88h-42L364.4 421.8z" />
@@ -53,7 +53,7 @@ const Footer = () => {
           id="social-facebook"
           className="social"
           style={{ maxWidth: "20px", height: "28px", fill: "#fff" }}
-          xmlns="http://www.w3.org/2000/svg"
+          xmlns="https://www.w3.org/2000/svg"
           width="9.64"
           height="18.57"
           viewBox="0 0 9.64 18.57"
@@ -75,7 +75,7 @@ const Footer = () => {
           id="social-youtube"
           className="social"
           style={{ maxWidth: "18px", height: "28px", fill: "#fff" }}
-          xmlns="http://www.w3.org/2000/svg"
+          xmlns="https://www.w3.org/2000/svg"
           width="20"
           height="14.06"
           viewBox="0 0 20 14.06"
@@ -97,7 +97,7 @@ const Footer = () => {
           id="social-linkedin"
           className="social"
           style={{ maxWidth: "16px", height: "28px", fill: "#fff" }}
-          xmlns="http://www.w3.org/2000/svg"
+          xmlns="https://www.w3.org/2000/svg"
           width="17.14"
           height="16.38"
           viewBox="0 0 17.14 16.38"
