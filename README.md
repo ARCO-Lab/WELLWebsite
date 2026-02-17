@@ -150,3 +150,7 @@ Upgrade Frontend to not lag on
 Add script to remove logs from C:\Program Files\PostgreSQL\17\data\log that are a couple months old as storage builds up fast
 Add sampling template for researchers to follow
 Get proper google maps api 
+Fix responsiveness of header logos on iphone dimensions for dashboard
+Refactor download function to send from backend
+Make sure colours of highcharts metrics for loggers are consistent across all loggers
+Add Flask-restX for api documentation
