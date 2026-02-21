@@ -20,8 +20,9 @@ add_action( 'after_setup_theme', 'well_theme_setup' );
 
 /**
  * Force HTTPS URLs for all assets and content
- * This ensures all URLs are served over HTTPS regardless of what's in the database
+ * DISABLED until reverse proxy sends X-Forwarded-Proto header
  */
+/*
 function well_force_https_urls($url) {
     if (is_string($url)) {
         return str_replace('http://', 'https://', $url);
@@ -51,6 +52,7 @@ function well_force_https_output_buffer($buffer) {
 add_action('template_redirect', function() {
     ob_start('well_force_https_output_buffer');
 });
+*/
 
 /**
  * This function is the proper WordPress way to load all of our theme's
