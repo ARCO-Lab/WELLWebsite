@@ -156,3 +156,5 @@ Make sure colours of highcharts metrics for loggers are consistent across all lo
 Add Flask-restX for api documentation
 once figure out how to get to wp-admin the correct way (perhaps by IP) then make it so taht wp-admin login etc just reroute to home
 fix wordpress site images to be responsive
+disable search and menu
+unit test everything on every page

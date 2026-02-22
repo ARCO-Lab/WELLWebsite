@@ -219,4 +219,19 @@ function well_get_mcmaster_nav_menu() {
     );
 }
 
+/**
+ * Disable WordPress 6.7 auto sizes feature for images in post content only
+ * This prevents the "sizes=auto" attribute from being added to content images,
+ * which causes image distortion issues in some browsers and themes.
+ * See: https://make.wordpress.org/core/2024/10/18/auto-sizes-for-lazy-loaded-images-in-wordpress-6-7/
+ */
+function well_remove_auto_sizes_from_content_images($content) {
+    if (is_singular() && in_the_loop() && is_main_query()) {
+        // Remove "auto, " from sizes attributes in post content
+        $content = preg_replace('/sizes="auto,\s*([^"]+)"/i', 'sizes="$1"', $content);
+    }
+    return $content;
+}
+add_filter('the_content', 'well_remove_auto_sizes_from_content_images', 20);
+
 ?>
