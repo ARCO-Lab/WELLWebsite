@@ -18,6 +18,7 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 ---
 
 ## Architecture
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/ad6d07d8-6c18-4ddd-8cef-f761087d6675" />
 
 ### Frontend (Dashboard)
 - **Next.js** (pages router) with **TypeScript**, **React**, and **TailwindCSS**
