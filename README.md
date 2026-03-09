@@ -4,9 +4,6 @@ This project is part of the McMaster Watershed Ecosystems Living Lab (WELL). It 
 
 ---
 
-WP username: mcmasterwell
-WP Password: Monitoring@AncasterCr33k
-
 ## Python Environment Setup
 
 ```bash
