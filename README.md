@@ -1,6 +1,85 @@
 # WELL Environmental Data Platform
 
-This project is part of the McMaster Watershed Ecosystems Living Lab (WELL). It fetches environmental sensor data (starting with weather station data via HOBOlink Licor Cloud API) for analysis and visualization in a future web dashboard.
+Part of the McMaster Watershed Ecosystems Living Lab (WELL). This platform fetches, stores, and visualizes environmental sensor data from weather and water quality stations, serving near real-time insights through an interactive web dashboard.
+
+**Live:** [welldash.mcmaster.ca](https://welldash.mcmaster.ca) | **WordPress Home:** [well.mcmaster.ca](https://well.mcmaster.ca)
+
+---
+
+## Overview
+
+The platform consists of two main components:
+
+1. **WELL Environmental Sensor Dashboard** — A standalone Next.js dashboard with a Flask backend, hosted at `welldash.mcmaster.ca` and embedded into the WordPress site via iframe.
+2. **WELL WordPress Home Page** — A custom PHP WordPress theme at `well.mcmaster.ca` with a banner carousel, responsive imagery, and links to the dashboard.
+
+Both apps run as separate Docker containers on a Linux VM, fronted by a single Nginx reverse proxy with unified TLS.
+
+---
+
+## Architecture
+
+### Frontend (Dashboard)
+- **Next.js** (pages router) with **TypeScript**, **React**, and **TailwindCSS**
+- **Highcharts** for rich visualizations: time-series charts, wind-rose, and interactive station map
+- Custom React hooks encapsulate data fetching and memoized filter state (station, parameter, date range)
+- Performance: SSR, code-splitting, memoization, debounced inputs, optimized static assets
+- Frontend state synchronized via URL query parameters (shareable/linkable views)
+
+### Backend
+- **Flask** WSGI app served by **Gunicorn** (3 workers)
+- REST endpoints for: `stations`, `parameters`, `metrics`, `aggregate`, `download`, `ai/analyze`, `health`
+- Smart caching: DB-level query tuning + application caching + HTTP cache headers (ETag/Cache-Control)
+- Optional Nginx proxy cache for heavy CSV/static responses
+- Config via environment variables; request/ingestion activity logging for observability
+
+### Storage
+- **PostgreSQL** primary datastore for time-series and sampling data
+- Indexes on station identifiers, parameters, and timestamps for fast queries
+- Downsampling jobs materialize reduced-resolution series for commonly requested windows
+- Staging area supports CSV/Excel imports; logs area persists operational logs
+
+### WordPress Home Page
+- Custom PHP template under `wp-content/themes/well`
+- **Bootstrap** grid and utility classes for responsive layout
+- **Flickity** banner carousel with adaptive height
+- Responsive images via `srcset/sizes`; accessible alt text throughout
+- Links to a dedicated page that embeds the dashboard via iframe
+
+### Hosting & Infrastructure
+- Both apps containerized with **Docker**
+- **Nginx** reverse proxy: TLS termination, host/path routing to WordPress or dashboard container
+- `frame-ancestors` / CSP configured to permit iframe embedding between apps
+- CORS constrained to trusted origins; secrets injected via environment variables
+
+---
+
+## Data Sources & APIs
+
+| Source | Type |
+|---|---|
+| HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
+| WQData Live API | Automated ingestion & scheduled updates |
+| OpenAI API | AI analysis over downsampled series |
+| Borealis | Nightly cron export/upload |
+| SharePoint | Nightly cron export/upload |
+
+---
+
+## Automation
+
+Cron orchestrates all scheduled tasks:
+- **Ingestion**: HoboLink and WQData pulls on schedule
+- **Historical backfills**: Retroactive data imports
+- **Downsampling**: Bucket-based reduced-resolution series for chart performance
+- **Exports**: Nightly CSV exports to Borealis and SharePoint with checksum verification and logging
+- **Health checks**: Readiness endpoints for external monitors
+
+---
+
+## AI Analysis
+
+An API endpoint aggregates/downsamples a series and sends a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend renders the output inside an analysis modal and allows exporting the narrative.
 
 ---
 
@@ -8,16 +87,20 @@ This project is part of the McMaster Watershed Ecosystems Living Lab (WELL). It 
 
 ```bash
 python -m venv venv
-.\venv\Scripts\activate on Windows
+
+# Windows
+.\venv\Scripts\activate
+# or
+.\venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 ```
-If you have already setup the virtual enviroment, to reactivate it do:
-```bash
-.\venv\Scripts\Activate.ps1
-```
+
+---
 
 ## Environment Variables
-Create ```bash .env``` file in ```bash backend/``` directory:
+
+Create a `.env` file in the `backend/` directory:
 
 ```bash
 HOBOLINK_API_URL=https://api.hobolink.licor.cloud/v1/data
@@ -28,130 +111,92 @@ WQDATA_API_URL=https://www.wqdatalive.com/api/v1
 WQDATA_API_KEY=your-api-key-here
 WQDATA_DEVICE_ID=your-device-id-here
 ```
-```bash HOBOLINK_LOGGERS``` should be the serial number of each logger
 
-README checklist:
-Linux VM hosting stuff
-Backend Flask/WSGI and config, Routes, Services, DB, logs, all SCRIPTS, .env
-
-CRON
-frontend components, animations, config, filters metrics just an idea of the directory, hooks, api routes, index and styles, Dockerfile and CONFIG IGNORING ERRORS
-
-wordpress self explanatory
-nginx
-redeploy script
-docker compose
-
-
-python upload_data.py --year 2023 --month 7
-
-Large:
-update config.py to use os.get env for all borealis and sharepoint stuff instead of calling it there
-Sharepoint Uploads
-take out whatever files (css, js, etc ) from wordpress, remove unused classes, and chagne so it doesnt look like macsites theme
-
-Small:
-change google maps api to new long term one without dev purposes
-openai api too under matt
-use webhooks with flask to automate redployments on push to repo
-check if sees/macsites/lovable is present anywhere
-cron job for inputting to database (add once a month retrieval of borealis as well in same script)
-cron job for updating to borealis and sharepoint (use download feature from frontend)
-make sure calling api/analysis or whatever on website itself doesnt call and only valid calls to the api are sent
-fix all type errors, eslint, typescript etc. by removing the pass in config
-CHECK IF MUTLIPLE PEOPLE ON WEBSITE CAN HANDLE
-HOST ON VM (DASHBOARD ON welldash.mcmaster.ca) WP on well.mcmaster.ca
-
-https://www.youtube.com/watch?v=-yIsQPp31L0&ab_channel=ByteGrad
-
-
-Great questions! Here’s a concise breakdown:
+> `HOBOLINK_LOGGERS` should be the serial number of each logger, comma-separated.
 
 ---
 
-### 1. How does this config code work?
+## Data Upload (Manual)
 
-```python
-BOREALIS_URL = Config.DEMO_BOREALIS_URL
-BOREALIS_API_TOKEN = Config.BOREALIS_API_TOKEN
-# etc.
-```
-- These lines **read environment variables** via your `Config` class.
-- On your Linux VM, you must set these environment variables (e.g., in your shell, .env file, or systemd service).
-- When your app starts, `Config` reads them and makes them available everywhere you use `Config`.
-
----
-
-### 2. What is a WSGI server?
-
-- **WSGI** stands for **Web Server Gateway Interface**.
-- It’s a Python standard for running web apps in production.
-- **Flask’s built-in server** (`app.run(...)`) is for development only—**not safe or performant for production**.
-- **WSGI servers** (like **gunicorn**, **uWSGI**, or **mod_wsgi**) run your Flask app in a robust, multi-process, production-ready way.
-
----
-
-### 3. What changes for production?
-
-- **You do NOT run `python server.py` directly in production.**
-- Instead, you run a WSGI server and point it at your Flask app’s entry point (the `create_app` function in server.py).
-- **No code changes are needed** if you use the `create_app` pattern (which you do).
-
-**Example with gunicorn:**
 ```bash
-export DEMO_BOREALIS_URL=...
-export BOREALIS_API_TOKEN=...
-# etc.
-gunicorn --bind 0.0.0.0:5000 server:create_app
+python upload_data.py --year 2023 --month 7
 ```
-- This tells gunicorn to use the `create_app` function in server.py.
 
 ---
 
-### 4. Can I run multiple processes and load-balance?
+## Tech Stack
 
-- **Yes!** WSGI servers like gunicorn can run multiple worker processes:
-    ```bash
-    gunicorn --workers 4 --bind 0.0.0.0:5000 server:create_app
-    ```
-- Gunicorn will **split incoming requests among the workers** automatically.
-- For even more scalability, you can run multiple gunicorn instances behind a load balancer (like nginx).
-
----
-
-### **Summary Table**
-
-| Environment | How to Run                | Handles Concurrency? | Production Ready? |
-|-------------|---------------------------|----------------------|-------------------|
-| Dev         | `python server.py`        | No                   | No                |
-| Prod        | `gunicorn server:create_app` | Yes (multi-worker)   | Yes               |
+| Layer | Technologies |
+|---|---|
+| Frontend | Next.js, React, TypeScript, TailwindCSS, Highcharts |
+| Backend | Python, Flask, Gunicorn (WSGI) |
+| Database | PostgreSQL |
+| Infrastructure | Docker, Nginx, Linux VM |
+| CMS | WordPress (PHP, Bootstrap, Flickity) |
+| APIs | HoboLink, WQData, OpenAI, Borealis, SharePoint |
+| Automation | Cron, shell scripts |
 
 ---
 
-**TL;DR:**  
-- Set your environment variables on the VM.
-- Use a WSGI server like gunicorn for production.
-- No code changes needed for WSGI.
-- WSGI servers handle concurrency and load balancing for you.
+## Known Issues & TODOs
 
-TODO:
-add shared-secret header between dashboard and backend (dashboard sends X-Internal-Auth; Flask validates) for extra protection
-Check all backend injection script (historical and scheduled), 
-Check CORS for backend API
-Setup Template for CSV Sampling uploads
-Check if loggers is being inputted
-Add indexes on DB for speed
-Highcharts Boost Module for faster rendering
-Upgrade backend API calls Data chunking, load balancing for multiple concurrent users
-Upgrade Frontend to not lag on 
-Add script to remove logs from C:\Program Files\PostgreSQL\17\data\log that are a couple months old as storage builds up fast
-Add sampling template for researchers to follow
-Get proper google maps api 
-Fix responsiveness of header logos on iphone dimensions for dashboard
-Refactor download function to send from backend
-Make sure colours of highcharts metrics for loggers are consistent across all loggers
-Add Flask-restX for api documentation
-once figure out how to get to wp-admin the correct way (perhaps by IP) then make it so taht wp-admin login etc just reroute to home
-fix wordpress site images to be responsive
-disable search and menu
-unit test everything on every page
+### High Priority
+- [ ] Update `config.py` to use `os.getenv` for all Borealis and SharePoint config instead of hardcoding
+- [ ] Add shared-secret header between dashboard and backend (`X-Internal-Auth`) for extra protection
+- [ ] Check all backend injection scripts (historical and scheduled)
+- [ ] Verify CORS configuration for backend API
+- [ ] Add indexes on DB for query speed
+- [ ] Check if multiple concurrent users on the website are handled correctly
+
+### Backend
+- [ ] Use webhooks with Flask to automate redeployments on push to repo
+- [ ] Add rate limiting and background queues for heavy AI/aggregation tasks
+- [ ] Add Flask-RestX for API documentation
+- [ ] Add script to remove old PostgreSQL logs from `C:\Program Files\PostgreSQL\17\data\log`
+- [ ] Cron job for monthly Borealis retrieval (add to existing export script)
+- [ ] Ensure `/api/analysis` calls are only triggered by valid frontend requests
+
+### Frontend
+- [ ] Fix all TypeScript/ESLint errors (currently suppressed via config)
+- [ ] Fix responsiveness of header logos on iPhone dimensions
+- [ ] Add Highcharts Boost Module for faster rendering on large datasets
+- [ ] Make Highcharts metric colours consistent across all loggers
+- [ ] Refactor download function to send from backend
+- [ ] Upgrade frontend to handle lag on large dataset renders
+
+### WordPress
+- [ ] Fix WordPress site images to be responsive
+- [ ] Remove unused CSS/JS files from theme; clean up unused classes
+- [ ] Restyle so it no longer resembles the MacSites/Lovable default theme
+- [ ] Disable search and menu where not needed
+- [ ] Once `wp-admin` is accessible via correct path/IP, redirect login attempts to home
+
+### Infrastructure
+- [ ] Switch to long-term Google Maps API key (remove dev-purposes key)
+- [ ] Update OpenAI API key to Matt's account
+- [ ] Setup CSV sampling upload template for researchers
+- [ ] Add sampling template/guidelines for researchers
+- [ ] Extend caching with revalidation strategies and window-aware materialized views
+- [ ] Expand download options (Parquet, GeoJSON) with provenance metadata
+- [ ] Add end-to-end tests for filters, downloads, and AI analysis workflows
+- [ ] Add automated Lighthouse checks for accessibility and performance (WordPress)
+- [ ] Tighten proxy headers (CSP, X-Frame-Options) while preserving embed behavior
+
+---
+
+## FAQ
+
+**How does routing work end-to-end?**
+Nginx terminates TLS and routes by host/path to either the dashboard container or WordPress. The frontend encodes filter state in URL query params. The API exposes versioned REST paths for stations, parameters, metrics, aggregate, download, ai, and health.
+
+**How are backups automated?**
+Nightly cron jobs export curated CSVs from PostgreSQL and upload them to Borealis and SharePoint, recording checksums and outcomes in logs.
+
+**How does the AI analysis feature work safely?**
+The API aggregates and downsamples the series first, then sends a bounded prompt with metadata to OpenAI. Responses are rendered in the UI and can be exported.
+
+**What keeps the dashboard responsive with large datasets?**
+Indexed PostgreSQL queries, precomputed downsampled series, cached API responses, and client-side SSR/memoization.
+
+**How is the dashboard embedded and secured?**
+It's embedded via iframe on a dedicated WordPress page. CSP `frame-ancestors` and CORS rules allow only the trusted WordPress origin.
