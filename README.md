@@ -139,6 +139,45 @@ python upload_data.py --year 2023 --month 7
 
 ---
 
+## Terms & Conditions
+
+The WELL Environmental Data Platform and the associated WordPress site are intended to provide environmental monitoring information, research support, and public-facing project communication.
+
+- **Informational use only:** Data, charts, summaries, and downloadable files are provided for informational, educational, and research-support purposes and should not be treated as legal, regulatory, engineering, safety-critical, or emergency-response advice.
+- **No guarantee of uninterrupted service:** While the platform is designed for near real-time availability, uptime, data freshness, and feature availability are not guaranteed at all times because of scheduled maintenance, upstream API outages, network issues, or infrastructure failures.
+- **Data accuracy and completeness:** Sensor readings, derived metrics, AI-generated summaries, and exports may contain delays, gaps, approximations, processing errors, or third-party source inconsistencies. Users should independently validate important findings before relying on them.
+- **Acceptable use:** Users must not misuse the dashboard, APIs, iframe integration, or WordPress site, including by attempting unauthorized access, bypassing rate limits, scraping protected content, interfering with service availability, or introducing malicious content.
+- **Third-party services:** The platform depends on external providers including HoboLink, WQData Live, OpenAI, Borealis, SharePoint, WordPress, and hosting/network services. Their availability and terms may affect platform behavior.
+- **Intellectual property:** Project branding, code, visual assets, and original content remain subject to the rights and licenses defined by the WELL project, McMaster University, and any third-party licensors.
+- **Changes to the service:** Features, APIs, visualizations, exports, and access controls may be updated, restricted, or removed without notice as the platform evolves.
+
+> These terms are a project-level draft for documentation purposes and should be reviewed by McMaster/WELL stakeholders before being published as the official site terms.
+
+---
+
+## Privacy Policy
+
+The platform should publish a simple privacy notice covering both the dashboard and the WordPress site.
+
+- **Operational data collected:** The system may log request metadata such as IP address, timestamp, requested path, response status, browser/user-agent details, and application errors for security, troubleshooting, and performance monitoring.
+- **Analytics and observability:** Monitoring tools, logs, metrics, and alerts may be used to understand uptime, failures, and performance across Nginx, Flask, Next.js, WordPress, and PostgreSQL.
+- **User-submitted or uploaded files:** Research uploads such as CSV or Excel sampling files may contain user-supplied content and should be handled as institutional research data, with access limited to authorized project administrators.
+- **Third-party processing:** Data sent to third-party services, such as OpenAI for AI analysis or external APIs for ingestion/export workflows, is subject to those providers' terms and privacy practices.
+- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content. If analytics or non-essential cookies are added later, a cookie notice/consent flow should be considered.
+- **Data retention:** Application logs, backups, exports, and uploaded files should follow a defined retention and deletion policy appropriate for operational, institutional, and research needs.
+- **Access and protection:** Secrets should be stored securely, admin access should be restricted, backups should be protected, and production systems should use TLS and least-privilege access controls.
+- **Contact and governance:** The public site should identify the responsible WELL/McMaster contact or team for privacy questions, correction requests, and operational issues.
+
+Recommended follow-up production tasks:
+
+- [ ] Add public Terms & Conditions page to WordPress
+- [ ] Add public Privacy Policy page to WordPress
+- [ ] Link legal/privacy pages from the WordPress footer and any dashboard embed entry points
+- [ ] Document cookies, logging, AI processing, and third-party data sharing more explicitly before launch
+- [ ] Confirm institutional/legal review for final published wording
+
+---
+
 ## Known Issues & TODOs
 
 ### High Priority
@@ -146,6 +185,8 @@ python upload_data.py --year 2023 --month 7
 - [ ] Add shared-secret header between dashboard and backend (`X-Internal-Auth`) for extra protection
 - [ ] Check all backend injection scripts (historical and scheduled)
 - [ ] Verify CORS configuration for backend API
+- [ ] Add authentication/authorization model for API and admin operations (service-to-service + operator access)
+- [ ] Move download generation/streaming to backend APIs; keep frontend as trigger-only to reduce UI lag on large exports
 - [ ] Add indexes on DB for query speed
 - [ ] Check if multiple concurrent users on the website are handled correctly
 
@@ -153,16 +194,20 @@ python upload_data.py --year 2023 --month 7
 - [ ] Use webhooks with Flask to automate redeployments on push to repo
 - [ ] Add rate limiting and background queues for heavy AI/aggregation tasks
 - [ ] Add Flask-RestX for API documentation
+- [ ] Add backend unit tests for Flask routes, services, config parsing, sampling imports, and Borealis/export logic
+- [ ] Add integration tests for critical API endpoints (`/api/data`, `/api/latest`, `/api/analysis`, download/export paths)
 - [ ] Add script to remove old PostgreSQL logs from `C:\Program Files\PostgreSQL\17\data\log`
 - [ ] Cron job for monthly Borealis retrieval (add to existing export script)
+- [ ] Fix sampling-data Excel import flow and align it with Borealis pull/export formats
 - [ ] Ensure `/api/analysis` calls are only triggered by valid frontend requests
 
 ### Frontend
 - [ ] Fix all TypeScript/ESLint errors (currently suppressed via config)
+- [ ] Add frontend unit tests for hooks, filter/query-state logic, data transforms, and API error/loading states
 - [ ] Fix responsiveness of header logos on iPhone dimensions
 - [ ] Add Highcharts Boost Module for faster rendering on large datasets
 - [ ] Make Highcharts metric colours consistent across all loggers
-- [ ] Refactor download function to send from backend
+- [ ] Update download UI to use backend export endpoints with progress/error states
 - [ ] Upgrade frontend to handle lag on large dataset renders
 
 ### WordPress
@@ -171,17 +216,29 @@ python upload_data.py --year 2023 --month 7
 - [ ] Restyle so it no longer resembles the MacSites/Lovable default theme
 - [ ] Disable search and menu where not needed
 - [ ] Once `wp-admin` is accessible via correct path/IP, redirect login attempts to home
+- [ ] Add smoke tests for dashboard iframe embedding, mobile responsiveness, and cross-site navigation
 
 ### Infrastructure
 - [ ] Switch to long-term Google Maps API key (remove dev-purposes key)
 - [ ] Update OpenAI API key to Matt's account
 - [ ] Setup CSV sampling upload template for researchers
 - [ ] Add sampling template/guidelines for researchers
+- [ ] Define and document production server baseline (OS patching cadence, fail2ban/SSH hardening, least-privilege user accounts)
+- [ ] Define and enforce network controls (host firewall rules, allowed ingress/egress, DB not publicly exposed)
+- [ ] Create cloud/VM infrastructure runbook (provisioning, scaling limits, incident escalation, ownership)
+- [ ] Add container hardening and image scanning in pipeline (base image pinning, vulnerability scan, signed images)
+- [ ] Add automated backend/database backups with restore testing and retention policy
+- [ ] Add file-level backup + restore plan for WordPress assets/theme/uploads and dashboard artifacts
+- [ ] Add database reliability tasks (index review, query plan checks, vacuum/analyze schedule, connection limits)
 - [ ] Extend caching with revalidation strategies and window-aware materialized views
 - [ ] Expand download options (Parquet, GeoJSON) with provenance metadata
 - [ ] Add end-to-end tests for filters, downloads, and AI analysis workflows
 - [ ] Add automated Lighthouse checks for accessibility and performance (WordPress)
 - [ ] Tighten proxy headers (CSP, X-Frame-Options) while preserving embed behavior
+- [ ] Build CI/CD pipeline for frontend, backend, and WordPress theme/plugin changes with required quality gates (unit tests, smoke tests, lint, type checks, build, deploy, rollback); use Netlify only for frontend preview builds, not final integration signoff
+- [ ] Add observability stack: uptime checks, centralized logs, metrics, alerts, and error tracking across Nginx, Flask, Next.js, WordPress, and PostgreSQL (grafana)
+- [ ] Define SLOs/SLIs and alert thresholds (availability, latency, error rate, data freshness, cron success)
+- [ ] Add synthetic monitoring for the full WordPress → iframe dashboard journey and key API health checks
 
 ---
 
@@ -201,3 +258,6 @@ Indexed PostgreSQL queries, precomputed downsampled series, cached API responses
 
 **How is the dashboard embedded and secured?**
 It's embedded via iframe on a dedicated WordPress page. CSP `frame-ancestors` and CORS rules allow only the trusted WordPress origin.
+
+
+
