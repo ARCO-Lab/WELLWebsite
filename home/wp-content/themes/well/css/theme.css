@@ -16199,6 +16199,27 @@ body.noscroll {
   border-bottom: 3px solid transparent;
 }
 
+#navLinks {
+  justify-content: flex-end;
+}
+
+#well-home-logo {
+  min-width: auto !important;
+  padding: 0;
+  border-bottom: 0;
+}
+
+#well-home-logo img {
+  width: 130px;
+  height: auto;
+  display: block;
+}
+
+#well-home-logo:hover,
+#well-home-logo:focus {
+  opacity: 0.9;
+}
+
 #mcmaster-header,
 #mcmaster-header * {
   -webkit-box-sizing: border-box;

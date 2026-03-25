@@ -246,6 +246,8 @@ Recommended follow-up production tasks:
 - [ ] Add end-to-end tests for filters, downloads, and AI analysis workflows
 - [ ] Add automated Lighthouse checks for accessibility and performance (WordPress)
 - [ ] Tighten proxy headers (CSP, X-Frame-Options) while preserving embed behavior
+- [ ] Add and maintain `.env.template` documenting required environment variables for local/dev/prod deployments
+- [ ] Triage and resolve GitHub Dependabot vulnerabilities from the repository security dashboard (`https://github.com/ARCO-Lab/WELLWebsite/security/dependabot`)
 - [ ] Build CI/CD pipeline for frontend, backend, and WordPress theme/plugin changes with required quality gates (unit tests, smoke tests, lint, type checks, build, deploy, rollback); use Netlify only for frontend preview builds, not final integration signoff
 - [ ] Add a secure GitHub webhook deploy flow that triggers only after CI checks pass, then pulls latest code and redeploys only affected Docker services
 - [ ] Refactor `git_pull.sh` into a modular, environment-driven deploy script that uses GitHub-provided/env-configured variables (branch, environment, changed services, compose profile)

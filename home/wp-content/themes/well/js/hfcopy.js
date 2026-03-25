@@ -1341,11 +1341,11 @@ const setup_mcmasterNavKeyUp = () => {
                 const el = document.querySelector('#mcmaster-nav a[aria-expanded="true"]');
                 el?.click();
                 collapseMenu(event);
-                mcmenu.focus();
+                mcmenu?.focus();
             } else if (searchOverlay?.style.display === "block") {
                 // collapseMenu(event);
                 closeSearch(event);
-                mcsearch.focus();
+                mcsearch?.focus();
             }
         } else {
             mcmasterKeyNav(event);

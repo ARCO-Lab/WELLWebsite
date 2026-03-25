@@ -25,7 +25,7 @@
 <body <?php body_class(); ?>>
     <header id="mcmaster-header" style="position: relative;">
         <div id="skiptocontent">
-            <a href="#mcmenu">Skip to McMaster Navigation</a>
+            <a href="#mcmaster-nav">Skip to McMaster Navigation</a>
             <a href="#site-navbar">Skip to Site Navigation</a>
             <a href="#site-content">Skip to main content</a>
         </div>
@@ -39,9 +39,10 @@
                 <h1 class="mcmaster-header__header-title"><a href="<?php echo esc_url( home_url( '/' ) ); ?>">Watershed and Ecosystems Living Lab</a></h1>
             </div>
         </div>
-        <div id="navLinks" style="display: flex; align-items: center; width:160px; z-index:1200; transition: width 0s; margin-top: 24px;">
-            <a href="#" id="mcmaster-search" class="nav-item"><span></span><span class="sr-only">Search button</span></a>
-            <a href="#" id="mcmenu" class="nav-item" role="button" aria-controls="mac_navigation" aria-expanded="false"><span></span><span class="sr-only">Menu button</span></a>
+        <div id="navLinks" style="display: flex; align-items: center; width:160px; z-index:1200; transition: width 0s; margin-top: 24px; justify-content: flex-end;">
+            <a href="<?php echo esc_url( home_url( '/' ) ); ?>" id="well-home-logo" class="nav-item" aria-label="WELL Home">
+                <img src="<?php echo get_template_directory_uri(); ?>/img/welllogo.svg" alt="WELL logo" />
+            </a>
         </div>
     </header>
 
