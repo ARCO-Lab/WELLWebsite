@@ -19,9 +19,43 @@ function well_theme_setup() {
 add_action( 'after_setup_theme', 'well_theme_setup' );
 
 /**
- * Force HTTPS URLs for all assets and content
- * This ensures all URLs are served over HTTPS regardless of what's in the database
+ * Resolve deployment mode from environment.
+ * Expected values: PROD or DEV.
  */
+function well_get_deployment_mode() {
+    $deployment = getenv('DEPLOYMENT');
+
+    if (!is_string($deployment) || $deployment === '') {
+        return 'DEV';
+    }
+
+    return strtoupper(trim($deployment));
+}
+
+/**
+ * Force HTTPS URLs for all assets/content in production mode.
+ */
+function well_should_force_https_urls() {
+    if (well_get_deployment_mode() === 'PROD') {
+        return true;
+    }
+
+    if (well_get_deployment_mode() === 'DEV') {
+        return false;
+    }
+
+    // Safe fallback for unexpected values: keep host-based production detection.
+    $host = isset($_SERVER['HTTP_HOST']) ? strtolower($_SERVER['HTTP_HOST']) : '';
+    $host = preg_replace('/:\\d+$/', '', $host);
+
+    $production_hosts = array(
+        'well.mcmaster.ca',
+        'www.well.mcmaster.ca',
+    );
+
+    return in_array($host, $production_hosts, true);
+}
+
 function well_force_https_urls($url) {
     if (is_string($url)) {
         return str_replace('http://', 'https://', $url);
@@ -29,28 +63,31 @@ function well_force_https_urls($url) {
     return $url;
 }
 
-// Apply to all possible URL filters
-add_filter('option_home', 'well_force_https_urls');
-add_filter('option_siteurl', 'well_force_https_urls');
-add_filter('content_url', 'well_force_https_urls');
-add_filter('plugins_url', 'well_force_https_urls');
-add_filter('theme_root_uri', 'well_force_https_urls');
-add_filter('stylesheet_directory_uri', 'well_force_https_urls');
-add_filter('template_directory_uri', 'well_force_https_urls');
-add_filter('script_loader_src', 'well_force_https_urls');
-add_filter('style_loader_src', 'well_force_https_urls');
-add_filter('wp_get_attachment_url', 'well_force_https_urls');
-add_filter('wp_get_attachment_image_src', 'well_force_https_urls');
-add_filter('the_content', 'well_force_https_urls');
-add_filter('bloginfo_url', 'well_force_https_urls');
+if (well_should_force_https_urls()) {
+    // PROD mode: apply URL normalization globally (legacy behavior).
+    add_filter('option_home', 'well_force_https_urls');
+    add_filter('option_siteurl', 'well_force_https_urls');
+    add_filter('content_url', 'well_force_https_urls');
+    add_filter('plugins_url', 'well_force_https_urls');
+    add_filter('theme_root_uri', 'well_force_https_urls');
+    add_filter('stylesheet_directory_uri', 'well_force_https_urls');
+    add_filter('template_directory_uri', 'well_force_https_urls');
+    add_filter('script_loader_src', 'well_force_https_urls');
+    add_filter('style_loader_src', 'well_force_https_urls');
+    add_filter('wp_get_attachment_url', 'well_force_https_urls');
+    add_filter('wp_get_attachment_image_src', 'well_force_https_urls');
+    add_filter('the_content', 'well_force_https_urls');
+    add_filter('bloginfo_url', 'well_force_https_urls');
 
-// Force HTTPS in output buffer (catches everything)
-function well_force_https_output_buffer($buffer) {
-    return str_replace('http://well.mcmaster.ca', 'https://well.mcmaster.ca', $buffer);
+    // Catch remaining hardcoded production URLs in rendered HTML.
+    function well_force_https_output_buffer($buffer) {
+        return str_replace('http://well.mcmaster.ca', 'https://well.mcmaster.ca', $buffer);
+    }
+
+    add_action('template_redirect', function() {
+        ob_start('well_force_https_output_buffer');
+    });
 }
-add_action('template_redirect', function() {
-    ob_start('well_force_https_output_buffer');
-});
 
 /**
  * This function is the proper WordPress way to load all of our theme's

@@ -187,6 +187,8 @@ Recommended follow-up production tasks:
 - [ ] Verify CORS configuration for backend API
 - [ ] Add authentication/authorization model for API and admin operations (service-to-service + operator access)
 - [ ] Move download generation/streaming to backend APIs; keep frontend as trigger-only to reduce UI lag on large exports
+- [ ] Add server-side resolution-aware downsampling so large chart requests return display-ready data instead of raw million-point payloads
+- [ ] Add precomputed rollups/materialized views for common time windows (1 min / 5 min / hourly / daily)
 - [ ] Add indexes on DB for query speed
 - [ ] Check if multiple concurrent users on the website are handled correctly
 
@@ -196,6 +198,10 @@ Recommended follow-up production tasks:
 - [ ] Add Flask-RestX for API documentation
 - [ ] Add backend unit tests for Flask routes, services, config parsing, sampling imports, and Borealis/export logic
 - [ ] Add integration tests for critical API endpoints (`/api/data`, `/api/latest`, `/api/analysis`, download/export paths)
+- [ ] Add async export jobs for large downloads with job status, retry handling, and downloadable artifact links
+- [ ] Add request-size/query-budget limits so very large ranges automatically aggregate instead of returning excessive raw data
+- [ ] Add Redis caching for latest metrics, recent data, and common aggregate queries with TTL/invalidation rules
+- [ ] Add email alerts for failed ingestion, failed exports/uploads, stale data pulls, and scheduled job exceptions
 - [ ] Add script to remove old PostgreSQL logs from `C:\Program Files\PostgreSQL\17\data\log`
 - [ ] Cron job for monthly Borealis retrieval (add to existing export script)
 - [ ] Fix sampling-data Excel import flow and align it with Borealis pull/export formats
@@ -204,10 +210,13 @@ Recommended follow-up production tasks:
 ### Frontend
 - [ ] Fix all TypeScript/ESLint errors (currently suppressed via config)
 - [ ] Add frontend unit tests for hooks, filter/query-state logic, data transforms, and API error/loading states
+- [ ] Cancel stale in-flight requests when filters/date ranges change quickly
+- [ ] Add chart-resolution logic so the UI requests aggregated data for wide date ranges and only fetches raw detail on zoom
 - [ ] Fix responsiveness of header logos on iPhone dimensions
 - [ ] Add Highcharts Boost Module for faster rendering on large datasets
 - [ ] Make Highcharts metric colours consistent across all loggers
 - [ ] Update download UI to use backend export endpoints with progress/error states
+- [ ] Move any heavy client-side data transforms/parsing into Web Workers if profiling shows UI blocking
 - [ ] Upgrade frontend to handle lag on large dataset renders
 
 ### WordPress
@@ -229,14 +238,20 @@ Recommended follow-up production tasks:
 - [ ] Add container hardening and image scanning in pipeline (base image pinning, vulnerability scan, signed images)
 - [ ] Add automated backend/database backups with restore testing and retention policy
 - [ ] Add file-level backup + restore plan for WordPress assets/theme/uploads and dashboard artifacts
+- [ ] Partition large measurement tables by time and benchmark query performance against current schema
 - [ ] Add database reliability tasks (index review, query plan checks, vacuum/analyze schedule, connection limits)
+- [ ] Add load testing and benchmark targets for common dashboard flows, heavy chart queries, exports, and concurrent usage
 - [ ] Extend caching with revalidation strategies and window-aware materialized views
 - [ ] Expand download options (Parquet, GeoJSON) with provenance metadata
 - [ ] Add end-to-end tests for filters, downloads, and AI analysis workflows
 - [ ] Add automated Lighthouse checks for accessibility and performance (WordPress)
 - [ ] Tighten proxy headers (CSP, X-Frame-Options) while preserving embed behavior
 - [ ] Build CI/CD pipeline for frontend, backend, and WordPress theme/plugin changes with required quality gates (unit tests, smoke tests, lint, type checks, build, deploy, rollback); use Netlify only for frontend preview builds, not final integration signoff
-- [ ] Add observability stack: uptime checks, centralized logs, metrics, alerts, and error tracking across Nginx, Flask, Next.js, WordPress, and PostgreSQL (grafana)
+- [ ] Add a secure GitHub webhook deploy flow that triggers only after CI checks pass, then pulls latest code and redeploys only affected Docker services
+- [ ] Refactor `git_pull.sh` into a modular, environment-driven deploy script that uses GitHub-provided/env-configured variables (branch, environment, changed services, compose profile)
+- [ ] Document the full CI/CD + webhook auto-deploy workflow in this README once implemented (inputs, secrets, rollback, and service selection logic)
+- [ ] Implement observability stack: Prometheus + Alertmanager + Grafana for metrics/alerts (or Sentry), and Loki + Promtail for centralized logs across Nginx, Flask, Next.js, WordPress, cron jobs, and PostgreSQL
+- [ ] Route Alertmanager notifications to email for ingestion failures, export/upload failures, stale-data windows, API 5xx spikes, and host/database health incidents
 - [ ] Define SLOs/SLIs and alert thresholds (availability, latency, error rate, data freshness, cron success)
 - [ ] Add synthetic monitoring for the full WordPress → iframe dashboard journey and key API health checks
 
