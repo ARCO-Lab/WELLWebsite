@@ -10,6 +10,14 @@ function well_theme_setup() {
     // 1. Load the Bootstrap Navwalker file.
     require_once get_template_directory() . '/inc/class-wp-bootstrap-navwalker.php';
 
+    add_theme_support('post-thumbnails');
+
+    // Standardized responsive image targets used across homepage/section media.
+    add_image_size('well-mobile', 414, 0, false);
+    add_image_size('well-tablet', 720, 0, false);
+    add_image_size('well-desktop', 1080, 0, false);
+    add_image_size('well-large', 1600, 0, false);
+
     // 2. Register the menu location.
     register_nav_menus( array(
         'primary' => __( 'Primary Menu', 'well' ),
@@ -257,16 +265,26 @@ function well_get_mcmaster_nav_menu() {
 }
 
 /**
- * Disable WordPress 6.7 auto sizes feature for images in post content only
- * This prevents the "sizes=auto" attribute from being added to content images,
- * which causes image distortion issues in some browsers and themes.
- * See: https://make.wordpress.org/core/2024/10/18/auto-sizes-for-lazy-loaded-images-in-wordpress-6-7/
+ * Normalize image attributes in post content.
+ * - Remove WordPress 6.7+ sizes="auto, ..." token.
+ * - Strip malformed inline aspect-ratio styles that can force image squish.
  */
 function well_remove_auto_sizes_from_content_images($content) {
-    if (is_singular() && in_the_loop() && is_main_query()) {
-        // Remove "auto, " from sizes attributes in post content
-        $content = preg_replace('/sizes="auto,\s*([^"]+)"/i', 'sizes="$1"', $content);
+    if (is_singular() && in_the_loop() && is_main_query() && is_string($content) && $content !== '') {
+        // Remove "auto, " from sizes attributes in post content images.
+        $content = preg_replace('/\s+sizes="auto,\s*([^"]+)"/i', ' sizes="$1"', $content);
+
+        // Remove inline aspect-ratio declarations that can distort images.
+        $content = preg_replace(
+            '/(<img[^>]*\sstyle="[^"]*)\s*aspect-ratio\s*:\s*[^;\"]+;?\s*([^"]*")/i',
+            '$1 $2',
+            $content
+        );
+
+        // Clean up empty style attributes left after removals.
+        $content = preg_replace('/\sstyle="\s*"/i', '', $content);
     }
+
     return $content;
 }
 add_filter('the_content', 'well_remove_auto_sizes_from_content_images', 20);

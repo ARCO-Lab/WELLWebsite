@@ -259,6 +259,56 @@ Recommended follow-up production tasks:
 
 ---
 
+## Potential Workflow: Highcharts At 5M+ Points
+
+This is a proposed implementation workflow to make chart rendering fast at very large data volumes while preserving full-fidelity exports.
+
+### 1. Fast Initial Load (Coarse Series)
+- Request downsampled data for wide date ranges from backend (target ~300 to 2000 points per visible chart).
+- Return metadata with each response: `original_count`, `downsampled_count`, `resolution`, `range_start`, `range_end`.
+- Render immediately so users see a responsive chart without waiting for raw data.
+
+### 2. Zoom-Triggered Detail Fetch
+- Keep Highcharts zoom enabled on x-axis.
+- On zoom selection, call backend for the selected time window at a finer resolution (or raw if the window is small).
+- Replace only the visible series data after fetch, with debounce and request-cancel logic to avoid UI stalls.
+
+### 3. Resolution Rules (Server-Side)
+- Use range-aware buckets (example):
+	- multi-month/year view: daily or weekly aggregates
+	- multi-week view: hourly aggregates
+	- short-range view: raw/minute-level data
+- Prefer LTTB or min/max bucket-preserving downsampling for trend fidelity.
+
+### 4. Download Strategy (Dual Path)
+- **Instant browser download:** export currently visible dataset (fast, may be downsampled).
+- **Async full export:** queue a background job for complete raw data, then provide email/download link when ready.
+- Keep exports generated server-side so frontend remains responsive.
+
+### 5. Caching + Queueing
+- Add Redis cache for common chart queries (range + metrics + group + resolution key).
+- Add Celery worker(s) for heavy exports and long-running data assembly.
+- Add status endpoint for export progress (`queued`, `running`, `ready`, `failed`).
+
+### 6. Database + API Performance Baseline
+- Ensure composite indexes cover chart query pattern: `(group_type, measurement_type, recorded_at)`.
+- Enforce query budgets/limits for extreme ranges.
+- Stream/iterate large DB reads in chunks for export jobs.
+
+### 7. UX Guardrails
+- Show "displaying summarized data" badge when coarse data is shown.
+- Show loading indicator only for zoom refinement region, not full-page blocking spinner.
+- Keep tooltips/legend consistent between coarse and fine datasets.
+
+### 8. Suggested Rollout Order
+1. Server-side range-aware downsampling API.
+2. Frontend zoom-refine fetch flow with request cancellation.
+3. Redis caching for repeated chart windows.
+4. Async full-data export (Celery + email/link delivery).
+5. Profiling and tuning (p95 API latency, chart time-to-interactive, export completion time).
+
+---
+
 ## FAQ
 
 **How does routing work end-to-end?**

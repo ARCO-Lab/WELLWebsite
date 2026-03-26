@@ -41,6 +41,36 @@ const MetricChart: React.FC<MetricChartProps> = ({
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
   const [chartOptions, setChartOptions] = useState<any>({});
+  const [resolvedHeight, setResolvedHeight] = useState(height);
+
+  useEffect(() => {
+    const resolveHeight = () => {
+      if (typeof window === 'undefined') {
+        setResolvedHeight(height);
+        return;
+      }
+
+      if (modalOpen) {
+        setResolvedHeight(height);
+        return;
+      }
+
+      const viewportWidth = window.innerWidth;
+      if (viewportWidth < 480) {
+        setResolvedHeight(Math.min(height, 280));
+      } else if (viewportWidth < 768) {
+        setResolvedHeight(Math.min(height, 340));
+      } else if (viewportWidth < 1024) {
+        setResolvedHeight(Math.min(height, 420));
+      } else {
+        setResolvedHeight(height);
+      }
+    };
+
+    resolveHeight();
+    window.addEventListener('resize', resolveHeight);
+    return () => window.removeEventListener('resize', resolveHeight);
+  }, [height, modalOpen]);
 
   useEffect(() => {
     if (!data || loading) return;
@@ -92,7 +122,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
     setChartOptions({
       chart: {
         zoomType: 'x',
-        height,
+        height: resolvedHeight,
         style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
       title: {
@@ -135,7 +165,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       })),
       series,
     });
-  }, [data, loading, activeGroup, subFilters, showLegend, height, modalOpen]);
+  }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
 
   return (
     <div className="relative">
@@ -146,7 +176,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
         highcharts={Highcharts}
         options={chartOptions}
         ref={chartRef}
-        containerProps={{ style: { height: `${height}px` } }}
+        containerProps={{ style: { height: `${resolvedHeight}px` } }}
       />
     </div>
   );

@@ -237,7 +237,7 @@ const Map: FC<MapProps> = ({
           options={{ pixelOffset: new google.maps.Size(0, -40), disableAutoPan: true }}
         >
           <div
-            className="p-0 m-0 min-w-[280px]"
+            className="m-0 w-[min(280px,calc(100vw-48px))] p-0"
             onMouseEnter={() => {
               if (hoverTimeout) clearTimeout(hoverTimeout);
               setIsInfoWindowHovered(true);

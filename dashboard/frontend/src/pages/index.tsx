@@ -284,22 +284,14 @@ export default function Dashboard() {
       <main className="min-h-screen bg-background text-foreground">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
-          {/* Title, tab triggers, and warning for sampling tab */}
-          <div className="col-span-full mb-6 flex justify-between items-center">
+          {/* Title and tab triggers */}
+          <div className="col-span-full mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <h1 className="text-3xl lg:text-4xl font-poppins font-bold text-primary">
-              WELL Dashboard
+              Dashboard
             </h1>
-          {/* REMOVE ONCE REAL DATA IS AVAILABLE */}
-            {activeTab === "sampling" && (
-              <div className="flex-1 flex justify-center">
-                <div className="bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-2 rounded text-center font-semibold mx-4">
-                  NOTE: This is mock data at the moment, will be updated in the future with real data.
-                </div>
-              </div>
-            )}
-            <TabsList>
-              <TabsTrigger value="sensor">West Campus</TabsTrigger>
-              <TabsTrigger value="sampling">Ancaster Watershed</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto sm:grid-cols-none">
+              <TabsTrigger value="sensor" className="w-full sm:w-auto">West Campus</TabsTrigger>
+              <TabsTrigger value="sampling" className="w-full sm:w-auto">Ancaster Watershed</TabsTrigger>
             </TabsList>
           </div>
 
@@ -310,7 +302,7 @@ export default function Dashboard() {
                 
                 {/* Filters Sidebar */}
                 <div className="lg:col-span-1">
-                  <div className="mcmaster-card p-6 h-fit sticky top-6">
+                  <div className="mcmaster-card h-fit p-6 lg:sticky lg:top-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                       Filters 
                       <Information id={1} />
@@ -368,7 +360,7 @@ export default function Dashboard() {
                     
                     {/* Latest Data */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card p-6 lg:min-h-[30rem] flex flex-col">
+                      <div className="mcmaster-card flex min-h-[24rem] flex-col p-6 lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Latest Data 
                           <Information id={3} />
@@ -401,7 +393,7 @@ export default function Dashboard() {
                     
                     {/* Map */}
                     <div className="lg:col-span-2">
-                      <div className="mcmaster-card p-6 h-96 lg:h-[30rem] flex flex-col">
+                      <div className="mcmaster-card flex h-[20rem] flex-col p-6 sm:h-[22rem] lg:h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Map 
                           <Information id={2} />
@@ -535,7 +527,7 @@ export default function Dashboard() {
                 
                 {/* Filters Sidebar */}
                 <div className="lg:col-span-1">
-                  <div className="mcmaster-card p-6 h-fit sticky top-6">
+                  <div className="mcmaster-card h-fit p-6 lg:sticky lg:top-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                       Filters 
                       <Information id={6} />

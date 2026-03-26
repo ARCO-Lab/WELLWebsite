@@ -13,8 +13,7 @@ const Footer = () => {
       icon: (
         <svg
           id="social-instagram"
-          className="social"
-          style={{ maxWidth: "20px", height: "28px", fill: "#fff" }}
+          className="social h-4 w-4 fill-current sm:h-5 sm:w-5"
           xmlns="https://www.w3.org/2000/svg"
           width="17.14"
           height="17.14"
@@ -35,8 +34,7 @@ const Footer = () => {
       icon: (
         <svg
           id="social-x"
-          className="social"
-          style={{ maxWidth: "20px", height: "28px", fill: "#fff" }}
+          className="social h-4 w-4 fill-current sm:h-5 sm:w-5"
           xmlns="https://www.w3.org/2000/svg"
           viewBox="0 0 512 512"
         >
@@ -51,8 +49,7 @@ const Footer = () => {
       icon: (
         <svg
           id="social-facebook"
-          className="social"
-          style={{ maxWidth: "20px", height: "28px", fill: "#fff" }}
+          className="social h-4 w-4 fill-current sm:h-5 sm:w-5"
           xmlns="https://www.w3.org/2000/svg"
           width="9.64"
           height="18.57"
@@ -73,8 +70,7 @@ const Footer = () => {
       icon: (
         <svg
           id="social-youtube"
-          className="social"
-          style={{ maxWidth: "18px", height: "28px", fill: "#fff" }}
+          className="social h-4 w-4 fill-current sm:h-5 sm:w-5"
           xmlns="https://www.w3.org/2000/svg"
           width="20"
           height="14.06"
@@ -95,8 +91,7 @@ const Footer = () => {
       icon: (
         <svg
           id="social-linkedin"
-          className="social"
-          style={{ maxWidth: "16px", height: "28px", fill: "#fff" }}
+          className="social h-4 w-4 fill-current sm:h-5 sm:w-5"
           xmlns="https://www.w3.org/2000/svg"
           width="17.14"
           height="16.38"
@@ -114,10 +109,10 @@ const Footer = () => {
 
   return (
     <footer className="bg-primary text-primary-foreground mt-8">
-      <div className="container mx-auto px-4 py-8">
-        <div className="text-center space-y-6">
-          {/* McMaster University Logo */}
-          <div className="flex justify-center">
+      <div className="container mx-auto px-4 py-12">
+        <div className="space-y-6">
+          {/* Logos Row */}
+          <div className="flex justify-center gap-8 pb-6 border-b border-white/40">
             <a
               href="https://www.mcmaster.ca/"
               target="_blank"
@@ -126,44 +121,62 @@ const Footer = () => {
               <Image
                 src="/logos/m24-bw_left-rev.svg"
                 alt="McMaster University"
-                width={200}
-                height={48}
-                className="h-20 object-contain"
+                width={320}
+                height={90}
+                sizes="(max-width: 640px) 240px, 320px"
+                className="h-auto w-72 object-contain sm:w-96"
+                priority
+              />
+            </a>
+            <a
+              href="https://well.mcmaster.ca"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Image
+                src="/logos/WELL_LogoAndTitle_TransparentBG.PNG"
+                alt="WELL Logo"
+                width={220}
+                height={220}
+                sizes="(max-width: 640px) 150px, 220px"
+                className="h-auto w-48 object-contain sm:w-56"
                 priority
               />
             </a>
           </div>
 
-          {/* Links */}
-          <div className="flex justify-center space-x-8 text-sm">
-            <a
-              href="https://www.mcmaster.ca/opr/html/opr/contact_us/main/contact_us.html"
-              className="hover:text-secondary transition-colors"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Contact
-            </a>
-            <a
-              href="https://www.mcmaster.ca/opr/html/footer/main/terms_of_use.html"
-              className="hover:text-secondary transition-colors"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Terms & Conditions
-            </a>
-            <a
-              href="https://www.mcmaster.ca/privacy/"
-              className="hover:text-secondary transition-colors"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Privacy Policy
-            </a>
+          {/* Links Section - centered vertically and horizontally */}
+          <div className="flex items-center justify-center pt-0 pb-6 border-b border-white/40">
+            <div className="flex flex-wrap justify-center items-center gap-x-24 gap-y-2 text-lg">
+              <a
+                href="https://www.mcmaster.ca/opr/html/opr/contact_us/main/contact_us.html"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Contact
+              </a>
+              <a
+                href="https://www.mcmaster.ca/opr/html/footer/main/terms_of_use.html"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Terms & Conditions
+              </a>
+              <a
+                href="https://www.mcmaster.ca/privacy/"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Privacy Policy
+              </a>
+            </div>
           </div>
 
-          {/* Social Media Links */}
-          <ul id="social--links" className="flex justify-center space-x-4">
+          {/* Social Media Links - with white circles */}
+          <ul id="social--links" className="flex justify-center space-x-8 py-4">
             {socialLinks.map((social) => (
               <li key={social.name} className={social.className}>
                 <a
@@ -171,7 +184,7 @@ const Footer = () => {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={social.name}
-                  className="p-2 hover:text-secondary transition-colors"
+                  className="p-1 rounded-full border-2 border-white/80 text-primary-foreground hover:border-secondary hover:text-secondary transition-colors flex items-center justify-center"
                 >
                   {social.icon}
                 </a>
@@ -179,32 +192,30 @@ const Footer = () => {
             ))}
           </ul>
 
-          {/* Address and Contact Info */}
-          <div className="space-y-2 text-sm">
-            <div>
+          {/* Address, Phone, and Copyright */}
+          <div className="text-center text-xs sm:text-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-center gap-2 sm:gap-6">
               <a
                 href="https://www.google.ca/maps/place/McMaster+University/@43.260879,-79.919225,17z/data=%213m1%214b1%214m2%213m1%211s0x882c84ac44f72ac1:0x399e00ea6143011c"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-semibold hover:text-secondary transition-colors"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
               >
-                1280 Main Street West Hamilton, Ontario L8S 4L8
+                1280 Main Street West{"\u00A0\u00A0\u00A0\u00A0"}Hamilton, Ontario L8S 4L8
               </a>
-            </div>
-            <div>
               <a
                 href="tel:+19055259140"
-                className="font-semibold hover:text-secondary transition-colors"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
               >
                 (905) 525-9140
               </a>
             </div>
-            <div className="pt-2">
+            <div>
               <a
                 href="https://www.mcmaster.ca/"
-                className="font-semibold hover:text-secondary transition-colors"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
               >
-                © 2025 McMaster University
+                © 2026 McMaster University
               </a>
             </div>
           </div>

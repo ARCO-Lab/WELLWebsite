@@ -66,6 +66,7 @@ const WeatherMetrics = ({
   const filteredMetrics = metricMap.filter(({ label }) => 
     activeKeys.includes(label)
   );
+  const CARD_TRACK_WIDTH = 240;
 
   // Create infinite scrolling effect by duplicating metrics
   const infiniteMetrics = [...filteredMetrics, ...filteredMetrics, ...filteredMetrics];
@@ -80,7 +81,7 @@ const WeatherMetrics = ({
       setScrollPosition(prev => {
         const newPos = prev + e.deltaX * 0.5;
         // Adjust width calculation for new card size
-        return Math.max(0, Math.min(newPos, filteredMetrics.length * 240));
+        return Math.max(0, Math.min(newPos, filteredMetrics.length * CARD_TRACK_WIDTH));
       });
     };
 
@@ -101,7 +102,7 @@ const WeatherMetrics = ({
           className={`flex space-x-3 ${isPaused ? '' : 'animate-scroll'}`}
           style={{
             // Adjust width calculation for new card size
-            width: `${filteredMetrics.length * 240}px`,
+            width: `${filteredMetrics.length * CARD_TRACK_WIDTH}px`,
             transform: `translateX(-${scrollPosition}px)`
           }}
         >
@@ -115,7 +116,7 @@ const WeatherMetrics = ({
             return (
               <Card 
                 key={`${item.key}-${index}`} 
-                className="min-w-[260px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0"
+                  className="min-w-[220px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0 sm:min-w-[240px]"
               >
                 <CardContent className="p-3">
                   <div className="flex items-center justify-between gap-4">

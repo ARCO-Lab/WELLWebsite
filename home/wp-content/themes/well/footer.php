@@ -3,9 +3,14 @@
 // It includes McMaster University links, social media icons, and contact information.
 ?>
 <footer id="mac-footer" class="maroon" style="background:#7a003c;">
-    <a style="text-decoration:none; color:#FFF" href="https://www.mcmaster.ca/">
-        <span class="sr-only">McMaster logo</span>
-    </a>
+    <div class="footer-logo-row" style="display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:center; gap:12px; width:100%; max-width:700px; margin:0 auto 8px;">
+        <a class="footer-logo-link footer-logo-link--mcmaster" style="text-decoration:none; color:#FFF; display:inline-flex; align-items:center; justify-content:center; flex:0 1 60%; min-width:0;" href="https://www.mcmaster.ca/" aria-label="McMaster University">
+            <img src="<?php echo esc_url(get_template_directory_uri() . '/img/m24-bw_left-rev.svg'); ?>" alt="McMaster University" style="display:block; width:100%; max-width:100%; height:auto;">
+        </a>
+        <a class="footer-logo-link footer-logo-link--well" style="text-decoration:none; color:#FFF; display:inline-flex; align-items:center; justify-content:center; flex:0 1 40%; min-width:0;" href="https://well.mcmaster.ca/" aria-label="WELL">
+            <img src="<?php echo esc_url(get_template_directory_uri() . '/img/welllogo.svg'); ?>" alt="WELL" style="display:block; width:100%; max-width:100%; height:auto;">
+        </a>
+    </div>
     <ul id="mcmaster--links">
         <li><a style="color:#FFF" href="https://www.mcmaster.ca/opr/html/opr/contact_us/main/contact_us.html">Contact</a></li>
         <li><a style="color:#FFF" href="https://www.mcmaster.ca/opr/html/footer/main/terms_of_use.html">Terms & Conditions</a></li>
@@ -42,7 +47,7 @@
         <li><a style="color:#FFF" href="https://www.google.ca/maps/place/McMaster+University/@43.260879,-79.919225,17z/data=%213m1%214b1%214m2%213m1%211s0x882c84ac44f72ac1:0x399e00ea6143011c" target="_blank" id="mcmaster-address"><strong>1280 Main Street West  Hamilton,&nbsp;Ontario&nbsp;&nbsp;L8S&nbsp;4L8</strong></a></li>
         <li><a style="color:#FFF" href="tel:+19055259140" id="mcmaster-phone"><strong>(905) 525-9140</strong></a></li>
         <br>
-        <li><a style="color:#FFF" href="https://www.mcmaster.ca/" id="mcmaster-copyright"><strong>© 2025 McMaster University</strong></a></li>
+        <li><a style="color:#FFF" href="https://www.mcmaster.ca/" id="mcmaster-copyright"><strong>© 2026 McMaster University</strong></a></li>
     </ul>
 </footer>
 

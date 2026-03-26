@@ -30,7 +30,10 @@ get_header();
   </div>
 </banner>
 <?php $dashboard_url = isset($dashboard_url) ? $dashboard_url : (getenv('DASHBOARD_URL') ?: 'https://welldash.mcmaster.ca'); ?>
-<iframe src="<?php echo esc_url($dashboard_url); ?>/" style="width:100%;height:100vh;border:none;"></iframe>
+<iframe
+  src="<?php echo esc_url($dashboard_url); ?>/"
+  style="width:100%;height:clamp(560px,88vh,1000px);border:none;display:block;"
+></iframe>
 
 <section class="content-area cool-grey my-4">
   <div class="container">
@@ -49,10 +52,12 @@ get_header();
                       /wp-content/uploads/2025/09/borealislogo.jpg 1080w,
                       /wp-content/uploads/2025/09/borealislogo.jpg 1600w
                   "
-                  sizes="(max-width: 480px) 150px, (max-width: 800px) 270px, 300px"
+                  sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px"
                   src="/wp-content/uploads/2025/09/borealislogo.jpg"
                   class="img-fluid d-block mx-auto"
                   style="max-width: 200px; width: 100%; height: auto;"
+                  loading="lazy"
+                  decoding="async"
                 />            
               </figure>
             </div>
@@ -62,8 +67,8 @@ get_header();
             <h2>Archived Datasets</h2>
             <p>For premade datasets uploaded monthly, visit the <strong>WELL</strong> data repositories:</p>
             <p style="text-align: left;">
-              <a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://borealisdata.ca/dataverse/WELL" target="_blank" rel="noopener noreferrer">Borealis</a>
-              <a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://mcmasteru365.sharepoint.com/sites/WELL" target="_blank" rel="noopener noreferrer">Sharepoint</a>
+              <a class="btn btn-primary btn-lg text-center d-inline-block mb-2 mr-sm-2" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://borealisdata.ca/dataverse/WELL" target="_blank" rel="noopener noreferrer">Borealis</a>
+              <a class="btn btn-primary btn-lg text-center d-inline-block mb-2" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://mcmasteru365.sharepoint.com/sites/WELL" target="_blank" rel="noopener noreferrer">Sharepoint</a>
             </p>
           </div>
           <!-- Right image -->
@@ -78,9 +83,11 @@ get_header();
                       /wp-content/uploads/2025/09/sharepointlogo.png 1080w,
                       /wp-content/uploads/2025/09/sharepointlogo.png 1600w
                   "
-                  sizes="(max-width: 480px) 150px, (max-width: 800px) 270px, 300px"
+                  sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px"
                   src="/wp-content/uploads/2025/09/sharepointlogo.png"
                   class="img-fluid d-block mx-auto"
+                  loading="lazy"
+                  decoding="async"
                 />            
               </figure>
             </div>

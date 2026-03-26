@@ -30,6 +30,7 @@ const LoggerMetrics = ({
   const loggerConfig = SENSOR_FILTER_CONFIG.gauges;
   const allLoggerIds = Object.keys(loggerConfig.sites);
   const allMetrics = loggerConfig.metrics;
+  const CARD_TRACK_WIDTH = 272;
 
   // 1. Filter metrics to display based on activeKeys - MATCH CreekMetrics logic
   const metricsToDisplay = useMemo(() => {
@@ -81,7 +82,7 @@ const LoggerMetrics = ({
       e.preventDefault();
       setScrollPosition(prev => {
         const newPos = prev + e.deltaX * 0.5; 
-        const maxScroll = loggerMetricCombinations.length * 272;
+        const maxScroll = loggerMetricCombinations.length * CARD_TRACK_WIDTH;
         return Math.max(0, Math.min(newPos, maxScroll));
       });
     };
@@ -118,7 +119,7 @@ const LoggerMetrics = ({
             className={`flex space-x-3 ${isPaused ? '' : 'animate-scroll'}`}
             style={{
               transform: `translateX(-${scrollPosition}px)`,
-              width: `${loggerMetricCombinations.length * 272}px`
+              width: `${loggerMetricCombinations.length * CARD_TRACK_WIDTH}px`
             }}
           >
             {infiniteCombinations.map((item, index) => {
@@ -136,7 +137,7 @@ const LoggerMetrics = ({
               return (
                 <Card 
                   key={`${item.combinedKey}-${index}`} 
-                  className="min-w-[260px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0"
+                  className="min-w-[220px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0 sm:min-w-[240px]"
                 >
                   <CardContent className="p-3 relative">
                     <div className="absolute top-0 left-9">

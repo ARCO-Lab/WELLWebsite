@@ -87,11 +87,11 @@ const LoggerGraph = ({
       case 2:
         return 'grid-cols-1'; // 2 loggers: stacked vertically
       case 3:
-        return 'md:grid-cols-3'; // 3 loggers: 3 columns on medium screens+
+        return 'grid-cols-1 lg:grid-cols-3';
       case 4:
-        return 'md:grid-cols-4'; // 4 loggers: 4 columns on medium screens+
+        return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-4';
       case 5:
-        return 'md:grid-cols-5'; // 5 loggers: 5 columns on medium screens+
+        return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-5';
       default:
         return 'grid-cols-1 md:grid-cols-2'; // Default fallback
     }

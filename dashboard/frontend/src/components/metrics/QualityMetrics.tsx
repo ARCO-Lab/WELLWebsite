@@ -57,6 +57,7 @@ const QualityMetrics = ({
   const filteredMetrics = metricMap.filter(({ label }) => 
     activeKeys.includes(label)
   );
+  const CARD_TRACK_WIDTH = 280;
 
   // Create infinite scrolling effect by duplicating metrics
   const infiniteMetrics = [...filteredMetrics, ...filteredMetrics, ...filteredMetrics];
@@ -70,7 +71,7 @@ const QualityMetrics = ({
       e.preventDefault();
       setScrollPosition(prev => {
         const newPos = prev + e.deltaX * 0.5;
-        return Math.max(0, Math.min(newPos, filteredMetrics.length * 280));
+        return Math.max(0, Math.min(newPos, filteredMetrics.length * CARD_TRACK_WIDTH));
       });
     };
 
@@ -90,7 +91,7 @@ const QualityMetrics = ({
         <div 
           className={`flex space-x-3 ${isPaused ? '' : 'animate-scroll'}`}
           style={{
-            width: `${filteredMetrics.length * 280}px`,
+            width: `${filteredMetrics.length * CARD_TRACK_WIDTH}px`,
             transform: `translateX(-${scrollPosition}px)`
           }}
         >
@@ -105,7 +106,7 @@ const QualityMetrics = ({
             return (
               <Card 
                 key={`${item.key}-${index}`} 
-                className="min-w-[260px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0"
+                className="min-w-[220px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0 sm:min-w-[240px]"
               >
                 <CardContent className="p-3">
                   <div className="flex items-center justify-between gap-4">

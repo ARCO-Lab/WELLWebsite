@@ -1,7 +1,7 @@
 // This file defines the WindRose component for rendering wind rose diagrams using Highcharts.
 // It bins wind speed and direction data, then displays frequency distributions in a polar column chart.
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Highcharts from 'highcharts/highcharts-more';
 import HighchartsReact from 'highcharts-react-official';
 import { fabClasses } from '@mui/material';
@@ -73,12 +73,30 @@ interface WindRoseProps {
 
 const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
   const series = getWindRoseSeries(data);
+  const [chartHeight, setChartHeight] = useState(400);
+
+  useEffect(() => {
+    const updateHeight = () => {
+      if (typeof window === 'undefined') return;
+      if (window.innerWidth < 480) {
+        setChartHeight(280);
+      } else if (window.innerWidth < 768) {
+        setChartHeight(320);
+      } else {
+        setChartHeight(400);
+      }
+    };
+
+    updateHeight();
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
 
   const options = {
     chart: { 
       polar: true, 
       type: 'column',
-      height: 400,
+      height: chartHeight,
       style: { fontFamily: "'Poppins', Arial, sans-serif" }
     },
     title: {

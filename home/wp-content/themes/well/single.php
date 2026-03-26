@@ -39,9 +39,15 @@ if ( have_posts() ) :
                                     <div class="dropdown-menu" aria-labelledby="dropdownMenuButton">
                                         <div class="social-share-title"></div>
                                         <div class="ss-icon-menu">
-                                            <a class="ss-icons ss-twitter" href="https://twitter.com/intent/tweet?url=<?php the_permalink(); ?>&text=<?php the_title(); ?>" target="_blank"><span class="sr-only">Twitter</span></a>
-                                            <a class="ss-icons ss-facebook" href="https://www.facebook.com/sharer.php?u=<?php the_permalink(); ?>" target="_blank"><span class="sr-only">Facebook</span></a>
-                                            <a class="ss-icons ss-linkedin" href="https://www.linkedin.com/sharing/share-offsite/?url=<?php the_permalink(); ?>" target="_blank"><span class="sr-only">LinkedIn</span></a>
+                                            <a class="ss-icons ss-twitter" href="https://twitter.com/intent/tweet?url=<?php echo urlencode(get_permalink()); ?>&text=<?php echo urlencode(get_the_title()); ?>" target="_blank" rel="noopener noreferrer" aria-label="Share on X">
+                                                <span class="sr-only">X</span>
+                                            </a>
+                                            <a class="ss-icons ss-facebook" href="https://www.facebook.com/sharer.php?u=<?php echo urlencode(get_permalink()); ?>" target="_blank" rel="noopener noreferrer" aria-label="Share on Facebook">
+                                                <span class="sr-only">Facebook</span>
+                                            </a>
+                                            <a class="ss-icons ss-linkedin" href="https://www.linkedin.com/sharing/share-offsite/?url=<?php echo urlencode(get_permalink()); ?>" target="_blank" rel="noopener noreferrer" aria-label="Share on LinkedIn">
+                                                <span class="sr-only">LinkedIn</span>
+                                            </a>
                                         </div>
                                     </div>
                                 </div>
@@ -52,7 +58,9 @@ if ( have_posts() ) :
                             <hr class="news-divider">
                         </div>
 
-                        <?php the_content(); ?>
+                        <div class="entry-content">
+                            <?php the_content(); ?>
+                        </div>
 
                         <span class="category h6"><i class="fa fa-tags"></i>&nbsp;News</span>
                     </section>

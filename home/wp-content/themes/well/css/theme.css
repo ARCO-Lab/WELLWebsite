@@ -15493,6 +15493,12 @@ body.role-subscriber #wpadminbar {
   border-bottom: 5px solid var(--secondary-colour);
 }
 
+/* Narrow safety fallback for the affected article image rendering only. */
+.single-post.postid-31 #site-content .wp-block-image img {
+  aspect-ratio: auto !important;
+  height: auto !important;
+}
+
 blockquote {
   margin-left: 2.2rem;
   padding-left: 1.2rem;
@@ -16201,6 +16207,7 @@ body.noscroll {
 
 #navLinks {
   justify-content: flex-end;
+  max-width: 45vw;
 }
 
 #well-home-logo {
@@ -16210,14 +16217,51 @@ body.noscroll {
 }
 
 #well-home-logo img {
-  width: 130px;
+  width: clamp(85px, 18vw, 130px);
   height: auto;
   display: block;
+  margin-top: 4px;
 }
 
 #well-home-logo:hover,
 #well-home-logo:focus {
   opacity: 0.9;
+}
+
+#mcmaster-brand img {
+  max-width: 100%;
+  height: auto;
+  width: clamp(85px, 18vw, 130px) !important;
+}
+
+@media (max-width: 767.98px) {
+  #navLinks {
+    max-width: 42vw;
+    margin-top: 10px;
+    right: 8px;
+  }
+
+  #well-home-logo img {
+    width: clamp(80px, 18vw, 120px);
+  }
+
+  #mcmaster-brand img {
+    width: clamp(80px, 18vw, 120px) !important;
+  }
+}
+
+@media (max-width: 575.98px) {
+  #navLinks {
+    max-width: 38vw;
+  }
+
+  #well-home-logo img {
+    width: clamp(75px, 18vw, 110px);
+  }
+
+  #mcmaster-brand img {
+    width: clamp(75px, 18vw, 110px) !important;
+  }
 }
 
 #mcmaster-header,
@@ -16749,6 +16793,13 @@ footer#mac-footer ul#mcmaster--links li a {
   letter-spacing: 1px;
 }
 
+footer#mac-footer ul#mcmaster--links li a:hover,
+footer#mac-footer ul#address--links a:hover {
+  color: #fff;
+  text-decoration: underline;
+  text-decoration-color: #fff;
+}
+
 footer#mac-footer ul#social--links a:hover {
   border-color: var(--secondary-colour);
 }
@@ -17098,6 +17149,38 @@ header#mcmaster-header .mcmaster-header__site-logo[src*="brand-standards"] {
     clear: both;
     width: 100%;
     padding-top: 16px;
+  }
+
+  header#mcmaster-header #mcmaster-brand {
+    float: none !important;
+    padding-top: 0 !important;
+    margin-top: 0;
+    height: 72px;
+    display: flex !important;
+    align-items: center;
+  }
+
+  header#mcmaster-header #mcmaster-brand img {
+    display: block;
+    margin: 0 !important;
+  }
+
+  header#mcmaster-header #navLinks {
+    top: 0;
+    margin-top: 0 !important;
+    height: 72px;
+    display: flex;
+    align-items: center;
+  }
+
+  header#mcmaster-header #well-home-logo {
+    display: flex;
+    align-items: center;
+    height: 72px;
+  }
+
+  header#mcmaster-header #well-home-logo img {
+    margin-top: 0;
   }
 
   header#mcmaster-header .mcmaster-header__header-title {

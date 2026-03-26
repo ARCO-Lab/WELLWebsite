@@ -1,13 +1,37 @@
 /* This code was adapted from MacSites' WordPress Theme */
 
-#mac-footer>a {
+#mac-footer .footer-logo-row {
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: center !important;
+  align-items: center !important;
+  gap: clamp(8px, 1.8vw, 20px);
+  margin: 0 auto 8px;
+  flex-wrap: nowrap !important;
+  width: 100%;
+  max-width: 520px;
+}
+
+#mac-footer .footer-logo-link {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+#mac-footer .footer-logo-link img {
   display: block;
-  background-image: url('../img/m24-bw_left-rev.svg') !important;
-  background-repeat: no-repeat;
-  background-position: center;
-  height: 114px;
-  width: 360px;
-  margin: 0 auto;
+  height: auto;
+  max-width: 100%;
+}
+
+#mac-footer .footer-logo-link--mcmaster img {
+  width: clamp(130px, 30vw, 220px);
+}
+
+#mac-footer .footer-logo-link--well img {
+  width: clamp(95px, 22vw, 150px);
 }
 
 #mps-footer {

@@ -9,14 +9,17 @@
       <div class="col-lg-12">
         <div class="card card-shadow border-top-0">
           <div class="card-main border-top h-100">
-            <div class="card border-0 no-shadow card-hover flex-sm-row">
+            <div class="card border-0 no-shadow card-hover flex-lg-row">
               <div class="card-img-mask card-img-mask-full card-img-mh min-w-50 order-sm-1">
                 <img
                 srcset="/wp-content/uploads/2025/08/dashboardPreview.png 414w,
                         /wp-content/uploads/2025/08/dashboardPreview.png 720w,
                         /wp-content/uploads/2025/08/dashboardPreview.png 1080w"
-                sizes="(max-width: 480px) 414px, (max-width: 800px) 720px, 1080px"
+                sizes="(max-width: 576px) 100vw, (max-width: 991.98px) 90vw, 50vw"
                 src="/wp-content/uploads/2025/08/dashboardPreview.png"
+                loading="lazy"
+                decoding="async"
+                class="img-fluid"
                 alt="Dashboard preview"
                 role="presentation"
                 />            

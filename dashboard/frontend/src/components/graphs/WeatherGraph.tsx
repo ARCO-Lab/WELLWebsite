@@ -91,14 +91,14 @@ const WeatherGraph = ({
       {/* Render wind rose or metric chart based on tab and filters */}
       {weatherTab === "windrose" && canShowWindrose
         ? (
-          <div className={`flex w-full ${hasWindSpeed && hasGustSpeed ? "flex-row gap-4" : "flex-col"}`}>
+          <div className={`flex w-full ${hasWindSpeed && hasGustSpeed ? "flex-col gap-4 lg:flex-row" : "flex-col"}`}>
             {hasWindSpeed && (
-              <div className={hasWindSpeed && hasGustSpeed ? "w-1/2" : "w-full"}>
+              <div className={hasWindSpeed && hasGustSpeed ? "w-full lg:w-1/2" : "w-full"}>
                 <WindRose data={windSpeedRoseData} title="Wind Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
               </div>
             )}
             {hasGustSpeed && (
-              <div className={hasWindSpeed && hasGustSpeed ? "w-1/2" : "w-full"}>
+              <div className={hasWindSpeed && hasGustSpeed ? "w-full lg:w-1/2" : "w-full"}>
                 <WindRose data={gustSpeedRoseData} title="Gust Speed" showLegend={Object.values(activeGroups).filter(Boolean).length < 2} />
               </div>
             )}

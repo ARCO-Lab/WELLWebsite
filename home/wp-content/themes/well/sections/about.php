@@ -21,9 +21,11 @@
                     /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-300x300.png 300w,
                     /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG.png 600w
                 "
-                sizes="(max-width: 480px) 150px, (max-width: 800px) 270px, 300px"
+                  sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px"
                 src="/wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG.png"
                 class="img-fluid d-block mx-auto"
+                  loading="lazy"
+                  decoding="async"
                 />            
               </figure>
             </div>

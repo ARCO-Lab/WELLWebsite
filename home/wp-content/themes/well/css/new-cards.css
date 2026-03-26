@@ -581,11 +581,11 @@ banner section.carousel .container-fluid>.row,
 banner section.carousel div.row.carousel-limiter,
 banner section.carousel div.row.carousel-limiter>div,
 banner section.carousel div.row.carousel-limiter>div>div {
-  height: 100%;
+  height: auto;
 }
 
 banner section.carousel .container-fluid {
-  padding: none !important;
+  padding: 0 !important;
 }
 
 banner section.carousel div.carousel-text.text-lg-right,
@@ -595,6 +595,34 @@ banner section.carousel div.carousel-text.text-lg-left {
 
 banner section.carousel div.carousel-text {
   overflow: hidden;
+  height: auto;
+}
+
+banner section.carousel .hero-carousel .flickity-page-dots {
+  left: 0;
+  right: 0;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+}
+
+banner section.carousel .hero-carousel .flickity-page-dots .dot {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+banner section.carousel .hero-carousel .flickity-page-dots .dot:hover,
+banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  transform: scale(1.3);
 }
 
 .hero-carousel .carousel-cell.narrow {
@@ -607,23 +635,19 @@ banner section.carousel div.carousel-text {
 
 @media (min-width: 991.98px) {
   banner section.carousel div.row.carousel-limiter {
+    width: 40%;
+    background-color: #fff !important;
+  }
 
-    &:has(.text-lg-right),
-    &:has(.text-lg-left) {
-      width: 40%;
-      background-color: #fff !important;
-    }
-
-    .text-lg-right,
-    .text-lg-left {
-      width: 40%;
-    }
+  banner section.carousel div.row.carousel-limiter .text-lg-right,
+  banner section.carousel div.row.carousel-limiter .text-lg-left {
+    width: 100%;
   }
 }
 
 @media (min-width: 1200px) {
   .hero-carousel {
-    height: auto;
+    height: 500px;
   }
 }
 
@@ -635,6 +659,27 @@ banner section.carousel div.carousel-text {
   .hero-carousel p.banner-text {
     font-size: 16px;
     line-height: 1.375rem;
+  }
+}
+
+@media (max-width: 991.98px) {
+  banner section.carousel .container-fluid,
+  banner section.carousel .container-fluid > .row,
+  banner section.carousel div.row.carousel-limiter,
+  banner section.carousel div.row.carousel-limiter > div,
+  banner section.carousel div.row.carousel-limiter > div > div {
+    height: auto;
+    min-height: 0;
+  }
+
+  banner section.carousel .hero-carousel .carousel-cell.drop {
+    overflow: hidden;
+  }
+
+  banner section.carousel div.carousel-text.text-lg-right,
+  banner section.carousel div.carousel-text.text-lg-left,
+  banner section.carousel div.carousel-text {
+    overflow: hidden;
   }
 }
 

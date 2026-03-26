@@ -45,6 +45,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [scrollPosition, setScrollPosition] = useState(0);
+  const CARD_TRACK_WIDTH = 272;
 
   const metricCombinations = [];
   const creekConfig = SAMPLING_FILTER_CONFIG[creekKey];
@@ -100,7 +101,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
       setScrollPosition(prev => {
         // Use e.deltaX for horizontal scroll, multiplied for sensitivity
         const newPos = prev + e.deltaX * 0.5; 
-        const maxScroll = metricCombinations.length * 272;
+        const maxScroll = metricCombinations.length * CARD_TRACK_WIDTH;
         return Math.max(0, Math.min(newPos, maxScroll));
       });
     };
@@ -136,7 +137,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
             className={`flex space-x-3 ${isPaused ? '' : 'animate-scroll'}`}
             style={{
               transform: `translateX(-${scrollPosition}px)`,
-              width: `${metricCombinations.length * 272}px`
+              width: `${metricCombinations.length * CARD_TRACK_WIDTH}px`
             }}
           >
             {infiniteCombinations.map((item, index) => {
@@ -152,7 +153,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({
               return (
                 <Card 
                   key={`${item.combinedKey}-${index}`} 
-                  className="min-w-[260px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0"
+                  className="min-w-[220px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0 sm:min-w-[240px]"
                 >
                   <CardContent className="p-3 relative">
                     <div className="absolute top-0 left-9">

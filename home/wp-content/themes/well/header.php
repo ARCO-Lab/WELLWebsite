@@ -31,7 +31,7 @@
         </div>
         <div class="header__inner">
             <a href="https://www.mcmaster.ca" id="mcmaster-brand" class="nav-item" style="float:left; display:block; z-index:1000; position:relative; padding-top: 8px;">
-                <img src="<?php echo get_template_directory_uri(); ?>/img/logo.svg" style="width: 180px; height: 80px; margin: 0 20px 0 -20px;" alt="McMaster logo" />
+                <img src="<?php echo get_template_directory_uri(); ?>/img/logo.svg" style="height: auto; margin: 0 12px 0 -12px;" alt="McMaster logo" />
                 <span class="sr-only">McMaster logo</span>
             </a>
             <div id="mcmaster-header__title">
@@ -39,7 +39,7 @@
                 <h1 class="mcmaster-header__header-title"><a href="<?php echo esc_url( home_url( '/' ) ); ?>">Watershed and Ecosystems Living Lab</a></h1>
             </div>
         </div>
-        <div id="navLinks" style="display: flex; align-items: center; width:160px; z-index:1200; transition: width 0s; margin-top: 24px; justify-content: flex-end;">
+        <div id="navLinks" style="display: flex; align-items: center; width: auto; z-index:1200; transition: width 0s; margin-top: 16px; justify-content: flex-end;">
             <a href="<?php echo esc_url( home_url( '/' ) ); ?>" id="well-home-logo" class="nav-item" aria-label="WELL Home">
                 <img src="<?php echo get_template_directory_uri(); ?>/img/welllogo.svg" alt="WELL logo" />
             </a>
