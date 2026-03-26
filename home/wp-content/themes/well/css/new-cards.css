@@ -1,5 +1,3 @@
-/* This code was adapted from MacSites' WordPress Theme */
-
 /* Simon's updated Styling for new thumbnail and dynamic cards starts here */
 
 .card-title {
@@ -184,7 +182,7 @@
     text-shadow: 0 1px 9px rgba(0, 0, 0, 1);
 
     &:after {
-      background-image: url("data:image/svg+xml;charset=utf8,%3Csvg id='b7ff402d-2e47-497f-ba2c-3db55e7b97ef' data-name='Layer 1' xmlns='https://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Ccircle cx='9' cy='9' r='9' fill='%23fdbf57'/%3E%3Cpath fill='none' stroke='%23222222' stroke-miterlimit='10' d='M11.7 7.7L9 10.4 6.3 7.7'/%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml;charset=utf8,%3Csvg id='b7ff402d-2e47-497f-ba2c-3db55e7b97ef' data-name='Layer 1' xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Ccircle cx='9' cy='9' r='9' fill='%23fdbf57'/%3E%3Cpath fill='none' stroke='%23222222' stroke-miterlimit='10' d='M11.7 7.7L9 10.4 6.3 7.7'/%3E%3C/svg%3E");
       box-shadow: 0 1px 9px rgba(0, 0, 0, 1);
     }
   }
@@ -330,12 +328,7 @@
   max-width: 25%;
 }
 
-.card .card-img-mask-full.no-hover img {
-  height: 100%;
-  width: 100%;
-  object-fit: cover;
-}
-
+.card .card-img-mask-full.no-hover img,
 .card:hover .card-img-mask-full.no-hover img {
   height: 100%;
   width: 100%;
@@ -398,14 +391,8 @@
     margin-bottom: 18px;
   }
 
-  .card-img-mh2::after {
-    padding-bottom: 56.25%;
-  }
-
-  .card-img-mh3::after {
-    padding-bottom: 56.25%;
-  }
-
+  .card-img-mh2::after,
+  .card-img-mh3::after,
   .card-img-mh4::after {
     padding-bottom: 56.25%;
   }
@@ -523,6 +510,97 @@ small {
   color: var(--primary-colour);
 }
 
+.thumbnail-cards.grey .card:not(.card-img-background):not(:has(.card-img-background)) .card-text a {
+  color: var(--primary-colour-on-white);
+}
+
+.content-area.maroon,
+.content-area.grey,
+.thumbnail-cards.maroon>.container>div.pb-2,
+.thumbnail-cards.grey>.container>div.pb-2,
+.dynamic-content.maroon>.container>div:not(.row) {
+
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    color: var(--primary-text);
+  }
+}
+
+.dynamic-content.grey>.container>div:not(.row) {
+
+  p.lead,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    color: #ffffff;
+  }
+
+  a:not(.btn) {
+    color: var(--secondary-colour);
+  }
+}
+
+.content-area.maroon,
+.thumbnail-cards.maroon>.container>div.pb-2,
+.dynamic-content.maroon>.container>div:not(.row) {
+
+  p.lead,
+  p,
+  ul,
+  ol,
+  li,
+  td {
+    color: var(--primary-text);
+  }
+
+  blockquote {
+    border-left-color: var(--primary-text);
+  }
+
+  a:not(.btn) {
+    color: var(--secondary-colour-on-primary);
+  }
+}
+
+&.content-area.grey {
+
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p.lead,
+  p {
+    color: #fff;
+  }
+}
+
+.grey li a {
+  color: #fff;
+}
+
+.modal .modal-body {
+
+  p,
+  span,
+  ul,
+  li,
+  th,
+  td {
+    color: #000 !important;
+  }
+
+  a:not(.navbut):not(.btn) {
+    text-decoration: underline;
+    color: var(--primary-colour-on-white) !important;
+  }
+}
+
 .card-hover:hover .card-subtitle {
   color: var(--secondary-colour);
 }
@@ -581,11 +659,11 @@ banner section.carousel .container-fluid>.row,
 banner section.carousel div.row.carousel-limiter,
 banner section.carousel div.row.carousel-limiter>div,
 banner section.carousel div.row.carousel-limiter>div>div {
-  height: auto;
+  height: 100%;
 }
 
 banner section.carousel .container-fluid {
-  padding: 0 !important;
+  padding: none !important;
 }
 
 banner section.carousel div.carousel-text.text-lg-right,
@@ -595,7 +673,6 @@ banner section.carousel div.carousel-text.text-lg-left {
 
 banner section.carousel div.carousel-text {
   overflow: hidden;
-  height: auto;
 }
 
 banner section.carousel .hero-carousel .flickity-page-dots {
@@ -635,19 +712,23 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
 
 @media (min-width: 991.98px) {
   banner section.carousel div.row.carousel-limiter {
-    width: 40%;
-    background-color: #fff !important;
-  }
 
-  banner section.carousel div.row.carousel-limiter .text-lg-right,
-  banner section.carousel div.row.carousel-limiter .text-lg-left {
-    width: 100%;
+    &:has(.text-lg-right),
+    &:has(.text-lg-left) {
+      width: 40%;
+      background-color: #fff !important;
+    }
+
+    .text-lg-right,
+    .text-lg-left {
+      width: 40%;
+    }
   }
 }
 
 @media (min-width: 1200px) {
   .hero-carousel {
-    height: 500px;
+    height: auto;
   }
 }
 
@@ -659,27 +740,6 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
   .hero-carousel p.banner-text {
     font-size: 16px;
     line-height: 1.375rem;
-  }
-}
-
-@media (max-width: 991.98px) {
-  banner section.carousel .container-fluid,
-  banner section.carousel .container-fluid > .row,
-  banner section.carousel div.row.carousel-limiter,
-  banner section.carousel div.row.carousel-limiter > div,
-  banner section.carousel div.row.carousel-limiter > div > div {
-    height: auto;
-    min-height: 0;
-  }
-
-  banner section.carousel .hero-carousel .carousel-cell.drop {
-    overflow: hidden;
-  }
-
-  banner section.carousel div.carousel-text.text-lg-right,
-  banner section.carousel div.carousel-text.text-lg-left,
-  banner section.carousel div.carousel-text {
-    overflow: hidden;
   }
 }
 
@@ -1028,13 +1088,13 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
   transition: all 0.2s ease-out;
   background-repeat: no-repeat;
   background-position: center;
-  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='https://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Cpath fill='%23FFFFFF' d='M27 19.3c.5-.3.8-.7.8-1.3s-.3-1-.8-1.3L14.2 9.2c-.5-.3-1-.3-1.5 0-.4.3-.7.7-.7 1.3v15c0 .6.2 1 .8 1.3.2.1.5.2.7.2.3 0 .5-.1.8-.2L27 19.3z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Cpath fill='%23FFFFFF' d='M27 19.3c.5-.3.8-.7.8-1.3s-.3-1-.8-1.3L14.2 9.2c-.5-.3-1-.3-1.5 0-.4.3-.7.7-.7 1.3v15c0 .6.2 1 .8 1.3.2.1.5.2.7.2.3 0 .5-.1.8-.2L27 19.3z'/%3E%3C/svg%3E");
 }
 
 .card-hover:hover .video-play {
   opacity: 1;
   border-color: var(--secondary-colour);
-  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='https://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Cpath fill='%23fdbf57' d='M27 19.3c.5-.3.8-.7.8-1.3s-.3-1-.8-1.3L14.2 9.2c-.5-.3-1-.3-1.5 0-.4.3-.7.7-.7 1.3v15c0 .6.2 1 .8 1.3.2.1.5.2.7.2.3 0 .5-.1.8-.2L27 19.3z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Cpath fill='%23fdbf57' d='M27 19.3c.5-.3.8-.7.8-1.3s-.3-1-.8-1.3L14.2 9.2c-.5-.3-1-.3-1.5 0-.4.3-.7.7-.7 1.3v15c0 .6.2 1 .8 1.3.2.1.5.2.7.2.3 0 .5-.1.8-.2L27 19.3z'/%3E%3C/svg%3E");
 }
 
 /* Increase z-index of modal element to 1250 */
@@ -1121,20 +1181,6 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
     }
   }
 
-  &.grey,
-  &.maroon {
-
-    h2,
-    h3,
-    h4,
-    h5,
-    h6,
-    p.lead,
-    p {
-      color: #fff;
-    }
-  }
-
   &.grey a {
     color: var(--secondary-colour);
 
@@ -1186,8 +1232,14 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
   object-fit: cover;
 }
 
-.card-footer span.btn {
-  z-index: -1;
+.card-footer {
+  span.btn {
+    z-index: -1;
+  }
+
+  p {
+    color: var(--grey);
+  }
 }
 
 .card.card-shadow:hover {
@@ -1201,7 +1253,6 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
 }
 
 /* Footer logo */
-/* #site-footer img[src$="mcm-mps_stack-rev.png"] { */
 #site-footer img.img-fluid {
   max-width: 12.5rem;
   max-height: 12.5rem;
@@ -1336,7 +1387,7 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
           border-radius: 50%;
           background-repeat: no-repeat;
           background-color: var(--primary-colour);
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='https://www.w3.org/2000/svg' fill='%23FFFFFF' viewBox='0 0 320 512'%3E%3Cpath d='M285.5 273L91.1 467.3c-9.4 9.4-24.6 9.4-33.9 0l-22.7-22.7c-9.4-9.4-9.4-24.5 0-33.9L188.5 256 34.5 101.3c-9.3-9.4-9.3-24.5 0-33.9l22.7-22.7c9.4-9.4 24.6-9.4 33.9 0L285.5 239c9.4 9.4 9.4 24.6 0 33.9z'/%3E%3C/svg%3E");
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%23FFFFFF' viewBox='0 0 320 512'%3E%3Cpath d='M285.5 273L91.1 467.3c-9.4 9.4-24.6 9.4-33.9 0l-22.7-22.7c-9.4-9.4-9.4-24.5 0-33.9L188.5 256 34.5 101.3c-9.3-9.4-9.3-24.5 0-33.9l22.7-22.7c9.4-9.4 24.6-9.4 33.9 0L285.5 239c9.4 9.4 9.4 24.6 0 33.9z'/%3E%3C/svg%3E");
           background-position: center;
         }
       }
@@ -1349,10 +1400,21 @@ banner section.carousel .hero-carousel .flickity-page-dots .dot.is-selected {
 
           &:after {
             background-color: var(--primary-text);
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='https://www.w3.org/2000/svg' fill='%237A003C' viewBox='0 0 320 512'%3E%3Cpath d='M285.5 273L91.1 467.3c-9.4 9.4-24.6 9.4-33.9 0l-22.7-22.7c-9.4-9.4-9.4-24.5 0-33.9L188.5 256 34.5 101.3c-9.3-9.4-9.3-24.5 0-33.9l22.7-22.7c9.4-9.4 24.6-9.4 33.9 0L285.5 239c9.4 9.4 9.4 24.6 0 33.9z'/%3E%3C/svg%3E");
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%237A003C' viewBox='0 0 320 512'%3E%3Cpath d='M285.5 273L91.1 467.3c-9.4 9.4-24.6 9.4-33.9 0l-22.7-22.7c-9.4-9.4-9.4-24.5 0-33.9L188.5 256 34.5 101.3c-9.3-9.4-9.3-24.5 0-33.9l22.7-22.7c9.4-9.4 24.6-9.4 33.9 0L285.5 239c9.4 9.4 9.4 24.6 0 33.9z'/%3E%3C/svg%3E");
           }
         }
       }
+    }
+  }
+}
+
+/* Handle Mobile Margin for Thumbnail Cards w/ Sidebar */
+
+#site-content.sidebar {
+  @media (max-width: 576px) {
+    div>.thumbnail-cards:not(.white) {
+      margin-left: -12px;
+      margin-right: -12px;
     }
   }
 }
