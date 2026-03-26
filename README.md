@@ -181,6 +181,9 @@ Recommended follow-up production tasks:
 ## Known Issues & TODOs
 
 ### High Priority
+- [ ] UI visual bugs: fix SVG arrows on the About page
+- [ ] UI visual bugs: fix share-option post icons (X/Facebook/LinkedIn rendering)
+- [ ] Fix modal behavior on mobile, especially chart/graph usability (consider landscape-oriented layout)
 - [ ] Update `config.py` to use `os.getenv` for all Borealis and SharePoint config instead of hardcoding
 - [ ] Add shared-secret header between dashboard and backend (`X-Internal-Auth`) for extra protection
 - [ ] Check all backend injection scripts (historical and scheduled)
