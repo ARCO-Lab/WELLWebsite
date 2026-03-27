@@ -91,9 +91,6 @@ const Download: React.FC<DownloadProps> = ({
   };
 
   const buildExportPayload = () => {
-    console.log("[buildExportPayload] called");
-    console.log("[buildExportPayload] activeGroups state:", activeGroups);
-    console.log("[buildExportPayload] subFilters state:", subFilters);
     if (!startDate || !endDate) {
       throw new Error("Start and end date are required");
     }
@@ -147,36 +144,63 @@ const Download: React.FC<DownloadProps> = ({
       ? knownLoggerIds
       : gaugeSelection.filter((entry) => knownLoggerIds.includes(entry));
 
-    const selectedWeatherMetrics = activeGroups.weather
-      ? (subFilters.weather || [])
+    const weatherSelection = subFilters.weather || [];
+    const qualitySelection = subFilters.quality || [];
+
+    let selectedWeatherMetrics = activeGroups.weather
+      ? weatherSelection
           .filter((label) => SENSOR_FILTER_CONFIG.weather.metrics.includes(label))
-          .map((label) => METRIC_NAME_MAP[label] || label)
       : [];
 
-    const selectedQualityMetrics = activeGroups.quality
-      ? (subFilters.quality || [])
+    if (
+      activeGroups.weather &&
+      selectedWeatherMetrics.length === 0 &&
+      (
+        weatherSelection.length === 0 ||
+        weatherSelection.includes(SENSOR_FILTER_CONFIG.weather.itemsLabel)
+      )
+    ) {
+      selectedWeatherMetrics = SENSOR_FILTER_CONFIG.weather.metrics;
+    }
+
+    let selectedQualityMetrics = activeGroups.quality
+      ? qualitySelection
           .filter((label) => SENSOR_FILTER_CONFIG.quality.metrics.includes(label))
-          .map((label) => METRIC_NAME_MAP[label] || label)
       : [];
+
+    if (
+      activeGroups.quality &&
+      selectedQualityMetrics.length === 0 &&
+      (
+        qualitySelection.length === 0 ||
+        qualitySelection.includes(SENSOR_FILTER_CONFIG.quality.itemsLabel)
+      )
+    ) {
+      selectedQualityMetrics = SENSOR_FILTER_CONFIG.quality.metrics;
+    }
 
     const selectedLoggerMetrics = activeGroups.gauges
       ? gaugeSelection
           .filter((label) => SENSOR_FILTER_CONFIG.gauges.metrics.includes(label))
-          .map((label) => METRIC_NAME_MAP[label] || label)
       : [];
 
+    const toCanonicalMetric = (label: string) => METRIC_NAME_MAP[label] || label;
+    const weatherMetricKeys = selectedWeatherMetrics.map(toCanonicalMetric);
+    const qualityMetricKeys = selectedQualityMetrics.map(toCanonicalMetric);
+    const loggerMetricKeys = selectedLoggerMetrics.map(toCanonicalMetric);
+
     const selectedMetrics = new Set<string>([
-      ...selectedWeatherMetrics,
-      ...selectedQualityMetrics,
-      ...selectedLoggerMetrics,
+      ...weatherMetricKeys,
+      ...qualityMetricKeys,
+      ...loggerMetricKeys,
     ]);
 
     const groupMeasurementTypes: Record<string, string[]> = {};
-    if (activeGroups.weather) groupMeasurementTypes.Weather = selectedWeatherMetrics;
-    if (activeGroups.quality) groupMeasurementTypes.Quality = selectedQualityMetrics;
-    if (activeGroups.gauges) groupMeasurementTypes.Logger = selectedLoggerMetrics;
+    if (activeGroups.weather) groupMeasurementTypes.Weather = weatherMetricKeys;
+    if (activeGroups.quality) groupMeasurementTypes.Quality = qualityMetricKeys;
+    if (activeGroups.gauges) groupMeasurementTypes.Logger = loggerMetricKeys;
 
-    return {
+    const payload = {
       domain: "sensor",
       start: start.toISOString(),
       end: end.toISOString(),
@@ -185,6 +209,7 @@ const Download: React.FC<DownloadProps> = ({
       measurement_types: Array.from(selectedMetrics),
       group_measurement_types: groupMeasurementTypes,
     };
+    return payload;
   };
 
   const triggerDownload = async (response: Response, fallbackFileName: string) => {

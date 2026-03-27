@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from db.database import db
 from db.models import SamplingMeasurement, SensorMeasurement
@@ -73,7 +73,7 @@ def normalize_export_payload(payload: Dict) -> Dict:
         normalized_group_measurement_types = {
             group: _as_string_list(group_measurement_types.get(group, []))
             for group in group_types
-            if _as_string_list(group_measurement_types.get(group, []))
+            if group in group_measurement_types
         }
         normalized["group_measurement_types"] = normalized_group_measurement_types
 
@@ -214,7 +214,24 @@ def _sensor_query(filters: Dict):
         SensorMeasurement.group_type.in_(filters["group_types"]),
     )
 
-    if filters.get("measurement_types"):
+    group_measurement_types = filters.get("group_measurement_types") or {}
+    if group_measurement_types:
+        per_group_clauses = []
+        for group in filters["group_types"]:
+            selected_metrics = group_measurement_types.get(group, [])
+            if selected_metrics:
+                per_group_clauses.append(
+                    and_(
+                        SensorMeasurement.group_type == group,
+                        SensorMeasurement.measurement_type.in_(selected_metrics),
+                    )
+                )
+            else:
+                per_group_clauses.append(SensorMeasurement.group_type == group)
+
+        if per_group_clauses:
+            query = query.filter(or_(*per_group_clauses))
+    elif filters.get("measurement_types"):
         query = query.filter(SensorMeasurement.measurement_type.in_(filters["measurement_types"]))
 
     if filters.get("station_ids"):
@@ -420,6 +437,11 @@ def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
                     csv_row.append(_get_logger_label(station_id))
                     for metric in logger_metrics:
                         csv_row.append(logger_data.get((timestamp, station_id, metric), ""))
+
+            if len(csv_row) < len(headers):
+                csv_row.extend([""] * (len(headers) - len(csv_row)))
+            elif len(csv_row) > len(headers):
+                csv_row = csv_row[: len(headers)]
 
             writer.writerow(csv_row)
 
