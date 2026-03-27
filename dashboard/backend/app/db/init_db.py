@@ -9,7 +9,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 
 from server import create_app
 from db.database import db
-from db.models import SensorMeasurement, SamplingMeasurement
+from db.models import SensorMeasurement, SamplingMeasurement, ExportJob
 
 app = create_app()
 

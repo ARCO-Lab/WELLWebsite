@@ -1,16 +1,14 @@
 // This file defines the Download component for exporting filtered sensor or sampling data as a CSV file.
 // It builds the CSV structure based on active filters, groups, and selected metrics/sites.
 
-import React from "react";
+import React, { useState } from "react";
 import { Download as DownloadIcon } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import {
   SENSOR_FILTER_CONFIG,
   SAMPLING_FILTER_CONFIG,
-  CREEK_ID_MAP_REVERSE,
+  CREEK_ID_MAP,
   SAMPLING_METRICS,
-  SENSOR_STATION_COORDINATES,
-  SAMPLING_SITE_COORDINATES,
 } from "@/components/config/filters";
 
 interface DownloadProps {
@@ -55,47 +53,6 @@ const formatDate = (date: Date) => {
   return date.toISOString().split("T")[0].replace(/-/g, "");
 };
 
-const getLoggerLabel = (station_id: string) => {
-  return SENSOR_FILTER_CONFIG.gauges.sites[station_id as keyof typeof SENSOR_FILTER_CONFIG.gauges.sites] || station_id;
-};
-
-const getSamplingLabel = (site_id: string) => {
-  for (const creek of Object.values(SAMPLING_FILTER_CONFIG)) {
-    if (
-      typeof creek === "object" &&
-      creek !== null &&
-      "sites" in creek &&
-      typeof (creek as any).sites === "object"
-    ) {
-      if ((creek as { sites: Record<string, string> }).sites[site_id]) {
-        return (creek as { sites: Record<string, string> }).sites[site_id];
-      }
-    }
-  }
-  return site_id;
-};
-
-const getStationCoordinates = (station_id: string, group: string) => {
-  if (group === "gauges") {
-    const coords = SENSOR_STATION_COORDINATES.find(
-      (coord) => coord.id === station_id && coord.group === "gauges"
-    );
-    return coords ? { lat: coords.lat, lng: coords.lng } : null;
-  } else if (group === "weather") {
-    const coords = SENSOR_STATION_COORDINATES.find((coord) => coord.group === "weather");
-    return coords ? { lat: coords.lat, lng: coords.lng } : null;
-  } else if (group === "quality") {
-    const coords = SENSOR_STATION_COORDINATES.find((coord) => coord.group === "quality");
-    return coords ? { lat: coords.lat, lng: coords.lng } : null;
-  }
-  return null;
-};
-
-const getSamplingCoordinates = (site_id: string) => {
-  const coords = SAMPLING_SITE_COORDINATES.find((coord) => coord.id === site_id);
-  return coords ? { lat: coords.lat, lng: coords.lng } : null;
-};
-
 const Download: React.FC<DownloadProps> = ({
   activeGroups,
   subFilters,
@@ -106,11 +63,14 @@ const Download: React.FC<DownloadProps> = ({
   data,
   isSampling = false,
 }) => {
+  const [isExporting, setIsExporting] = useState(false);
+  const [statusText, setStatusText] = useState<string>("");
+
   const getFileName = () => {
     if (isSampling) {
       const activeCreekLabels = Object.entries(activeCreeks)
         .filter(([_, active]) => active)
-        .map(([creekKey, _]) => {
+        .map(([creekKey]) => {
           const creek = SAMPLING_FILTER_CONFIG[creekKey as keyof typeof SAMPLING_FILTER_CONFIG];
           return creek?.label || creekKey;
         });
@@ -130,290 +90,227 @@ const Download: React.FC<DownloadProps> = ({
     return `${parts.join("_")}_${from}_${to}.csv`;
   };
 
-  const handleDownload = () => {
-    // Build and trigger CSV download based on current filters and data
-    if (!data || data.length === 0) {
-      console.warn("No data available to download.");
-      return;
+  const buildExportPayload = () => {
+    console.log("[buildExportPayload] called");
+    console.log("[buildExportPayload] activeGroups state:", activeGroups);
+    console.log("[buildExportPayload] subFilters state:", subFilters);
+    if (!startDate || !endDate) {
+      throw new Error("Start and end date are required");
     }
 
-    const mappedSubFilters = {
-      weather: subFilters.weather.map((label) => METRIC_NAME_MAP[label] || label),
-      quality: subFilters.quality.map((label) => METRIC_NAME_MAP[label] || label),
-      gauges: subFilters.gauges.map((label) => METRIC_NAME_MAP[label] || label),
-    };
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
 
-    // 1. Filter relevant entries
-    const filtered = data.filter((entry) => {
-      if (isSampling) {
-        const creekKey = CREEK_ID_MAP_REVERSE[entry.creek_id || ""];
-        if (!creekKey || !activeCreeks[creekKey]) return false;
-        const creekFilters = samplingSubFilters[creekKey] || [];
-        if (creekFilters.length === 0) return false;
-        const creekConfig = SAMPLING_FILTER_CONFIG[creekKey as keyof typeof SAMPLING_FILTER_CONFIG];
-        const allSites = Object.keys(creekConfig?.sites || {});
-        if (creekFilters.includes("All Sites")) return true;
-        if (creekFilters.includes(entry.site_id || "")) return true;
-        if (creekFilters.includes(entry.measurement_type)) return true;
-        return false;
-      } else {
-        if (entry.group_type === "Weather" && activeGroups.weather) {
-          return mappedSubFilters.weather.includes(entry.measurement_type);
-        }
-        if (entry.group_type === "Quality" && activeGroups.quality) {
-          return mappedSubFilters.quality.includes(entry.measurement_type);
-        }
-        if (entry.group_type === "Logger" && activeGroups.gauges) {
-          return mappedSubFilters.gauges.includes(entry.measurement_type);
-        }
-        return false;
-      }
-    });
-
-    const timestamps = [...new Set(filtered.map((d) => d.recorded_at))].sort();
-
-    // --- SECTION CONFIGURATION ---
-    const sectionConfigs: Array<{
-      label: string;
-      type: "weather" | "quality" | "logger" | "sampling";
-      metrics: string[];
-      sites?: Array<{ id: string; label: string; coords: { lat: number; lng: number } | null }>;
-    }> = [];
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
 
     if (isSampling) {
-      Object.entries(activeCreeks)
+      const selectedCreeks = Object.entries(activeCreeks)
         .filter(([_, active]) => active)
-        .forEach(([creekKey, _]) => {
-          const creek = SAMPLING_FILTER_CONFIG[creekKey as keyof typeof SAMPLING_FILTER_CONFIG];
-          const creekFilters = samplingSubFilters[creekKey] || [];
-          const allSiteIds = Object.keys((creek && creek.sites) || {});
-          let selectedSites: string[] = [];
-          if (creekFilters.includes("All Sites")) {
-            selectedSites = allSiteIds;
-          } else {
-            selectedSites = creekFilters.filter((f) => allSiteIds.includes(f));
-          }
-          // Only sites with *actual data* for the selected metrics
-          const selectedMetrics = creekFilters.filter((f) => SAMPLING_METRICS.includes(f));
-          const sitesWithData = selectedSites.filter((siteId) =>
-            selectedMetrics.some((metric) =>
-              filtered.some(
-                (d) =>
-                  CREEK_ID_MAP_REVERSE[d.creek_id || ""] === creekKey &&
-                  d.site_id === siteId &&
-                  d.measurement_type === metric
-              )
-            )
-          );
-          if (sitesWithData.length > 0 && selectedMetrics.length > 0) {
-            sectionConfigs.push({
-              label: creek?.label || creekKey,
-              type: "sampling",
-              metrics: selectedMetrics,
-              sites: sitesWithData.map((siteId) => ({
-                id: siteId,
-                label: getSamplingLabel(siteId),
-                coords: getSamplingCoordinates(siteId),
-              })),
-            });
-          }
-        });
-    } else {
-      // Weather
-      if (activeGroups.weather) {
-        const weatherMetrics = [
-          ...new Set(filtered.filter((d) => d.group_type === "Weather").map((d) => d.measurement_type)),
-        ].sort();
-        if (weatherMetrics.length > 0) {
-          sectionConfigs.push({
-            label: "Weather",
-            type: "weather",
-            metrics: weatherMetrics,
-            sites: [
-              {
-                id: "weather",
-                label: "West Campus",
-                coords: getStationCoordinates("", "weather"),
-              },
-            ],
-          });
+        .map(([creekKey]) => creekKey);
+
+      const siteIds = new Set<string>();
+      const measurementTypes = new Set<string>();
+
+      selectedCreeks.forEach((creekKey) => {
+        const filters = samplingSubFilters[creekKey] || [];
+        const creekConfig = SAMPLING_FILTER_CONFIG[creekKey as keyof typeof SAMPLING_FILTER_CONFIG];
+        const allSites = Object.keys(creekConfig?.sites || {});
+
+        if (filters.includes("All Sites")) {
+          allSites.forEach((site) => siteIds.add(site));
+        } else {
+          filters.filter((f) => allSites.includes(f)).forEach((site) => siteIds.add(site));
         }
-      }
-      // Quality
-      if (activeGroups.quality) {
-        const qualityMetrics = [
-          ...new Set(filtered.filter((d) => d.group_type === "Quality").map((d) => d.measurement_type)),
-        ].sort();
-        if (qualityMetrics.length > 0) {
-          sectionConfigs.push({
-            label: "Quality",
-            type: "quality",
-            metrics: qualityMetrics,
-            sites: [
-              {
-                id: "quality",
-                label: "West Campus",
-                coords: getStationCoordinates("", "quality"),
-              },
-            ],
-          });
-        }
-      }
-      // Logger(s)
-      if (activeGroups.gauges) {
-        let effectiveGaugeFilters = [...subFilters.gauges];
-        if (subFilters.gauges.includes("All Loggers")) {
-          effectiveGaugeFilters = effectiveGaugeFilters.filter((f) => f !== "All Loggers").concat(Object.keys(SENSOR_FILTER_CONFIG.gauges.sites));
-        }
-        // Only valid gauge metrics (order matches metrics in SENSOR_FILTER_CONFIG, not random set)
-        const validGaugeMetrics = SENSOR_FILTER_CONFIG.gauges.metrics;
-        const loggerMetrics = [
-          ...new Set(
-            filtered
-              .filter((d) => d.group_type === "Logger" && validGaugeMetrics.includes(d.measurement_type))
-              .map((d) => d.measurement_type)
-          ),
-        ].sort();
-        // Only loggers that have *any* data for the chosen metrics
-        const loggersWithData = effectiveGaugeFilters.filter((siteId) =>
-          loggerMetrics.some((metric) =>
-            filtered.some(
-              (d) =>
-                d.group_type === "Logger" &&
-                (d.station_id || d.logger_id || d.site_id) === siteId &&
-                d.measurement_type === metric
-            )
-          )
-        );
-        if (loggerMetrics.length > 0 && loggersWithData.length > 0) {
-          sectionConfigs.push({
-            label: "Logger",
-            type: "logger",
-            metrics: loggerMetrics,
-            sites: loggersWithData.map((siteId) => ({
-              id: siteId,
-              label: getLoggerLabel(siteId),
-              coords: getStationCoordinates(siteId, "gauges"),
-            })),
-          });
-        }
-      }
+
+        filters.filter((f) => SAMPLING_METRICS.includes(f)).forEach((metric) => measurementTypes.add(metric));
+      });
+
+      return {
+        domain: "sampling",
+        start: start.toISOString(),
+        end: end.toISOString(),
+        creek_ids: selectedCreeks.map((creekKey) => CREEK_ID_MAP[creekKey as keyof typeof CREEK_ID_MAP]),
+        site_ids: Array.from(siteIds),
+        measurement_types: Array.from(measurementTypes),
+      };
     }
 
-    // --- HEADERS: identical structure for logger and sampling ---
-    const headers = ["ID", "Timestamp"];
-    sectionConfigs.forEach((section, sectionIdx) => {
-      if (sectionIdx > 0) headers.push(""); // Section separator
-      if (section.type === "sampling") {
-        headers.push("Creek");
-        section.sites?.forEach((site, siteIdx) => {
-          headers.push("Site");
-          headers.push("Latitude");
-          headers.push("Longitude");
-          section.metrics.forEach((metric) => {
-            const unit = filtered.find((d) => d.measurement_type === metric)?.unit || "";
-            headers.push(unit ? `${metric}: ${unit}` : metric);
-          });
-        });
-      } else if (section.type === "logger") {
-        headers.push("Group");
-        section.sites?.forEach((site) => {
-          headers.push("Sensor");
-          headers.push("Latitude");
-          headers.push("Longitude");
-          section.metrics.forEach((metric) => {
-            const unit = filtered.find((d) => d.measurement_type === metric)?.unit || "";
-            headers.push(unit ? `${metric}: ${unit}` : metric);
-          });
-        });
-      } else {
-        // weather/quality: single site
-        headers.push("Group");
-        headers.push("Latitude");
-        headers.push("Longitude");
-        section.metrics.forEach((metric) => {
-          const unit = filtered.find((d) => d.measurement_type === metric)?.unit || "";
-          headers.push(unit ? `${metric}: ${unit}` : metric);
-        });
+    const groupTypes: string[] = [];
+    if (activeGroups.weather) groupTypes.push("Weather");
+    if (activeGroups.quality) groupTypes.push("Quality");
+    if (activeGroups.gauges) groupTypes.push("Logger");
+
+    const knownLoggerIds = Object.keys(SENSOR_FILTER_CONFIG.gauges.sites);
+    const gaugeSelection = subFilters.gauges || [];
+    const selectedStationIds = gaugeSelection.includes("All Loggers")
+      ? knownLoggerIds
+      : gaugeSelection.filter((entry) => knownLoggerIds.includes(entry));
+
+    const selectedWeatherMetrics = activeGroups.weather
+      ? (subFilters.weather || [])
+          .filter((label) => SENSOR_FILTER_CONFIG.weather.metrics.includes(label))
+          .map((label) => METRIC_NAME_MAP[label] || label)
+      : [];
+
+    const selectedQualityMetrics = activeGroups.quality
+      ? (subFilters.quality || [])
+          .filter((label) => SENSOR_FILTER_CONFIG.quality.metrics.includes(label))
+          .map((label) => METRIC_NAME_MAP[label] || label)
+      : [];
+
+    const selectedLoggerMetrics = activeGroups.gauges
+      ? gaugeSelection
+          .filter((label) => SENSOR_FILTER_CONFIG.gauges.metrics.includes(label))
+          .map((label) => METRIC_NAME_MAP[label] || label)
+      : [];
+
+    const selectedMetrics = new Set<string>([
+      ...selectedWeatherMetrics,
+      ...selectedQualityMetrics,
+      ...selectedLoggerMetrics,
+    ]);
+
+    const groupMeasurementTypes: Record<string, string[]> = {};
+    if (activeGroups.weather) groupMeasurementTypes.Weather = selectedWeatherMetrics;
+    if (activeGroups.quality) groupMeasurementTypes.Quality = selectedQualityMetrics;
+    if (activeGroups.gauges) groupMeasurementTypes.Logger = selectedLoggerMetrics;
+
+    return {
+      domain: "sensor",
+      start: start.toISOString(),
+      end: end.toISOString(),
+      group_types: groupTypes,
+      station_ids: selectedStationIds,
+      measurement_types: Array.from(selectedMetrics),
+      group_measurement_types: groupMeasurementTypes,
+    };
+  };
+
+  const triggerDownload = async (response: Response, fallbackFileName: string) => {
+    if (!response.ok) {
+      let err = "Failed to download export";
+      try {
+        const payload = await response.json();
+        err = payload.error || err;
+      } catch {
+        // Keep fallback error.
       }
-    });
+      throw new Error(err);
+    }
 
-    // --- ROWS: ensure one value per header, no extras!
-    const csvRows = [headers.join(",")];
-    timestamps.forEach((timestamp, index) => {
-      const csvRow = [index + 1, timestamp];
-      sectionConfigs.forEach((section, sectionIdx) => {
-        if (sectionIdx > 0) csvRow.push("");
-        if (section.type === "sampling") {
-          csvRow.push(section.label);
-          section.sites?.forEach((site) => {
-            csvRow.push(site.label);
-            csvRow.push(site.coords?.lat?.toString() || "");
-            csvRow.push(site.coords?.lng?.toString() || "");
-            section.metrics.forEach((metric) => {
-              const creekConfigKey = Object.keys(SAMPLING_FILTER_CONFIG).find(
-                (key) =>
-                  SAMPLING_FILTER_CONFIG[key as keyof typeof SAMPLING_FILTER_CONFIG]?.label === section.label
-              );
-              const match = filtered.find(
-                (d) =>
-                  CREEK_ID_MAP_REVERSE[d.creek_id || ""] === creekConfigKey &&
-                  d.site_id === site.id &&
-                  d.measurement_type === metric &&
-                  d.recorded_at === timestamp
-              );
-              csvRow.push(match ? match.value.toFixed(2) : "");
-            });
-          });
-        } else if (section.type === "logger") {
-          csvRow.push(section.label); // "Logger"
-          section.sites?.forEach((site) => {
-            csvRow.push(site.label);
-            csvRow.push(site.coords?.lat?.toString() || "");
-            csvRow.push(site.coords?.lng?.toString() || "");
-            section.metrics.forEach((metric) => {
-              const match = filtered.find(
-                (d) =>
-                  d.group_type === "Logger" &&
-                  (d.station_id || d.logger_id || d.site_id) === site.id &&
-                  d.measurement_type === metric &&
-                  d.recorded_at === timestamp
-              );
-              csvRow.push(match ? match.value.toFixed(2) : "");
-            });
-          });
-        } else {
-          // weather/quality
-          csvRow.push(section.label);
-          const site = section.sites?.[0];
-          if (site) {
-            csvRow.push(site.coords?.lat?.toString() || "");
-            csvRow.push(site.coords?.lng?.toString() || "");
-            section.metrics.forEach((metric) => {
-              const match = filtered.find(
-                (d) =>
-                  d.group_type === section.label &&
-                  d.measurement_type === metric &&
-                  d.recorded_at === timestamp
-              );
-              csvRow.push(match ? match.value.toFixed(2) : "");
-            });
-          }
-        }
-      });
-      csvRows.push(csvRow.join(","));
-    });
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const fileNameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    const fileName = fileNameMatch?.[1] || fallbackFileName;
 
-    // --- SAVE ---
-    const csvContent = csvRows.join("\n");
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", getFileName());
+    link.setAttribute("download", fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const pollUntilReady = async (jobId: string, pollIntervalSeconds: number) => {
+    for (;;) {
+      const statusRes = await fetch(`/api/exports/jobs/${encodeURIComponent(jobId)}`);
+      if (!statusRes.ok) {
+        throw new Error("Failed to poll export job status");
+      }
+
+      const status = await statusRes.json();
+      const progress = typeof status.progress_pct === "number" ? status.progress_pct.toFixed(1) : "0.0";
+      setStatusText(`Preparing export (${status.status}${status.status === "running" ? ` ${progress}%` : ""})`);
+
+      if (status.status === "ready") {
+        return;
+      }
+      if (status.status === "failed") {
+        throw new Error(status.error_message || "Export failed");
+      }
+      if (status.status === "expired") {
+        throw new Error("Export expired before download");
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, pollIntervalSeconds) * 1000));
+    }
+  };
+
+  const handleDownload = async () => {
+    try {
+      setIsExporting(true);
+      setStatusText("Estimating export size");
+      console.log("[Download] Starting export...");
+
+      const payload = buildExportPayload();
+      console.log("[Download] Payload:", payload);
+
+      console.log("[Download] Calling /api/exports/estimate...");
+      const estimateRes = await fetch("/api/exports/estimate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      console.log("[Download] Estimate response status:", estimateRes.status);
+
+      if (!estimateRes.ok) {
+        const estimateError = await estimateRes.json();
+        throw new Error(estimateError.error || "Failed to estimate export size");
+      }
+
+      const estimate = await estimateRes.json();
+      console.log("[Download] Estimate result:", estimate);
+      const recommendedMode = estimate.recommended_mode || "async";
+
+      if (recommendedMode === "sync") {
+        setStatusText("Generating file");
+        console.log("[Download] Using SYNC mode");
+        const syncRes = await fetch("/api/exports/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        console.log("[Download] Sync response status:", syncRes.status);
+        await triggerDownload(syncRes, getFileName());
+        setStatusText("");
+        return;
+      }
+
+      console.log("[Download] Using ASYNC mode");
+      setStatusText("Queueing export job");
+      const createJobRes = await fetch("/api/exports/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      console.log("[Download] Create job response status:", createJobRes.status);
+
+      if (!createJobRes.ok) {
+        const createErr = await createJobRes.json();
+        throw new Error(createErr.error || "Failed to queue export job");
+      }
+
+      const created = await createJobRes.json();
+      console.log("[Download] Job created:", created);
+      const jobId = created.job_id as string;
+      const pollInterval = Number(created.poll_interval_seconds || 3);
+      await pollUntilReady(jobId, pollInterval);
+
+      setStatusText("Downloading file");
+      const downloadRes = await fetch(`/api/exports/jobs/${encodeURIComponent(jobId)}/download`);
+      await triggerDownload(downloadRes, getFileName());
+      setStatusText("");
+    } catch (error: any) {
+      console.error("[Download] ERROR:", error);
+      console.error("[Download] Error message:", error?.message);
+      setStatusText(error?.message || "Download failed");
+      window.setTimeout(() => setStatusText(""), 6000);
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   // Only allow download if at least one group or creek has active data
@@ -435,11 +332,11 @@ const Download: React.FC<DownloadProps> = ({
   return (
     <Button
       onClick={handleDownload}
-      disabled={!hasActiveData}
+      disabled={!hasActiveData || isExporting}
       className="btn-mcmaster-primary w-full"
     >
       <DownloadIcon className="h-4 w-4 mr-2" />
-      Download Data
+      {isExporting ? statusText || "Preparing export" : "Download Data"}
     </Button>
   );
 };

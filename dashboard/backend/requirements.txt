@@ -12,3 +12,5 @@ schedule
 openpyxl
 pyDataverse
 gunicorn
+celery
+redis

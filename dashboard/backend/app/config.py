@@ -27,3 +27,11 @@ class Config:
     SHAREPOINT_USER = os.getenv("SHAREPOINT_USER")
     SHAREPOINT_PASS = os.getenv("SHAREPOINT_PASS")
 
+    EXPORTS_DIR = os.getenv("EXPORTS_DIR", "/app/app/exports")
+    EXPORT_FILE_TTL_MINUTES = int(os.getenv("EXPORT_FILE_TTL_MINUTES", "60"))
+    EXPORT_SYNC_ROW_THRESHOLD = int(os.getenv("EXPORT_SYNC_ROW_THRESHOLD", "100000"))
+    EXPORT_POLL_INTERVAL_SECONDS = int(os.getenv("EXPORT_POLL_INTERVAL_SECONDS", "3"))
+
+    CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
+    CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
+

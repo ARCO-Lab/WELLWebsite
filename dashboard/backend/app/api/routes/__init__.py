@@ -9,6 +9,7 @@ from .analysis.wind import register_analysis_wind_route
 from .analysis.complete import register_analysis_complete_route
 from .samples import register_samples_route
 from .recent import register_recent_route
+from .exports import register_export_routes
 
 def register_routes(app):
     # Shared/global state for summaries and caches
@@ -27,3 +28,4 @@ def register_routes(app):
     register_analysis_complete_route(app, latest_summaries, latest_sampling_summaries, client)
     register_samples_route(app, latest_sampling_summaries)
     register_recent_route(app)
+    register_export_routes(app)
