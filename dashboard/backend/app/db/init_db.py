@@ -9,7 +9,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 
 from server import create_app
 from db.database import db
-from db.models import SensorMeasurement, SamplingMeasurement, ExportJob
+import db.models  # Ensure all model classes are registered before create_all()
 
 app = create_app()
 
