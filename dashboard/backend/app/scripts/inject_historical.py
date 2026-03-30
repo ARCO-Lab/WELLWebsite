@@ -5,6 +5,7 @@ import os, sys, pathlib
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -15,6 +16,7 @@ from api.services.weather import WeatherService
 from api.services.loggers import LoggerService
 from api.services.quality import QualityService
 from config import Config
+from utils.aggregation import BUCKET_CONFIG, aggregate_raw_to_level
 
 app = create_app()
 
@@ -199,6 +201,56 @@ def fetch_quality_chunk(start_str, end_str):
     
     return all_quality
 
+
+def _aggregate_bucket_worker(bucket_type, start_time, end_time):
+    """Run one aggregation level in its own thread/app context."""
+    with app.app_context():
+        try:
+            touched = aggregate_raw_to_level(start_time, end_time, bucket_type=bucket_type)
+            return bucket_type, touched, None
+        except Exception as exc:
+            db.session.rollback()
+            return bucket_type, 0, str(exc)
+        finally:
+            db.session.remove()
+
+
+def build_aggregations_after_historical_load(start_time, end_time):
+    """Build all aggregate levels in parallel after historical data load."""
+    bucket_types = list(BUCKET_CONFIG.keys())
+    max_workers = min(4, len(bucket_types))
+
+    print(
+        f"[AGG BOOTSTRAP] Starting threaded aggregation build for range "
+        f"[{start_time} - {end_time}] with {max_workers} workers"
+    )
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_aggregate_bucket_worker, bucket_type, start_time, end_time): bucket_type
+            for bucket_type in bucket_types
+        }
+
+        for future in as_completed(futures):
+            bucket_type = futures[future]
+            try:
+                bt, touched, err = future.result()
+                if err:
+                    print(f"[AGG BOOTSTRAP ERROR] {bt}: {err}")
+                else:
+                    print(f"[AGG BOOTSTRAP] {bt}: touched {touched}")
+                results.append((bt, touched, err))
+            except Exception as exc:
+                print(f"[AGG BOOTSTRAP ERROR] {bucket_type}: {exc}")
+                results.append((bucket_type, 0, str(exc)))
+
+    failed = [item for item in results if item[2]]
+    if failed:
+        print(f"[AGG BOOTSTRAP] Completed with {len(failed)} failed bucket types")
+    else:
+        print("[AGG BOOTSTRAP] Completed successfully for all bucket types")
+
 def inject_all_history():
     # Main function: clears DB, fetches and inserts data in chunks to avoid API truncation
     with app.app_context():
@@ -283,6 +335,15 @@ def inject_all_history():
             current_start_dt = chunk_end_dt
 
         print(f"\n[DONE] Inserted {total_inserted} total records ({total_duplicates} duplicates skipped).")
+
+        if total_inserted > 0:
+            agg_start = db.session.query(db.func.min(SensorMeasurement.recorded_at)).scalar()
+            agg_end = db.session.query(db.func.max(SensorMeasurement.recorded_at)).scalar()
+
+            if agg_start and agg_end:
+                build_aggregations_after_historical_load(agg_start, agg_end)
+            else:
+                print("[AGG BOOTSTRAP] Skipped: unable to resolve min/max recorded_at")
 
 if __name__ == "__main__":
     inject_all_history()

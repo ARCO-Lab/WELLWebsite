@@ -10,6 +10,7 @@ import threading
 import os
 import re
 from inject_from_api import inject_all_new_data
+from utils.aggregation import aggregate_latest_hours
 
 log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
@@ -183,10 +184,54 @@ def api_injection_job():
         print(f"[ERROR] Full traceback: {traceback.format_exc()}")
         print("========== API INJECTION ERROR END ==========")
 
+
+def aggregation_refresh_job(bucket_types, lookback_hours):
+    """Periodic safety refresh for aggregate tables in case inserts were missed."""
+    try:
+        print(
+            f"[AGG] Refresh start: bucket_types={bucket_types}, lookback_hours={lookback_hours}"
+        )
+        aggregate_latest_hours(bucket_types=bucket_types, lookback_hours=lookback_hours)
+        print("[AGG] Refresh completed")
+    except Exception as e:
+        print(f"[AGG ERROR] refresh failed: {e}")
+
+
+def schedule_aggregation_tasks():
+    """Register periodic aggregation maintenance jobs."""
+    # Highest-detail refresh for near-real-time windows.
+    schedule.every(15).minutes.do(
+        aggregation_refresh_job,
+        bucket_types=["30min"],
+        lookback_hours=12,
+    )
+
+    # Short-range levels for 1-2 day analytics.
+    schedule.every(60).minutes.do(
+        aggregation_refresh_job,
+        bucket_types=["1hour", "3hour"],
+        lookback_hours=48,
+    )
+
+    # Mid-range levels for weekly analytics.
+    schedule.every(6).hours.do(
+        aggregation_refresh_job,
+        bucket_types=["6hour", "12hour"],
+        lookback_hours=168,
+    )
+
+    # Long-range levels refreshed daily.
+    schedule.every().day.at("02:00").do(
+        aggregation_refresh_job,
+        bucket_types=["24hour", "1week"],
+        lookback_hours=720,
+    )
+
 def run_api_scheduler():
     """Run the original API injection scheduler (every 10 minutes)."""
     print("API Scheduler started. Running every 10 minutes...\n")
     api_injection_job()
+    schedule_aggregation_tasks()
     schedule.every(10).minutes.do(api_injection_job)
     while True:
         schedule.run_pending()

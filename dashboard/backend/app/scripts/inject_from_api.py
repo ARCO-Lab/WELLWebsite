@@ -17,6 +17,7 @@ from api.services.loggers import LoggerService
 from config import Config
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
+from utils.aggregation import refresh_recent_aggregates
 
 app = create_app()
 weather_service = WeatherService(Config.HOBO_API_URL, Config.HOBO_API_TOKEN, Config.HOBO_LOGGERS)
@@ -381,6 +382,15 @@ def inject_all_new_data():
                 print(f"[SKIPPED - DUPLICATE] {obj.group_type} {obj.measurement_type} {obj.station_id} {obj.recorded_at}")
 
         print(f"[INFO] Inserted {inserted} new total records.")
+
+        if inserted > 0:
+            try:
+                print("[INFO] Refreshing aggregation tables from recent windows...")
+                refresh_recent_aggregates()
+                print("[INFO] Aggregation refresh completed.")
+            except Exception as e:
+                db.session.rollback()
+                print(f"[ERROR] Aggregation refresh failed: {e}")
 '''
 def debug_parsing_last_2_hours():
     with app.app_context():
