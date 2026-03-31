@@ -1,7 +1,7 @@
 # This file registers all API routes for the WELL backend Flask application.
 # It initializes shared state and the OpenAI client, then wires up each route handler.
 
-from .data import register_data_route
+from .data import register_data_route, register_adaptive_data_route
 from .latest import register_latest_route
 from .analysis.alltime import register_analysis_alltime_route
 from .analysis.recent import register_analysis_recent_route
@@ -21,6 +21,7 @@ def register_routes(app):
 
     # Register each route, passing shared state as needed
     register_data_route(app, latest_summaries)
+    register_adaptive_data_route(app)
     register_latest_route(app, latest_metrics_cache)
     register_analysis_alltime_route(app, latest_summaries, client)
     register_analysis_recent_route(app, latest_metrics_cache, client)
