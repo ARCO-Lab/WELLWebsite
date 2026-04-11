@@ -2,8 +2,8 @@
 // It supports multiple Y-axes for different units, dynamic series, and custom styling.
 // Includes dynamic data aggregation for performance optimization with large datasets.
 
-import React, { useEffect, useRef, useState } from 'react';
-import Highcharts from 'highcharts';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Highcharts from 'highcharts/highstock';
 import HighchartsReact from 'highcharts-react-official';
 import MouseWheelZoom from 'highcharts/modules/mouse-wheel-zoom';
 import {
@@ -12,6 +12,7 @@ import {
   getAggregationStats,
   AggregationConfig,
 } from '../../../utils/dataAggregation';
+import useViewportCache from '../../../hooks/useViewportCache';
 
 if (typeof MouseWheelZoom === 'function') {
   MouseWheelZoom(Highcharts);
@@ -38,6 +39,7 @@ interface MetricChartProps {
 }
 
 const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
+const MIN_VISIBLE_WINDOW_MS = 60 * 60 * 1000;
 
 const MetricChart: React.FC<MetricChartProps> = ({
   activeGroup,
@@ -61,6 +63,77 @@ const MetricChart: React.FC<MetricChartProps> = ({
   const aggregationConfigRef = useRef<AggregationConfig>({ approximation: 'average', targetPixelWidth: 3 });
   // Track current zoom state
   const [zoomState, setZoomState] = useState<{ xMin: number; xMax: number } | null>(null);
+  // Track full data extent for panning enabled/disabled logic
+  const fullExtentRef = useRef<{ xMin: number; xMax: number } | null>(null);
+  const pendingDateResetRef = useRef<string | null>(null);
+  const rangeTrackRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    mode: 'left' | 'right' | 'center';
+    startX: number;
+    startMin: number;
+    startMax: number;
+  } | null>(null);
+  const { getCachedDataForRange, clearCache: clearViewportCache, metadata: viewportCacheMetadata } = useViewportCache();
+
+  const applyVisibleRange = useCallback((nextMin: number, nextMax: number) => {
+    if (!chartRef.current?.chart) return;
+    chartRef.current.chart.xAxis[0].setExtremes(nextMin, nextMax, true, false);
+    setZoomState({ xMin: nextMin, xMax: nextMax });
+  }, []);
+
+  const startRangeDrag = useCallback((mode: 'left' | 'right' | 'center', clientX: number) => {
+    if (!fullExtentRef.current) return;
+
+    const current = zoomState || fullExtentRef.current;
+    dragRef.current = {
+      mode,
+      startX: clientX,
+      startMin: current.xMin,
+      startMax: current.xMax,
+    };
+
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current || !fullExtentRef.current || !rangeTrackRef.current) return;
+
+      const full = fullExtentRef.current;
+      const total = full.xMax - full.xMin;
+      if (total <= 0) return;
+
+      const width = rangeTrackRef.current.clientWidth || 1;
+      const deltaMs = ((e.clientX - dragRef.current.startX) / width) * total;
+
+      let nextMin = dragRef.current.startMin;
+      let nextMax = dragRef.current.startMax;
+      const minWindow = Math.max(MIN_VISIBLE_WINDOW_MS, total * 0.02);
+
+      if (dragRef.current.mode === 'center') {
+        const span = dragRef.current.startMax - dragRef.current.startMin;
+        nextMin = Math.max(full.xMin, dragRef.current.startMin + deltaMs);
+        nextMax = nextMin + span;
+        if (nextMax > full.xMax) {
+          nextMax = full.xMax;
+          nextMin = nextMax - span;
+        }
+      } else if (dragRef.current.mode === 'left') {
+        nextMin = Math.min(dragRef.current.startMin + deltaMs, nextMax - minWindow);
+        nextMin = Math.max(full.xMin, nextMin);
+      } else {
+        nextMax = Math.max(dragRef.current.startMax + deltaMs, nextMin + minWindow);
+        nextMax = Math.min(full.xMax, nextMax);
+      }
+
+      applyVisibleRange(nextMin, nextMax);
+    };
+
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [applyVisibleRange, zoomState]);
 
   useEffect(() => {
     const resolveHeight = () => {
@@ -163,6 +236,24 @@ const MetricChart: React.FC<MetricChartProps> = ({
       };
     });
 
+    // Extract and store full data extent for conditional panning
+    if (originalDataRef.current.size > 0) {
+      let minTs = Number.POSITIVE_INFINITY;
+      let maxTs = Number.NEGATIVE_INFINITY;
+      originalDataRef.current.forEach((seriesPoints) => {
+        if (!seriesPoints.length) return;
+        minTs = Math.min(minTs, seriesPoints[0][0]);
+        maxTs = Math.max(maxTs, seriesPoints[seriesPoints.length - 1][0]);
+      });
+
+      if (Number.isFinite(minTs) && Number.isFinite(maxTs)) {
+        fullExtentRef.current = {
+          xMin: minTs,
+          xMax: maxTs,
+        };
+      }
+    }
+
     const yAxes = Array.from(unitMap.keys()).map((unit, index) => ({
       title: {
         text: null,
@@ -174,14 +265,27 @@ const MetricChart: React.FC<MetricChartProps> = ({
       visible: modalOpen, // make visible on modal open
     }));
 
+    // Compute whether currently zoomed to determine panning enablement
+    const isZoomed = 
+      zoomState && 
+      fullExtentRef.current && 
+      (Math.abs(zoomState.xMin - fullExtentRef.current.xMin) > 1 || 
+       Math.abs(zoomState.xMax - fullExtentRef.current.xMax) > 1);
+
     setChartOptions({
       boost: {
         useGPUTranslations: true,
       },
+      navigator: {
+        enabled: false,
+        scrollbar: {
+          enabled: false,
+        },
+      },
       chart: {
         zoomType: 'x',
         panning: {
-          enabled: true,
+          enabled: isZoomed === true,
           type: 'x',
         },
         zooming: {
@@ -190,10 +294,11 @@ const MetricChart: React.FC<MetricChartProps> = ({
           mouseWheel: {
             enabled: true,
             type: 'x',
-            sensitivity: 1.05,
+            sensitivity: 2.1,
           },
         },
         height: resolvedHeight,
+        spacingBottom: showLegend && series.length > 1 ? 96 : 56,
         style: { fontFamily: "Poppins, Arial, sans-serif" },
       },
       title: {
@@ -215,6 +320,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       },
       xAxis: {
         type: 'datetime',
+        minRange: 60 * 60 * 1000,
         events: {
           // Handle zoom/pan events for dynamic re-aggregation
           afterSetExtremes: function (event: Highcharts.AxisSetExtremesEventObject) {
@@ -243,7 +349,133 @@ const MetricChart: React.FC<MetricChartProps> = ({
       })),
       series,
     });
-  }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
+  }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen, zoomState]);
+
+  const legendEnabled = Boolean(chartOptions?.legend?.enabled);
+
+  // Reset to the full visible timeline whenever the date range changes.
+  useEffect(() => {
+    pendingDateResetRef.current = `${startDate?.toISOString() || ''}|${endDate?.toISOString() || ''}`;
+    setZoomState(null);
+  }, [startDate, endDate]);
+
+  // Apply pending date-range reset once fresh data has been processed.
+  useEffect(() => {
+    if (!pendingDateResetRef.current || !chartRef.current?.chart || !fullExtentRef.current) return;
+
+    const full = fullExtentRef.current;
+    chartRef.current.chart.xAxis[0].setExtremes(full.xMin, full.xMax, true, false);
+    pendingDateResetRef.current = null;
+  }, [data]);
+
+  const mergeWindowPoints = (
+    existing: [number, number][],
+    incoming: [number, number][],
+    xMin: number,
+    xMax: number
+  ): [number, number][] => {
+    const outside = existing.filter(([ts]) => ts < xMin || ts > xMax);
+    const merged = [...outside, ...incoming].sort((a, b) => a[0] - b[0]);
+
+    // Deduplicate by timestamp, keeping the last occurrence (incoming window data should win).
+    const deduped: [number, number][] = [];
+    for (const point of merged) {
+      if (deduped.length > 0 && deduped[deduped.length - 1][0] === point[0]) {
+        deduped[deduped.length - 1] = point;
+      } else {
+        deduped.push(point);
+      }
+    }
+    return deduped;
+  };
+
+  const fetchVisibleWindowData = useCallback(async (xMin: number, xMax: number) => {
+    const isZoomed =
+      fullExtentRef.current &&
+      (Math.abs(xMin - fullExtentRef.current.xMin) > 1 ||
+        Math.abs(xMax - fullExtentRef.current.xMax) > 1);
+
+    if (!isZoomed || subFilters.length === 0) {
+      return;
+    }
+
+    try {
+      const rows = await getCachedDataForRange({
+        minTs: xMin,
+        maxTs: xMax,
+        granularity: 'auto',
+        prefetchAdjacent: true,
+        activeGroups: {
+          weather: activeGroup === 'weather',
+          quality: activeGroup === 'quality',
+          gauges: activeGroup === 'gauges',
+        },
+      });
+
+      if (!rows.length || !chartRef.current?.chart) return;
+
+      const incomingBySeries = new Map<string, [number, number][]>();
+      rows.forEach((item) => {
+        if (!subFilters.includes(item.measurement_type)) return;
+
+        const seriesName = `${item.measurement_type} (${item.unit})`;
+        const ts =
+          new Date(item.recorded_at).getTime() -
+          new Date(item.recorded_at).getTimezoneOffset() * 60 * 1000;
+        if (!incomingBySeries.has(seriesName)) {
+          incomingBySeries.set(seriesName, []);
+        }
+        incomingBySeries.get(seriesName)!.push([ts, item.value]);
+      });
+
+      incomingBySeries.forEach((incoming, seriesName) => {
+        const sortedIncoming = incoming.sort((a, b) => a[0] - b[0]);
+        const existing = originalDataRef.current.get(seriesName) || [];
+        originalDataRef.current.set(
+          seriesName,
+          mergeWindowPoints(existing, sortedIncoming, xMin, xMax)
+        );
+      });
+
+      const chart = chartRef.current.chart;
+      const chartPixelWidth = chart.plotWidth || 800;
+      chart.series.forEach((highchartsSeries) => {
+        const originalData = originalDataRef.current.get(highchartsSeries.name);
+        if (!originalData) return;
+
+        const aggregationResult = reaggregateOnZoom(
+          originalData,
+          chartPixelWidth,
+          xMin,
+          xMax,
+          aggregationConfigRef.current
+        );
+        highchartsSeries.setData(aggregationResult.aggregated, false);
+      });
+      chart.redraw();
+    } catch (err: any) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[Window Fetch] Failed to fetch visible range data', err);
+      }
+    }
+  }, [activeGroup, getCachedDataForRange, subFilters]);
+
+  // While user scrolls/pans a zoomed view, fetch denser data for that visible window.
+  useEffect(() => {
+    if (!zoomState) return;
+
+    const timeout = window.setTimeout(() => {
+      fetchVisibleWindowData(zoomState.xMin, zoomState.xMax);
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [zoomState, fetchVisibleWindowData]);
+
+  useEffect(() => {
+    clearViewportCache();
+  }, [data, activeGroup, subFilters, clearViewportCache]);
 
   // Handle zoom events for dynamic re-aggregation
   useEffect(() => {
@@ -318,17 +550,91 @@ const MetricChart: React.FC<MetricChartProps> = ({
     return () => clearTimeout(timer);
   }, [data]);
 
+  // Update panning enabled state when zoom state changes
+  useEffect(() => {
+    if (!chartRef.current?.chart) return;
+    
+    const isZoomed = 
+      zoomState && 
+      fullExtentRef.current && 
+      (Math.abs(zoomState.xMin - fullExtentRef.current.xMin) > 1 || 
+       Math.abs(zoomState.xMax - fullExtentRef.current.xMax) > 1);
+    
+    chartRef.current.chart.update({
+      chart: {
+        panning: {
+          enabled: isZoomed === true,
+        }
+      }
+    }, false);
+  }, [zoomState]);
+
   return (
     <div className="relative">
       {/* Show error or loading state if needed */}
       {error && <div className="text-red-500">Error: {error.message}</div>}
       {loading && <div className="text-center"></div>}
-      <HighchartsReact
-        highcharts={Highcharts}
-        options={chartOptions}
-        ref={chartRef}
-        containerProps={{ style: { height: `${resolvedHeight}px`, touchAction: 'none' } }}
-      />
+      {viewportCacheMetadata.inFlightRequests > 0 && (
+        <div className="absolute inset-0 z-10 animate-pulse rounded bg-gradient-to-r from-slate-200/30 via-slate-100/20 to-slate-200/30 pointer-events-none" />
+      )}
+      <div className="relative">
+        <HighchartsReact
+          highcharts={Highcharts}
+          constructorType="stockChart"
+          options={chartOptions}
+          ref={chartRef}
+          containerProps={{ style: { height: `${resolvedHeight}px`, touchAction: 'none' } }}
+        />
+        {fullExtentRef.current && (() => {
+          const full = fullExtentRef.current;
+          const activeRange = zoomState || full;
+          const total = Math.max(1, full.xMax - full.xMin);
+          const leftPct = ((activeRange.xMin - full.xMin) / total) * 100;
+          const widthPct = ((activeRange.xMax - activeRange.xMin) / total) * 100;
+
+          return (
+            <div
+              className="pointer-events-none absolute left-2 right-2"
+              style={{ bottom: legendEnabled ? 52 : 12 }}
+            >
+              <div
+                ref={rangeTrackRef}
+                className="pointer-events-auto relative h-5 rounded-full border border-slate-400 bg-slate-200/95 shadow-sm"
+              >
+                <div
+                  className="absolute top-0 h-5 rounded-full bg-slate-500/95"
+                  style={{ left: `${leftPct}%`, width: `${Math.max(4, widthPct)}%` }}
+                />
+                <button
+                  type="button"
+                  aria-label="Adjust range start"
+                  className="absolute top-1/2 h-8 w-6 -translate-y-1/2 cursor-ew-resize rounded-full border-2 border-slate-800 bg-white shadow-md"
+                  style={{ left: `calc(${leftPct}% - 12px)` }}
+                  onMouseDown={(e) => startRangeDrag('left', e.clientX)}
+                >
+                  <span className="mx-auto block h-4 w-[3px] rounded-full bg-slate-500" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Adjust range end"
+                  className="absolute top-1/2 h-8 w-6 -translate-y-1/2 cursor-ew-resize rounded-full border-2 border-slate-800 bg-white shadow-md"
+                  style={{ left: `calc(${leftPct + widthPct}% - 12px)` }}
+                  onMouseDown={(e) => startRangeDrag('right', e.clientX)}
+                >
+                  <span className="mx-auto block h-4 w-[3px] rounded-full bg-slate-500" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Move visible range"
+                  className="absolute top-0 h-5 cursor-grab active:cursor-grabbing bg-transparent"
+                  style={{ left: `${leftPct}%`, width: `${Math.max(4, widthPct)}%` }}
+                  onMouseDown={(e) => startRangeDrag('center', e.clientX)}
+                />
+              </div>
+            </div>
+          );
+        })()}
+      </div>
     </div>
   );
 };
