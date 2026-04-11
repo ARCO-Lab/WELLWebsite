@@ -184,6 +184,7 @@ Recommended follow-up production tasks:
 - [ ] UI visual bugs: fix SVG arrows on the About page
 - [ ] UI visual bugs: fix share-option post icons (X/Facebook/LinkedIn rendering)
 - [ ] Fix modal behavior on mobile, especially chart/graph usability (consider landscape-oriented layout)
+- [ ] Document local PostgreSQL setup for prod parity: database/user creation, environment variables, and exact migration/seed scripts to create all tables
 - [ ] Update `config.py` to use `os.getenv` for all Borealis and SharePoint config instead of hardcoding
 - [ ] Add shared-secret header between dashboard and backend (`X-Internal-Auth`) for extra protection
 - [ ] Check all backend injection scripts (historical and scheduled)
@@ -194,6 +195,10 @@ Recommended follow-up production tasks:
 - [ ] Add precomputed rollups/materialized views for common time windows (1 min / 5 min / hourly / daily)
 - [ ] Add indexes on DB for query speed
 - [ ] Check if multiple concurrent users on the website are handled correctly
+- [ ] Remove first Borealis upload on script start; schedule uploads only on specific months/years (manual trigger or cron)
+- [ ] Split dashboard Docker services into separate frontend and backend containers for independent restart capability
+- [ ] Enhance Highcharts rendering: add Boost Module with native data grouping, lazy loading, and dynamic grouping intervals based on date range (e.g., 5-min for 2-month windows, hourly for 1-year windows, daily for multi-year)
+- [ ] Build GitHub Actions CI/CD pipeline with per-commit quality gates: **Backend** (unit tests for routes/services/config, integration tests for `/api/data`, `/api/analysis`, export endpoints, linting, type checking, Docker build validation); **Frontend/Next.js** (unit tests for hooks/components, E2E tests for filter/download flows, Lighthouse accessibility/performance checks, responsive design tests across mobile/tablet/desktop, ESLint/TypeScript checks); **WordPress** (accessibility audit, responsive design tests, theme/plugin security scan, smoke tests for iframe embedding); **Infrastructure** (Docker image security scan, compose validation, dependency vulnerability checks)
 
 ### Backend
 - [ ] Use webhooks with Flask to automate redeployments on push to repo
@@ -216,7 +221,6 @@ Recommended follow-up production tasks:
 - [ ] Cancel stale in-flight requests when filters/date ranges change quickly
 - [ ] Add chart-resolution logic so the UI requests aggregated data for wide date ranges and only fetches raw detail on zoom
 - [ ] Fix responsiveness of header logos on iPhone dimensions
-- [ ] Add Highcharts Boost Module for faster rendering on large datasets
 - [ ] Make Highcharts metric colours consistent across all loggers
 - [ ] Update download UI to use backend export endpoints with progress/error states
 - [ ] Move any heavy client-side data transforms/parsing into Web Workers if profiling shows UI blocking
@@ -255,7 +259,7 @@ Recommended follow-up production tasks:
 - [ ] Add a secure GitHub webhook deploy flow that triggers only after CI checks pass, then pulls latest code and redeploys only affected Docker services
 - [ ] Refactor `git_pull.sh` into a modular, environment-driven deploy script that uses GitHub-provided/env-configured variables (branch, environment, changed services, compose profile)
 - [ ] Document the full CI/CD + webhook auto-deploy workflow in this README once implemented (inputs, secrets, rollback, and service selection logic)
-- [ ] Implement observability stack: Prometheus + Alertmanager + Grafana for metrics/alerts (or Sentry), and Loki + Promtail for centralized logs across Nginx, Flask, Next.js, WordPress, cron jobs, and PostgreSQL
+- [ ] Implement observability stack: Prometheus + Alertmanager + Grafana for metrics/alerts (or Sentry/Posthog/Resend for emails on downloads, and errors), and Loki + Promtail for centralized logs across Nginx, Flask, Next.js, WordPress, cron jobs, and PostgreSQL
 - [ ] Route Alertmanager notifications to email for ingestion failures, export/upload failures, stale-data windows, API 5xx spikes, and host/database health incidents
 - [ ] Define SLOs/SLIs and alert thresholds (availability, latency, error rate, data freshness, cron success)
 - [ ] Add synthetic monitoring for the full WordPress → iframe dashboard journey and key API health checks

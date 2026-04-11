@@ -1,5 +1,6 @@
 volumes:
   db_data:
+  exports_data:
 
 networks:
   front:
@@ -55,10 +56,21 @@ services:
       DATABASE_URL: ${BACKEND_DATABASE_URL}
       # If you also want to drive the port via env:
       BACKEND_PORT: ${BACKEND_PORT}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      EXPORTS_DIR: ${EXPORTS_DIR:-/app/app/exports}
     expose:
       - "${BACKEND_PORT}"              # internal-only
     extra_hosts:
       - "host.docker.internal:host-gateway"   # lets container reach host/VM if needed
+    restart: unless-stopped
+    networks:
+      - internal_api
+    volumes:
+      - exports_data:/app/app/exports
+
+  redis:
+    image: redis:7-alpine
     restart: unless-stopped
     networks:
       - internal_api
@@ -85,6 +97,28 @@ services:
     volumes:
       # Persist worker logs on host for easy access
       - ./dashboard/backend/app/logs:/app/app/logs
+
+  export_worker:
+    build:
+      context: ./dashboard/backend
+    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "--loglevel=info"]
+    env_file:
+      - ./dashboard/backend/app/.env
+    environment:
+      DATABASE_URL: ${BACKEND_DATABASE_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      EXPORTS_DIR: ${EXPORTS_DIR:-/app/app/exports}
+    depends_on:
+      redis:
+        condition: service_started
+      backend:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - internal_api
+    volumes:
+      - exports_data:/app/app/exports
 
   # --- Next.js frontend ---
   dashboard:
