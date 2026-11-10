@@ -15,6 +15,7 @@ from api.services.weather import WeatherService
 from api.services.loggers import LoggerService
 from api.services.quality import QualityService
 from config import Config
+from utils.sensor_names import weather_measurement_name
 
 app = create_app()
 
@@ -53,12 +54,7 @@ def parse_weather_entry(entry, logger_id):
     if sensor_sn and sensor_sn.endswith("-B"):
         return None
     
-    measurement_type = entry.get("sensor_measurement_type")
-    if measurement_type == "Temperature":
-        if sensor_sn == "21948438-1":
-            measurement_type = "Soil Temperature"
-        elif sensor_sn == "22154270-1":
-            measurement_type = "Air Temperature"
+    measurement_type = weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type"))
     if measurement_type == "RH":
         measurement_type = "Relative Humidity"
 
