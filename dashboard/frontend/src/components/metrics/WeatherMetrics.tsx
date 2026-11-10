@@ -39,16 +39,6 @@ const WeatherMetrics = ({
   const [scrollPosition, setScrollPosition] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
 
-  if (loading) {
-    return (
-      <div className="space-y-3">
-        {[...Array(4)].map((_, i) => (
-          <div key={i} className="h-16 bg-muted/20 rounded animate-pulse" />
-        ))}
-      </div>
-    );
-  }
-
   const metricMap = [
     { label: "Air Temperature", key: "Air Temperature", icon: Thermometer, color: "text-mcmaster-maroon" },
     { label: "Relative Humidity", key: "Relative Humidity", icon: Droplets, color: "text-mcmaster-gold" },
@@ -71,7 +61,9 @@ const WeatherMetrics = ({
   // Create infinite scrolling effect by duplicating metrics
   const infiniteMetrics = [...filteredMetrics, ...filteredMetrics, ...filteredMetrics];
 
-  useEffect(() => { // Error necessary
+  // Hooks first, before the loading return below: React needs the same hooks in the same order on every
+  // render, and returning early before this one changed the count when `loading` flipped.
+  useEffect(() => {
     // Attach horizontal scroll handler for mouse wheel
     const container = containerRef.current;
     if (!container) return;
@@ -87,7 +79,17 @@ const WeatherMetrics = ({
 
     container.addEventListener('wheel', handleScroll, { passive: false });
     return () => container.removeEventListener('wheel', handleScroll);
-  }, [filteredMetrics.length]);
+  }, [filteredMetrics.length, loading]); // re-attach once the cards replace the loading skeleton
+
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="h-16 bg-muted/20 rounded animate-pulse" />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
