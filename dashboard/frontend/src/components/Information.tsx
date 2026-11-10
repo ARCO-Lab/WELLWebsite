@@ -12,14 +12,16 @@ const infoMap: Record<number, string> = {
   1: "Filter sensor data by category (Loggers, Weather, Quality), select individual metrics, and adjust date ranges. Your selections here and on the map are synchronized.",
   2: "The map displays sensor locations. Blue droplets are water loggers, the pink droplet is the water quality sensor, and the gray cloud is the weather station. Click markers to toggle them.",
   3: "This section shows the most recent readings for your selected sensor metrics. Click any metric to view it in a fullscreen modal for detailed analysis.",
-  4: "Graph visualizations for sensor data update based on your filters. Click a graph to open it fullscreen, revealing an AI-generated analysis of trends, correlations, and anomalies.",
+  // AI ANALYSIS DISABLED: was "...Click a graph to open it fullscreen, revealing an AI-generated analysis of trends, correlations, and anomalies."
+  4: "Graph visualizations for sensor data update based on your filters. Click a graph to open it fullscreen for a larger, zoomable view.",
   5: "The AI generates insights from your selected sensor data. It summarizes trends, anomalies, and correlations, helping you understand the relationships between different sensor readings.",
 
   // --- Sampling Tab ---
   6: "Filter sampling data by creek, select metrics like E. coli or pH, and choose specific sampling sites. Your selections here and on the map are synchronized.",
   7: "The map displays sampling site locations, color-coded by creek: orange for Ancaster Creek, yellow for Tiffany Creek, green for Sulphur Creek, black for Coldwater Creek, and white for Spencer’s Creek. Hover over a marker to see its name. Click markers to toggle individual sites on or off.",
   8: "This section shows the latest measurements for your selected sampling metrics and sites. Click any metric to view it in a fullscreen modal for detailed analysis.",
-  9: "Graphs are grouped first by creek, then by individual sampling site. Click a graph to open it fullscreen and view an AI-generated analysis of water quality trends over time.",
+  // AI ANALYSIS DISABLED: was "...Click a graph to open it fullscreen and view an AI-generated analysis of water quality trends over time."
+  9: "Graphs are grouped first by creek, then by individual sampling site. Click a graph to open it fullscreen for a larger, zoomable view.",
   10: "The AI generates insights from your selected sampling data. It summarizes trends and potential issues based on the selected metrics, sites, and date range."
 };
 
