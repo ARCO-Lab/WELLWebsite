@@ -100,6 +100,13 @@ const LoggerGraph = ({
   return (
     <div className="p-4 bg-white rounded shadow">
       <h3 className="font-bold text-lg mb-2">Water Loggers</h3>
+
+      {/* One message for all the logger charts: inside each narrow chart it ran far past the card */}
+      {error && !loading && (
+        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700" role="alert">
+          {error.message}
+        </div>
+      )}
       
       {/* The grid class is now dynamically set based on the number of selected loggers */}
       <div className={`grid ${getGridClass(selectedLoggers.length)} gap-4`}>
@@ -128,6 +135,7 @@ const LoggerGraph = ({
                 data={loggerData}
                 loading={loading}
                 error={error}
+                showErrorBanner={false}
                 modalOpen={modalOpen}
                 showLegend={modalOpen ? true : index === legendIndex}
               />
