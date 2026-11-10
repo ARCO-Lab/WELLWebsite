@@ -343,6 +343,7 @@ def upload_to_borealis(csv_content, csv_name):
         print(f"Successfully uploaded {csv_name} to Borealis")
     except Exception as e:
         print(f"Error uploading to Borealis: {e}")
+        raise  # exit non-zero, so the scheduler logs the failed upload instead of a success
 
 def upload_to_sharepoint(csv_content, csv_name):
     """Upload CSV to SharePoint"""

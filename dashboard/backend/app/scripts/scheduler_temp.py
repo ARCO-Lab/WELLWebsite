@@ -13,7 +13,7 @@ import pathlib
 from inject_from_api import inject_all_new_data
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
-from utils.jobs import run_in_background, download_status  # noqa: E402
+from utils.jobs import run_in_background, run_bounded, download_status  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
@@ -64,7 +64,7 @@ def run_download_data():
     cmd = [sys.executable, "scripts/download_data.py"]
     timestamped_print_download(f"Running command: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=DOWNLOAD_TIMEOUT_S)
+        result = run_bounded(cmd, DOWNLOAD_TIMEOUT_S)
         timestamped_print_download(f"download_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_download(f"download_data.py stderr: {result.stderr}")
@@ -83,7 +83,10 @@ def run_download_data():
         try:
             list_cmd = [sys.executable, "scripts/download_data.py", "--list-files"]
             timestamped_print_download(f"Running debug command: {' '.join(list_cmd)}")
-            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=LIST_FILES_TIMEOUT_S)
+            try:
+                list_result = run_bounded(list_cmd, LIST_FILES_TIMEOUT_S)
+            except subprocess.CalledProcessError as list_error:  # --list-files exits 1 when it finds nothing
+                list_result = list_error
             timestamped_print_download(f"--list-files stdout: {list_result.stdout}")
             if list_result.stderr:
                 timestamped_print_download(f"--list-files stderr: {list_result.stderr}")
@@ -100,7 +103,7 @@ def run_upload_data():
         # Run upload_data.py without arguments (defaults to last month)
         cmd = [sys.executable, "scripts/upload_data.py"]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=UPLOAD_TIMEOUT_S)
+        result = run_bounded(cmd, UPLOAD_TIMEOUT_S)
         timestamped_print_upload(f"upload_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_upload(f"upload_data.py stderr: {result.stderr}")

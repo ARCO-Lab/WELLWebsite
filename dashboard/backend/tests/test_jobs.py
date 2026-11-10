@@ -1,14 +1,17 @@
 """Tests for utils/jobs.py (the worker scheduler's helpers). Run from dashboard/backend: python -m unittest discover -s tests"""
 import datetime as dt
+import os
 import pathlib
+import subprocess
 import sys
 import threading
+import time
 import unittest
 
 import schedule
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-from utils.jobs import download_status, run_in_background  # noqa: E402
+from utils.jobs import download_status, run_bounded, run_in_background  # noqa: E402
 
 
 class RunInBackgroundTests(unittest.TestCase):
@@ -69,6 +72,41 @@ class RunInBackgroundTests(unittest.TestCase):
             self.assertGreater(job.next_run, dt.datetime.now())
         finally:
             release.set()
+
+
+class RunBoundedTests(unittest.TestCase):
+    def test_returns_output_on_success(self):
+        r = run_bounded([sys.executable, "-c", "print('ok')"], timeout=30)
+        self.assertEqual(r.stdout.strip(), "ok")
+
+    def test_raises_on_failure_with_output(self):
+        with self.assertRaises(subprocess.CalledProcessError) as ctx:
+            run_bounded([sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"], timeout=30)
+        self.assertEqual(ctx.exception.returncode, 3)
+        self.assertIn("boom", ctx.exception.stdout)
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX-only; the worker runs on Linux")
+    def test_timeout_also_stops_what_the_command_started(self):
+        """download_data.py runs inject_sampling.py; a timeout must stop both."""
+        script = "; ".join([
+            "import subprocess, sys, time",
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+            "print(child.pid, flush=True)",
+            "time.sleep(60)",
+        ])
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired) as ctx:
+            run_bounded([sys.executable, "-c", script], timeout=2, grace=2)
+        self.assertLess(time.monotonic() - started, 30)
+        child_pid = int(ctx.exception.output.split()[0])
+        for _ in range(50):  # the kernel may need a moment to reap it
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail(f"child process {child_pid} outlived the timeout")
 
 
 class DownloadStatusTests(unittest.TestCase):
