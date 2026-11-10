@@ -141,14 +141,19 @@ New tables are created by `db.create_all()` (`dashboard/backend/app/db/init_db.p
 
 ```bash
 cd ~/WELLWebsite
-pg_dump "<database url>" -Fc -f ~/welldb-$(date +%F).dump    # a backup first, kept outside the repo
+./git_pull.sh && docker compose up -d --build --no-deps backend   # the migration files are baked into the image
+pg_dump "<database url>" -Fc -f ~/welldb-$(date +%F).dump        # a backup first, kept outside the repo
 docker compose exec backend python scripts/migrate.py --status   # what has run and what is pending
 docker compose exec backend python scripts/migrate.py --dry-run  # the SQL that would run
 docker compose exec backend python scripts/migrate.py            # apply
 ```
 
+- The first step is needed because `docker compose exec backend` only sees the files in the running image. Rebuilding restarts gunicorn, so the API returns errors for a few seconds.
 - Each file runs in one transaction, so a failed migration leaves nothing half-done. A file whose first line is `-- migrate: no-transaction` runs outside a transaction instead, as `CREATE INDEX CONCURRENTLY` requires; such a file holds one statement.
-- Indexes are built with `CONCURRENTLY`, which doesn't block reads or inserts, so the site and the ingestion keep running and nothing needs restarting.
+- Indexes are built with `CONCURRENTLY`, which doesn't block reads or inserts, so the index build itself needs no downtime: the site and the ingestion keep running while it builds.
+- If a concurrent index build fails part way, PostgreSQL leaves an INVALID index behind. The runner then refuses to record the migration, names the index and exits with an error: drop it with `DROP INDEX CONCURRENTLY <name>;` and run the migration again.
+- Two runs at the same time take turns (a PostgreSQL advisory lock), so a migration never runs twice.
+- Never rename or renumber a file once it has been applied: the runner identifies migrations by file name and would run it again. Two files with the same number are refused.
 - Dated files such as `2026-11-10_swap_air_soil_temperature.sql` are one-off data fixes, run by hand with `psql` as their comments describe; the runner ignores them.
 - When a migration changes the schema, change `db/models.py` to match, so a fresh database built by `create_all()` gets the same result.
 
