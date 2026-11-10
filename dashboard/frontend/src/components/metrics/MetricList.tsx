@@ -97,7 +97,9 @@ export function compassPoint(degrees: number): string {
 
 // --- tiles ---
 
-function Tile({ row, caption, staleAfterHours }: { row: MetricRow; caption?: string; staleAfterHours: number | null }) {
+// In the strip a tile is one line, as wide as its content. In the modal (wrap) it is at most as wide as the modal,
+// and a long name wraps instead of being cut off on a narrow phone.
+function Tile({ row, caption, staleAfterHours, wrap = false }: { row: MetricRow; caption?: string; staleAfterHours: number | null; wrap?: boolean }) {
   const Icon = row.icon;
   const value = row.reading?.value;
   const hasValue = typeof value === "number" && Number.isFinite(value);
@@ -106,14 +108,14 @@ function Tile({ row, caption, staleAfterHours }: { row: MetricRow; caption?: str
   const stale = hasValue && staleAfterHours != null && age != null && age > staleAfterHours;
 
   return (
-    <div className="flex shrink-0 items-center gap-3 whitespace-nowrap rounded-lg border border-input-border bg-card px-3 py-2">
+    <div className={`flex items-center gap-3 rounded-lg border border-input-border bg-card px-3 py-2 ${wrap ? "min-w-0 max-w-full" : "shrink-0 whitespace-nowrap"}`}>
       <Icon aria-hidden className={`h-4 w-4 shrink-0 ${row.color}`} />
-      <div className="leading-tight">
+      <div className={`leading-tight ${wrap ? "min-w-0 break-words" : ""}`}>
         {caption && <p className="text-[11px] font-semibold text-primary/80">{caption}</p>}
         <p className="text-sm text-foreground" title={row.fullLabel ?? row.label}>{row.label}</p>
         {stale && <p className="text-[11px] text-amber-800">Last reading {formatSiteTime(row.reading?.recorded_at)}</p>}
       </div>
-      <p className="ml-auto pl-1 leading-tight">
+      <p className="ml-auto shrink-0 whitespace-nowrap pl-1 leading-tight">
         {shown ? (
           <>
             <span className={`font-poppins text-lg font-semibold tabular-nums ${stale ? "text-muted" : "text-primary"}`}>
@@ -134,8 +136,9 @@ const SPEED_PX_PER_S = 30;
 // The scrolling strip. It scrolls by moving scrollLeft, so the strip is also an ordinary horizontal scroller:
 // a trackpad, Shift + wheel, a swipe or the arrow keys move it by hand, while a normal wheel still scrolls the page.
 // When the tiles don't all fit, a second copy follows the first and the strip wraps by exactly one copy's width,
-// so the loop is seamless. Hover, keyboard focus or a touch pauses it where it is; it doesn't auto-scroll at all
-// for people who ask their system for reduced motion.
+// so the loop is seamless. It pauses where it is while a mouse is over it or it has keyboard focus, and for 2.5 s
+// after a touch (a tap is not a hover, and focus from a click or a closing modal doesn't pause it). It doesn't
+// auto-scroll at all for people who ask their system for reduced motion.
 function Ticker({ label, children }: { label: string; children: React.ReactNode }) {
   const scroller = useRef<HTMLDivElement>(null);
   const firstCopy = useRef<HTMLDivElement>(null);
@@ -200,9 +203,9 @@ function Ticker({ label, children }: { label: string; children: React.ReactNode 
       role="region"
       aria-label={label}
       tabIndex={0}
-      onMouseEnter={pause}
-      onMouseLeave={() => resume()}
-      onFocus={pause}
+      onPointerEnter={(e) => { if (e.pointerType === "mouse") pause(); }}
+      onPointerLeave={(e) => { if (e.pointerType === "mouse") resume(); }}
+      onFocus={(e) => { if (e.currentTarget.matches(":focus-visible")) pause(); }}
       onBlur={() => resume()}
       onTouchStart={pause}
       onTouchEnd={() => resume(2500)}
@@ -235,7 +238,9 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
     .sort()
     .pop();
   const tiles = sections.flatMap((section) =>
-    section.rows.map((row) => <Tile key={row.key} row={row} caption={section.title} staleAfterHours={staleAfterHours} />)
+    section.rows.map((row) => (
+      <Tile key={row.key} row={row} caption={section.title} staleAfterHours={staleAfterHours} wrap={layout === "wrap"} />
+    ))
   );
 
   return (
