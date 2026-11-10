@@ -196,9 +196,21 @@ def fetch_quality_chunk(start_str, end_str):
     
     return all_quality
 
+# Shown instead of the guard's usual "back up, then run it again": this script can't fetch back what it
+# deletes. LI-COR rejects start dates more than a year back, get_weather_data/get_logger_data turn that
+# error into "no data", and a 30-day chunk is more than LI-COR's 100,000-record cap (about 20 days for
+# this station), so a reload of a populated database silently loses older history and whole sensors.
+WIPE_ADVICE = (
+    "This script can't fetch them all back: LI-COR only serves the past year, and the script's 30-day "
+    "requests are cut off at LI-COR's 100,000-record cap, so sensors drop out of the reload without an error. "
+    "Weather and logger readings older than a year would be lost for good. To fill gaps in the stored data, "
+    "run scripts/licor_backfill.py instead (add --check to only report what's missing). Set ALLOW_WIPE=1 for "
+    "this script only on a database you can afford to lose, such as a fresh local one."
+)
+
 def inject_all_history():
     # Main function: clears DB, fetches and inserts data in chunks to avoid API truncation
-    require_wipe_permission("every sensor measurement (and reset the id sequence)")
+    require_wipe_permission("every sensor measurement (and reset the id sequence)", advice=WIPE_ADVICE)
     with app.app_context():
         print("[INFO] Clearing existing SensorMeasurement records ...")
         SensorMeasurement.query.delete()
