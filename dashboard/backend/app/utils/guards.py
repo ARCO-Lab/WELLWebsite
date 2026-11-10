@@ -11,6 +11,6 @@ def require_wipe_permission(what, env=None):
     env = os.environ if env is None else env
     if env.get("ALLOW_WIPE") != "1":
         raise SystemExit(
-            f"Refusing to delete {what}. This script empties the table before reloading it. "
+            f"Refusing to delete {what}: this permanently deletes every row it covers. "
             "Take a backup first (pg_dump), then run it again with ALLOW_WIPE=1 set for that run."
         )
