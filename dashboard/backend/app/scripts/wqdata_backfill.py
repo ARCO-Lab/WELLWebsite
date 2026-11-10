@@ -18,12 +18,14 @@ wall-clock times, so on the night clocks go back the repeated hour's readings sh
 the first one and can't be stored; they aren't counted as missing. --check also compares the values
 of readings already stored.
 
-WQData throttles bursts, so requests are paced PAUSE seconds apart. It also limits requests per hour
-(HTTP 429 "Request exceeds hourly limit"), shared with the 10-minute ingestion, and each day checked
-costs a request, so keep --days to what's needed. A day (at most about 2,700 values)
-fits in one response; longer responses are paged (see fetch_points). Network errors, timeouts, 429 and
-5xx responses are retried. Inserts use ON CONFLICT DO NOTHING, so running it twice is harmless. The ids of inserted rows are saved to logs/wqdata-backfill-<timestamp>.ids; to undo a run,
-delete those ids from sensor_measurements.
+WQData limits requests per hour (HTTP 429 "Request exceeds hourly limit"), and the limit is shared with
+the 10-minute ingestion. So days are fetched WINDOW_DAYS at a time (a full day is about 2,700 values
+and a response holds about 5,000-7,000, so a week takes 3-4 paged requests; see fetch_points), a 429
+stops the run at once instead of spending more of the quota on retries, and requests are paced PAUSE
+seconds apart because WQData also throttles bursts. Network errors, timeouts and 5xx responses are
+retried. Each day is still compared and inserted on its own. Inserts use ON CONFLICT DO NOTHING, so
+running it twice is harmless. The ids of inserted rows are saved to logs/wqdata-backfill-<timestamp>.ids;
+to undo a run, delete those ids from sensor_measurements.
 """
 from __future__ import annotations
 
@@ -46,7 +48,8 @@ from utils.fetching import FMT, UTC, to_local  # noqa: E402
 KEY_COLUMNS = ["station_id", "measurement_type", "recorded_at"]   # the table's unique key
 PAUSE = 3.5                       # seconds between WQData requests; it throttles bursts
 SETTLE = dt.timedelta(hours=1)    # the ingestion re-reads the last hour itself
-RETRY_STATUSES = {429, 500, 502, 503, 504}
+WINDOW_DAYS = 7                   # days fetched per (paged) request range
+RETRY_STATUSES = {500, 502, 503, 504}   # not 429: that's the hourly quota, and retries would spend more of it
 ATTEMPTS = 4
 
 
@@ -55,8 +58,8 @@ class WQDataError(RuntimeError):
 
 
 class WQData:
-    """Requests to WQData's data endpoint, paced PAUSE seconds apart, retried on network errors, timeouts,
-    throttling and server errors."""
+    """Requests to WQData's data endpoint, paced PAUSE seconds apart, retried on network errors, timeouts
+    and server errors. A 429 (hourly quota used up) fails at once."""
 
     def __init__(self, api_url, api_key, device_id, get=requests.get, sleep=time.sleep, pause=PAUSE):
         self.url = f"{str(api_url).rstrip('/')}/devices/{device_id}/parameters/data"
@@ -84,6 +87,8 @@ class WQData:
                     except ValueError:
                         raise WQDataError(f"WQData sent a response that isn't JSON for {frm} to {to} UTC") from None
                 problem = f"HTTP {r.status_code}" + self.message(r)
+                if r.status_code == 429:
+                    problem += "; WQData's hourly request limit is used up (shared with the ingestion), try again later"
                 if r.status_code not in RETRY_STATUSES:
                     break
             if attempt < ATTEMPTS - 1:
@@ -165,9 +170,12 @@ def parse_args(argv=None):
     return args
 
 
-def backfill(days, tz, station, get_page, read_stored, insert_rows, ids_path, check, log=print, requests_made=None) -> int:
+def backfill(days, tz, station, get_page, read_stored, insert_rows, ids_path, check, log=print, requests_made=None,
+             window=WINDOW_DAYS) -> int:
     """Compare WQData with the database for each (day, start, end) in `days` and, unless `check`, insert
-    what's missing. The database is reached through two functions, so this runs without one in tests:
+    what's missing. WQData is read `window` consecutive days at a time, to spend fewer requests of its
+    hourly quota; the comparison, the inserts and their transactions stay per day.
+    The database is reached through two functions, so this runs without one in tests:
       read_stored(lo, hi) -> {unique key: stored value} for the station's Quality rows in [lo, hi)
       insert_rows(rows, record_ids) -> ids of the rows inserted; it must call record_ids(ids) before it commits
     Returns the exit code: 1 if a WQData request failed, after reporting what was inserted until then."""
@@ -182,10 +190,17 @@ def backfill(days, tz, station, get_page, read_stored, insert_rows, ids_path, ch
             f.flush()
             os.fsync(f.fileno())
 
+    def by_day():
+        """(day, lo, hi, that day's rows), fetching WQData `window` days at a time."""
+        for i in range(0, len(days), window):
+            chunk = days[i:i + window]
+            points = fetch_points(get_page, to_utc(chunk[0][1], tz), to_utc(chunk[-1][2], tz))
+            window_rows = quality_rows(points, station, tz)
+            for day, lo, hi in chunk:
+                yield day, lo, hi, {k: r for k, r in window_rows.items() if lo <= k[2] < hi}
+
     try:
-        for day, lo, hi in days:
-            points = fetch_points(get_page, to_utc(lo, tz), to_utc(hi, tz))
-            rows = {k: r for k, r in quality_rows(points, station, tz).items() if lo <= k[2] < hi}
+        for day, lo, hi, rows in by_day():
             stored = read_stored(lo, hi)
             missing, extra, differ = compare(rows, stored)
             inserted = insert_rows(missing, record_ids) if missing and not check else []
@@ -263,7 +278,7 @@ def main(argv=None) -> int:
         end = (dt.datetime.now(UTC) - SETTLE).replace(second=0, microsecond=0)
         days = day_windows(end, args.days, tz)
         print(f"{'Checking' if args.check else 'Backfilling'} WQData device {station} for {days[0][0]} to "
-              f"{days[-1][2]:%Y-%m-%d %H:%M} ({tz.key}, as stored), one request per day", flush=True)
+              f"{days[-1][2]:%Y-%m-%d %H:%M} ({tz.key}, as stored), reading WQData {WINDOW_DAYS} days at a time", flush=True)
         code = backfill(days, tz, station, wq.get_page, read_stored, insert_rows, ids_path, args.check,
                         log=lambda line: print(line, flush=True), requests_made=lambda: wq.requests)
     return code

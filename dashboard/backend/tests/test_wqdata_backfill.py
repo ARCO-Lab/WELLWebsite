@@ -79,11 +79,19 @@ class Requests(unittest.TestCase):
         self.assertEqual(len(calls), bf.ATTEMPTS)
         self.assert_no_key(cm.exception)
 
-    def test_throttled_then_ok_is_retried(self):
-        wq, calls, sleeps = client(Response(429), Response(200, {"data": []}))
+    def test_server_error_then_ok_is_retried(self):
+        wq, calls, sleeps = client(Response(503), Response(200, {"data": []}))
         self.assertEqual(wq.get_page("a", "b"), {"data": []})
         self.assertEqual(len(calls), 2)
         self.assertEqual(sleeps, [10, bf.PAUSE])   # back off, then the usual pause
+
+    def test_quota_used_up_stops_at_once(self):
+        # A 429 means the hourly quota (shared with the ingestion) is used up: retrying would spend more of it.
+        wq, calls, sleeps = client(Response(429, {"message": "Request exceeds hourly limit"}), Response(200, {"data": []}))
+        with self.assertRaises(bf.WQDataError) as cm:
+            wq.get_page("a", "b")
+        self.assertEqual((len(calls), sleeps), (1, []))
+        self.assertIn("hourly request limit is used up", str(cm.exception))
 
     def test_timeout_is_retried(self):
         wq, calls, _ = client(requests.Timeout(f"read timed out: ?apiKey={KEY}"), Response(200, {"data": []}))
@@ -108,7 +116,7 @@ class Requests(unittest.TestCase):
 
     def test_wqdata_message_is_shown_without_the_key(self):
         quota = Response(429, {"message": f"Request exceeds hourly limit for {KEY}"})
-        wq, calls, _ = client(*[quota] * bf.ATTEMPTS)
+        wq, calls, _ = client(quota)
         with self.assertRaises(bf.WQDataError) as cm:
             wq.get_page("a", "b")
         self.assertIn("HTTP 429 (Request exceeds hourly limit for ***)", str(cm.exception))
@@ -245,13 +253,19 @@ class Backfill(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def run_backfill(self, check=False, fail_on_day=None, stored=None):
-        events, next_id = [], iter(range(100, 200))
+    def run_backfill(self, check=False, fail_on_day=None, stored=None, window=bf.WINDOW_DAYS):
+        events, next_id, self.requests = [], iter(range(100, 200)), []
 
-        def get_page(frm, to):   # one point per day, at local midnight, with two stored parameters
+        def get_page(frm, to):   # one point per day at 05:00Z (local midnight in EST), two stored parameters each
+            self.requests.append((frm, to))
             if fail_on_day and frm.startswith(fail_on_day):
                 raise bf.WQDataError("WQData request for ... failed: HTTP 503")
-            return {"data": [point(frm, 125001, 125002)], "info": {"more": False}}
+            t, end, data = dt.datetime.fromisoformat(frm), dt.datetime.fromisoformat(to), []
+            while t <= end:
+                if t.hour == 5 and t.minute == 0:
+                    data.append(point(t.strftime("%Y-%m-%d %H:%M:%S"), 125001, 125002))
+                t += dt.timedelta(hours=1)
+            return {"data": data, "info": {"more": False}}
 
         def insert_rows(rows, record_ids):
             ids = [next(next_id) for _ in rows]
@@ -259,8 +273,17 @@ class Backfill(unittest.TestCase):
             events.append(("commit", self.ids_path.read_text().split()))   # the file's ids at commit time
             return ids
         code = bf.backfill(self.days, self.tz, "4501", get_page, lambda lo, hi: dict(stored or {}),
-                           insert_rows, self.ids_path, check, log=self.log.append)
+                           insert_rows, self.ids_path, check, log=self.log.append, window=window)
         return code, events
+
+    def test_days_are_read_a_window_at_a_time_and_compared_per_day(self):
+        self.days = bf.day_windows(dt.datetime(2026, 11, 20, 5, tzinfo=UTC), 9, self.tz)   # Nov 11-19, local
+        code, events = self.run_backfill()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.requests, [("2026-11-11 05:00:00", "2026-11-18 04:59:59"),    # 7 days
+                                         ("2026-11-18 05:00:00", "2026-11-20 04:59:59")])   # the other 2
+        self.assertEqual(len(events), 9)   # still one insert (transaction) per day
+        self.assertEqual(sum(" 2 missing" in line for line in self.log), 9)   # each day sees only its own point
 
     def test_insert_records_ids_before_commit(self):
         code, events = self.run_backfill()
@@ -276,7 +299,7 @@ class Backfill(unittest.TestCase):
         self.assertIn("0 missing", self.log[-1])
 
     def test_failure_reports_what_was_inserted_and_keeps_the_ids(self):
-        code, _ = self.run_backfill(fail_on_day="2026-11-10")   # the second day's request fails
+        code, _ = self.run_backfill(fail_on_day="2026-11-10", window=1)   # the second window's request fails
         self.assertEqual(code, 1)
         self.assertEqual(self.ids_path.read_text().split(), ["100", "101"])
         self.assertTrue(any("HTTP 503" in line for line in self.log))
