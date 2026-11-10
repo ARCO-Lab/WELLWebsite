@@ -1,7 +1,7 @@
 # This file defines the WeatherService class for fetching weather station data from an external API.
 # It handles authentication, logger selection, and filtering of weather data.
 
-import requests, sys, pathlib
+import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
 from datetime import datetime, timedelta, timezone
@@ -22,6 +22,29 @@ class WeatherService:
     def get_logger_id(self):
         # Return the first logger ID (used for group queries)
         return self.logger_ids[0]  # Extendable later
+
+    def get_page(self, start, end):
+        """One request for [start, end) (aware datetimes): (all records, whether LI-COR capped the response).
+
+        Unlike get_weather_data this returns every sensor (weather and loggers), reports the cap
+        ("max_results": true at 100,000 records) instead of hiding it, retries briefly on rate limits and
+        server errors, and raises on any other HTTP error so a failed fetch can't look like "no data".
+        Use utils.fetching.fetch_range to read longer periods.
+        """
+        fmt = "%Y-%m-%d %H:%M:%S"
+        params = {
+            "loggers": self.get_logger_id(),
+            "start_date_time": start.astimezone(timezone.utc).strftime(fmt),
+            "end_date_time": (end - timedelta(seconds=1)).astimezone(timezone.utc).strftime(fmt),
+        }
+        for attempt in range(4):
+            response = requests.get(self.api_url, headers=self.get_headers(), params=params, timeout=120)
+            if response.status_code not in (429, 500, 502, 503, 504):
+                break
+            time.sleep(10 * (attempt + 1))
+        response.raise_for_status()
+        body = response.json()
+        return body.get("data", []), bool(body.get("max_results"))
 
     def get_weather_data(self, start_time=None, end_time=None):
         # Fetch weather data from the API, optionally for a time range
