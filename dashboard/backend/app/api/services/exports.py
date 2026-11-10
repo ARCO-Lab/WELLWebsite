@@ -7,6 +7,7 @@ from sqlalchemy import and_, or_
 
 from db.database import db
 from db.models import SamplingMeasurement, SensorMeasurement
+from utils.timezone import EST_TZ
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
 
@@ -98,9 +99,21 @@ def estimate_rows(payload: Dict) -> int:
     return int(query.count())
 
 
+def _local_date(value: str) -> str:
+    """YYYYMMDD of an ISO timestamp in the site's time zone, i.e. the day the user picked.
+
+    The dashboard sends local midnight and 23:59:59.999 converted to UTC, so formatting the UTC value
+    would name a download for Nov 9 "..._20261109_20261110". Naive values are already local time.
+    """
+    ts = datetime.fromisoformat(value)
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(EST_TZ)
+    return ts.strftime("%Y%m%d")
+
+
 def default_export_filename(filters: Dict) -> str:
-    start = datetime.fromisoformat(filters["start"]).strftime("%Y%m%d")
-    end = datetime.fromisoformat(filters["end"]).strftime("%Y%m%d")
+    start = _local_date(filters["start"])
+    end = _local_date(filters["end"])
 
     if filters["domain"] == "sensor":
         parts = ["WELLWestCampus"]
