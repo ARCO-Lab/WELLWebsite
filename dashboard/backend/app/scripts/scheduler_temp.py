@@ -1,15 +1,19 @@
-# This script runs scheduled jobs for API data injection, data download, and data upload.
-# It manages logging, thread scheduling, and invokes other scripts as subprocesses.
+# This script runs the worker's scheduled jobs: vendor API ingestion every 10 minutes, the weekly
+# Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (the 1st, 02:00).
+# One scheduler loop starts each job in its own thread, and a job that is still running is never
+# started again, so every job runs once per slot. It logs to files under logs/.
 
 import schedule
 import time
 import sys
 import builtins
 import subprocess
-import threading
 import os
-import re
+import pathlib
 from inject_from_api import inject_all_new_data
+
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+from utils.jobs import run_in_background, download_status  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
@@ -48,33 +52,19 @@ def timestamped_print_upload(*args, **kwargs):
     if LOG_TO_STDOUT:
         builtins._original_print(timestamp, *args, **kwargs)
 
-def run_download_data(first_run=False):
-    """Run download_data.py and return the temporary file path if new data was downloaded."""
+def run_download_data():
+    """Run download_data.py. It downloads every new Borealis file and imports each one itself
+    (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES or NO_NEW_FILES."""
+    cmd = [sys.executable, "scripts/download_data.py"]
+    timestamped_print_download(f"Running command: {' '.join(cmd)}")
     try:
-        cmd = [sys.executable, "scripts/download_data.py"]
-        if first_run:
-            cmd.append("--force")
-            timestamped_print_download(f"Running command: {' '.join(cmd)}")
-        else:
-            timestamped_print_download(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         timestamped_print_download(f"download_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_download(f"download_data.py stderr: {result.stderr}")
-        
-        # Check for OUTPUT line with temporary file path
-        match = re.search(r'OUTPUT: (.+)', result.stdout)
-        if match and "ERROR" not in result.stdout:
-            tmp_file_path = match.group(1)
-            timestamped_print_download(f"Success: download_data.py downloaded new file. Temporary file path: {tmp_file_path}")
-            return tmp_file_path
-        timestamped_print_download("No new file downloaded by download_data.py")
-        return None
+        status = download_status(result.stdout)
+        timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
+        return status
     except subprocess.CalledProcessError as e:
         timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
         timestamped_print_download(f"download_data.py stdout: {e.stdout}")
@@ -83,11 +73,7 @@ def run_download_data(first_run=False):
         try:
             list_cmd = [sys.executable, "scripts/download_data.py", "--list-files"]
             timestamped_print_download(f"Running debug command: {' '.join(list_cmd)}")
-            list_result = subprocess.run(
-                list_cmd,
-                capture_output=True,
-                text=True
-            )
+            list_result = subprocess.run(list_cmd, capture_output=True, text=True)
             timestamped_print_download(f"--list-files stdout: {list_result.stdout}")
             if list_result.stderr:
                 timestamped_print_download(f"--list-files stderr: {list_result.stderr}")
@@ -97,36 +83,6 @@ def run_download_data(first_run=False):
     except Exception as e:
         timestamped_print_download(f"[ERROR] Unexpected error running download_data.py: {e}")
         return None
-
-def run_inject_sampling(tmp_file_path):
-    """Run inject_sampling.py with the temporary file path."""
-    try:
-        cmd = [sys.executable, "scripts/inject_sampling.py", tmp_file_path]
-        timestamped_print_download(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        timestamped_print_download(f"inject_sampling.py stdout: {result.stdout}")
-        if result.stderr:
-            timestamped_print_download(f"inject_sampling.py stderr: {result.stderr}")
-        timestamped_print_download("Success: inject_sampling.py completed")
-    except subprocess.CalledProcessError as e:
-        timestamped_print_download(f"[ERROR] inject_sampling.py failed with exit code {e.returncode}: {e}")
-        timestamped_print_download(f"inject_sampling.py stdout: {e.stdout}")
-        timestamped_print_download(f"inject_sampling.py stderr: {e.stderr}")
-    except Exception as e:
-        timestamped_print_download(f"[ERROR] Unexpected error running inject_sampling.py: {e}")
-    finally:
-        # Clean up temporary file
-        try:
-            if os.path.exists(tmp_file_path):
-                os.remove(tmp_file_path)
-                timestamped_print_download(f"DEBUG: Cleaned up temporary file: {tmp_file_path}")
-        except Exception as e:
-            timestamped_print_download(f"[ERROR] Failed to clean up temporary file {tmp_file_path}: {e}")
 
 def run_upload_data():
     """Run upload_data.py for the previous month's data."""
@@ -151,25 +107,25 @@ def run_upload_data():
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Unexpected error running upload_data.py: {e}")
 
-def download_job(first_run=False):
-    """Weekly job: run download_data.py and inject_sampling.py if new data is found."""
-    timestamped_print_download(f"========== DOWNLOAD JOB STARTED (first_run={first_run}) ==========")
-    tmp_file_path = run_download_data(first_run=first_run)
-    if tmp_file_path:
-        timestamped_print_download(f"New data file downloaded. Running inject_sampling.py with {tmp_file_path}...")
-        run_inject_sampling(tmp_file_path)
-    else:
-        timestamped_print_download("No new data file downloaded. Skipping inject_sampling.py.")
+def download_job():
+    """Weekly job: download and import any new Borealis sampling files."""
+    timestamped_print_download("========== DOWNLOAD JOB STARTED ==========")
+    run_download_data()
     timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
-def upload_job(first_run=False):
-    """Monthly job: run upload_data.py for the previous month."""
-    timestamped_print_upload(f"========== UPLOAD JOB STARTED (first_run={first_run}) ==========")
+def upload_job():
+    """Monthly job: upload the previous month's sensor data to Borealis."""
+    timestamped_print_upload("========== UPLOAD JOB STARTED ==========")
     run_upload_data()
     timestamped_print_upload("========== UPLOAD JOB COMPLETED ==========")
 
+def monthly_upload_check():
+    """Runs daily at 02:00 (schedule has no monthly interval) and uploads on the 1st of the month."""
+    if time.strftime("%d") == "01":
+        upload_job()
+
 def api_injection_job():
-    """Original job: run inject_all_new_data every 10 minutes."""
+    """Every 10 minutes: fetch new vendor API data and store it."""
     try:
         print("========== API INJECTION STARTED ==========")
         print("Calling inject_all_new_data() function...")
@@ -183,50 +139,8 @@ def api_injection_job():
         print(f"[ERROR] Full traceback: {traceback.format_exc()}")
         print("========== API INJECTION ERROR END ==========")
 
-def run_api_scheduler():
-    """Run the original API injection scheduler (every 10 minutes)."""
-    print("API Scheduler started. Running every 10 minutes...\n")
-    api_injection_job()
-    schedule.every(10).minutes.do(api_injection_job)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-def run_download_scheduler():
-    """Run the download scheduler (weekly)."""
-    timestamped_print_download("Download Scheduler started. Running every Sunday at 00:00...\n")
-    timestamped_print_download("Executing immediate download job")
-    download_job(first_run=True)
-    timestamped_print_download("Immediate download job completed")
-    schedule.every().sunday.at("00:00").do(download_job, first_run=False)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-def run_upload_scheduler():
-    """Run the upload scheduler (monthly)."""
-    timestamped_print_upload("Upload Scheduler started. Running on the 1st of each month at 02:00...\n")
-    timestamped_print_upload("Executing immediate upload job for last month's data")
-    upload_job(first_run=True)
-    timestamped_print_upload("Immediate upload job completed")
-    
-    # Schedule daily check for monthly upload (since schedule doesn't have built-in monthly support)
-    def check_monthly_upload():
-        current_day = time.strftime("%d")
-        if current_day == "01":
-            upload_job(first_run=False)
-    
-    schedule.every().day.at("02:00").do(check_monthly_upload)
-    
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
 if __name__ == "__main__":
-    # Main entry point: starts all scheduler threads and logging
-    # Save original stdout before any redirection
-    original_stdout = sys.stdout
-    
+    # Main entry point: one scheduler loop for all jobs
     # Ensure log directories exist
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
     os.makedirs(os.path.dirname(download_log_file_path), exist_ok=True)
@@ -238,37 +152,34 @@ if __name__ == "__main__":
 
     # Initial startup message (file; optionally stdout)
     print("WELL Scheduler Container Started!")
-    print("Main thread started. Starting all schedulers...")
     if LOG_TO_STDOUT:
         builtins._original_print("[scheduler] Mirroring logs to stdout is ENABLED via WORKER_LOG_TO_STDOUT.")
     else:
         builtins._original_print("[scheduler] Logs are written to /app/app/logs/*. Set WORKER_LOG_TO_STDOUT=1 to mirror to stdout.")
 
-    # Start API scheduler in one thread
-    print("Starting API scheduler thread")
-    api_thread = threading.Thread(target=run_api_scheduler, daemon=True)
-    api_thread.start()
+    # Each job starts in its own thread and is skipped while its previous run is still going.
+    api_run = run_in_background(api_injection_job, log=print)
+    download_run = run_in_background(download_job, log=timestamped_print_download)
+    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload)
 
-    # Start download scheduler in another thread
-    timestamped_print_download("Starting download scheduler thread")
-    download_thread = threading.Thread(target=run_download_scheduler, daemon=True)
-    download_thread.start()
+    scheduler = schedule.Scheduler()
+    scheduler.every(10).minutes.do(api_run)
+    scheduler.every().sunday.at("00:00").do(download_run)
+    scheduler.every().day.at("02:00").do(upload_run)
 
-    # Start upload scheduler in a third thread
-    timestamped_print_upload("Starting upload scheduler thread")
-    upload_thread = threading.Thread(target=run_upload_scheduler, daemon=True)
-    upload_thread.start()
+    print("Schedule: API injection every 10 minutes; Borealis download Sundays 00:00; "
+          "Borealis upload on the 1st at 02:00.")
+    timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
+                               "run `python scripts/download_data.py` by hand to fetch now.")
+    timestamped_print_upload("Upload scheduler ready: the 1st of each month at 02:00. Nothing runs at startup; "
+                             "run `python scripts/upload_data.py --year Y --month M` by hand to upload a month.")
 
-    # Keep main thread alive
+    # Catch up on vendor data right away after a restart; the Borealis jobs wait for their slots.
+    api_run()
+
     try:
-        print("Main thread running with 3 schedulers. Press Ctrl+C to stop.")
-        print("- API injections: every 10 minutes")
-        print("- Download jobs: every Sunday at 00:00")
-        print("- Upload jobs: 1st of each month at 02:00")
         while True:
-            time.sleep(10)
+            scheduler.run_pending()
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("Shutting down all schedulers...")
-        timestamped_print_download("Shutting down download scheduler...")
-        timestamped_print_upload("Shutting down upload scheduler...")
-        sys.exit(0)
+        print("Shutting down the scheduler...")
