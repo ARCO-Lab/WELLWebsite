@@ -61,7 +61,7 @@ class Jetpack_Provision {
 			// This code mostly copied from Jetpack::admin_page_load.
 			Jetpack::maybe_set_version_option();
 			Jetpack::connection()->add_register_request_param( 'from', 'jetpack-start' );
-			$registered = Jetpack::connection()->try_registration();
+			$registered = Jetpack::connection()->try_registration( true, true );
 			if ( is_wp_error( $registered ) ) {
 				return $registered;
 			} elseif ( ! $registered ) {
@@ -170,7 +170,7 @@ class Jetpack_Provision {
 			),
 			'timeout' => 60,
 			'method'  => 'POST',
-			'body'    => wp_json_encode( $request_body ),
+			'body'    => wp_json_encode( $request_body, JSON_UNESCAPED_SLASHES ),
 		);
 
 		$blog_id = Jetpack_Options::get_option( 'id' );
@@ -191,6 +191,7 @@ class Jetpack_Provision {
 			$url = add_query_arg( array( 'calypso_env' => $calypso_env ), $url );
 		}
 
+		// @phan-suppress-next-line PhanAccessMethodInternal -- Phan is correct, but the usage is intentional.
 		$result = Client::_wp_remote_request( $url, $request );
 
 		if ( is_wp_error( $result ) ) {
@@ -272,7 +273,8 @@ class Jetpack_Provision {
 			'body'    => '',
 		);
 
-		$url    = sprintf( '%s/rest/v1.3/jpphp/partner-keys/verify', self::get_api_host() );
+		$url = sprintf( '%s/rest/v1.3/jpphp/partner-keys/verify', self::get_api_host() );
+		// @phan-suppress-next-line PhanAccessMethodInternal -- Phan is correct, but the usage is intentional.
 		$result = Client::_wp_remote_request( $url, $request );
 
 		if ( is_wp_error( $result ) ) {

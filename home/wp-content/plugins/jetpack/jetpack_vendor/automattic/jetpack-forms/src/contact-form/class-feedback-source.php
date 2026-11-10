@@ -15,11 +15,20 @@ namespace Automattic\Jetpack\Forms\ContactForm;
 class Feedback_Source {
 
 	/**
+	 * Source types whose forms can only be placed by a user with the administrator-tier
+	 * `edit_theme_options` capability. Destinations declared in these surfaces are trusted
+	 * even though they have no numeric post author to check.
+	 *
+	 * @var string[]
+	 */
+	const ADMIN_TIER_SOURCE_TYPES = array( 'block_template', 'block_template_part', 'widget' );
+
+	/**
 	 * The ID of the post or page that the feedback was created on.
 	 *
-	 * @var int
+	 * @var string
 	 */
-	private $id = 0;
+	private $id = '';
 
 	/**
 	 * The title of the  post or page that the feedback was created on.
@@ -44,28 +53,79 @@ class Feedback_Source {
 	private $page_number = 1;
 
 	/**
+	 * The source type of the feedback entry.
+	 * Possible values: single, widget, block_template, block_template_part
+	 *
+	 * @var string
+	 */
+	private $source_type = 'single';
+
+	/**
+	 * The request URL of the feedback entry.
+	 *
+	 * @var string
+	 */
+	private $request_url = '';
+
+	/**
+	 * Whether this feedback was created from a form preview submission.
+	 *
+	 * Test feedback is stored normally in the inbox but is distinguished in the
+	 * notification email, excluded from the default CSV export, and skips the
+	 * spam/Akismet pipeline.
+	 *
+	 * @var bool
+	 */
+	private $is_test = false;
+
+	/**
 	 * Constructor for Feedback_Source.
 	 *
-	 * @param int    $id          The ID of the feedback entry.
-	 * @param string $title       The title of the feedback entry.
-	 * @param int    $page_number The page number of the feedback entry, default is 1.
+	 * @param string|int $id          The Source ID = post ID, widget ID, block template ID, or 0 for homepage or non-post/page.
+	 * @param string     $title       The title of the feedback entry.
+	 * @param int        $page_number The page number of the feedback entry, default is 1.
+	 * @param string     $source_type The source type of the feedback entry, default is 'single'.
+	 * @param string     $request_url The request URL of the feedback entry.
+	 * @param bool       $is_test     Whether the feedback was submitted from a form preview.
 	 */
-	public function __construct( $id, $title, $page_number = 1 ) {
+	public function __construct( $id = 0, $title = '', $page_number = 1, $source_type = 'single', $request_url = '', $is_test = false ) {
 
-		$this->id          = $id > 0 ? (int) $id : 0;
-		$this->title       = $title;
-		$this->page_number = $page_number;
-		$this->permalink   = $this->id === 0 ? home_url() : '';
-
-		if ( $id <= 0 ) {
-			return;
+		if ( is_numeric( $id ) ) {
+			$this->id = $id > 0 ? $id : 0;
+		} else {
+			$this->id = $id;
 		}
 
-		$entry_post = get_post( $id );
+		if ( is_numeric( $page_number ) ) {
+			$this->page_number = $page_number > 0 ? $page_number : 1;
+		} else {
+			$this->page_number = 1;
+		}
 
-		if ( $entry_post && $entry_post->post_status === 'publish' ) {
-			$this->permalink = get_permalink( $entry_post );
-			$this->title     = get_the_title( $entry_post );
+		$this->title       = html_entity_decode( $title, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		$this->permalink   = empty( $request_url ) ? home_url() : $request_url;
+		$this->source_type = $source_type; // possible source types: single, widget, block_template, block_template_part
+		$this->request_url = $request_url;
+		$this->is_test     = (bool) $is_test;
+
+		if ( is_numeric( $id ) && ! empty( $id ) ) {
+			$entry_post = get_post( (int) $id );
+			if ( $entry_post && $entry_post->post_status === 'publish' ) {
+				$this->permalink = get_permalink( $entry_post );
+				$this->title     = html_entity_decode( get_the_title( $entry_post ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+			} elseif ( $entry_post ) {
+				$this->permalink = '';
+
+				if ( $entry_post->post_status === 'trash' ) {
+					/* translators: %s is the post title */
+					$this->title = sprintf( __( '(trashed) %s', 'jetpack-forms' ), $this->title );
+				}
+			}
+			if ( empty( $entry_post ) ) {
+				/* translators: %s is the post title */
+				$this->title     = sprintf( __( '(deleted) %s', 'jetpack-forms' ), $this->title );
+				$this->permalink = '';
+			}
 		}
 	}
 
@@ -83,9 +143,93 @@ class Feedback_Source {
 			return new self( 0, '', $current_page_number );
 		}
 
-		$title = $current_post->post_title ?? '';
+		$title = isset( $current_post->post_title ) ? html_entity_decode( $current_post->post_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) : __( '(no title)', 'jetpack-forms' );
 
 		return new self( $id, $title, $current_page_number );
+	}
+
+	/**
+	 * Get the title of the current page. That we can then use to display in the feedback entry.
+	 *
+	 * @return string The title of the current page. That we want to show to the user. To tell them where the feedback was left.
+	 */
+	private static function get_source_title() {
+		if ( is_front_page() ) {
+			return get_bloginfo( 'name' );
+		}
+		if ( is_home() ) {
+			return get_the_title( get_option( 'page_for_posts', true ) );
+		}
+		if ( is_singular() ) {
+			return get_the_title();
+		}
+		if ( is_archive() ) {
+			return get_the_archive_title();
+		}
+		if ( is_search() ) {
+			/* translators: %s is the search term */
+			return sprintf( __( 'Search results for: %s', 'jetpack-forms' ), get_search_query() );
+		}
+		if ( is_404() ) {
+			return __( '404 Not Found', 'jetpack-forms' );
+		}
+		return get_bloginfo( 'name' );
+	}
+
+	/**
+	 * Creates a Feedback_Source instance for a block template.
+	 *
+	 * @param array $attributes Form Shortcode attributes.
+	 *
+	 * @return Feedback_Source Returns an instance of Feedback_Source.
+	 */
+	public static function get_current( $attributes ) {
+		global $wp, $page;
+		$current_url = home_url( add_query_arg( array(), $wp->request ) );
+
+		// When a form is rendered inside the server-side preview
+		// (Form_Preview::maybe_render_preview), flag the source as a test
+		// submission. The flag travels with the signed JWT and is read back
+		// at submission time to branch the response into the test pipeline.
+		$is_test = Form_Preview::is_preview_mode();
+
+		// The widget context is resolved server-side in Contact_Form::parse() (it overwrites the
+		// widget attribute before the form is built), so the value seen here is trustworthy.
+		if ( isset( $attributes['widget'] ) && ! empty( $attributes['widget'] ) ) {
+			return new self( $attributes['widget'], self::get_source_title(), 1, 'widget', $current_url, $is_test );
+		}
+
+		// Block template part and block template sources are determined from render-scoped
+		// globals that are set only while the actual template part / template renders — never
+		// from a content attribute. A content attribute can be supplied by a post author (who
+		// need not hold edit_theme_options), so trusting it would let post-content forms
+		// masquerade as admin-authored template sources. See Util for the globals' lifecycle.
+		if ( ! empty( $GLOBALS['grunion_block_template_part_id'] ) ) {
+			return new self( $GLOBALS['grunion_block_template_part_id'], self::get_source_title(), $page, 'block_template_part', $current_url, $is_test );
+		}
+
+		if ( ! empty( $GLOBALS['grunion_block_template_id'] ) ) {
+			return new self( $GLOBALS['grunion_block_template_id'], self::get_source_title(), $page, 'block_template', $current_url, $is_test );
+		}
+
+		return new Feedback_Source( \get_the_ID(), \get_the_title(), $page, 'single', $current_url, $is_test );
+	}
+
+	/**
+	 * Creates a Feedback_Source instance from serialized data.
+	 *
+	 * @param array $data The serialized data.
+	 * @return Feedback_Source Returns an instance of Feedback_Source.
+	 */
+	public static function from_serialized( $data ) {
+		$id          = $data['source_id'] ?? 0;
+		$title       = $data['entry_title'] ?? '';
+		$page_number = $data['entry_page'] ?? 1;
+		$source_type = $data['source_type'] ?? 'single';
+		$request_url = $data['request_url'] ?? '';
+		$is_test     = ! empty( $data['is_test'] );
+
+		return new self( $id, $title, $page_number, $source_type, $request_url, $is_test );
 	}
 
 	/**
@@ -97,7 +241,39 @@ class Feedback_Source {
 		if ( $this->page_number > 1 && ! empty( $this->permalink ) ) {
 			return add_query_arg( 'page', $this->page_number, $this->permalink );
 		}
-		return $this->permalink;
+		return wp_validate_redirect( $this->permalink, home_url() );
+	}
+
+	/**
+	 * Get the edit URL of the form or page where the feedback was submitted from.
+	 *
+	 * @return string The edit URL of the form or page.
+	 */
+	public function get_edit_form_url() {
+
+		if ( current_user_can( 'edit_theme_options' ) ) {
+			if ( $this->source_type === 'block_template' && \wp_is_block_theme() ) {
+				return admin_url( 'site-editor.php?p=' . esc_attr( '/wp_template/' . addslashes( $this->id ) ) . '&canvas=edit' );
+			}
+
+			if ( $this->source_type === 'block_template_part' && \wp_is_block_theme() ) {
+				return admin_url( 'site-editor.php?p=' . esc_attr( '/wp_template_part/' . addslashes( $this->id ) ) . '&canvas=edit' );
+			}
+
+			if ( $this->source_type === 'widget' && current_theme_supports( 'widgets' ) ) {
+				return admin_url( 'widgets.php' );
+			}
+		}
+
+		if ( $this->id && is_numeric( $this->id ) && $this->id > 0 && current_user_can( 'edit_post', (int) $this->id ) ) {
+			$entry_post = get_post( (int) $this->id );
+			if ( $entry_post && $entry_post->post_status === 'trash' ) {
+				return ''; // No edit link is possible for trashed posts. They need to be restored first.
+			}
+			return \get_edit_post_link( (int) $this->id, 'url' );
+		}
+
+		return '';
 	}
 
 	/**
@@ -131,10 +307,40 @@ class Feedback_Source {
 	/**
 	 * Get the post id of the feedback entry.
 	 *
-	 * @return int The ID of the feedback entry.
+	 * @return int|string The ID of the feedback entry.
 	 */
 	public function get_id() {
 		return $this->id;
+	}
+
+	/**
+	 * Get the source type of the feedback entry.
+	 *
+	 * Possible values: single, widget, block_template, block_template_part.
+	 *
+	 * @return string The source type.
+	 */
+	public function get_source_type() {
+		return $this->source_type;
+	}
+
+	/**
+	 * Whether this feedback was submitted from a form preview (test submission).
+	 *
+	 * @return bool
+	 */
+	public function is_test() {
+		return $this->is_test;
+	}
+
+	/**
+	 * Flag this feedback as a test submission coming from form preview.
+	 *
+	 * @param bool $is_test Whether the feedback is a test submission.
+	 * @return void
+	 */
+	public function set_is_test( $is_test ) {
+		$this->is_test = (bool) $is_test;
 	}
 
 	/**
@@ -143,9 +349,18 @@ class Feedback_Source {
 	 * @return array
 	 */
 	public function serialize() {
-		return array(
+		$data = array(
 			'entry_title' => $this->title,
 			'entry_page'  => $this->page_number,
+			'source_id'   => $this->id,
+			'source_type' => $this->source_type,
+			'request_url' => $this->request_url,
 		);
+
+		if ( $this->is_test ) {
+			$data['is_test'] = true;
+		}
+
+		return $data;
 	}
 }

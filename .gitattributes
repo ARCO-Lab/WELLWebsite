@@ -1,0 +1,3 @@
+# WordPress core and plugins under home/ are vendor releases. Store them byte-for-byte,
+# without line-ending conversion, so they keep matching the official checksums.
+home/** -text

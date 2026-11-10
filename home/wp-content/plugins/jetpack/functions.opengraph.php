@@ -14,6 +14,8 @@
 use Automattic\Block_Scanner;
 use Automattic\Jetpack\Connection\Manager as Connection_Manager;
 use Automattic\Jetpack\Current_Plan;
+use Automattic\Jetpack\Post_Media\Images;
+use Automattic\Jetpack\Status;
 use Automattic\Jetpack\Status\Host;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -21,6 +23,85 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 add_action( 'wp_head', 'jetpack_og_tags' );
+
+/**
+ * Keep Twitter Cards from analyzing the body of a gated post.
+ *
+ * Twitter_Cards::twitter_cards_tags() runs at priority 11 and, when a card type
+ * is already set, emits only the site default image instead of images and
+ * videos parsed out of the body.
+ *
+ * @since 16.2
+ *
+ * @param array $tags Open Graph tags.
+ * @return array
+ */
+function jetpack_og_gate_twitter_cards( $tags ) {
+	/** This filter is documented in class.jetpack.php */
+	if ( apply_filters( 'jetpack_disable_twitter_cards', false ) ) {
+		return $tags;
+	}
+
+	if ( ! is_singular() ) {
+		return $tags;
+	}
+
+	$post = get_post();
+	if ( ! $post instanceof WP_Post || ! \Automattic\Jetpack\SEO\Content_Gate::is_gated( $post ) ) {
+		return $tags;
+	}
+
+	if ( empty( $tags['twitter:text:title'] ) ) {
+		$tags['twitter:text:title'] = get_the_title( $post );
+	}
+
+	// Twitter_Cards stops once a card type is set, so carry the featured image
+	// across here; it is chosen separately and never parsed out of the body.
+	$card_type = 'summary';
+	if ( empty( $tags['twitter:image'] ) ) {
+		$image = Images::get_image(
+			$post->ID,
+			array(
+				'width'           => 144,
+				'height'          => 144,
+				'from_slideshow'  => false,
+				'from_gallery'    => false,
+				'from_attachment' => false,
+				'from_blocks'     => false,
+				'from_html'       => false,
+			)
+		);
+
+		// Twitter's limits: 4096px maximum, and 300x157 minimum for a large card.
+		if (
+			! empty( $image['src'] )
+			&& isset( $image['src_width'] ) && isset( $image['src_height'] )
+			&& (int) $image['src_width'] <= 4096
+			&& (int) $image['src_height'] <= 4096
+		) {
+			if ( (int) $image['src_width'] >= 300 && (int) $image['src_height'] >= 157 ) {
+				$card_type             = 'summary_large_image';
+				$tags['twitter:image'] = esc_url( add_query_arg( 'w', 640, $image['src'] ) );
+			} else {
+				$tags['twitter:image'] = esc_url( add_query_arg( 'w', 144, $image['src'] ) );
+			}
+
+			if ( ! empty( $image['alt_text'] ) ) {
+				$alt_length                = 420;
+				$tags['twitter:image:alt'] = strlen( $image['alt_text'] ) > $alt_length
+					? esc_attr( mb_substr( $image['alt_text'], 0, $alt_length ) . '…' )
+					: esc_attr( $image['alt_text'] );
+			}
+		}
+	}
+
+	if ( empty( $tags['twitter:card'] ) ) {
+		$tags['twitter:card'] = $card_type;
+	}
+
+	return $tags;
+}
+add_filter( 'jetpack_open_graph_tags', 'jetpack_og_gate_twitter_cards', 10 );
 add_action( 'web_stories_story_head', 'jetpack_og_tags' );
 
 // Add a Fediverse Open Graph Tag when an author has connected their Mastodon account.
@@ -123,7 +204,7 @@ function jetpack_og_tags() {
 		}
 
 		$tags['og:url'] = get_permalink( $data->ID );
-		if ( ! post_password_required() ) {
+		if ( ! post_password_required( $data ) ) {
 			/*
 			 * If the post author set an excerpt, use that.
 			 * Otherwise, pick the post content that comes before the More tag if there is one.
@@ -131,9 +212,15 @@ function jetpack_og_tags() {
 			 */
 			if ( ! empty( $data->post_excerpt ) ) {
 				$tags['og:description'] = jetpack_og_get_description( $data->post_excerpt );
-			} elseif ( ! has_block( 'premium-content/container', $data->post_content ) ) {
-				$excerpt                = explode( '<!--more-->', $data->post_content )[0];
-				$tags['og:description'] = jetpack_og_get_description( $excerpt );
+			} else {
+				$content = \Automattic\Jetpack\SEO\Content_Gate::is_gated( $data )
+					? \Automattic\Jetpack\SEO\Content_Gate::public_teaser( $data )
+					: $data->post_content;
+
+				if ( '' !== $content ) {
+					$excerpt                = explode( '<!--more-->', $content )[0];
+					$tags['og:description'] = jetpack_og_get_description( $excerpt );
+				}
 			}
 		}
 
@@ -332,18 +419,26 @@ function jetpack_og_get_image( $width = 200, $height = 200, $deprecated = null )
 		// Grab obvious image if post is an attachment page for an image.
 		if ( is_attachment( get_the_ID() ) && str_starts_with( get_post_mime_type(), 'image' ) ) {
 			$image['src']      = wp_get_attachment_url( get_the_ID() );
-			$image['alt_text'] = Jetpack_PostImages::get_alt_text( get_the_ID() );
+			$image['alt_text'] = Images::get_alt_text( get_the_ID() );
 		}
 
 		// Attempt to find something good for this post using our generalized PostImages code.
-		if ( empty( $image ) && class_exists( 'Jetpack_PostImages' ) ) {
-			$post_image = Jetpack_PostImages::get_image(
-				get_the_ID(),
-				array(
-					'width'  => $width,
-					'height' => $height,
-				)
+		if ( empty( $image ) ) {
+			$image_args = array(
+				'width'  => $width,
+				'height' => $height,
 			);
+			// Every source but the featured image is parsed out of the body.
+			if ( \Automattic\Jetpack\SEO\Content_Gate::is_gated( get_post( get_the_ID() ) ) ) {
+				$image_args += array(
+					'from_slideshow'  => false,
+					'from_gallery'    => false,
+					'from_attachment' => false,
+					'from_blocks'     => false,
+					'from_html'       => false,
+				);
+			}
+			$post_image = Images::get_image( get_the_ID(), $image_args );
 			if ( ! empty( $post_image ) && is_array( $post_image ) ) {
 				$image['src'] = $post_image['src'];
 				if ( isset( $post_image['src_width'] ) && isset( $post_image['src_height'] ) ) {
@@ -441,6 +536,11 @@ function jetpack_og_get_fallback_social_image( $width, $height ) {
 		$site_image['src'] = jetpack_og_get_site_fallback_blank_image();
 	}
 
+	// Return the site image if we are in offline mode instead of attempting to generate a dynamic one.
+	if ( ( new Status() )->is_offline_mode() ) {
+		return $site_image;
+	}
+
 	/*
 	 * Only attempt to generate a dynamic fallback image
 	 * if we have a healthy connection to WPCOM.
@@ -528,7 +628,7 @@ function jetpack_og_get_site_image( $width, $height ) {
 				'src'      => $sl_details[0],
 				'width'    => $sl_details[1],
 				'height'   => $sl_details[2],
-				'alt_text' => Jetpack_PostImages::get_alt_text( $custom_logo_id ),
+				'alt_text' => Images::get_alt_text( $custom_logo_id ),
 			);
 		}
 	}
