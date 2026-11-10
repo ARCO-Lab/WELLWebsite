@@ -1,0 +1,16 @@
+"""Safety checks for scripts that delete data. Pure: no database."""
+import os
+
+
+def require_wipe_permission(what, env=None):
+    """Stop (SystemExit) unless the caller set ALLOW_WIPE=1 for this run.
+
+    Call it before any statement that deletes every row of a table, so the destructive scripts can't be
+    run by accident, from shell history, or by a scheduler.
+    """
+    env = os.environ if env is None else env
+    if env.get("ALLOW_WIPE") != "1":
+        raise SystemExit(
+            f"Refusing to delete {what}. This script empties the table before reloading it. "
+            "Take a backup first (pg_dump), then run it again with ALLOW_WIPE=1 set for that run."
+        )

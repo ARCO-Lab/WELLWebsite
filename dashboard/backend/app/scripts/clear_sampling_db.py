@@ -11,10 +11,12 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from server import create_app
 from db.database import db
 from db.models import SamplingMeasurement
+from utils.guards import require_wipe_permission
 
 app = create_app()
 
 def clear_sampling_db():
+    require_wipe_permission("all sampling data")
     with app.app_context():
         print("[INFO] Clearing ALL SamplingMeasurement records from the database ...")
         SamplingMeasurement.query.delete()

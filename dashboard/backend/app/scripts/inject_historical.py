@@ -15,6 +15,7 @@ from api.services.weather import WeatherService
 from api.services.loggers import LoggerService
 from api.services.quality import QualityService
 from config import Config
+from utils.guards import require_wipe_permission
 from utils.sensor_names import weather_measurement_name
 
 app = create_app()
@@ -197,6 +198,7 @@ def fetch_quality_chunk(start_str, end_str):
 
 def inject_all_history():
     # Main function: clears DB, fetches and inserts data in chunks to avoid API truncation
+    require_wipe_permission("every sensor measurement (and reset the id sequence)")
     with app.app_context():
         print("[INFO] Clearing existing SensorMeasurement records ...")
         SensorMeasurement.query.delete()

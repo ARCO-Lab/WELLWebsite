@@ -198,6 +198,8 @@ def inject_all_sampling_history(file_path):
     Original function - loads all data and replaces existing records
     Keep this for initial setup or full refresh scenarios
     """
+    from utils.guards import require_wipe_permission  # local: keeps this change apart from the import block
+    require_wipe_permission("all sampling data (--full-reload)")
     try:
         print(f"[INFO] Loading file: {file_path}")
         sampling_service = SamplingService(file_path)
