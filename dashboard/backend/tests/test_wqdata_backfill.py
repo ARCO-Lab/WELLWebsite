@@ -85,12 +85,33 @@ class Requests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(sleeps, [10, bf.PAUSE])   # back off, then the usual pause
 
+    def test_timeout_is_retried(self):
+        wq, calls, _ = client(requests.Timeout(f"read timed out: ?apiKey={KEY}"), Response(200, {"data": []}))
+        self.assertEqual(wq.get_page("a", "b"), {"data": []})
+        self.assertEqual(len(calls), 2)
+
+    def test_other_request_errors_fail_at_once(self):
+        wq, calls, _ = client(requests.exceptions.InvalidURL(f"bad url ?apiKey={KEY}"))
+        with self.assertRaises(bf.WQDataError) as cm:
+            wq.get_page("a", "b")
+        self.assertIn("InvalidURL", str(cm.exception))
+        self.assertEqual(len(calls), 1)
+        self.assert_no_key(cm.exception)
+
     def test_client_error_fails_at_once_with_status_only(self):
         wq, calls, _ = client(Response(401, {"error": "bad key"}))
         with self.assertRaises(bf.WQDataError) as cm:
             wq.get_page("a", "b")
         self.assertIn("HTTP 401", str(cm.exception))
         self.assertEqual(len(calls), 1)
+        self.assert_no_key(cm.exception)
+
+    def test_wqdata_message_is_shown_without_the_key(self):
+        quota = Response(429, {"message": f"Request exceeds hourly limit for {KEY}"})
+        wq, calls, _ = client(*[quota] * bf.ATTEMPTS)
+        with self.assertRaises(bf.WQDataError) as cm:
+            wq.get_page("a", "b")
+        self.assertIn("HTTP 429 (Request exceeds hourly limit for ***)", str(cm.exception))
         self.assert_no_key(cm.exception)
 
     def test_non_json_response(self):
@@ -192,6 +213,94 @@ class Compare(unittest.TestCase):
         self.assertTrue(bf.same_value(None, None))
         self.assertFalse(bf.same_value(None, 0.0))
         self.assertFalse(bf.same_value(1.0, 1.001))
+
+
+class FallBackHour(unittest.TestCase):
+    def test_repeated_hour_shares_keys_with_the_first(self):
+        # 2026-11-01 05:00-06:00Z is 01:00-02:00 EDT and 06:00-07:00Z is 01:00-02:00 EST again: the naive
+        # stored times repeat, so the second hour merges into the first (its reading kept), as in the table.
+        tz = toronto()
+        points = [{"timestamp": ts, "values": [{"parameterId": 125001, "value": v}]}
+                  for ts, v in (("2026-11-01 05:00:00", "1"), ("2026-11-01 05:30:00", "2"),
+                                ("2026-11-01 06:00:00", "3"), ("2026-11-01 06:30:00", "4"))]
+        rows = quality_rows(points, "4501", tz)
+        self.assertEqual({k[2]: r["value"] for k, r in rows.items()},
+                         {dt.datetime(2026, 11, 1, 1, 0): 1.0, dt.datetime(2026, 11, 1, 1, 30): 2.0})
+        missing, extra, differ = bf.compare(rows, {k: r["value"] for k, r in rows.items()})
+        self.assertEqual((missing, extra, differ), ([], 0, 0))   # the repeat isn't reported missing
+
+
+class Backfill(unittest.TestCase):
+    """backfill() with stand-ins for WQData and the database."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        self.ids_path = pathlib.Path(self.dir.name) / "wqdata-backfill-test.ids"
+        self.ids_path.touch()   # main() creates it up front
+        self.tz = toronto()
+        self.days = bf.day_windows(dt.datetime(2026, 11, 11, 5, tzinfo=UTC), 2, self.tz)   # Nov 9 and 10, local
+        self.log = []
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def run_backfill(self, check=False, fail_on_day=None, stored=None):
+        events, next_id = [], iter(range(100, 200))
+
+        def get_page(frm, to):   # one point per day, at local midnight, with two stored parameters
+            if fail_on_day and frm.startswith(fail_on_day):
+                raise bf.WQDataError("WQData request for ... failed: HTTP 503")
+            return {"data": [point(frm, 125001, 125002)], "info": {"more": False}}
+
+        def insert_rows(rows, record_ids):
+            ids = [next(next_id) for _ in rows]
+            record_ids(ids)
+            events.append(("commit", self.ids_path.read_text().split()))   # the file's ids at commit time
+            return ids
+        code = bf.backfill(self.days, self.tz, "4501", get_page, lambda lo, hi: dict(stored or {}),
+                           insert_rows, self.ids_path, check, log=self.log.append)
+        return code, events
+
+    def test_insert_records_ids_before_commit(self):
+        code, events = self.run_backfill()
+        self.assertEqual(code, 0)
+        self.assertEqual(events, [("commit", ["100", "101"]), ("commit", ["100", "101", "102", "103"])])
+        self.assertIn("4 inserted (ids in", self.log[-1])
+
+    def test_nothing_inserted_removes_the_empty_ids_file(self):
+        stored = {("4501", m, lo): 1.5 for _, lo, _ in self.days for m in ("Water Temperature", "Conductivity")}
+        code, events = self.run_backfill(stored=stored)
+        self.assertEqual((code, events), (0, []))
+        self.assertFalse(self.ids_path.exists())
+        self.assertIn("0 missing", self.log[-1])
+
+    def test_failure_reports_what_was_inserted_and_keeps_the_ids(self):
+        code, _ = self.run_backfill(fail_on_day="2026-11-10")   # the second day's request fails
+        self.assertEqual(code, 1)
+        self.assertEqual(self.ids_path.read_text().split(), ["100", "101"])
+        self.assertTrue(any("HTTP 503" in line for line in self.log))
+        self.assertIn("stopped early", self.log[-1])
+        self.assertIn("2 inserted (ids in", self.log[-1])
+
+    def test_failure_with_nothing_inserted_removes_the_empty_ids_file(self):
+        code, _ = self.run_backfill(fail_on_day="2026-11-09")
+        self.assertEqual(code, 1)
+        self.assertFalse(self.ids_path.exists())
+
+    def test_check_inserts_nothing(self):
+        code, events = self.run_backfill(check=True)
+        self.assertEqual((code, events), (0, []))
+        self.assertIn("4 missing on 2026-11-09 (2), 2026-11-10 (2)", self.log[-1])
+
+
+class Settings(unittest.TestCase):
+    def test_unset_wqdata_settings_stop_with_a_clear_error(self):
+        from unittest import mock
+        from config import Config
+        with mock.patch.object(Config, "WQ_API_KEY", None), mock.patch("builtins.print") as out:
+            self.assertEqual(bf.main(["--check"]), 2)
+        self.assertIn("WQ_API_KEY", out.call_args[0][0])
 
 
 class Args(unittest.TestCase):

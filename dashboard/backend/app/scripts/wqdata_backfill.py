@@ -18,9 +18,11 @@ wall-clock times, so on the night clocks go back the repeated hour's readings sh
 the first one and can't be stored; they aren't counted as missing. --check also compares the values
 of readings already stored.
 
-WQData throttles bursts, so requests are paced PAUSE seconds apart. A day (at most about 2,700 values)
-fits in one response; longer responses are paged (see fetch_points). Inserts use ON CONFLICT DO NOTHING, so running it twice is
-harmless. The ids of inserted rows are saved to logs/wqdata-backfill-<timestamp>.ids; to undo a run,
+WQData throttles bursts, so requests are paced PAUSE seconds apart. It also limits requests per hour
+(HTTP 429 "Request exceeds hourly limit"), shared with the 10-minute ingestion, and each day checked
+costs a request, so keep --days to what's needed. A day (at most about 2,700 values)
+fits in one response; longer responses are paged (see fetch_points). Network errors, timeouts, 429 and
+5xx responses are retried. Inserts use ON CONFLICT DO NOTHING, so running it twice is harmless. The ids of inserted rows are saved to logs/wqdata-backfill-<timestamp>.ids; to undo a run,
 delete those ids from sensor_measurements.
 """
 from __future__ import annotations
@@ -53,7 +55,8 @@ class WQDataError(RuntimeError):
 
 
 class WQData:
-    """Requests to WQData's data endpoint, paced PAUSE seconds apart, retried on throttling and server errors."""
+    """Requests to WQData's data endpoint, paced PAUSE seconds apart, retried on network errors, timeouts,
+    throttling and server errors."""
 
     def __init__(self, api_url, api_key, device_id, get=requests.get, sleep=time.sleep, pause=PAUSE):
         self.url = f"{str(api_url).rstrip('/')}/devices/{device_id}/parameters/data"
@@ -69,20 +72,31 @@ class WQData:
             self.requests += 1
             try:
                 r = self.get(self.url, params={"apiKey": self.api_key, "from": frm, "to": to}, timeout=(10, 120))
-            except requests.RequestException as e:
+            except (requests.ConnectionError, requests.Timeout) as e:
                 problem = type(e).__name__   # its message holds the URL, and with it the key
+            except requests.RequestException as e:   # e.g. a malformed URL: retrying won't help
+                problem = type(e).__name__
+                break
             else:
                 if r.status_code == 200:
                     try:
                         return r.json()
                     except ValueError:
                         raise WQDataError(f"WQData sent a response that isn't JSON for {frm} to {to} UTC") from None
-                problem = f"HTTP {r.status_code}"
+                problem = f"HTTP {r.status_code}" + self.message(r)
                 if r.status_code not in RETRY_STATUSES:
                     break
             if attempt < ATTEMPTS - 1:
                 self.sleep(10 * (attempt + 1))
         raise WQDataError(f"WQData request for {frm} to {to} UTC failed: {problem}")
+
+    def message(self, response) -> str:
+        """WQData's own error message, e.g. "Request exceeds hourly limit" with a 429, with the key scrubbed."""
+        try:
+            text = str(response.json().get("message") or "")[:200]
+        except (ValueError, AttributeError):
+            return ""
+        return f" ({text.replace(str(self.api_key), '***')})" if text else ""
 
 
 def fetch_points(get_page, start: dt.datetime, end: dt.datetime) -> list:
@@ -151,16 +165,69 @@ def parse_args(argv=None):
     return args
 
 
+def backfill(days, tz, station, get_page, read_stored, insert_rows, ids_path, check, log=print, requests_made=None) -> int:
+    """Compare WQData with the database for each (day, start, end) in `days` and, unless `check`, insert
+    what's missing. The database is reached through two functions, so this runs without one in tests:
+      read_stored(lo, hi) -> {unique key: stored value} for the station's Quality rows in [lo, hi)
+      insert_rows(rows, record_ids) -> ids of the rows inserted; it must call record_ids(ids) before it commits
+    Returns the exit code: 1 if a WQData request failed, after reporting what was inserted until then."""
+    from utils.parsers import quality_rows
+
+    totals = dict(points=0, readings=0, stored=0, missing=0, inserted=0, extra=0, differ=0)
+    gap_days, failed = [], None
+
+    def record_ids(ids):
+        with open(ids_path, "a") as f:
+            f.writelines(f"{row_id}\n" for row_id in ids)
+            f.flush()
+            os.fsync(f.fileno())
+
+    try:
+        for day, lo, hi in days:
+            points = fetch_points(get_page, to_utc(lo, tz), to_utc(hi, tz))
+            rows = {k: r for k, r in quality_rows(points, station, tz).items() if lo <= k[2] < hi}
+            stored = read_stored(lo, hi)
+            missing, extra, differ = compare(rows, stored)
+            inserted = insert_rows(missing, record_ids) if missing and not check else []
+            n_points = len({k[2] for k in rows})
+            for name, n in (("points", n_points), ("readings", len(rows)), ("stored", len(stored)),
+                            ("missing", len(missing)), ("inserted", len(inserted)), ("extra", extra), ("differ", differ)):
+                totals[name] += n
+            if missing:
+                gap_days.append(f"{day} ({len(missing)})")
+            log(f"  {day}: {n_points:4} points, {len(rows):5} readings, {len(stored):5} stored, {len(missing):5} missing"
+                + ("" if check else f", {len(inserted):5} inserted")
+                + (f", {extra} stored but not at WQData" if extra else "")
+                + (f", {differ} stored with a different value" if differ else ""))
+    except WQDataError as e:
+        failed = e
+        log(f"[ERROR] {e}")
+    finally:
+        if not check and not totals["inserted"]:
+            ids_path.unlink(missing_ok=True)   # don't leave an empty ids file behind
+    t = totals
+    log(f"[{'ERROR' if failed else 'INFO'}] WQData {'check' if check else 'backfill'}"
+        + (" stopped early" if failed else "") + f": {len(days)} days, {t['points']} points, "
+        f"{t['readings']} readings, {t['missing']} missing" + (f" on {', '.join(gap_days)}" if gap_days else "")
+        + ("" if check else f", {t['inserted']} inserted" + (f" (ids in {ids_path})" if t["inserted"] else ""))
+        + f", {t['extra']} stored but not at WQData, values differ on {t['differ']} of {t['stored'] - t['extra']} compared"
+        + (f" | {requests_made()} requests" if requests_made else ""))
+    return 1 if failed else 0
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
+    from config import Config
+    unset = [name for name in ("WQ_API_URL", "WQ_API_KEY", "WQ_DEVICE_ID") if not getattr(Config, name)]
+    if unset:
+        print(f"[ERROR] {', '.join(unset)} not set; WQData can't be read", flush=True)
+        return 2
     from sqlalchemy import text
     from sqlalchemy.dialects.postgresql import insert
     from zoneinfo import ZoneInfo
-    from config import Config
     from db.database import db
     from db.models import SensorMeasurement
     from server import create_app
-    from utils.parsers import quality_rows
 
     app = create_app()
     wq = WQData(Config.WQ_API_URL, Config.WQ_API_KEY, Config.WQ_DEVICE_ID)
@@ -170,62 +237,36 @@ def main(argv=None) -> int:
     if not args.check:   # fail before writing anything if the ids file can't be created
         ids_path.parent.mkdir(parents=True, exist_ok=True)
         ids_path.touch()
-    totals = dict(points=0, readings=0, stored=0, missing=0, inserted=0, extra=0, differ=0)
-    gap_days = []
 
     with app.app_context():
         engine = db.engine
+
+        def read_stored(lo, hi):
+            with engine.connect() as c:
+                return {(station, m, t): v for m, t, v in c.execute(text(
+                    "select measurement_type, recorded_at, value from sensor_measurements "
+                    "where station_id = :s and group_type = 'Quality' and recorded_at >= :lo and recorded_at < :hi"),
+                    {"s": station, "lo": lo, "hi": hi})}
+
+        def insert_rows(rows, record_ids):
+            ids = []
+            with engine.begin() as c:   # one transaction per day
+                for i in range(0, len(rows), 1000):
+                    stmt = (insert(table).values(rows[i:i + 1000])
+                            .on_conflict_do_nothing(index_elements=KEY_COLUMNS).returning(table.c.id))
+                    ids.extend(r[0] for r in c.execute(stmt))
+                record_ids(ids)   # before the commit: if this write fails, the day is rolled back
+            return ids
+
         with engine.connect() as c:
             tz = ZoneInfo(c.execute(text("show timezone")).scalar())
         end = (dt.datetime.now(UTC) - SETTLE).replace(second=0, microsecond=0)
         days = day_windows(end, args.days, tz)
         print(f"{'Checking' if args.check else 'Backfilling'} WQData device {station} for {days[0][0]} to "
               f"{days[-1][2]:%Y-%m-%d %H:%M} ({tz.key}, as stored), one request per day", flush=True)
-        try:
-            for day, lo, hi in days:
-                points = fetch_points(wq.get_page, to_utc(lo, tz), to_utc(hi, tz))
-                rows = {k: r for k, r in quality_rows(points, station, tz).items() if lo <= k[2] < hi}
-                with engine.connect() as c:
-                    stored = {(station, m, t): v for m, t, v in c.execute(text(
-                        "select measurement_type, recorded_at, value from sensor_measurements "
-                        "where station_id = :s and group_type = 'Quality' and recorded_at >= :lo and recorded_at < :hi"),
-                        {"s": station, "lo": lo, "hi": hi})}
-                missing, extra, differ = compare(rows, stored)
-                inserted = []
-                if missing and not args.check:
-                    with engine.begin() as c:   # one transaction per day
-                        for i in range(0, len(missing), 1000):
-                            stmt = (insert(table).values(missing[i:i + 1000])
-                                    .on_conflict_do_nothing(index_elements=KEY_COLUMNS).returning(table.c.id))
-                            inserted.extend(r[0] for r in c.execute(stmt))
-                        # Record the ids before the commit: if this write fails, the day is rolled back.
-                        with open(ids_path, "a") as f:
-                            f.writelines(f"{row_id}\n" for row_id in inserted)
-                            f.flush()
-                            os.fsync(f.fileno())
-                n_points = len({k[2] for k in rows})
-                for name, n in (("points", n_points), ("readings", len(rows)), ("stored", len(stored)),
-                                ("missing", len(missing)), ("inserted", len(inserted)), ("extra", extra), ("differ", differ)):
-                    totals[name] += n
-                if missing:
-                    gap_days.append(f"{day} ({len(missing)})")
-                print(f"  {day}: {n_points:4} points, {len(rows):5} readings, {len(stored):5} stored, {len(missing):5} missing"
-                      + ("" if args.check else f", {len(inserted):5} inserted")
-                      + (f", {extra} stored but not at WQData" if extra else "")
-                      + (f", {differ} stored with a different value" if differ else ""), flush=True)
-        except WQDataError as e:
-            print(f"[ERROR] {e}", flush=True)
-            return 1
-
-    if not args.check and not totals["inserted"]:
-        ids_path.unlink(missing_ok=True)   # don't leave an empty ids file behind every run
-    t = totals
-    print(f"[INFO] WQData {'check' if args.check else 'backfill'}: {len(days)} days, {t['points']} points, "
-          f"{t['readings']} readings, {t['missing']} missing" + (f" on {', '.join(gap_days)}" if gap_days else "")
-          + ("" if args.check else f", {t['inserted']} inserted" + (f" (ids in {ids_path})" if t["inserted"] else ""))
-          + f", {t['extra']} stored but not at WQData, values differ on {t['differ']} of {t['stored'] - t['extra']} compared"
-          + f" | {wq.requests} requests", flush=True)
-    return 0
+        code = backfill(days, tz, station, wq.get_page, read_stored, insert_rows, ids_path, args.check,
+                        log=lambda line: print(line, flush=True), requests_made=lambda: wq.requests)
+    return code
 
 
 if __name__ == "__main__":
