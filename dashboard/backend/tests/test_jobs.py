@@ -49,20 +49,26 @@ class RunInBackgroundTests(unittest.TestCase):
     def test_scheduler_runs_a_due_job_once_even_while_it_is_still_running(self):
         """The old worker polled one scheduler from three threads, and a job's next run only moved
         once the job returned, so a slow job started twice. The wrapper returns at once instead."""
-        release, runs = threading.Event(), []
+        started, finished, release, runs = threading.Event(), threading.Event(), threading.Event(), []
 
         def slow():
             runs.append(1)
+            started.set()
             release.wait(5)
+            finished.set()
 
         scheduler = schedule.Scheduler()
         job = scheduler.every(10).minutes.do(run_in_background(slow, log=lambda *_: None))
-        job.next_run = dt.datetime.now() - dt.timedelta(seconds=1)
-        scheduler.run_pending()
-        scheduler.run_pending()  # same moment, e.g. a second poller
-        self.assertEqual(len(runs), 1)
-        self.assertGreater(job.next_run, dt.datetime.now())
-        release.set()
+        try:
+            job.next_run = dt.datetime.now() - dt.timedelta(seconds=1)
+            scheduler.run_pending()  # must return while slow() is still blocked
+            self.assertTrue(started.wait(5))
+            self.assertFalse(finished.is_set(), "the job ran inline instead of in its own thread")
+            scheduler.run_pending()  # same moment, e.g. a second poller
+            self.assertEqual(len(runs), 1)
+            self.assertGreater(job.next_run, dt.datetime.now())
+        finally:
+            release.set()
 
 
 class DownloadStatusTests(unittest.TestCase):

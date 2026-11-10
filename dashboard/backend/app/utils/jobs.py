@@ -1,23 +1,29 @@
 """Helpers for the worker's scheduler (scripts/scheduler_temp.py). Pure: no database or vendor settings."""
 import re
 import threading
+import time
 
 
 def run_in_background(job, log=print, name=None):
     """Wrap `job` so each call starts it in its own thread and returns at once.
 
     If the previous run of the same job is still going, the call is skipped and logged instead,
-    so a slow run can never overlap the next one. Returning at once matters too: the `schedule`
-    library only moves a job's next run time after the scheduled callable returns, so a job that
-    blocks the loop looks "still due" to anything else polling the scheduler meanwhile.
+    so a slow run can never overlap the next one. The skip message says how long the run has been
+    going, so a hung job shows up in the log; jobs must bound their own I/O (request and subprocess
+    timeouts), since a run that never returns keeps the lock. Returning at once matters too: the
+    `schedule` library only moves a job's next run time after the scheduled callable returns, so a
+    job that blocks the loop looks "still due" to anything else polling the scheduler meanwhile.
     """
     lock = threading.Lock()
+    started_at = [None]
     label = name or getattr(job, "__name__", "job")
 
     def start():
         if not lock.acquire(blocking=False):
-            log(f"[WARN] {label} is still running from its last start; skipping this run")
+            minutes = (time.monotonic() - started_at[0]) / 60 if started_at[0] else 0
+            log(f"[WARN] {label} is still running (started {minutes:.0f} min ago); skipping this run")
             return None
+        started_at[0] = time.monotonic()
 
         def target():
             try:

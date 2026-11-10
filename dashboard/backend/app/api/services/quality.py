@@ -46,7 +46,7 @@ class QualityService:
             }
 
             try:
-                response = requests.get(url, params=params)
+                response = requests.get(url, params=params, timeout=(10, 120))
                 response.raise_for_status()
                 json_data = response.json()
 
@@ -81,7 +81,7 @@ class QualityService:
                 "to": end_time
             }
             try:
-                tail_response = requests.get(url, params=final_params)
+                tail_response = requests.get(url, params=final_params, timeout=(10, 120))
                 tail_response.raise_for_status()
                 final_data = tail_response.json().get("data", [])
                 all_data.extend(final_data)

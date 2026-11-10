@@ -19,6 +19,12 @@ log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
 upload_log_file_path = "logs/db_uploads.log"
 
+# Hard limits for the Borealis subprocesses. A run that hangs is stopped, so it can't hold its
+# job's lock (see utils.jobs.run_in_background) and block every later run.
+DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
+UPLOAD_TIMEOUT_S = 2 * 60 * 60
+LIST_FILES_TIMEOUT_S = 5 * 60
+
 # Control whether to also mirror file logs to stdout (Docker logs)
 # Set WORKER_LOG_TO_STDOUT=1|true to enable
 LOG_TO_STDOUT = os.getenv("WORKER_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on")
@@ -58,13 +64,17 @@ def run_download_data():
     cmd = [sys.executable, "scripts/download_data.py"]
     timestamped_print_download(f"Running command: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=DOWNLOAD_TIMEOUT_S)
         timestamped_print_download(f"download_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_download(f"download_data.py stderr: {result.stderr}")
         status = download_status(result.stdout)
         timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
         return status
+    except subprocess.TimeoutExpired as e:
+        timestamped_print_download(f"[ERROR] download_data.py was stopped after {DOWNLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_download(f"download_data.py stdout so far: {e.stdout}")
+        return None
     except subprocess.CalledProcessError as e:
         timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
         timestamped_print_download(f"download_data.py stdout: {e.stdout}")
@@ -73,7 +83,7 @@ def run_download_data():
         try:
             list_cmd = [sys.executable, "scripts/download_data.py", "--list-files"]
             timestamped_print_download(f"Running debug command: {' '.join(list_cmd)}")
-            list_result = subprocess.run(list_cmd, capture_output=True, text=True)
+            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=LIST_FILES_TIMEOUT_S)
             timestamped_print_download(f"--list-files stdout: {list_result.stdout}")
             if list_result.stderr:
                 timestamped_print_download(f"--list-files stderr: {list_result.stderr}")
@@ -90,16 +100,14 @@ def run_upload_data():
         # Run upload_data.py without arguments (defaults to last month)
         cmd = [sys.executable, "scripts/upload_data.py"]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=UPLOAD_TIMEOUT_S)
         timestamped_print_upload(f"upload_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_upload(f"upload_data.py stderr: {result.stderr}")
         timestamped_print_upload("Success: upload_data.py completed")
+    except subprocess.TimeoutExpired as e:
+        timestamped_print_upload(f"[ERROR] upload_data.py was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_upload(f"upload_data.py stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
         timestamped_print_upload(f"[ERROR] upload_data.py failed with exit code {e.returncode}: {e}")
         timestamped_print_upload(f"upload_data.py stdout: {e.stdout}")

@@ -106,7 +106,7 @@ def get_files_from_dataset(list_files=False):
         headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
         params = {"persistentId": BOREALIS_AW_PERSISTENT_ID}
         print(f"DEBUG: Sending request to {BOREALIS_URL}/api/datasets/:persistentId")
-        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers)
+        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers, timeout=(10, 120))
         print(f"DEBUG: Response status: {response.status_code}")
         print(f"DEBUG: Response URL: {response.url}")
         response.raise_for_status()
@@ -175,7 +175,7 @@ def download_file_to_memory(file_id, filename):
     try:
         headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
         params = {"format": "original"}
-        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params)
+        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params, timeout=(10, 600))
         response.raise_for_status()
         
         file_buffer = io.BytesIO(response.content)

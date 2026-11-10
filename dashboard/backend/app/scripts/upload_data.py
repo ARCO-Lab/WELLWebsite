@@ -332,7 +332,8 @@ def upload_to_borealis(csv_content, csv_name):
         resp = requests.post(
             f"{BOREALIS_URL}/api/datasets/:persistentId/add?persistentId={BOREALIS_WC_PERSISTENT_ID}&key={BOREALIS_API_TOKEN}",
             data=payload,
-            files=files
+            files=files,
+            timeout=(10, 600),
         )
         resp.raise_for_status()
         print(f"Successfully uploaded {csv_name} to Borealis")
