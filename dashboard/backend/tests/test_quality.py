@@ -110,7 +110,7 @@ class QualityErrorLoggingTests(unittest.TestCase):
 
     def test_a_failed_later_page_is_logged_without_the_key_and_keeps_what_was_read(self):
         conn_error = requests.ConnectionError(f"Max retries exceeded with url: /data?apiKey={KEY}")
-        points, log, _ = fetch([page([("2026-11-01 00:00:00", [1])], more=True, count=1, total=5), conn_error])
+        points, log, _ = fetch([page([("2026-11-02 00:00:00", [1])], more=True, count=1, total=5), conn_error])
         self.assertEqual(len(points), 1)
         self.assertIn("ConnectionError", log)
         self.assertNotIn(KEY, log)
