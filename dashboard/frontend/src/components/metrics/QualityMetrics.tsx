@@ -7,10 +7,10 @@ import MetricGroup, { type MetricRow } from "./MetricList";
 // fullLabel = the filter's name for the metric; label = the shorter name shown in the panel;
 // key = measurement_type in the API
 const metricMap = [
-  { fullLabel: "Total Dissolved Solids (TDS)", label: "Dissolved solids (TDS)", key: "TDS", icon: Beaker, color: "text-mcmaster-maroon" },
+  { fullLabel: "Total Dissolved Solids (TDS)", label: "Dissolved solids", key: "TDS", icon: Beaker, color: "text-mcmaster-maroon" },
   { fullLabel: "Dissolved Oxygen (ODO)", label: "Dissolved oxygen", key: "ODO", icon: Waves, color: "text-mcmaster-gold" },
   { fullLabel: "Dissolved Oxygen Saturation (ODOSat)", label: "Oxygen saturation", key: "ODOSat", icon: Eye, color: "text-mcmaster-grey" },
-  { fullLabel: "Total Suspended Solids (TSS)", label: "Suspended solids (TSS)", key: "TSS", icon: Zap, color: "text-primary" },
+  { fullLabel: "Total Suspended Solids (TSS)", label: "Suspended solids", key: "TSS", icon: Zap, color: "text-primary" },
   { fullLabel: "Turbidity", label: "Turbidity", key: "Turbidity", icon: Droplets, color: "text-mcmaster-maroon" },
   { fullLabel: "Salinity", label: "Salinity", key: "Salinity", icon: FlaskConical, color: "text-mcmaster-gold" },
   { fullLabel: "Conductivity", label: "Conductivity", key: "Conductivity", icon: Activity, color: "text-mcmaster-grey" },

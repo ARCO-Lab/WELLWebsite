@@ -102,9 +102,9 @@ function Row({ row, staleAfterHours }: { row: MetricRow; staleAfterHours: number
   return (
     <li className="flex min-w-0 items-start justify-between gap-3 py-1.5">
       <div className="min-w-0">
-        <p className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
-          <Icon aria-hidden className={`h-3.5 w-3.5 shrink-0 ${row.color}`} />
-          <span className="truncate" title={row.fullLabel ?? row.label}>{row.label}</span>
+        <p className="flex min-w-0 items-start gap-1.5 text-sm leading-snug text-foreground">
+          <Icon aria-hidden className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${row.color}`} />
+          <span className="line-clamp-2 break-words" title={row.fullLabel ?? row.label}>{row.label}</span>
         </p>
         {stale && (
           <p className="pl-5 text-[11px] leading-snug text-amber-800">

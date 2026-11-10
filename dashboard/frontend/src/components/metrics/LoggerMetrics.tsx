@@ -8,7 +8,7 @@ import MetricGroup, { type MetricSection } from "./MetricList";
 
 // key = the filter's name for the metric, which is also measurement_type in the API
 const metricDisplayMap: Record<string, { label: string; icon: React.ElementType; color: string }> = {
-  "Water Surface Elevation": { label: "Surface elevation", icon: Waves, color: "text-mcmaster-maroon" },
+  "Water Surface Elevation": { label: "Water surface", icon: Waves, color: "text-mcmaster-maroon" },
   "Water Temperature": { label: "Water temperature", icon: Thermometer, color: "text-mcmaster-gold" },
 };
 
