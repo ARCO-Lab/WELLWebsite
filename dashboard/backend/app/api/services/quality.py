@@ -6,6 +6,14 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
 from datetime import datetime, timezone, timedelta
 
+
+def describe_request_error(e):
+    """A short description of a failed request that is safe to log: the error type and HTTP status only.
+    WQData takes its key as the apiKey query parameter, and requests' own error text includes the full
+    URL, so printing the exception itself would write the key into the logs."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    return f"{type(e).__name__} (HTTP {status})" if status else type(e).__name__
+
 class QualityService:
     def __init__(self, api_url, api_key, device_id):
         # Initialize with API URL, key, and device ID
@@ -68,7 +76,7 @@ class QualityService:
                 current_start = (last_ts + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
 
             except requests.exceptions.RequestException as e:
-                print(f"[ERROR] Failed to fetch quality data: {e}")
+                print(f"[ERROR] Failed to fetch quality data: {describe_request_error(e)}")
                 break
 
             iteration += 1
@@ -86,7 +94,7 @@ class QualityService:
                 final_data = tail_response.json().get("data", [])
                 all_data.extend(final_data)
             except Exception as e:
-                print(f"[WARN] Tail fetch failed: {e}")
+                print(f"[WARN] Tail fetch failed: {describe_request_error(e)}")
 
         return all_data
 
