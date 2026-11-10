@@ -329,8 +329,12 @@ def upload_to_borealis(csv_content, csv_name):
         files = {'file': (csv_name, csv_content)}
         params = dict(description='Automated upload', categories=['Data'])
         payload = dict(jsonData=json.dumps(params))
+        # The token goes in the X-Dataverse-key header only. In the URL it would be printed by any
+        # error message that includes the URL (requests' HTTPError does), and so end up in the logs.
         resp = requests.post(
-            f"{BOREALIS_URL}/api/datasets/:persistentId/add?persistentId={BOREALIS_WC_PERSISTENT_ID}&key={BOREALIS_API_TOKEN}",
+            f"{BOREALIS_URL}/api/datasets/:persistentId/add",
+            params={"persistentId": BOREALIS_WC_PERSISTENT_ID},
+            headers=headers,
             data=payload,
             files=files,
             timeout=(10, 600),
