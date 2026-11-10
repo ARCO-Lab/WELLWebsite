@@ -8,7 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/animations/dialog";
-import AIAnalysis from "./AIAnalysis"; // Make sure this path is correct
+// AI ANALYSIS DISABLED: AI panel in the chart modal (uncomment here and below to restore)
+// import AIAnalysis from "./AIAnalysis"; // Make sure this path is correct
 
 interface ModalProps {
   isOpen: boolean;
@@ -49,9 +50,9 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
             ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })
             : children}
 
-          {/* Conditionally render AI Analysis only if type is NOT 'sampling' */}
+          {/* AI ANALYSIS DISABLED: AI panel in the chart modal. Uncomment to restore.
           {type !== 'sampling' && (
-            <AIAnalysis 
+            <AIAnalysis
               type={type}
               subtypes={subtypes}
               analysisType={analysisType}
@@ -59,6 +60,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
               modalOpen={isOpen}
             />
           )}
+          */}
         </div>
       </DialogContent>
     </Dialog>

@@ -3,6 +3,13 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
+// AI ANALYSIS DISABLED: this route returns 404 while the feature is switched off.
+// To restore it, delete this stub and uncomment the original handler below.
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  return res.status(404).json({ error: "AI analysis is currently disabled" });
+}
+
+/* AI ANALYSIS DISABLED: original implementation below
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     const { type, subtypes } = req.query;
@@ -43,3 +50,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: "Failed to fetch analysis from backend" });
   }
 }
+*/
