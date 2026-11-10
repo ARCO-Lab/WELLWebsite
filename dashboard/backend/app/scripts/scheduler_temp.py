@@ -1,6 +1,6 @@
 # This script runs the worker's scheduled jobs: vendor API ingestion every 10 minutes, the weekly
-# Borealis sampling download (Sundays 00:00) and the monthly Borealis upload of last month (02:00 Toronto
-# time on the 1st, retried daily until it succeeds).
+# Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
+# month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
 
@@ -18,7 +18,7 @@ from inject_from_api import inject_all_new_data
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status,
-    load_uploaded_months, record_uploaded_month, month_due_for_upload, month_key,
+    load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
 )
 
 log_file_path = "logs/db_injections.log"
@@ -27,6 +27,9 @@ upload_log_file_path = "logs/db_uploads.log"
 # Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
 # on the host), so it survives restarts and rebuilds.
 uploaded_months_path = "logs/uploaded_months.json"
+# The first month the scheduler uploads; earlier months are never sent (they went up, or didn't, before
+# uploads were recorded). Override with BOREALIS_UPLOAD_FIRST_MONTH=YYYY-MM.
+UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
 
 # Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
 # (the container's clock).
@@ -111,7 +114,7 @@ def run_download_data():
         return None
 
 def run_upload_data(year, month):
-    """Run upload_data.py for one month. True if it finished without an error."""
+    """Run upload_data.py for one month. True only if it exited 0 and reported the file as uploaded."""
     try:
         cmd = [sys.executable, "scripts/upload_data.py", "--year", str(year), "--month", str(month)]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
@@ -119,6 +122,9 @@ def run_upload_data(year, month):
         timestamped_print_upload(f"upload_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_upload(f"upload_data.py stderr: {result.stderr}")
+        if "Successfully uploaded" not in result.stdout:
+            timestamped_print_upload("[ERROR] upload_data.py finished but didn't report an upload")
+            return False
         timestamped_print_upload("Success: upload_data.py completed")
         return True
     except subprocess.TimeoutExpired as e:
@@ -146,24 +152,26 @@ def upload_job(year, month):
     return ok
 
 def monthly_upload_check():
-    """Runs every hour. At 02:00 Toronto time it uploads last month, unless that month is already recorded in
-    uploaded_months_path; a successful upload is recorded there. So a missed slot (the worker was down) or a
-    failed upload is retried the next day, and a month that went up is never uploaded again."""
+    """Runs every hour and acts only at 02:00 Toronto time. It uploads, oldest first, each month from
+    UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
+    goes up. So a missed slot (the worker was down) or a failed upload is retried the next day, a month that
+    went up is never sent again, and errors are logged once a day, not every hour."""
+    now = datetime.now(SITE_TZ)
+    if now.hour != UPLOAD_HOUR:
+        return
     try:
+        first_month = parse_month_key(UPLOAD_FIRST_MONTH)
         uploaded = load_uploaded_months(uploaded_months_path)
     except Exception as e:
-        timestamped_print_upload(f"[ERROR] Can't read {uploaded_months_path} ({type(e).__name__}: {e}); "
-                                 "not uploading until it's fixed or removed")
+        timestamped_print_upload(f"[ERROR] Not uploading: {type(e).__name__}: {e} "
+                                 f"(check BOREALIS_UPLOAD_FIRST_MONTH and {uploaded_months_path})")
         return
-    due = month_due_for_upload(datetime.now(SITE_TZ), uploaded)
-    if not due:
-        return
-    year, month = due
-    if upload_job(year, month):
-        record_uploaded_month(uploaded_months_path, year, month)
-        timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {uploaded_months_path}")
-    else:
-        timestamped_print_upload(f"{month_key(year, month)} was not uploaded; trying again tomorrow at 02:00")
+    for year, month in months_due_for_upload(now, uploaded, first_month):
+        if upload_job(year, month):
+            record_uploaded_month(uploaded_months_path, year, month)
+            timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {uploaded_months_path}")
+        else:
+            timestamped_print_upload(f"{month_key(year, month)} was not uploaded; trying again tomorrow at 02:00")
 
 def api_injection_job():
     """Every 10 minutes: fetch new vendor API data and store it."""
@@ -209,11 +217,12 @@ if __name__ == "__main__":
     scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
 
     print("Schedule: API injection every 10 minutes; Borealis download Sundays 00:00; "
-          "Borealis upload of last month at 02:00 Toronto time on the 1st, retried daily until it succeeds.")
+          "Borealis upload at 02:00 Toronto time of each ended month not yet uploaded.")
     timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
                                "run `python scripts/download_data.py` by hand to fetch now.")
-    timestamped_print_upload("Upload scheduler ready: last month goes up at 02:00 Toronto time on the 1st (or the "
-                             f"next day at 02:00 if that fails); uploaded months are recorded in {uploaded_months_path}. "
+    timestamped_print_upload("Upload scheduler ready: at 02:00 Toronto time, each month from "
+                             f"{UPLOAD_FIRST_MONTH} on that has ended and isn't recorded in {uploaded_months_path} "
+                             "is uploaded (so last month goes up on the 1st, and a failed month is retried daily). "
                              "Nothing runs at startup; run `python scripts/upload_data.py --year Y --month M` by hand "
                              "to upload a month.")
 

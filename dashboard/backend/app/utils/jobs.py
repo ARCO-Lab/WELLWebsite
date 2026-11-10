@@ -92,22 +92,39 @@ def previous_month(now):
     return (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
 
 
-def month_due_for_upload(now, uploaded, hour=2):
-    """The (year, month) the monthly Borealis upload should send now, or None.
+# The hour (site time) the monthly Borealis upload runs in: after midnight, once the month's last readings are in.
+UPLOAD_HOUR = 2
 
-    `now` is site time (America/Toronto), the same wall clock recorded_at is stored in, so a month counts as
-    over only once it has ended there. The check runs every hour and acts only in `hour`, once the month's last
-    readings are in. `uploaded` holds the months already sent ("2026-10"), so a missed or failed upload is tried
-    again the next day until it succeeds, and a month that succeeded is never sent twice.
+
+def months_due_for_upload(now, uploaded, first_month):
+    """The (year, month) pairs the Borealis upload should send now, oldest first.
+
+    That is every month from `first_month` (a (year, month) pair) through the month before `now` that isn't in
+    `uploaded` (keys like "2026-10"). So a month that keeps failing is tried again each day, even after later
+    months have ended, and it doesn't hold them up; months before `first_month` are never sent. `now` is site
+    time (America/Toronto), the same wall clock recorded_at is stored in, so a month counts as over only once
+    it has ended there. Empty outside UPLOAD_HOUR.
     """
-    if now.hour != hour:
-        return None
-    year, month = previous_month(now)
-    return None if month_key(year, month) in uploaded else (year, month)
+    if now.hour != UPLOAD_HOUR:
+        return []
+    due, (year, month), last = [], first_month, previous_month(now)
+    while (year, month) <= last:
+        if month_key(year, month) not in uploaded:
+            due.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return due
 
 
 def month_key(year, month):
     return f"{year:04d}-{month:02d}"
+
+
+def parse_month_key(text):
+    """(year, month) from "YYYY-MM"; ValueError if it isn't one."""
+    match = re.fullmatch(r"(\d{4})-(\d{2})", (text or "").strip())
+    if not match or not 1 <= int(match.group(2)) <= 12:
+        raise ValueError(f"expected a month like 2026-10, got {text!r}")
+    return int(match.group(1)), int(match.group(2))
 
 
 def load_uploaded_months(path):

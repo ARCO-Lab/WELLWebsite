@@ -13,7 +13,8 @@ import schedule
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from utils.jobs import (  # noqa: E402
-    download_status, load_uploaded_months, month_due_for_upload, record_uploaded_month, run_bounded, run_in_background,
+    download_status, load_uploaded_months, months_due_for_upload, parse_month_key, record_uploaded_month, run_bounded,
+    run_in_background,
 )
 
 
@@ -155,32 +156,48 @@ def utc(*args):
 
 
 class MonthlyUploadTests(unittest.TestCase):
-    def due(self, when_utc, uploaded=()):
-        return month_due_for_upload(when_utc.astimezone(toronto()), set(uploaded))
+    def due(self, when_utc, uploaded=(), first=(2026, 10)):
+        return months_due_for_upload(when_utc.astimezone(toronto()), set(uploaded), first)
 
     def test_uploads_last_month_at_2am_toronto_on_the_1st(self):
-        self.assertEqual(self.due(utc(2026, 11, 1, 7, 0)), (2026, 10))  # 02:00 EST
-        self.assertEqual(self.due(utc(2026, 7, 1, 6, 0)), (2026, 6))  # 02:00 EDT
+        self.assertEqual(self.due(utc(2026, 11, 1, 7, 0)), [(2026, 10)])  # 02:00 EST
+        self.assertEqual(self.due(utc(2027, 7, 1, 6, 0), uploaded=[f"2026-{m}" for m in ("10", "11", "12")]
+                                  + [f"2027-0{m}" for m in range(1, 6)]), [(2027, 6)])  # 02:00 EDT
 
     def test_not_at_2am_utc_when_toronto_is_still_in_the_old_month(self):
         """02:00 UTC on the 1st is 21:00/22:00 Toronto on the last day: the month's last hours aren't over."""
-        self.assertIsNone(self.due(utc(2026, 11, 1, 2, 0)))
-        self.assertIsNone(self.due(utc(2026, 7, 1, 2, 0)))
+        self.assertEqual(self.due(utc(2026, 11, 1, 2, 0)), [])
+        self.assertEqual(self.due(utc(2026, 12, 1, 2, 0), uploaded={"2026-10"}), [])
 
     def test_only_in_the_2am_hour(self):
-        self.assertIsNone(self.due(utc(2026, 11, 1, 6, 0)))  # 01:00 EST
-        self.assertIsNone(self.due(utc(2026, 11, 1, 8, 0)))  # 03:00 EST
+        self.assertEqual(self.due(utc(2026, 11, 1, 6, 0)), [])  # 01:00 EST
+        self.assertEqual(self.due(utc(2026, 11, 1, 8, 0)), [])  # 03:00 EST
 
     def test_a_missed_or_failed_upload_is_tried_again_the_next_days(self):
-        self.assertEqual(self.due(utc(2026, 11, 2, 7, 0), uploaded={"2026-09"}), (2026, 10))
-        self.assertEqual(self.due(utc(2026, 11, 20, 7, 0), uploaded={"2026-09"}), (2026, 10))
+        self.assertEqual(self.due(utc(2026, 11, 2, 7, 0)), [(2026, 10)])
+        self.assertEqual(self.due(utc(2026, 11, 20, 7, 0)), [(2026, 10)])
+
+    def test_a_month_still_failing_on_the_next_1st_is_kept_oldest_first(self):
+        self.assertEqual(self.due(utc(2026, 12, 1, 7, 0)), [(2026, 10), (2026, 11)])
+        self.assertEqual(self.due(utc(2027, 2, 1, 7, 0), uploaded={"2026-11"}), [(2026, 10), (2026, 12), (2027, 1)])
 
     def test_an_uploaded_month_is_not_sent_again(self):
-        self.assertIsNone(self.due(utc(2026, 11, 1, 7, 0), uploaded={"2026-10"}))
-        self.assertIsNone(self.due(utc(2026, 11, 2, 7, 0), uploaded={"2026-10"}))
+        self.assertEqual(self.due(utc(2026, 11, 1, 7, 0), uploaded={"2026-10"}), [])
+        self.assertEqual(self.due(utc(2026, 11, 2, 7, 0), uploaded={"2026-10"}), [])
+
+    def test_months_before_the_first_month_are_never_sent(self):
+        self.assertEqual(self.due(utc(2026, 11, 1, 7, 0), first=(2026, 11)), [])
+        self.assertEqual(self.due(utc(2026, 12, 1, 7, 0), first=(2026, 11)), [(2026, 11)])
 
     def test_january_uploads_december_of_the_year_before(self):
-        self.assertEqual(self.due(utc(2027, 1, 1, 7, 0)), (2026, 12))
+        self.assertEqual(self.due(utc(2027, 1, 1, 7, 0), first=(2026, 12)), [(2026, 12)])
+
+    def test_parse_month_key(self):
+        self.assertEqual(parse_month_key("2026-10"), (2026, 10))
+        self.assertEqual(parse_month_key(" 2027-01\n"), (2027, 1))
+        for bad in ("2026-13", "2026-1", "Oct 2026", "", None):
+            with self.assertRaises(ValueError):
+                parse_month_key(bad)
 
     def test_record_round_trip(self):
         with tempfile.TemporaryDirectory() as d:

@@ -427,8 +427,10 @@ def main():
                     print(f"DEBUG:   Logger stations: {dict(station_counts)}")
         
         if not data:
-            print("DEBUG: No sensor data found for last month.")
-            return
+            # Exit non-zero: nothing was sent, so the scheduler must not record this month as uploaded
+            # (it tries again the next day, e.g. once a backfill has filled the month in).
+            print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
+            sys.exit(2)
         
         # Build CSV in memory - CHANGED to use io.StringIO instead of file path
         csv_name = f"WELLWestCampus_{start.strftime('%b%Y')}.csv"
