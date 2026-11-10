@@ -184,6 +184,24 @@ def classify_skipped(rows, inserted_keys, stored_values):
     return changed, unknown_site
 
 
+def check_skipped(rows, inserted_keys, fetch_stored, log=print):
+    """classify_skipped() on the stored values that fetch_stored(keys) returns for the skipped keys.
+
+    Best effort: the rows are already committed and the "Inserted N" line printed by then, so a failed
+    lookup only logs a [WARN] and returns no findings, rather than failing the import.
+    """
+    skipped = [row_key(r) for r in rows if row_key(r) not in inserted_keys]
+    if not skipped:
+        return [], []
+    try:
+        stored_values = fetch_stored(skipped)
+    except Exception as e:
+        log(f"[WARN] Could not compare the {len(skipped)} skipped rows with the stored ones ({e}); corrected "
+            f"readings and site-7 clashes are not reported for this run.")
+        return [], []
+    return classify_skipped(rows, inserted_keys, stored_values)
+
+
 # How to repair rows that landed on a shared site id (site 7 holds every unlisted name)
 _SITE_FIX = ("add the names to SITE_ID_MAP in utils/sampling_rows.py, delete the rows already stored under the shared "
              "site id (site_id = '7' for unlisted names; otherwise they stay and those readings end up stored twice), "
@@ -196,7 +214,7 @@ def _sql_text(value):
 
 
 def import_warnings(stats, changed=(), unknown_skipped=()):
-    """[WARN] lines for an import, from rows_from_entries()'s stats and classify_skipped()'s lists.
+    """[WARN] (and [INFO]) lines for an import, from rows_from_entries()'s stats and classify_skipped()'s lists.
 
     Covers unlisted site names, rows dropped by a site-name clash (in this file, or with rows already
     stored on site 7), and readings that differ from the stored one or from an earlier row of the file.
@@ -213,15 +231,20 @@ def import_warnings(stats, changed=(), unknown_skipped=()):
             lines.append(f"[WARN]   kept {kept!r}, dropped {dropped!r}: {measurement} on {when:%Y-%m-%d}")
     if unknown_skipped:
         differing = sum(values_differ(stored, row["value"]) for row, stored in unknown_skipped)
-        lines.append(f"[WARN] {len(unknown_skipped)} rows of unlisted sites were not imported because site 7 "
-                     f"(Unknown) already has a reading for that measurement and date ({differing} with a different "
-                     f"value). They may be from a different unlisted site than the stored rows, e.g. one named in "
-                     f"another file. To keep both: {_SITE_FIX}. E.g.:")
-        # Readings that differ from the stored one first: those are the likely clashes, not plain re-imports
-        examples = sorted(unknown_skipped, key=lambda pair: not values_differ(pair[1], pair[0]["value"]))
-        for row, stored in examples[:_EXAMPLES]:
-            lines.append(f"[WARN]   {row['measurement_type']} on {row['recorded_at']:%Y-%m-%d}: "
-                         f"stored {stored}, file {row['value']}")
+        if not differing:
+            # The usual case on a plain re-import: nothing to act on, and nothing to delete
+            lines.append(f"[INFO] {len(unknown_skipped)} site-7 rows already stored with the same value; unlisted "
+                         f"sites with equal readings can't be told apart.")
+        else:
+            lines.append(f"[WARN] {len(unknown_skipped)} rows of unlisted sites were not imported because site 7 "
+                         f"(Unknown) already has a reading for that measurement and date ({differing} with a "
+                         f"different value). They may be from a different unlisted site than the stored rows, e.g. "
+                         f"one named in another file. To keep both: {_SITE_FIX}. E.g.:")
+            # Readings that differ from the stored one first: those are the likely clashes, not plain re-imports
+            examples = sorted(unknown_skipped, key=lambda pair: not values_differ(pair[1], pair[0]["value"]))
+            for row, stored in examples[:_EXAMPLES]:
+                lines.append(f"[WARN]   {row['measurement_type']} on {row['recorded_at']:%Y-%m-%d}: "
+                             f"stored {stored}, file {row['value']}")
     if changed:
         lines.append(f"[WARN] {len(changed)} rows differ from the stored reading and were NOT applied (stored "
                      f"values are never overwritten), e.g.:")

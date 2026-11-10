@@ -6,8 +6,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-from utils.sampling_rows import (KEY, classify_skipped, entry_to_row, import_warnings, row_key,  # noqa: E402
-                                 rows_from_entries)
+from utils.sampling_rows import (KEY, check_skipped, classify_skipped, entry_to_row, import_warnings,  # noqa: E402
+                                 row_key, rows_from_entries)
 
 
 def entry(site="Falkirk Rd", creek="Tiffany Creek", measurement="E. coli", value=12.0, when="2025-06-01T00:00:00"):
@@ -124,6 +124,33 @@ class SkippedRowTests(unittest.TestCase):
         self.assertIn("(1 with a different value)", lines[1])
         self.assertEqual(lines[2], "[WARN]   E. coli on 2025-07-01: stored 99.0, file 7.0")
         self.assertEqual(len(lines), 2 + 5)
+
+    def test_clean_reimport_with_an_unlisted_site_is_one_info_line(self):
+        rows, stats = rows_from_entries([entry(site="Mystery Bridge"), entry(site="Mystery Bridge", measurement="pH")],
+                                        log=lambda *_: None)
+        changed, unknown = classify_skipped(rows, set(), {row_key(r): r["value"] for r in rows})
+        lines = import_warnings(stats, changed, unknown)
+        self.assertEqual(lines[1:], ["[INFO] 2 site-7 rows already stored with the same value; unlisted sites "
+                                     "with equal readings can't be told apart."])
+        self.assertNotIn("site_id = '7'", "\n".join(lines))
+
+    def test_check_skipped_looks_up_only_the_skipped_keys(self):
+        asked = []
+        changed, unknown = check_skipped(self.rows, self.inserted,
+                                         lambda keys: asked.extend(keys) or self.stored, log=self.fail)
+        self.assertEqual(asked, [row_key(r) for r in self.rows[1:]])
+        self.assertEqual([r["value"] for r, _ in changed], [240.0])
+        self.assertEqual([r["value"] for r, _ in unknown], [9.0])
+
+    def test_check_skipped_failure_only_warns(self):
+        """The rows are committed and "Inserted N" printed before this lookup, so it must not raise."""
+        def broken(keys):
+            raise RuntimeError("permission denied for table sampling_measurements")
+        logs = []
+        self.assertEqual(check_skipped(self.rows, self.inserted, broken, log=logs.append), ([], []))
+        self.assertEqual(len(logs), 1)
+        self.assertTrue(logs[0].startswith("[WARN] Could not compare the 3 skipped rows"))
+        self.assertIn("permission denied", logs[0])
 
     def test_collision_warning_says_to_delete_site_7_rows_before_reimporting(self):
         _, stats = rows_from_entries([entry(site="Mystery Bridge"), entry(site="Other Lane")], log=lambda *_: None)

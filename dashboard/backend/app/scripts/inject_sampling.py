@@ -13,8 +13,7 @@ from server import create_app
 from db.database import db
 from db.models import SamplingMeasurement
 from api.services.sampling import SamplingService
-from utils.sampling_rows import (KEY, classify_skipped, entry_to_row, import_warnings, row_key,
-                                 rows_from_entries)
+from utils.sampling_rows import KEY, check_skipped, entry_to_row, import_warnings, rows_from_entries
 
 app = create_app()
 
@@ -58,19 +57,26 @@ def inject_new_sampling_data(file_path, return_only=False):
                     .on_conflict_do_nothing(index_elements=list(KEY)).returning(*key_cols))
             inserted_keys.update(tuple(r) for r in db.session.execute(stmt))
         db.session.commit()
-
-        # Stored values of the skipped keys, to spot corrected readings and clashes on site 7
-        skipped = [row_key(r) for r in rows if row_key(r) not in inserted_keys]
-        stored_values = {}
-        for i in range(0, len(skipped), 1000):
-            query = select(*key_cols, SamplingMeasurement.value).where(tuple_(*key_cols).in_(skipped[i:i + 1000]))
-            stored_values.update({tuple(r[:3]): r[3] for r in db.session.execute(query)})
-        changed, unknown_skipped = classify_skipped(rows, inserted_keys, stored_values)
-
-        # download_data.py reads this exact line to decide whether a file counts as processed
+        # download_data.py reads this exact line to decide whether a file counts as processed, so it is
+        # printed as soon as the rows are committed, before the diagnostics below
         print(f"[INFO] Inserted {len(inserted_keys)} new sampling records.")
-        print(f"[INFO] {len(skipped)} were already stored; {stats['duplicates']} rows repeated "
+        print(f"[INFO] {len(rows) - len(inserted_keys)} were already stored; {stats['duplicates']} rows repeated "
               f"another row of the file; {stats['failed']} entries could not be parsed.")
+
+        def fetch_stored(keys):
+            """Stored values of these keys, to spot corrected readings and clashes on site 7."""
+            stored_values = {}
+            try:
+                for i in range(0, len(keys), 1000):
+                    query = (select(*key_cols, SamplingMeasurement.value)
+                             .where(tuple_(*key_cols).in_(keys[i:i + 1000])))
+                    stored_values.update({tuple(r[:3]): r[3] for r in db.session.execute(query)})
+            except Exception:
+                db.session.rollback()  # leave the session usable; check_skipped() reports the error
+                raise
+            return stored_values
+
+        changed, unknown_skipped = check_skipped(rows, inserted_keys, fetch_stored)
         for line in import_warnings(stats, changed, unknown_skipped):
             print(line)
         return rows
