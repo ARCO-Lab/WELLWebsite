@@ -19,7 +19,8 @@ import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
 import Modal from "@/components/Modal";
-import AIAnalysis from "@/components/AIAnalysis";
+// AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
+// import AIAnalysis from "@/components/AIAnalysis";
 import useFilteredData from "@/hooks/useFilteredData";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
@@ -497,7 +498,7 @@ export default function Dashboard() {
                     })()}
                   </div>
 
-                  {/* AI Analysis Section */}
+                  {/* AI ANALYSIS DISABLED: sensor-tab AI Analysis card. Uncomment to restore.
                   <div className="mcmaster-card p-6">
                       <h2 className="flex items-center justify-between mb-6 text-xl font-poppins font-bold text-primary">
                         AI Analysis
@@ -513,6 +514,7 @@ export default function Dashboard() {
                         />
                       </div>
                     </div>
+                  */}
                 </div>
               </div>
             </div>
@@ -709,7 +711,7 @@ export default function Dashboard() {
                       }
                     })()}
                   </div>
-                  {/* AI Analysis Section */}
+                  {/* AI ANALYSIS DISABLED: sampling-tab AI Analysis card. Uncomment to restore.
                   <div className="mcmaster-card p-6">
                       <h2 className="flex items-center justify-between mb-6 text-xl font-poppins font-bold text-primary">
                         AI Analysis
@@ -725,6 +727,7 @@ export default function Dashboard() {
                         />
                       </div>
                     </div>
+                  */}
                 </div>
               </div>
             </div>

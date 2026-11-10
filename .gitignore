@@ -69,3 +69,5 @@ home/wp-config.php
 home/wp-config-docker.php
 
 wordpress_backup.sql
+# Local snapshot of the VM (not tracked)
+well-vm/
