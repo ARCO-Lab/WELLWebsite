@@ -3,8 +3,18 @@ volumes:
   exports_data:
 
 networks:
+  # Pinned so the host firewall rule for PostgreSQL (README, "Host firewall") can name a
+  # fixed subnet. Only backend, worker and export_worker, all on internal_api, need the
+  # database. Unpinned, Docker hands out /24s from its pool in creation order, so
+  # recreating the networks could swap these two.
   front:
+    ipam:
+      config:
+        - subnet: 10.20.1.0/24
   internal_api:
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
 
 services:
   # --- WordPress + MySQL as you had ---
