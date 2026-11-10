@@ -24,6 +24,7 @@ def generate_export_job(self, job_id: str):
             logger.error("Export job not found: %s", job_id)
             return
 
+        artifact_path = None  # set once known, so a failed export can delete what it wrote
         try:
             job.status = "running"
             job.started_at = est_now()
@@ -66,6 +67,15 @@ def generate_export_job(self, job_id: str):
 
         except Exception as exc:
             logger.exception("Export job failed: %s", job_id)
+            # No row points at a failed export's file (the path is saved only on success), so the hourly cleanup
+            # would never find it: delete it now.
+            if artifact_path:
+                try:
+                    if os.path.exists(artifact_path):
+                        os.remove(artifact_path)
+                except OSError:
+                    logger.warning("Failed to remove the file of a failed export path=%s", artifact_path)
+                _remove_empty_job_folder(artifact_path)
             failed_job = db.session.get(ExportJob, job_id)
             if failed_job:
                 failed_job.status = "failed"

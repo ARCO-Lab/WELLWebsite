@@ -158,6 +158,26 @@ class CleanupTests(unittest.TestCase):
         with frozen_clock(FALL_BACK_DONE + dt.timedelta(minutes=61)):
             self.assertEqual(client.get("/api/exports/jobs/dst/download").status_code, 410)
 
+    def test_a_failed_export_deletes_the_file_it_wrote(self):
+        from tasks import exports as export_tasks
+        payload = {"domain": "sampling", "start": "2026-11-01T00:00:00", "end": "2026-11-02T00:00:00"}
+        self.db.session.add(self.ExportJob(id="broken", status="queued", domain="sampling", payload=payload,
+                                           estimated_rows=1))
+        self.db.session.commit()
+
+        def write_then_fail(payload, output_path, **kwargs):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            pathlib.Path(output_path).write_text("domain\n")
+            raise RuntimeError("database went away")
+
+        fail = mock.patch.object(export_tasks, "write_export_csv", side_effect=write_then_fail)
+        with fail, mock.patch.object(export_tasks, "create_app", return_value=self.app):
+            with self.assertRaises(RuntimeError):
+                export_tasks.generate_export_job("broken")
+        self.db.session.expire_all()
+        self.assertEqual(self.get("broken").status, "failed")
+        self.assertEqual(os.listdir(self.exports), [])  # neither the file nor its job folder is left
+
 
 if __name__ == "__main__":
     unittest.main()
