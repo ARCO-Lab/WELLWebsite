@@ -12,7 +12,7 @@ export TMPDIR=$T GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT
 git init -q --bare -b main "$T/remote.git"
 git clone -q "$T/remote.git" "$T/work" 2>/dev/null
 cd "$T/work" || exit 1
-mkdir -p dashboard/frontend dashboard/backend/app/db/migrations home/wp-includes wordpress
+mkdir -p dashboard/frontend dashboard/backend/app/db/migrations home/wp-includes
 for f in README.md dashboard/frontend/page.tsx dashboard/backend/app/x.py home/wp-includes/version.php docker-compose.yml; do echo 0 > "$f"; done
 cp "$ROOT/deploy.sh" .
 git add -A && git commit -qm init && git push -q origin HEAD:main
@@ -20,28 +20,44 @@ git add -A && git commit -qm init && git push -q origin HEAD:main
 # The VM's checkout
 git clone -q -b main "$T/remote.git" "$T/vm"
 
-# Stubs
+# Stubs. docker: `compose up` marks the stack as rebuilt; `compose ps -q <svc>` names a container "id-<svc>" that
+# reports 0 restarts. While $BAD_WORKER_SHA is checked out, service $MISSING has no container, and $CRASHING's
+# restart count reads 2 on the second look (a crash loop that Docker still shows as running). curl: answers
+# check-runs from $CHECKS_FILE (or fails if $API_DOWN), records health pings, and pages answer $HEALTH_CODE, 500
+# while $BAD_SHA is checked out, or $HEALTH_AFTER_REBUILD once the stack has been rebuilt.
 mkdir "$T/bin"
 cat > "$T/bin/docker" <<'EOF'
 #!/bin/sh
 echo "docker $*" >> "$STUB_LOG"
-[ "$1" = inspect ] && echo "${WORKER_RUNNING:-true}"
+bad_head() { [ -n "${BAD_WORKER_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_WORKER_SHA" ]; }
+case "$*" in
+  "compose up"*) touch "$T/rebuilt" ;;
+  "compose ps -q "*) if [ "$4" = "${MISSING:-}" ] && bad_head; then :; else echo "id-$4"; fi ;;
+  "inspect -f {{.RestartCount}} "*) echo 0 ;;
+  "inspect -f {{.State.Status}} {{.RestartCount}} "*)
+    if [ "$4" = "id-${CRASHING:-}" ] && bad_head; then echo "running 2"; else echo "running 0"; fi ;;
+esac
 exit 0
 EOF
 cat > "$T/bin/curl" <<'EOF'
 #!/bin/sh
 for a in "$@"; do
-  case "$a" in *check-runs*) cat "$CHECKS_FILE"; exit 0 ;; esac
+  case "$a" in
+    *check-runs*) [ -n "${API_DOWN:-}" ] && exit 22; cat "$CHECKS_FILE"; exit 0 ;;
+    http://hc.test/*) echo "ping $a" >> "$STUB_LOG"; exit 0 ;;
+  esac
 done
 case "$*" in
   *http_code*)
-    if [ -n "${BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_SHA" ]; then printf 500; else printf "${HEALTH_CODE:-200}"; fi ;;
+    if [ -n "${BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_SHA" ]; then printf 500
+    elif [ -n "${HEALTH_AFTER_REBUILD:-}" ] && [ -f "$T/rebuilt" ]; then printf "$HEALTH_AFTER_REBUILD"
+    else printf "${HEALTH_CODE:-200}"; fi ;;
 esac
 exit 0
 EOF
 chmod +x "$T/bin/docker" "$T/bin/curl"
-export DOCKER=$T/bin/docker CURL=$T/bin/curl STUB_LOG=$T/stub.log DEPLOY_LOG=$T/deploy.log DEPLOY_STATE=$T/state \
-  CHECKS_FILE=$T/checks.json DEPLOY_HEALTH_TRIES=2 DEPLOY_HEALTH_WAIT=0 VM=$T/vm
+export T DOCKER=$T/bin/docker CURL=$T/bin/curl STUB_LOG=$T/stub.log DEPLOY_LOG=$T/deploy.log DEPLOY_STATE=$T/state \
+  CHECKS_FILE=$T/checks.json DEPLOY_HEALTH_TRIES=2 DEPLOY_HEALTH_WAIT=0 DEPLOY_WORKER_WAIT=0 VM=$T/vm
 
 ci() { # ci <backend conclusion|pending> <dashboard conclusion|pending>
   python3 - "$1" "$2" > "$CHECKS_FILE" <<'EOF'
@@ -57,8 +73,11 @@ change() { # commit and push edits to the given paths
   (cd "$T/work" && for f in "$@"; do mkdir -p "$(dirname "$f")"; echo "$RANDOM" >> "$f"; done \
     && git add -A && git commit -qm "change $*" && git push -q origin HEAD:main)
 }
-sync_vm() { git -C "$T/vm" fetch -q && git -C "$T/vm" reset -q --hard origin/main; : > "$STUB_LOG"; rm -f "$DEPLOY_STATE"; }
-deploy() { (cd "$T/vm" && bash ./deploy.sh "$@") > "$T/out" 2>&1; echo $? > "$T/rc"; }
+sync_vm() {
+  git -C "$T/vm" fetch -q && git -C "$T/vm" reset -q --hard origin/main
+  : > "$STUB_LOG"; rm -f "$DEPLOY_STATE" "$DEPLOY_LOG" "$T/rebuilt"
+}
+deploy() { rm -f "$T/rebuilt"; (cd "$T/vm" && bash ./deploy.sh "$@") > "$T/out" 2>&1; echo $? > "$T/rc"; }
 head_is_remote() { [ "$(git -C "$T/vm" rev-parse HEAD)" = "$(git -C "$T/work" rev-parse HEAD)" ]; }
 ran() { grep -qF -- "$1" "$STUB_LOG"; }
 said() { grep -qF -- "$1" "$T/out"; }
@@ -74,10 +93,11 @@ sync_vm; deploy
 check "up to date: nothing runs" 'rc 0 && said "Already up to date" && [ ! -s "$STUB_LOG" ]'
 
 sync_vm; change dashboard/frontend/page.tsx; deploy
-check "frontend change: rebuilds only the dashboard" 'rc 0 && head_is_remote && ran "compose up -d --build --no-deps dashboard" && ! ran "backend"'
+check "frontend change: rebuilds only the dashboard, no worker check" 'rc 0 && head_is_remote && ran "compose up -d --build --no-deps dashboard" && ! ran "backend" && ! ran "compose ps"'
 
 sync_vm; change dashboard/backend/app/x.py; ci success success; deploy --auto
 check "--auto, CI passed: rebuilds backend, worker, export_worker" 'rc 0 && head_is_remote && ran "--no-deps backend worker export_worker"'
+check "backend change: checks both workers' containers" 'ran "compose ps -q worker" && ran "compose ps -q export_worker" && ran "inspect -f {{.State.Status}} {{.RestartCount}} id-export_worker"'
 
 sync_vm; change dashboard/backend/app/x.py; ci pending success; deploy --auto
 check "--auto, CI still running: waits, changes nothing" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && [ ! -s "$T/out" ]'
@@ -86,6 +106,17 @@ sync_vm; change dashboard/backend/app/x.py; ci failure success; deploy --auto
 check "--auto, CI failed: refuses and says so" 'rc 1 && ! head_is_remote && said "CI didn'"'"'t pass" && ! ran "compose"'
 deploy --auto
 check "--auto, CI failed: reports it only once" 'rc 0 && [ ! -s "$T/out" ]'
+
+sync_vm; change dashboard/backend/app/x.py; API_DOWN=1 deploy --auto
+check "--auto, GitHub API error: says so" 'rc 1 && said "couldn'"'"'t ask GitHub" && ! ran "compose"'
+API_DOWN=1 deploy --auto
+check "--auto, GitHub API error: reports it only once" 'rc 0 && [ ! -s "$T/out" ]'
+
+sync_vm; change dashboard/backend/app/x.py; echo 'not json' > "$CHECKS_FILE"; deploy --auto
+check "a command failing unexpectedly still logs FAILED with the line" 'rc 1 && said "FAILED: line " && grep -q "FAILED: line " "$DEPLOY_LOG" && ! ran "compose"'
+
+sync_vm; change dashboard/frontend/page.tsx; DEPLOY_REMOTE=nowhere DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy
+check "fetch fails: logs FAILED and pings /fail" 'rc 1 && said "FAILED: couldn'"'"'t fetch nowhere/main" && ran "ping http://hc.test/x/fail" && ! ran "compose"'
 
 sync_vm; change dashboard/backend/app/db/migrations/2026-12-01_x.sql; ci success success; deploy --auto
 check "--auto, new migration: held" 'rc 0 && ! head_is_remote && said "HELD" && said "migration" && ! ran "compose"'
@@ -99,24 +130,57 @@ sync_vm; change home/wp-includes/version.php; ci success success; deploy --auto
 check "--auto, WordPress core update: held" 'rc 0 && ! head_is_remote && said "WordPress core"'
 
 sync_vm; change docker-compose.yml; deploy
-check "by hand, docker-compose.yml change: rebuilds everything" 'rc 0 && head_is_remote && ran "compose up -d --build" && ! ran "--no-deps"'
+check "by hand, docker-compose.yml change: rebuilds everything, checks both workers" 'rc 0 && head_is_remote && ran "compose up -d --build" && ! ran "--no-deps" && ran "compose ps -q worker" && ran "compose ps -q export_worker"'
 
 sync_vm; change README.md; deploy
 check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! ran "compose"'
 
-sync_vm; change dashboard/frontend/page.tsx; deploy --dry-run
+sync_vm; (cd "$T/work" && git mv dashboard/frontend/page.tsx dashboard/backend/app/page.tsx && git commit -qm move && git push -q origin HEAD:main); deploy
+check "a file moved between services: both sides rebuild" 'rc 0 && ran "--no-deps dashboard backend worker export_worker"'
+
+sync_vm; change dashboard/frontend/page.tsx; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --dry-run
 check "--dry-run: says what it would do, changes nothing" 'rc 0 && ! head_is_remote && said "Would deploy" && said "services: dashboard" && [ ! -s "$STUB_LOG" ]'
 
-sync_vm; echo dirty >> "$T/vm/README.md"; change dashboard/frontend/page.tsx; deploy
-check "local edits on the VM: refuses" 'rc 1 && said "local changes" && ! ran "compose"'
+sync_vm; echo dirty >> "$T/vm/README.md"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --dry-run --auto
+check "--dry-run that fails: no log, state or ping" 'rc 1 && said "FAILED" && [ ! -e "$DEPLOY_LOG" ] && [ ! -e "$DEPLOY_STATE" ] && [ ! -s "$STUB_LOG" ]'
 git -C "$T/vm" checkout -q -- README.md
 
-sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx
-export BAD_SHA; BAD_SHA=$(git -C "$T/work" rev-parse HEAD); deploy; unset BAD_SHA
-check "unhealthy after deploy: rolls back to the previous commit" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "rolling back" && said "healthy again"'
+sync_vm; echo dirty >> "$T/vm/README.md"; change dashboard/frontend/page.tsx; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "local edits on the VM: refuses and pings /fail" 'rc 1 && said "local changes" && ! ran "compose" && ran "ping http://hc.test/x/fail"'
+: > "$STUB_LOG"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "--auto, local edits: reported only once" 'rc 0 && [ ! -s "$T/out" ] && [ ! -s "$STUB_LOG" ]'
+git -C "$T/vm" checkout -q -- README.md
 
-sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx; HEALTH_CODE=502 deploy
+sync_vm; (cd "$T/vm" && echo vm > vm-only && git add vm-only && git commit -qm "commit made on the VM"); change README.md; deploy --auto
+check "--auto, not a fast-forward: refuses" 'rc 1 && said "isn'"'"'t a fast-forward" && ! ran "compose"'
+deploy --auto
+check "--auto, not a fast-forward: reported only once" 'rc 0 && [ ! -s "$T/out" ]'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx
+export BAD_SHA; BAD_SHA=$(git -C "$T/work" rev-parse HEAD); deploy
+check "unhealthy after deploy: rolls back to the previous commit" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "rolling back" && said "healthy again"'
+: > "$STUB_LOG"; ci success success; deploy --auto
+check "--auto after a rollback: doesn't redeploy the rolled-back commit" 'rc 0 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && [ ! -s "$T/out" ] && ! ran "compose"'
+unset BAD_SHA; change dashboard/frontend/page.tsx; deploy --auto
+check "--auto after a rollback: a newer commit deploys" 'rc 0 && head_is_remote && ran "compose up"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
+BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=export_worker deploy
+check "a rebuilt worker crash-looping (restart count rising): rolls back" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "export_worker container didn'"'"'t stay up" && said "healthy again"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
+BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) MISSING=worker deploy
+check "a rebuilt worker with no container: rolls back" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "no worker container" && said "healthy again"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx; HEALTH_AFTER_REBUILD=502 deploy
 check "still unhealthy after rollback: says a person is needed" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "STILL unhealthy"'
+
+sync_vm; change dashboard/frontend/page.tsx; ci success success; HEALTH_CODE=502 deploy --auto
+check "--auto, site already unhealthy: doesn't deploy, says so" 'rc 1 && ! head_is_remote && said "already unhealthy" && ! ran "compose"'
+HEALTH_CODE=502 deploy --auto
+check "--auto, site already unhealthy: reported only once" 'rc 0 && [ ! -s "$T/out" ]'
+HEALTH_CODE=502 deploy
+check "by hand, site already unhealthy: deploys anyway, no rollback" 'rc 1 && head_is_remote && said "deploying anyway" && said "still unhealthy"'
 
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]
