@@ -4,6 +4,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -11,7 +12,9 @@ import unittest
 import schedule
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-from utils.jobs import download_status, run_bounded, run_in_background  # noqa: E402
+from utils.jobs import (  # noqa: E402
+    download_status, load_uploaded_months, month_due_for_upload, record_uploaded_month, run_bounded, run_in_background,
+)
 
 
 class RunInBackgroundTests(unittest.TestCase):
@@ -137,6 +140,65 @@ class DownloadStatusTests(unittest.TestCase):
 
     def test_ignores_output_text_inside_other_lines(self):
         self.assertIsNone(download_status("inject_sampling.py stdout: something OUTPUT: x\n"))
+
+
+def toronto():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("America/Toronto")
+    except Exception:
+        raise unittest.SkipTest("no time zone database on this machine")
+
+
+def utc(*args):
+    return dt.datetime(*args, tzinfo=dt.timezone.utc)
+
+
+class MonthlyUploadTests(unittest.TestCase):
+    def due(self, when_utc, uploaded=()):
+        return month_due_for_upload(when_utc.astimezone(toronto()), set(uploaded))
+
+    def test_uploads_last_month_at_2am_toronto_on_the_1st(self):
+        self.assertEqual(self.due(utc(2026, 11, 1, 7, 0)), (2026, 10))  # 02:00 EST
+        self.assertEqual(self.due(utc(2026, 7, 1, 6, 0)), (2026, 6))  # 02:00 EDT
+
+    def test_not_at_2am_utc_when_toronto_is_still_in_the_old_month(self):
+        """02:00 UTC on the 1st is 21:00/22:00 Toronto on the last day: the month's last hours aren't over."""
+        self.assertIsNone(self.due(utc(2026, 11, 1, 2, 0)))
+        self.assertIsNone(self.due(utc(2026, 7, 1, 2, 0)))
+
+    def test_only_in_the_2am_hour(self):
+        self.assertIsNone(self.due(utc(2026, 11, 1, 6, 0)))  # 01:00 EST
+        self.assertIsNone(self.due(utc(2026, 11, 1, 8, 0)))  # 03:00 EST
+
+    def test_a_missed_or_failed_upload_is_tried_again_the_next_days(self):
+        self.assertEqual(self.due(utc(2026, 11, 2, 7, 0), uploaded={"2026-09"}), (2026, 10))
+        self.assertEqual(self.due(utc(2026, 11, 20, 7, 0), uploaded={"2026-09"}), (2026, 10))
+
+    def test_an_uploaded_month_is_not_sent_again(self):
+        self.assertIsNone(self.due(utc(2026, 11, 1, 7, 0), uploaded={"2026-10"}))
+        self.assertIsNone(self.due(utc(2026, 11, 2, 7, 0), uploaded={"2026-10"}))
+
+    def test_january_uploads_december_of_the_year_before(self):
+        self.assertEqual(self.due(utc(2027, 1, 1, 7, 0)), (2026, 12))
+
+    def test_record_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "uploaded_months.json")
+            self.assertEqual(load_uploaded_months(path), set())  # no file yet
+            record_uploaded_month(path, 2026, 10)
+            record_uploaded_month(path, 2026, 11)
+            record_uploaded_month(path, 2026, 10)
+            self.assertEqual(load_uploaded_months(path), {"2026-10", "2026-11"})
+            self.assertEqual(os.listdir(d), ["uploaded_months.json"])  # no temp file left behind
+
+    def test_a_damaged_record_raises_instead_of_reading_as_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "uploaded_months.json")
+            with open(path, "w") as f:
+                f.write('{"uploaded_mon')
+            with self.assertRaises(ValueError):
+                load_uploaded_months(path)
 
 
 if __name__ == "__main__":

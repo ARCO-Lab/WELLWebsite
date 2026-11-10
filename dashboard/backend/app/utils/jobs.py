@@ -1,4 +1,5 @@
 """Helpers for the worker's scheduler (scripts/scheduler_temp.py). Pure: no database or vendor settings."""
+import json
 import os
 import re
 import signal
@@ -84,3 +85,48 @@ def download_status(stdout):
     """
     found = re.findall(r"^OUTPUT: (\S+)\s*$", stdout or "", flags=re.MULTILINE)
     return found[-1] if found else None
+
+
+def previous_month(now):
+    """(year, month) of the month before `now`'s month."""
+    return (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+
+
+def month_due_for_upload(now, uploaded, hour=2):
+    """The (year, month) the monthly Borealis upload should send now, or None.
+
+    `now` is site time (America/Toronto), the same wall clock recorded_at is stored in, so a month counts as
+    over only once it has ended there. The check runs every hour and acts only in `hour`, once the month's last
+    readings are in. `uploaded` holds the months already sent ("2026-10"), so a missed or failed upload is tried
+    again the next day until it succeeds, and a month that succeeded is never sent twice.
+    """
+    if now.hour != hour:
+        return None
+    year, month = previous_month(now)
+    return None if month_key(year, month) in uploaded else (year, month)
+
+
+def month_key(year, month):
+    return f"{year:04d}-{month:02d}"
+
+
+def load_uploaded_months(path):
+    """The months recorded in `path` as uploaded; empty if the file doesn't exist yet.
+
+    A file that can't be read raises instead of counting as empty, so a damaged record can't cause every
+    month to be uploaded again.
+    """
+    try:
+        with open(path) as f:
+            return set(json.load(f).get("uploaded_months", []))
+    except FileNotFoundError:
+        return set()
+
+
+def record_uploaded_month(path, year, month):
+    """Add (year, month) to the record in `path`, written atomically so a crash can't leave half a file."""
+    months = load_uploaded_months(path) | {month_key(year, month)}
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump({"uploaded_months": sorted(months)}, f, indent=2)
+    os.replace(tmp, path)

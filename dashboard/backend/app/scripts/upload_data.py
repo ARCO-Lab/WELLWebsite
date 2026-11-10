@@ -13,6 +13,7 @@ import pandas as pd
 import csv
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from db.database import db
 from db.models import SensorMeasurement
@@ -76,7 +77,9 @@ def get_logger_label(station_id):
     return SENSOR_FILTER_CONFIG["gauges"]["sites"].get(str(station_id), f"Logger {station_id}")
 
 def get_last_month_range():
-    now = datetime.now()
+    # recorded_at is naive Toronto wall-clock time, so "last month" is measured there too, not on the
+    # container's UTC clock, which turns to the next month at 19:00 or 20:00 Toronto time on the last day.
+    now = datetime.now(ZoneInfo("America/Toronto")).replace(tzinfo=None)
     first_of_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     last_month_end = first_of_this_month
     # Go to the first day of last month
