@@ -15,6 +15,11 @@ def create_celery_app() -> Celery:
         timezone="UTC",
         enable_utc=True,
         imports=("tasks.exports",),
+        # Run by the beat scheduler embedded in export_worker (`celery ... worker -B` in docker-compose.yml):
+        # delete export files whose download window (EXPORT_FILE_TTL_MINUTES) has passed.
+        beat_schedule={
+            "cleanup-expired-exports": {"task": "exports.cleanup_expired_artifacts", "schedule": 60 * 60},
+        },
     )
     return celery
 
