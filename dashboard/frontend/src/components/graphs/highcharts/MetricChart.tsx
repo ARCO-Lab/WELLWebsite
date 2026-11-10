@@ -4,6 +4,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
+// Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
+import 'highcharts/modules/accessibility';
 
 interface SensorData {
   measurement_type: string;
@@ -167,6 +169,9 @@ const MetricChart: React.FC<MetricChartProps> = ({
     });
   }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
 
+  const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
+    && chartOptions.series.every((s: { data?: unknown[] }) => !s.data?.length);
+
   return (
     <div className="relative">
       <HighchartsReact
@@ -182,6 +187,12 @@ const MetricChart: React.FC<MetricChartProps> = ({
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" aria-hidden="true" />
             Loading data…
           </div>
+        </div>
+      )}
+      {/* A chart with nothing to draw says so instead of showing empty axes (e.g. Logger 5, whose water sensor is dead) */}
+      {isEmpty && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <p className="rounded-md bg-white/90 px-3 py-1.5 text-sm text-muted">No readings in this period</p>
         </div>
       )}
       {/* e.g. "This range has 1,451,713 readings, more than …": the API explains what to do instead */}

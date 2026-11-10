@@ -36,6 +36,14 @@ const useFilteredData = (
     useEffect(() => {
         if (!startDate || !endDate) return;
 
+        // Nothing selected: nothing to fetch (the API would answer 400 for a request without groups).
+        if (!activeGroups.weather && !activeGroups.quality && !activeGroups.gauges) {
+            setData([]);
+            setError(null);
+            setLoading(false);
+            return;
+        }
+
         // A newer range (or unmount) cancels this request, and its response is ignored if it still arrives.
         const controller = new AbortController();
         let stale = false;

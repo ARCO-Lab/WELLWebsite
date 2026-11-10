@@ -1,146 +1,46 @@
-// This file defines the WeatherMetrics component for displaying metric cards for weather data.
-// It supports horizontal scrolling, metric filtering, and dynamic value display.
+// Latest weather station readings for the metrics selected under Filters (Latest Data panel and its modal).
 
-import React, { useRef, useState, useEffect } from "react";
+import React from "react";
 import { Thermometer, Droplets, Wind, CloudRain, Compass, Snowflake, Gauge, Sun, Waves, TreePine, Navigation } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/animations/card";
+import MetricGroup, { compassPoint, type MetricRow } from "./MetricList";
 
-interface WeatherMetric {
-  label: string;
-  key: string; 
-}
-
-const metrics: WeatherMetric[] = [
-  { label: "Air Temperature", key: "Air Temperature" },
-  { label: "Relative Humidity", key: "Relative Humidity" },
-  { label: "Wind Speed", key: "Wind Speed" },
-  { label: "Gust Speed", key: "Gust Speed" },
-  { label: "Wind Direction", key: "Wind Direction" },
-  { label: "Dew Point", key: "Dew Point" },
-  { label: "Rainfall", key: "Rain" },
-  { label: "Pressure", key: "Pressure" },
-  { label: "Solar Radiation", key: "Solar Radiation" },
-  { label: "Water Content", key: "Water Content" },
-  { label: "Soil Temperature", key: "Soil Temperature" },
+// label = the filter's name for the metric; key = measurement_type in the API
+const metricMap = [
+  { label: "Air Temperature", key: "Air Temperature", icon: Thermometer, color: "text-mcmaster-maroon" },
+  { label: "Relative Humidity", key: "Relative Humidity", icon: Droplets, color: "text-mcmaster-gold" },
+  { label: "Wind Speed", key: "Wind Speed", icon: Wind, color: "text-mcmaster-grey" },
+  { label: "Gust Speed", key: "Gust Speed", icon: Navigation, color: "text-primary" },
+  { label: "Wind Direction", key: "Wind Direction", icon: Compass, color: "text-mcmaster-maroon" },
+  { label: "Dew Point", key: "Dew Point", icon: Snowflake, color: "text-mcmaster-gold" },
+  { label: "Rainfall", key: "Rain", icon: CloudRain, color: "text-mcmaster-grey" },
+  { label: "Pressure", key: "Pressure", icon: Gauge, color: "text-primary" },
+  { label: "Solar Radiation", key: "Solar Radiation", icon: Sun, color: "text-mcmaster-maroon" },
+  { label: "Water Content", key: "Water Content", icon: Waves, color: "text-mcmaster-gold" },
+  { label: "Soil Temperature", key: "Soil Temperature", icon: TreePine, color: "text-mcmaster-grey" },
 ];
+
+// "152° SSE" reads better than "151.62 °"
+const windDirection = (value: number) => ({ value: `${Math.round(value)}°`, unit: compassPoint(value) });
 
 const WeatherMetrics = ({
   activeKeys,
-  activeGroups,
   metrics: weatherData = [],
   loading = false,
 }: {
   activeKeys: string[];
-  activeGroups: { weather: boolean; quality: boolean; gauges: boolean };
+  activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
   metrics?: any[];
   loading?: boolean;
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [scrollPosition, setScrollPosition] = useState(0);
-  const [isPaused, setIsPaused] = useState(false);
+  const rows: MetricRow[] = metricMap
+    .filter(({ label }) => activeKeys.includes(label))
+    .map((metric) => ({
+      ...metric,
+      reading: weatherData.find((d) => d.group_type === "Weather" && d.measurement_type === metric.key),
+      format: metric.key === "Wind Direction" ? windDirection : undefined,
+    }));
 
-  const metricMap = [
-    { label: "Air Temperature", key: "Air Temperature", icon: Thermometer, color: "text-mcmaster-maroon" },
-    { label: "Relative Humidity", key: "Relative Humidity", icon: Droplets, color: "text-mcmaster-gold" },
-    { label: "Wind Speed", key: "Wind Speed", icon: Wind, color: "text-mcmaster-grey" },
-    { label: "Gust Speed", key: "Gust Speed", icon: Navigation, color: "text-primary" },
-    { label: "Wind Direction", key: "Wind Direction", icon: Compass, color: "text-mcmaster-maroon" },
-    { label: "Dew Point", key: "Dew Point", icon: Snowflake, color: "text-mcmaster-gold" },
-    { label: "Rainfall", key: "Rain", icon: CloudRain, color: "text-mcmaster-grey" },
-    { label: "Pressure", key: "Pressure", icon: Gauge, color: "text-primary" },
-    { label: "Solar Radiation", key: "Solar Radiation", icon: Sun, color: "text-mcmaster-maroon" },
-    { label: "Water Content", key: "Water Content", icon: Waves, color: "text-mcmaster-gold" },
-    { label: "Soil Temperature", key: "Soil Temperature", icon: TreePine, color: "text-mcmaster-grey" }
-  ];
-
-  const filteredMetrics = metricMap.filter(({ label }) => 
-    activeKeys.includes(label)
-  );
-  const CARD_TRACK_WIDTH = 240;
-
-  // Create infinite scrolling effect by duplicating metrics
-  const infiniteMetrics = [...filteredMetrics, ...filteredMetrics, ...filteredMetrics];
-
-  // Hooks first, before the loading return below: React needs the same hooks in the same order on every
-  // render, and returning early before this one changed the count when `loading` flipped.
-  useEffect(() => {
-    // Attach horizontal scroll handler for mouse wheel
-    const container = containerRef.current;
-    if (!container) return;
-
-    const handleScroll = (e: WheelEvent) => {
-      e.preventDefault();
-      setScrollPosition(prev => {
-        const newPos = prev + e.deltaX * 0.5;
-        // Adjust width calculation for new card size
-        return Math.max(0, Math.min(newPos, filteredMetrics.length * CARD_TRACK_WIDTH));
-      });
-    };
-
-    container.addEventListener('wheel', handleScroll, { passive: false });
-    return () => container.removeEventListener('wheel', handleScroll);
-  }, [filteredMetrics.length, loading]); // re-attach once the cards replace the loading skeleton
-
-  if (loading) {
-    return (
-      <div className="space-y-3">
-        {[...Array(4)].map((_, i) => (
-          <div key={i} className="h-16 bg-muted/20 rounded animate-pulse" />
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <h4 className="font-poppins font-semibold text-sm text-primary">Weather Metrics</h4>
-      <div 
-        ref={containerRef}
-        className="relative overflow-hidden"
-        onMouseEnter={() => setIsPaused(true)}
-        onMouseLeave={() => setIsPaused(false)}
-      >
-        <div 
-          className={`flex space-x-3 ${isPaused ? '' : 'animate-scroll'}`}
-          style={{
-            // Adjust width calculation for new card size
-            width: `${filteredMetrics.length * CARD_TRACK_WIDTH}px`,
-            transform: `translateX(-${scrollPosition}px)`
-          }}
-        >
-          {infiniteMetrics.map((item, index) => {
-
-            const Icon = item.icon;
-            const entry = weatherData.find((d) => d.measurement_type === item.key);
-            const value = entry?.value?.toFixed(2) ?? "--";
-            const unit = entry?.unit ?? "";
-            
-            return (
-              <Card 
-                key={`${item.key}-${index}`} 
-                  className="min-w-[220px] border border-input-border hover:shadow-sm transition-all duration-200 shrink-0 sm:min-w-[240px]"
-              >
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="flex items-center space-x-2">
-                      <Icon className={`h-4 w-4 ${item.color}`} />
-                      <span className="mcmaster-body font-medium text-sm">{item.label}</span>
-                    </div>
-                    <div className="text-right">
-                      <span className="font-poppins font-semibold text-lg text-primary">
-                        {value}
-                      </span>
-                      <span className="mcmaster-notes text-muted ml-1 text-xs">{unit}</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
+  return <MetricGroup title="Weather Metrics" sections={[{ key: "weather", rows }]} loading={loading} />;
 };
 
 export default WeatherMetrics;
