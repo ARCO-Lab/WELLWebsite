@@ -56,6 +56,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({ creekKey, subFilters, metri
       loading={loading}
       staleAfterHours={null}
       timeLabel="sampled"
+      dateOnly
       emptyHint="Pick metrics under Filters to see the latest samples."
     />
   );

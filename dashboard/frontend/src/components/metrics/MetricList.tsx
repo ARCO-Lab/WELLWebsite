@@ -35,6 +35,7 @@ interface MetricGroupProps {
   // Readings older than this are marked "last reading …"; null for grab samples, which are always old.
   staleAfterHours?: number | null;
   timeLabel?: string; // e.g. "as of" or "sampled"
+  dateOnly?: boolean; // grab samples carry a date, not a meaningful time
   emptyHint?: string;
 }
 
@@ -58,15 +59,18 @@ function siteNowMs(): number {
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
 }
 
-// Formats a site wall-clock time: "11:30 AM" today, "Nov 8, 9:10 PM" this year, "Oct 6, 2025" before that.
-export function formatSiteTime(value: string | null | undefined): string | null {
+// Formats a site wall-clock time: "11:30 AM" today, "Nov 8, 9:10 PM" this year, "Oct 6, 2025" before that
+// (or always the date, for samples).
+export function formatSiteTime(value: string | null | undefined, dateOnly = false): string | null {
   const ms = value ? wallClockMs(value) : null;
   if (ms == null) return null;
   const now = new Date(siteNowMs());
   const at = new Date(ms);
   const sameDay = at.getUTCFullYear() === now.getUTCFullYear() && at.getUTCMonth() === now.getUTCMonth()
     && at.getUTCDate() === now.getUTCDate();
-  const options: Intl.DateTimeFormatOptions = sameDay
+  const options: Intl.DateTimeFormatOptions = dateOnly
+    ? { month: "short", day: "numeric", year: "numeric" }
+    : sameDay
     ? { hour: "numeric", minute: "2-digit" }
     : at.getUTCFullYear() === now.getUTCFullYear()
       ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
@@ -134,6 +138,7 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
   loading = false,
   staleAfterHours = 3,
   timeLabel = "as of",
+  dateOnly = false,
   emptyHint = "Pick metrics under Filters to see their latest values.",
 }) => {
   // The newest reading in the group, for the "as of …" line.
@@ -149,7 +154,7 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <h3 className="font-poppins text-sm font-semibold text-primary">{title}</h3>
         {!loading && newest && (
-          <p className="text-[11px] text-muted">{timeLabel} {formatSiteTime(newest)}</p>
+          <p className="text-[11px] text-muted">{timeLabel} {formatSiteTime(newest, dateOnly)}</p>
         )}
       </div>
       {loading ? (
