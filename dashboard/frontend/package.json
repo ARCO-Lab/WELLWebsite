@@ -27,15 +27,15 @@
     "date-fns": "^4.1.0",
     "framer-motion": "^12.16.0",
     "google-map-react": "^2.2.5",
-    "highcharts": "^12.2.0",
+    "highcharts": "^12.6.2",
     "highcharts-react-official": "^3.2.2",
     "lucide-react": "^0.534.0",
-    "next": "15.3.2",
-    "react": "^19.0.0",
+    "next": "15.5.29",
+    "react": "~19.1.10",
     "react-chartjs-2": "^5.3.0",
     "react-datepicker": "^8.3.0",
     "react-day-picker": "^9.8.1",
-    "react-dom": "^19.0.0",
+    "react-dom": "~19.1.10",
     "tailwind-merge": "^3.3.1",
     "tailwindcss-animate": "^1.0.7"
   },
@@ -48,8 +48,11 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "15.3.2",
+    "eslint-config-next": "15.5.29",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "postcss": "^8.5.23"
   }
 }
