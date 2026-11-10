@@ -128,6 +128,21 @@ class Paging(unittest.TestCase):
         rows = quality_rows(points, "4501", UTC)
         self.assertEqual(len(rows), 4)
 
+    def test_more_false_with_values_left_keeps_paging(self):
+        # Seen live: a long request's last page said more=false although count < total.
+        pages = {"2026-11-09 05:00:00": {"data": [point("2026-11-09 05:00:00", 125001), point("2026-11-09 05:10:00", 125001)],
+                                         "info": {"more": False, "count": 2, "total": 3, "lastDataPointTimestamp": "2026-11-09 05:10:00"}},
+                 "2026-11-09 05:10:00": {"data": [point("2026-11-09 05:10:00", 125001), point("2026-11-09 05:20:00", 125001)],
+                                         "info": {"more": False, "count": 2, "total": 2, "lastDataPointTimestamp": "2026-11-09 05:20:00"}}}
+        calls = []
+
+        def get_page(frm, to):
+            calls.append(frm)
+            return pages[frm]
+        points = bf.fetch_points(get_page, self.start, self.end)
+        self.assertEqual(calls, ["2026-11-09 05:00:00", "2026-11-09 05:10:00"])
+        self.assertEqual(len(quality_rows(points, "4501", UTC)), 3)
+
     def test_paging_that_doesnt_advance_stops(self):
         def get_page(frm, to):
             return {"data": [], "info": {"more": True, "lastDataPointTimestamp": frm}}

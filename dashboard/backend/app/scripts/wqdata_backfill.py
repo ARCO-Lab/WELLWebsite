@@ -18,8 +18,8 @@ wall-clock times, so on the night clocks go back the repeated hour's readings sh
 the first one and can't be stored; they aren't counted as missing. --check also compares the values
 of readings already stored.
 
-WQData throttles bursts, so requests are paced PAUSE seconds apart (a day is one request of about
-2,700 values; longer responses are paged). Inserts use ON CONFLICT DO NOTHING, so running it twice is
+WQData throttles bursts, so requests are paced PAUSE seconds apart. A day (at most about 2,700 values)
+fits in one response; longer responses are paged (see fetch_points). Inserts use ON CONFLICT DO NOTHING, so running it twice is
 harmless. The ids of inserted rows are saved to logs/wqdata-backfill-<timestamp>.ids; to undo a run,
 delete those ids from sensor_measurements.
 """
@@ -88,9 +88,11 @@ class WQData:
 def fetch_points(get_page, start: dt.datetime, end: dt.datetime) -> list:
     """Every WQData point in [start, end) (aware datetimes), following WQData's paging.
 
-    When a response is cut off (about 5,000 values), it says info.more and gives the time of its last
-    point; the next request starts at that point, not after it, so a point whose values were split
-    between two pages is read whole. The repeated point is merged by quality_rows.
+    A response cut off at about 5,000-7,000 values gives the time of its last point
+    (info.lastDataPointTimestamp), and the next request starts at that point, not after it, so a point
+    whose values were split between two pages is read whole (quality_rows merges the repeat). WQData's
+    info.more isn't reliable on its own: a 14-day request ended with more=false three days early. So
+    paging only stops when a response holds every value it says the range has (info.count >= info.total).
     """
     to = (end - dt.timedelta(seconds=1)).astimezone(UTC).strftime(FMT)
     frm = start.astimezone(UTC).strftime(FMT)
@@ -99,7 +101,8 @@ def fetch_points(get_page, start: dt.datetime, end: dt.datetime) -> list:
         body = get_page(frm, to)
         points.extend(body.get("data") or [])
         info = body.get("info") or {}
-        if not info.get("more"):
+        count, total = info.get("count"), info.get("total")
+        if not info.get("more") and (count is None or total is None or count >= total):
             return points
         last = info.get("lastDataPointTimestamp")
         if not last or last <= frm:   # same fixed format, so string order is time order
