@@ -34,9 +34,11 @@ interface Props {
 }
 
 const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen, data, loading = false, error = null, }: Props) => {
-  // Map frontend metric labels to backend keys if needed
-  const mappedSubFilters = subFilters.quality.map(
-    label => QUALITY_METRIC_MAP[label] || label
+  // Map frontend metric labels to backend keys if needed. Memoized so the chart doesn't rebuild its series
+  // on every page re-render.
+  const mappedSubFilters = useMemo(
+    () => subFilters.quality.map(label => QUALITY_METRIC_MAP[label] || label),
+    [subFilters.quality]
   );
 
   // Filter data for the "Quality" group

@@ -96,11 +96,11 @@ const Header = () => {
             {/* Center: Titles */}
             <div className="w-full px-4 pt-1 text-center sm:px-6 lg:px-40 lg:pt-0">
               {/* School and project titles with links */}
-              <h2
+              <p
                 className="text-primary"
                 style={{
                   fontWeight: 600,
-                  fontSize: "1.36em",
+                  fontSize: "clamp(0.95rem, 0.6rem + 1.6vw, 1.36rem)",
                   lineHeight: 1.6,
                   letterSpacing: "1px",
                   margin: 0,
@@ -112,12 +112,12 @@ const Header = () => {
                 <a href="https://sees.mcmaster.ca/" className="hover:text-primary transition-colors">
                   School of Earth, Environment & Society
                 </a>
-              </h2>
+              </p>
               <h1
                 className="text-black"
                 style={{
                   fontWeight: 600,
-                  fontSize: "2.35em",
+                  fontSize: "clamp(1.45rem, 0.9rem + 2.9vw, 2.35rem)",
                   lineHeight: 1.2631578947,
                   letterSpacing: "1px",
                   margin: 0,

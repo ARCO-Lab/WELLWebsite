@@ -1,0 +1,40 @@
+# Keeps the build context to what the Dockerfile needs (package files, src/,
+# public/, scripts/ and the config files), so builds are small and don't pick
+# up local-only files.
+
+# Secrets. The dashboard container gets its runtime values from docker-compose
+# (env_file and environment) and its build-time values from build args, so env
+# files must not be copied into the build.
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# Installed and built in the image itself
+node_modules/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+# Copied from node_modules by scripts/copy-maplibre-worker.mjs during the build
+public/maplibre/
+
+# Logs, editors, OS and git files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.git/
+.gitignore
+.vercel/
+Makefile
+Dockerfile
+.dockerignore
