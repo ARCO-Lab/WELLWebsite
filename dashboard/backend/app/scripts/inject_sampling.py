@@ -61,6 +61,11 @@ def inject_new_sampling_data(file_path, return_only=False):
         if stats["unknown_sites"]:
             print(f"[WARN] Site names matching no known site were stored as site 7 (Unknown): "
                   f"{sorted(stats['unknown_sites'])}")
+        if stats["collisions"]:
+            print(f"[WARN] {len(stats['collisions'])} rows were not imported because a different site name maps to "
+                  f"the same site (add the names to SITE_ID_MAP in utils/sampling_rows.py), e.g.:")
+            for kept, dropped, measurement, when in stats["collisions"][:5]:
+                print(f"[WARN]   kept {kept!r}, dropped {dropped!r}: {measurement} on {when:%Y-%m-%d}")
         return rows
 
     except Exception as e:

@@ -50,6 +50,14 @@ class RowsFromEntriesTests(unittest.TestCase):
         self.assertEqual([r["value"] for r in rows], [1.0, 7.1])
         self.assertEqual(stats["duplicates"], 1)
 
+    def test_different_names_mapping_to_one_site_are_reported_as_collisions(self):
+        rows, stats = rows_from_entries([entry(site="Mystery Bridge"), entry(site="Other Lane"),
+                                         entry(site="Mystery Bridge")], log=lambda *_: None)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(stats["duplicates"], 1)  # the same name again
+        self.assertEqual([c[:2] for c in stats["collisions"]], [("Mystery Bridge", "Other Lane")])
+        self.assertEqual(stats["unknown_sites"], {"Mystery Bridge"})  # only names whose rows were kept
+
     def test_counts_failures_and_collects_unknown_sites(self):
         logs = []
         rows, stats = rows_from_entries([entry(when="garbage"), entry(site="Mystery Bridge")], log=logs.append)

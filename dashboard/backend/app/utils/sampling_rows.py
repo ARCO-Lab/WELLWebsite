@@ -111,11 +111,15 @@ def entry_to_row(entry):
 def rows_from_entries(entries, log=print):
     """Rows for every entry that parses, keeping the first of any rows that share the unique key.
 
-    Returns (rows, stats); stats has the counts `failed` and `duplicates` (rows in the file that repeat
-    a key) and `unknown_sites`, the site names that matched nothing and were stored as "Unknown".
+    Returns (rows, stats):
+    - `failed`: entries that couldn't be parsed;
+    - `duplicates`: rows that repeat an earlier row of the file (same site name, measurement and date);
+    - `collisions`: rows dropped because a *different* site name maps to the same site, e.g. two
+      unlisted sites that both become site 7 ("Unknown"), as (kept name, dropped name, measurement, date);
+    - `unknown_sites`: names that matched no known site and whose rows were kept (stored as site 7).
     """
-    rows, seen = [], set()
-    stats = {"failed": 0, "duplicates": 0, "unknown_sites": set()}
+    rows, seen = [], {}
+    stats = {"failed": 0, "duplicates": 0, "collisions": [], "unknown_sites": set()}
     for entry in entries:
         try:
             row = entry_to_row(entry)
@@ -123,12 +127,16 @@ def rows_from_entries(entries, log=print):
             stats["failed"] += 1
             log(f"[ERROR] Failed to parse sampling entry: {e} | {entry}")
             continue
-        if row["site_id"] == str(SITE_ID_MAP["Unknown"]):
-            stats["unknown_sites"].add(str(entry.get("site_id")))
+        name = str(entry.get("site_id"))
         key = tuple(row[k] for k in KEY)
         if key in seen:
-            stats["duplicates"] += 1
+            if seen[key] == name:
+                stats["duplicates"] += 1
+            else:
+                stats["collisions"].append((seen[key], name, row["measurement_type"], row["recorded_at"]))
             continue
-        seen.add(key)
+        seen[key] = name
         rows.append(row)
+        if row["site_id"] == str(SITE_ID_MAP["Unknown"]):
+            stats["unknown_sites"].add(name)
     return rows, stats
