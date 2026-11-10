@@ -84,6 +84,32 @@ Cron orchestrates all scheduled tasks:
 - **Exports**: Nightly CSV exports to Borealis and SharePoint with checksum verification and logging
 - **Health checks**: Readiness endpoints for external monitors
 
+### Deploying
+
+The VM runs `main`. On the VM, `./deploy.sh`:
+- pulls `main`;
+- rebuilds only the services whose files changed:
+  - `dashboard/frontend/` → `dashboard`;
+  - `dashboard/backend/` → `backend`, `worker`, `export_worker`;
+  - `wordpress/` → `wordpress`;
+  - `docker-compose.yml` → everything;
+  - `home/` needs nothing: it's bind-mounted, so it's live once pulled.
+- checks the site: `/api/latest`, the dashboard and WordPress home pages, and that the worker is running;
+- rolls back to the previous commit if any check fails.
+
+Each run is logged in `deploy.log`; `./deploy.sh --dry-run` only shows what would happen. It refuses to run over local edits to tracked files, so change the VM only through `main`.
+
+`./deploy.sh --auto` deploys a new commit on `main` only once all its CI checks have passed (`.github/workflows/ci.yml`). It holds changes that need a person, logging them and leaving them for you:
+- a new database migration;
+- `docker-compose.yml`;
+- a WordPress core update, which needs its database update run from wp-admin.
+
+Deploy those with `./deploy.sh`. To deploy automatically, add this to your crontab (`crontab -e`); the optional `DEPLOY_HEALTHCHECK_URL` gets pinged on every run and on failure:
+
+```
+*/5 * * * * cd ~/WELLWebsite && DEPLOY_HEALTHCHECK_URL=https://hc-ping.com/<uuid> ./deploy.sh --auto >/dev/null 2>&1
+```
+
 ---
 
 ## AI Analysis

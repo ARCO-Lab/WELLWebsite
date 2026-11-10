@@ -69,3 +69,13 @@ jobs:
       - name: Lint
         run: npm run lint
         continue-on-error: true
+
+  deploy-script:
+    name: Deploy script
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deploy.sh in a sandbox (fake remote, stub docker and curl)
+        run: bash .github/scripts/test_deploy.sh
