@@ -99,14 +99,27 @@ class RunBoundedTests(unittest.TestCase):
             run_bounded([sys.executable, "-c", script], timeout=2, grace=2)
         self.assertLess(time.monotonic() - started, 30)
         child_pid = int(ctx.exception.output.split()[0])
-        for _ in range(50):  # the kernel may need a moment to reap it
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
+        for _ in range(50):  # give the kernel a moment
+            if not _running(child_pid):
                 break
             time.sleep(0.1)
         else:
             self.fail(f"child process {child_pid} outlived the timeout")
+
+
+def _running(pid):
+    """True while pid is a live process. A zombie (killed, not yet reaped, e.g. re-parented to a PID 1 that
+    doesn't reap, as in a container) has stopped running, so it counts as gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            state = f.read().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return False
+    return state not in ("Z", "X")
 
 
 class DownloadStatusTests(unittest.TestCase):
