@@ -26,6 +26,12 @@ const infoMap: Record<number, string> = {
 };
 
 
+// The panel each help text belongs to, for the (i) button's accessible name.
+const panelNames: Record<number, string> = {
+  1: "Filters", 2: "Map", 3: "Latest Data", 4: "Graphs", 5: "AI Analysis",
+  6: "Filters", 7: "Map", 8: "Latest Data", 9: "Graphs", 10: "AI Analysis",
+};
+
 interface InformationProps {
   id: number;
 }
@@ -55,7 +61,8 @@ const Information: React.FC<InformationProps> = ({ id }) => {
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 w-6 p-0 text-muted hover:text-primary transition-colors"
+            className="-m-1 h-8 w-8 p-0 text-muted hover:text-primary transition-colors"
+            aria-label={`About ${panelNames[id] ?? "this panel"}`}
           >
             <Info className="h-4 w-4" />
           </Button>

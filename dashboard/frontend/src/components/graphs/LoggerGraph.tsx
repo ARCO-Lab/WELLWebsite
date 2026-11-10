@@ -16,7 +16,7 @@ interface Props {
   subFilters: string[];
   startDate: Date | null;
   endDate: Date | null;
-  modalOpen: boolean;
+  modalOpen?: boolean; // set by the modal (cloneElement), not by the page
   data: any[];
   loading?: boolean;
   error?: Error | null;
@@ -26,7 +26,7 @@ const LoggerGraph = ({
   subFilters,
   startDate,
   endDate,
-  modalOpen,
+  modalOpen = false,
   data,
   loading = false,
   error = null,

@@ -4,6 +4,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
+// Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
+import 'highcharts/modules/accessibility';
 
 interface SensorData {
   measurement_type: string;
@@ -167,17 +169,38 @@ const MetricChart: React.FC<MetricChartProps> = ({
     });
   }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
 
+  const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
+    && chartOptions.series.every((s: { data?: unknown[] }) => !s.data?.length);
+
   return (
     <div className="relative">
-      {/* Show error or loading state if needed */}
-      {error && <div className="text-red-500">Error: {error.message}</div>}
-      {loading && <div className="text-center"></div>}
       <HighchartsReact
         highcharts={Highcharts}
         options={chartOptions}
         ref={chartRef}
         containerProps={{ style: { height: `${resolvedHeight}px` } }}
       />
+      {/* While a new range loads, the previous chart stays visible under a spinner */}
+      {loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center rounded bg-white/70" role="status" aria-live="polite">
+          <div className="flex items-center gap-2 text-sm text-gray-700">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" aria-hidden="true" />
+            Loading data…
+          </div>
+        </div>
+      )}
+      {/* A chart with nothing to draw says so instead of showing empty axes (e.g. Logger 5, whose water sensor is dead) */}
+      {isEmpty && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <p className="rounded-md bg-white/90 px-3 py-1.5 text-sm text-muted">No readings in this period</p>
+        </div>
+      )}
+      {/* e.g. "This range has 1,451,713 readings, more than …": the API explains what to do instead */}
+      {error && !loading && (
+        <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" role="alert">
+          {error.message}
+        </div>
+      )}
     </div>
   );
 };

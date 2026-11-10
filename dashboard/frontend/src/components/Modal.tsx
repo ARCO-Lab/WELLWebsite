@@ -36,7 +36,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-[90vw] max-h-[95vh] overflow-y-auto mcmaster-card">
+      <DialogContent aria-describedby={undefined} className="max-w-[90vw] max-h-[95vh] overflow-y-auto mcmaster-card max-sm:h-[100dvh] max-sm:max-h-none max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:p-4">
         <DialogHeader>
           <DialogTitle className="text-2xl font-poppins font-bold text-primary flex items-center justify-between">
             {/* Show group type and context in modal title */}
