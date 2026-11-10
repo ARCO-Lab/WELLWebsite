@@ -6,7 +6,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-from utils.sampling_rows import KEY, entry_to_row, rows_from_entries  # noqa: E402
+from utils.sampling_rows import (KEY, classify_skipped, entry_to_row, import_warnings, row_key,  # noqa: E402
+                                 rows_from_entries)
 
 
 def entry(site="Falkirk Rd", creek="Tiffany Creek", measurement="E. coli", value=12.0, when="2025-06-01T00:00:00"):
@@ -65,6 +66,58 @@ class RowsFromEntriesTests(unittest.TestCase):
         self.assertEqual(stats["failed"], 1)
         self.assertEqual(stats["unknown_sites"], {"Mystery Bridge"})
         self.assertTrue(any("Failed to parse" in line for line in logs))
+
+    def test_repeat_with_a_different_value_is_reported(self):
+        rows, stats = rows_from_entries([entry(value=2400.0), entry(value=240.0), entry(value=2400.0)],
+                                        log=lambda *_: None)
+        self.assertEqual([r["value"] for r in rows], [2400.0])
+        self.assertEqual(stats["duplicates"], 2)
+        self.assertEqual([(r[0], r[3], r[4]) for r in stats["differing_repeats"]], [("Falkirk Rd", 2400.0, 240.0)])
+
+
+class SkippedRowTests(unittest.TestCase):
+    """Rows ON CONFLICT DO NOTHING skipped: corrected readings and clashes on site 7 are reported."""
+
+    def setUp(self):
+        self.rows, _ = rows_from_entries([
+            entry(value=1.0, when="2025-06-01T00:00:00"),               # new
+            entry(value=240.0, when="2025-07-01T00:00:00"),             # stored as 2400: a correction
+            entry(value=5.0, when="2025-08-01T00:00:00"),               # stored with the same value
+            entry(site="Other Lane", value=9.0, when="2025-06-01T00:00:00"),  # site 7 already has this key
+        ], log=lambda *_: None)
+        keys = [row_key(r) for r in self.rows]
+        self.inserted = {keys[0]}
+        self.stored = {keys[1]: 2400.0, keys[2]: 5.0, keys[3]: 3.0}
+
+    def test_classify_skipped(self):
+        changed, unknown = classify_skipped(self.rows, self.inserted, self.stored)
+        self.assertEqual([(r["value"], stored) for r, stored in changed], [(240.0, 2400.0)])
+        self.assertEqual([(r["value"], stored) for r, stored in unknown], [(9.0, 3.0)])
+
+    def test_warnings_say_corrections_are_not_applied_and_how_to_fix_site_7(self):
+        _, stats = rows_from_entries([entry(site="Other Lane")], log=lambda *_: None)
+        changed, unknown = classify_skipped(self.rows, self.inserted, self.stored)
+        text = "\n".join(import_warnings(stats, changed, unknown))
+        self.assertIn("1 rows differ from the stored reading and were NOT applied", text)
+        self.assertIn("stored 2400.0, file 240.0", text)
+        self.assertIn("DELETE FROM sampling_measurements WHERE site_id = '1' AND measurement_type = 'E. coli' "
+                      "AND recorded_at = '2025-07-01 00:00:00';", text)
+        self.assertIn("1 rows of unlisted sites were not imported", text)
+        self.assertIn("may be from a different unlisted site", text)
+        self.assertIn("site_id = '7'", text)
+        self.assertTrue(all(line.startswith("[WARN]") for line in text.splitlines()))
+
+    def test_no_warnings_for_a_clean_reimport(self):
+        rows, stats = rows_from_entries([entry(), entry(measurement="pH", value=7.1)], log=lambda *_: None)
+        stored = {row_key(r): r["value"] for r in rows}
+        changed, unknown = classify_skipped(rows, set(), stored)
+        self.assertEqual(import_warnings(stats, changed, unknown), [])
+
+    def test_collision_warning_says_to_delete_site_7_rows_before_reimporting(self):
+        _, stats = rows_from_entries([entry(site="Mystery Bridge"), entry(site="Other Lane")], log=lambda *_: None)
+        text = "\n".join(import_warnings(stats))
+        self.assertIn("kept 'Mystery Bridge', dropped 'Other Lane'", text)
+        self.assertIn("delete the rows already stored under the shared site id (site_id = '7'", text)
 
 
 if __name__ == "__main__":

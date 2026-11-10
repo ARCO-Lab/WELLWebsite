@@ -4,6 +4,7 @@
 import os
 import sys
 import pathlib
+from sqlalchemy import select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert
 
@@ -12,7 +13,8 @@ from server import create_app
 from db.database import db
 from db.models import SamplingMeasurement
 from api.services.sampling import SamplingService
-from utils.sampling_rows import KEY, entry_to_row, rows_from_entries
+from utils.sampling_rows import (KEY, classify_skipped, entry_to_row, import_warnings, row_key,
+                                 rows_from_entries)
 
 app = create_app()
 
@@ -48,24 +50,29 @@ def inject_new_sampling_data(file_path, return_only=False):
         if return_only:
             return rows
 
-        inserted = 0
+        # RETURNING tells which keys were new; the rest were already stored
+        key_cols = [SamplingMeasurement.__table__.c[k] for k in KEY]
+        inserted_keys = set()
         for i in range(0, len(rows), 1000):
-            stmt = insert(SamplingMeasurement).values(rows[i:i + 1000]).on_conflict_do_nothing(index_elements=list(KEY))
-            inserted += db.session.execute(stmt).rowcount
+            stmt = (insert(SamplingMeasurement).values(rows[i:i + 1000])
+                    .on_conflict_do_nothing(index_elements=list(KEY)).returning(*key_cols))
+            inserted_keys.update(tuple(r) for r in db.session.execute(stmt))
         db.session.commit()
 
+        # Stored values of the skipped keys, to spot corrected readings and clashes on site 7
+        skipped = [row_key(r) for r in rows if row_key(r) not in inserted_keys]
+        stored_values = {}
+        for i in range(0, len(skipped), 1000):
+            query = select(*key_cols, SamplingMeasurement.value).where(tuple_(*key_cols).in_(skipped[i:i + 1000]))
+            stored_values.update({tuple(r[:3]): r[3] for r in db.session.execute(query)})
+        changed, unknown_skipped = classify_skipped(rows, inserted_keys, stored_values)
+
         # download_data.py reads this exact line to decide whether a file counts as processed
-        print(f"[INFO] Inserted {inserted} new sampling records.")
-        print(f"[INFO] {len(rows) - inserted} were already stored; {stats['duplicates']} rows repeated "
+        print(f"[INFO] Inserted {len(inserted_keys)} new sampling records.")
+        print(f"[INFO] {len(skipped)} were already stored; {stats['duplicates']} rows repeated "
               f"another row of the file; {stats['failed']} entries could not be parsed.")
-        if stats["unknown_sites"]:
-            print(f"[WARN] Site names matching no known site were stored as site 7 (Unknown): "
-                  f"{sorted(stats['unknown_sites'])}")
-        if stats["collisions"]:
-            print(f"[WARN] {len(stats['collisions'])} rows were not imported because a different site name maps to "
-                  f"the same site (add the names to SITE_ID_MAP in utils/sampling_rows.py), e.g.:")
-            for kept, dropped, measurement, when in stats["collisions"][:5]:
-                print(f"[WARN]   kept {kept!r}, dropped {dropped!r}: {measurement} on {when:%Y-%m-%d}")
+        for line in import_warnings(stats, changed, unknown_skipped):
+            print(line)
         return rows
 
     except Exception as e:
