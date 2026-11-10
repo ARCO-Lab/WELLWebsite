@@ -113,6 +113,18 @@ class SkippedRowTests(unittest.TestCase):
         changed, unknown = classify_skipped(rows, set(), stored)
         self.assertEqual(import_warnings(stats, changed, unknown), [])
 
+    def test_site_7_examples_list_differing_readings_first(self):
+        rows, stats = rows_from_entries([entry(site="Other Lane", when=f"2025-0{m}-01T00:00:00", value=float(m))
+                                         for m in range(1, 8)], log=lambda *_: None)
+        stored = {row_key(r): r["value"] for r in rows}
+        stored[row_key(rows[-1])] = 99.0  # only the last one differs
+        _, unknown = classify_skipped(rows, set(), stored)
+        lines = import_warnings(stats, (), unknown)
+        self.assertIn("7 rows of unlisted sites were not imported", lines[1])
+        self.assertIn("(1 with a different value)", lines[1])
+        self.assertEqual(lines[2], "[WARN]   E. coli on 2025-07-01: stored 99.0, file 7.0")
+        self.assertEqual(len(lines), 2 + 5)
+
     def test_collision_warning_says_to_delete_site_7_rows_before_reimporting(self):
         _, stats = rows_from_entries([entry(site="Mystery Bridge"), entry(site="Other Lane")], log=lambda *_: None)
         text = "\n".join(import_warnings(stats))

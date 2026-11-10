@@ -217,7 +217,9 @@ def import_warnings(stats, changed=(), unknown_skipped=()):
                      f"(Unknown) already has a reading for that measurement and date ({differing} with a different "
                      f"value). They may be from a different unlisted site than the stored rows, e.g. one named in "
                      f"another file. To keep both: {_SITE_FIX}. E.g.:")
-        for row, stored in unknown_skipped[:_EXAMPLES]:
+        # Readings that differ from the stored one first: those are the likely clashes, not plain re-imports
+        examples = sorted(unknown_skipped, key=lambda pair: not values_differ(pair[1], pair[0]["value"]))
+        for row, stored in examples[:_EXAMPLES]:
             lines.append(f"[WARN]   {row['measurement_type']} on {row['recorded_at']:%Y-%m-%d}: "
                          f"stored {stored}, file {row['value']}")
     if changed:
