@@ -61,6 +61,14 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 
 Without it, every container fails with "No route to host" after the next reboot, and ingestion stops. To add it without a reboot as well, run `sudo iptables -I INPUT -s 10.20.0.0/16 -p tcp --dport 5432 -j ACCEPT`. Never run `systemctl restart iptables`, which wipes Docker's own rules until Docker restarts. Never run `iptables-save > /etc/sysconfig/iptables` either, which would save Docker's temporary rules into the file.
 
+**Docker networks.** `docker-compose.yml` pins `internal_api` to 10.20.0.0/24 (backend, worker, export_worker, redis, dashboard) and `front` to 10.20.1.0/24 (wordpress, db). Only the three backend services on `internal_api` need PostgreSQL. Keep both subnets out of Docker's automatic address pools, so no other network can ever be given one of them: set `default-address-pools` in `/etc/docker/daemon.json` to ranges that exclude them, for example
+
+```json
+{ "default-address-pools": [ { "base": "10.20.128.0/17", "size": 24 }, { "base": "10.30.0.0/16", "size": 24 } ] }
+```
+
+Merge this into the file's other settings. Changing the file needs `sudo systemctl restart docker`, which restarts every container. Existing networks keep their subnets.
+
 ---
 
 ## Data Sources & APIs
