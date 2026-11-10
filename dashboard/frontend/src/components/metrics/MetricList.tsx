@@ -1,10 +1,11 @@
 // Shared layout for the Latest Data panels (weather, water quality, loggers, creek sampling sites).
 //
-// A titled group of readings: rows of "icon · name … value unit", optionally grouped under a logger or site
-// name, laid out in as many columns as fit (one in the narrow panel, several in the modal). Old readings say
-// when they were taken, so a value from last night or from last year doesn't look current.
+// A titled group of metric tiles ("icon · name   value unit"). In the panel they run as a slowly scrolling strip
+// (one row per group, so the panel stays compact); in the modal they wrap so every tile is visible at once.
+// Each tile is as wide as its content, so a name never runs into its value. Old readings say when they were
+// taken, so a value from last night or from last year doesn't look current.
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 export interface Reading {
   value?: number | null;
@@ -32,6 +33,7 @@ interface MetricGroupProps {
   title: string;
   sections: MetricSection[];
   loading?: boolean;
+  layout?: "ticker" | "wrap"; // ticker in the panel, wrap in the modal
   // Readings older than this are marked "last reading …"; null for grab samples, which are always old.
   staleAfterHours?: number | null;
   timeLabel?: string; // e.g. "as of" or "sampled"
@@ -71,10 +73,10 @@ export function formatSiteTime(value: string | null | undefined, dateOnly = fals
   const options: Intl.DateTimeFormatOptions = dateOnly
     ? { month: "short", day: "numeric", year: "numeric" }
     : sameDay
-    ? { hour: "numeric", minute: "2-digit" }
-    : at.getUTCFullYear() === now.getUTCFullYear()
-      ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
-      : { month: "short", day: "numeric", year: "numeric" };
+      ? { hour: "numeric", minute: "2-digit" }
+      : at.getUTCFullYear() === now.getUTCFullYear()
+        ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+        : { month: "short", day: "numeric", year: "numeric" };
   return new Intl.DateTimeFormat("en-CA", { ...options, timeZone: "UTC" }).format(at);
 }
 
@@ -93,9 +95,9 @@ export function compassPoint(degrees: number): string {
   return names[Math.round((((degrees % 360) + 360) % 360) / 22.5) % 16];
 }
 
-// --- components ---
+// --- tiles ---
 
-function Row({ row, staleAfterHours }: { row: MetricRow; staleAfterHours: number | null }) {
+function Tile({ row, caption, staleAfterHours }: { row: MetricRow; caption?: string; staleAfterHours: number | null }) {
   const Icon = row.icon;
   const value = row.reading?.value;
   const hasValue = typeof value === "number" && Number.isFinite(value);
@@ -104,22 +106,17 @@ function Row({ row, staleAfterHours }: { row: MetricRow; staleAfterHours: number
   const stale = hasValue && staleAfterHours != null && age != null && age > staleAfterHours;
 
   return (
-    <li className="flex min-w-0 items-start justify-between gap-3 py-1.5">
-      <div className="min-w-0">
-        <p className="flex min-w-0 items-start gap-1.5 text-sm leading-snug text-foreground">
-          <Icon aria-hidden className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${row.color}`} />
-          <span className="line-clamp-2 break-words" title={row.fullLabel ?? row.label}>{row.label}</span>
-        </p>
-        {stale && (
-          <p className="pl-5 text-[11px] leading-snug text-amber-800">
-            Last reading {formatSiteTime(row.reading?.recorded_at)}
-          </p>
-        )}
+    <div className="flex shrink-0 items-center gap-3 whitespace-nowrap rounded-lg border border-input-border bg-card px-3 py-2">
+      <Icon aria-hidden className={`h-4 w-4 shrink-0 ${row.color}`} />
+      <div className="leading-tight">
+        {caption && <p className="text-[11px] font-semibold text-primary/80">{caption}</p>}
+        <p className="text-sm text-foreground" title={row.fullLabel ?? row.label}>{row.label}</p>
+        {stale && <p className="text-[11px] text-amber-800">Last reading {formatSiteTime(row.reading?.recorded_at)}</p>}
       </div>
-      <p className="shrink-0 whitespace-nowrap text-right leading-tight">
+      <p className="ml-auto pl-1 leading-tight">
         {shown ? (
           <>
-            <span className={`font-poppins text-base font-semibold tabular-nums ${stale ? "text-muted" : "text-primary"}`}>
+            <span className={`font-poppins text-lg font-semibold tabular-nums ${stale ? "text-muted" : "text-primary"}`}>
               {shown.value}
             </span>
             {shown.unit && <span className="ml-1 text-xs text-muted">{shown.unit}</span>}
@@ -128,7 +125,96 @@ function Row({ row, staleAfterHours }: { row: MetricRow; staleAfterHours: number
           <span className="text-xs text-muted">No data</span>
         )}
       </p>
-    </li>
+    </div>
+  );
+}
+
+const SPEED_PX_PER_S = 30;
+
+// The scrolling strip. It scrolls by moving scrollLeft, so the strip is also an ordinary horizontal scroller:
+// a trackpad, Shift + wheel, a swipe or the arrow keys move it by hand, while a normal wheel still scrolls the page.
+// When the tiles don't all fit, a second copy follows the first and the strip wraps by exactly one copy's width,
+// so the loop is seamless. Hover, keyboard focus or a touch pauses it where it is; it doesn't auto-scroll at all
+// for people who ask their system for reduced motion.
+function Ticker({ label, children }: { label: string; children: React.ReactNode }) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const firstCopy = useRef<HTMLDivElement>(null);
+  const paused = useRef(false);
+  const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  // Only scroll (and add the second copy) when the tiles don't fit.
+  useEffect(() => {
+    const el = scroller.current;
+    const copy = firstCopy.current;
+    if (!el || !copy) return;
+    const check = () => setOverflowing(copy.offsetWidth > el.clientWidth + 1);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    observer.observe(copy);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const el = scroller.current;
+    const copy = firstCopy.current;
+    if (!el || !copy || !overflowing) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let frame = 0;
+    let last = performance.now();
+    let position = el.scrollLeft;
+    const gap = parseFloat(getComputedStyle(copy.parentElement as Element).columnGap) || 0;
+
+    const step = (now: number) => {
+      const copyWidth = copy.offsetWidth + gap; // where the second copy starts
+      const elapsed = Math.min(now - last, 100);
+      last = now;
+      if (paused.current || reduceMotion) {
+        position = el.scrollLeft; // follow any scrolling by hand
+      } else {
+        position += (SPEED_PX_PER_S * elapsed) / 1000;
+      }
+      if (position >= copyWidth) position -= copyWidth; // seamless wrap, by hand or automatic
+      if (Math.abs(el.scrollLeft - position) >= 0.5) el.scrollLeft = position;
+      frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [overflowing]);
+
+  useEffect(() => () => { if (resumeTimer.current) clearTimeout(resumeTimer.current); }, []);
+
+  const pause = () => {
+    if (resumeTimer.current) clearTimeout(resumeTimer.current);
+    paused.current = true;
+  };
+  const resume = (delay = 0) => {
+    if (resumeTimer.current) clearTimeout(resumeTimer.current);
+    resumeTimer.current = setTimeout(() => { paused.current = false; }, delay);
+  };
+
+  return (
+    <div
+      ref={scroller}
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      onMouseEnter={pause}
+      onMouseLeave={() => resume()}
+      onFocus={pause}
+      onBlur={() => resume()}
+      onTouchStart={pause}
+      onTouchEnd={() => resume(2500)}
+      className={`overflow-x-auto overscroll-x-contain rounded-md [scrollbar-width:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary [&::-webkit-scrollbar]:hidden ${
+        overflowing ? "[mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)]" : ""
+      }`}
+    >
+      <div className="flex w-max gap-3">
+        <div ref={firstCopy} className="flex gap-3">{children}</div>
+        {overflowing && <div className="flex gap-3" aria-hidden>{children}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -136,6 +222,7 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
   title,
   sections,
   loading = false,
+  layout = "ticker",
   staleAfterHours = 3,
   timeLabel = "as of",
   dateOnly = false,
@@ -147,10 +234,12 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
     .filter((t): t is string => !!t)
     .sort()
     .pop();
-  const rowCount = sections.reduce((n, s) => n + s.rows.length, 0);
+  const tiles = sections.flatMap((section) =>
+    section.rows.map((row) => <Tile key={row.key} row={row} caption={section.title} staleAfterHours={staleAfterHours} />)
+  );
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <h3 className="font-poppins text-sm font-semibold text-primary">{title}</h3>
         {!loading && newest && (
@@ -158,22 +247,13 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
         )}
       </div>
       {loading ? (
-        <div className="space-y-2" aria-hidden>
-          {[0, 1, 2].map((i) => <div key={i} className="h-5 animate-pulse rounded bg-black/5" />)}
-        </div>
-      ) : rowCount === 0 ? (
+        <div className="h-14 animate-pulse rounded-lg bg-black/5" aria-hidden />
+      ) : tiles.length === 0 ? (
         <p className="text-xs text-muted">{emptyHint}</p>
+      ) : layout === "wrap" ? (
+        <div className="flex flex-wrap gap-3">{tiles}</div>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(13.5rem,1fr))] gap-x-6 gap-y-1">
-          {sections.filter((s) => s.rows.length > 0).map((section) => (
-            <section key={section.key} className="min-w-0">
-              {section.title && <h4 className="pt-1 text-xs font-semibold text-foreground/80">{section.title}</h4>}
-              <ul className="divide-y divide-input-border">
-                {section.rows.map((row) => <Row key={row.key} row={row} staleAfterHours={staleAfterHours} />)}
-              </ul>
-            </section>
-          ))}
-        </div>
+        <Ticker label={`${title}, scrolling`}>{tiles}</Ticker>
       )}
     </div>
   );
