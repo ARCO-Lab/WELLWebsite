@@ -13,7 +13,19 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ.setdefault("DATABASE_URL", "sqlite://")  # never a real database
 
 from config import Config  # noqa: E402
-from utils.timezone import est_after, est_now  # noqa: E402
+from utils.timezone import est_after, est_now, est_passed  # noqa: E402
+
+# 2026-11-01 05:30 UTC is 01:30 EDT; clocks fall back at 02:00 EDT, so 60 real minutes later it is 01:30 EST.
+FALL_BACK_DONE = dt.datetime(2026, 11, 1, 5, 30, tzinfo=dt.timezone.utc)
+
+
+def frozen_clock(instant_utc):
+    """Patch the clock utils.timezone reads, so est_now(), est_after() and est_passed() see `instant_utc`."""
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant_utc.astimezone(tz)
+    return mock.patch("utils.timezone.datetime", Frozen)
 
 
 class EstAfterTests(unittest.TestCase):
@@ -25,6 +37,22 @@ class EstAfterTests(unittest.TestCase):
     def test_ordinary_day(self):
         start = dt.datetime(2026, 11, 10, 12, 0, tzinfo=dt.timezone.utc)  # 07:00 EST
         self.assertEqual(est_after(60, start), dt.datetime(2026, 11, 10, 8, 0))
+
+    def test_fall_back_expiry_reads_the_same_as_the_completion_time(self):
+        self.assertEqual(est_after(60, FALL_BACK_DONE), dt.datetime(2026, 11, 1, 1, 30))
+
+
+class EstPassedTests(unittest.TestCase):
+    def test_a_full_window_on_the_fall_back_night(self):
+        expires = est_after(60, FALL_BACK_DONE)  # 01:30, meaning 01:30 EST
+        self.assertFalse(est_passed(expires, FALL_BACK_DONE + dt.timedelta(seconds=3)))  # naive 01:30:03 > 01:30
+        self.assertFalse(est_passed(expires, FALL_BACK_DONE + dt.timedelta(minutes=59)))
+        self.assertTrue(est_passed(expires, FALL_BACK_DONE + dt.timedelta(minutes=61)))
+
+    def test_ordinary_times(self):
+        now = dt.datetime(2026, 11, 10, 12, 0, tzinfo=dt.timezone.utc)  # 07:00 EST
+        self.assertTrue(est_passed(dt.datetime(2026, 11, 10, 6, 59), now))
+        self.assertFalse(est_passed(dt.datetime(2026, 11, 10, 7, 1), now))
 
 
 class CleanupTests(unittest.TestCase):
@@ -55,12 +83,13 @@ class CleanupTests(unittest.TestCase):
         self.ctx.pop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def job(self, job_id, minutes_from_now, path):
+    def job(self, job_id, minutes_from_now, path, expires_at=None):
         if path and not os.path.exists(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             pathlib.Path(path).write_text("a,b\n")
+        expires_at = expires_at or est_now() + dt.timedelta(minutes=minutes_from_now)
         j = self.ExportJob(id=job_id, status="ready", domain="sensor", payload={}, artifact_path=path,
-                           artifact_name="x.csv", expires_at=est_now() + dt.timedelta(minutes=minutes_from_now))
+                           artifact_name="x.csv", expires_at=expires_at)
         self.db.session.add(j)
         self.db.session.commit()
         return path
@@ -112,6 +141,22 @@ class CleanupTests(unittest.TestCase):
         self.db.session.expire_all()
         self.assertEqual((self.get("late").status, self.get("late").artifact_path), ("expired", path))
         self.assertTrue(os.path.exists(path))
+
+    def test_download_within_the_window(self):
+        self.job("fresh", 30, os.path.join(self.exports, "fresh", "x.csv"))
+        r = self.app.test_client().get("/api/exports/jobs/fresh/download")
+        self.assertEqual((r.status_code, r.data), (200, b"a,b\n"))
+        r.close()
+
+    def test_download_right_after_ready_on_the_fall_back_night(self):
+        self.job("dst", 0, os.path.join(self.exports, "dst", "x.csv"), expires_at=est_after(60, FALL_BACK_DONE))
+        client = self.app.test_client()
+        with frozen_clock(FALL_BACK_DONE + dt.timedelta(seconds=3)):  # when the page asks for the file
+            r = client.get("/api/exports/jobs/dst/download")
+        self.assertEqual(r.status_code, 200)
+        r.close()
+        with frozen_clock(FALL_BACK_DONE + dt.timedelta(minutes=61)):
+            self.assertEqual(client.get("/api/exports/jobs/dst/download").status_code, 410)
 
 
 if __name__ == "__main__":

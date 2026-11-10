@@ -75,8 +75,9 @@ def generate_export_job(self, job_id: str):
             raise
 
 
-# Expiry times are naive local wall-clock times, which can jump an hour at a DST change. Only delete a file
-# once its expiry is more than this far in the past, so a download window is never cut short.
+# Expiry times are naive local wall-clock times, compared here in SQL, and a wall time is never more than an hour
+# off real time at a DST change. Only delete a file once its expiry is more than this far in the past, so a
+# download window is never cut short, even one the download route reads as the later of a repeated fall-back hour.
 DELETE_GRACE = timedelta(hours=1)
 
 

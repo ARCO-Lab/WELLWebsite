@@ -17,3 +17,14 @@ def est_after(minutes: float, now_utc: datetime = None) -> datetime:
     """
     now_utc = now_utc or datetime.now(timezone.utc)
     return (now_utc + timedelta(minutes=minutes)).astimezone(EST_TZ).replace(tzinfo=None)
+
+
+def est_passed(wall_time: datetime, now_utc: datetime = None) -> bool:
+    """Whether a naive local wall time (as est_now()/est_after() store them) is in the past, in real time.
+
+    Naive wall times can't be compared directly: in the hour repeated when clocks fall back, an expiry 60 minutes
+    away can read the same as the current time. An ambiguous time is read as the later of its two instants, so a
+    download window is never cut short. (Compared in UTC because Python ignores `fold` within one tzinfo.)
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    return now_utc > wall_time.replace(tzinfo=EST_TZ, fold=1).astimezone(timezone.utc)

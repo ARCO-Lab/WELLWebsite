@@ -9,7 +9,7 @@ from api.services.exports import normalize_export_payload, estimate_rows, write_
 from config import Config
 from db.database import db
 from db.models import ExportJob
-from utils.timezone import est_now
+from utils.timezone import est_now, est_passed
 
 
 def register_export_routes(app):
@@ -138,7 +138,7 @@ def register_export_routes(app):
         if job.status != "ready":
             return jsonify({"error": "Export is not ready", "status": job.status}), 409
 
-        if job.expires_at and est_now() > job.expires_at:
+        if job.expires_at and est_passed(job.expires_at):
             job.status = "expired"  # keep artifact_path: the hourly cleanup deletes the file and clears it
             db.session.commit()
             return jsonify({"error": "Export artifact has expired"}), 410
