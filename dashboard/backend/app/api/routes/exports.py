@@ -139,8 +139,7 @@ def register_export_routes(app):
             return jsonify({"error": "Export is not ready", "status": job.status}), 409
 
         if job.expires_at and est_now() > job.expires_at:
-            job.status = "expired"
-            job.artifact_path = None
+            job.status = "expired"  # keep artifact_path: the hourly cleanup deletes the file and clears it
             db.session.commit()
             return jsonify({"error": "Export artifact has expired"}), 410
 

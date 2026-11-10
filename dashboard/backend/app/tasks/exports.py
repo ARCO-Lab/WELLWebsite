@@ -2,6 +2,7 @@ import os
 from datetime import timedelta
 
 from celery.utils.log import get_task_logger
+from sqlalchemy import or_
 
 from api.services.exports import default_export_filename, write_export_csv
 from config import Config
@@ -9,7 +10,7 @@ from db.database import db
 from db.models import ExportJob
 from server import create_app
 from tasks.celery_app import celery_app
-from utils.timezone import est_now
+from utils.timezone import est_after, est_now
 
 logger = get_task_logger(__name__)
 
@@ -30,7 +31,9 @@ def generate_export_job(self, job_id: str):
             db.session.commit()
 
             artifact_name = default_export_filename(job.payload)
-            artifact_path = os.path.join(Config.EXPORTS_DIR, artifact_name)
+            # One folder per job: identical exports share a friendly file name, but must not share a file
+            # (cleaning up one job would delete the other's download).
+            artifact_path = os.path.join(Config.EXPORTS_DIR, job_id, artifact_name)
 
             def on_progress(produced_rows: int, total_rows: int):
                 progress = 100.0 if total_rows <= 0 else min(100.0, (produced_rows / total_rows) * 100.0)
@@ -58,7 +61,7 @@ def generate_export_job(self, job_id: str):
             complete_job.artifact_name = artifact_name
             complete_job.artifact_path = artifact_path
             complete_job.completed_at = est_now()
-            complete_job.expires_at = est_now() + timedelta(minutes=Config.EXPORT_FILE_TTL_MINUTES)
+            complete_job.expires_at = est_after(Config.EXPORT_FILE_TTL_MINUTES)
             db.session.commit()
 
         except Exception as exc:
@@ -72,25 +75,61 @@ def generate_export_job(self, job_id: str):
             raise
 
 
+# Expiry times are naive local wall-clock times, which can jump an hour at a DST change. Only delete a file
+# once its expiry is more than this far in the past, so a download window is never cut short.
+DELETE_GRACE = timedelta(hours=1)
+
+
 @celery_app.task(name="exports.cleanup_expired_artifacts")
 def cleanup_expired_artifacts():
+    """Delete export files whose download window has passed, and mark their jobs expired.
+
+    - A file is kept while another job that hasn't expired still points at it (exports made before
+      per-job folders could share one path).
+    - A job keeps its path until its file is really gone, so a failed delete is retried next run.
+    """
     app = create_app()
     with app.app_context():
-        now = est_now()
-        expired_jobs = (
+        cutoff = est_now() - DELETE_GRACE
+        candidates = (
             db.session.query(ExportJob)
-            .filter(ExportJob.expires_at.isnot(None), ExportJob.expires_at < now)
+            .filter(
+                ExportJob.artifact_path.isnot(None),
+                ExportJob.expires_at.isnot(None),
+                ExportJob.expires_at < cutoff,
+            )
             .all()
         )
-
-        for job in expired_jobs:
-            if job.artifact_path and os.path.exists(job.artifact_path):
+        for job in candidates:
+            path = job.artifact_path
+            still_used = (
+                db.session.query(ExportJob.id)
+                .filter(
+                    ExportJob.id != job.id,
+                    ExportJob.artifact_path == path,
+                    or_(ExportJob.expires_at.is_(None), ExportJob.expires_at >= cutoff),
+                )
+                .first()
+            )
+            if still_used is None and os.path.exists(path):
                 try:
-                    os.remove(job.artifact_path)
+                    os.remove(path)
                 except OSError:
-                    logger.warning("Failed to remove artifact path=%s", job.artifact_path)
+                    logger.warning("Failed to remove artifact path=%s; will retry on the next run", path)
+                    continue
+                _remove_empty_job_folder(path)
             job.status = "expired"
             job.artifact_path = None
 
-        if expired_jobs:
+        if candidates:
             db.session.commit()
+
+
+def _remove_empty_job_folder(path):
+    folder = os.path.dirname(path)
+    if os.path.abspath(folder) == os.path.abspath(Config.EXPORTS_DIR):
+        return  # an older export stored directly in EXPORTS_DIR
+    try:
+        os.rmdir(folder)
+    except OSError:
+        pass  # not empty, or already gone
