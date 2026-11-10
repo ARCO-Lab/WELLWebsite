@@ -67,7 +67,7 @@ Without it, every container fails with "No route to host" after the next reboot,
 { "default-address-pools": [ { "base": "10.20.128.0/17", "size": 24 }, { "base": "10.30.0.0/16", "size": 24 } ] }
 ```
 
-Merge this into the file's other settings. Changing the file needs `sudo systemctl restart docker`, which restarts every container. Existing networks keep their subnets.
+Merge this into the file's other settings, and keep its `"bip": "10.10.0.1/24"`. That pins the default `docker0` bridge, which `host.docker.internal` (mapped for backend and worker in `docker-compose.yml`) resolves to; without `bip`, a restart with new pools could move it. Changing the file needs `sudo systemctl restart docker`, which restarts every container. User-defined networks, such as this stack's, keep their subnets.
 
 ---
 
