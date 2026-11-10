@@ -60,14 +60,17 @@ backend/app/samplingExcel/
 backend/app/sampleUpload/
 
 
-# WordPress cache (runtime generated)
-home/wp-content/cache/
-home/wp-content/upgrade/
-
-# WordPress config and secrets (Docker creates from env vars)
-home/wp-config.php
-home/wp-config-docker.php
-
 wordpress_backup.sql
 # Local snapshot of the VM (not tracked)
 well-vm/
+
+# home/ is the WordPress site: core and plugins exactly as released (see .gitattributes). The
+# generic rules above (build/, logs, *.log, *.css.map, out/, ...) would hide release files there,
+# so re-include all of home/ and ignore only what is site state or secrets. Keep this block last.
+!home/**
+# WordPress cache (runtime generated)
+home/wp-content/cache/
+home/wp-content/upgrade/
+# WordPress config and secrets (Docker creates from env vars)
+home/wp-config.php
+home/wp-config-docker.php
