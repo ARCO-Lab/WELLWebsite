@@ -28,7 +28,9 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
   const disabledStyles = {
     disabled: { opacity: 0.5 },
   };
-  const today = new Date();
+  // Today in Toronto wall-clock time, like the default dates, so a viewer in another time zone can still pick
+  // the default end date (and its month) late in the evening.
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
 
   // Shared by both pickers:
   // - fixedWeeks always draws six weeks, so the calendar keeps one size and the arrows stay put while you click
