@@ -75,7 +75,8 @@ def inject_licor(tz, now):
 
 
 def inject_quality(tz, now):
-    # WQData pages its responses properly (QualityService follows them), so one call covers the range.
+    # QualityService follows WQData's paging (until a response holds all the values it reports), so one call
+    # covers the range.
     start = run_start("Quality", tz, now)
     entries = quality_service.get_quality_data(start.strftime(FMT), now.strftime(FMT))
     rows = quality_rows(entries, Config.WQ_DEVICE_ID, tz)
