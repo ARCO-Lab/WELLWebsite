@@ -106,7 +106,7 @@ def get_files_from_dataset(list_files=False):
         headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
         params = {"persistentId": BOREALIS_AW_PERSISTENT_ID}
         print(f"DEBUG: Sending request to {BOREALIS_URL}/api/datasets/:persistentId")
-        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers)
+        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers, timeout=(10, 120))
         print(f"DEBUG: Response status: {response.status_code}")
         print(f"DEBUG: Response URL: {response.url}")
         response.raise_for_status()
@@ -175,7 +175,7 @@ def download_file_to_memory(file_id, filename):
     try:
         headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
         params = {"format": "original"}
-        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params)
+        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params, timeout=(10, 600))
         response.raise_for_status()
         
         file_buffer = io.BytesIO(response.content)
@@ -211,7 +211,7 @@ def main():
     # Main entry point for downloading and processing files
     parser = argparse.ArgumentParser(description="Download all unprocessed files and process them sequentially.")
     parser.add_argument("--force", action="store_true", help="Force processing even if file is not new")
-    parser.add_argument("--list-files", action="store_true", help="List all files in the dataset for debugging")
+    parser.add_argument("--list-files", action="store_true", help="List the dataset's files and exit, without downloading or importing anything")
     args = parser.parse_args()
 
     print("DEBUG: Starting process...")
@@ -238,7 +238,12 @@ def main():
         
         print(f"DEBUG: Processed files: {len(processed_files)}")
         print(f"DEBUG: Unprocessed files: {[f['filename'] for f in unprocessed_files]}")
-        
+
+        # --list-files only lists; it never downloads or imports. The scheduler runs it under a short
+        # time limit to debug a failed download, and an import stopped part-way could lose rows.
+        if args.list_files:
+            sys.exit(0)
+
         if not unprocessed_files and not args.force:
             print("DEBUG: All files have been processed.")
             # Still output something for scheduler compatibility
