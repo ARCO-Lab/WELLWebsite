@@ -22,6 +22,19 @@ class RequireWipePermissionTests(unittest.TestCase):
     def test_allows_with_the_flag(self):
         self.assertIsNone(require_wipe_permission("x", env={"ALLOW_WIPE": "1"}))
 
+    def test_own_advice_replaces_the_backup_advice(self):
+        with self.assertRaises(SystemExit) as ctx:
+            require_wipe_permission("x", env={}, advice="Use the backfill instead.")
+        message = str(ctx.exception)
+        self.assertIn("Refusing to delete x", message)
+        self.assertTrue(message.endswith("Use the backfill instead."))
+        self.assertNotIn("pg_dump", message)
+
+    def test_own_advice_keeps_the_gate(self):
+        with self.assertRaises(SystemExit):
+            require_wipe_permission("x", env={"ALLOW_WIPE": "yes"}, advice="a")
+        self.assertIsNone(require_wipe_permission("x", env={"ALLOW_WIPE": "1"}, advice="a"))
+
 
 if __name__ == "__main__":
     unittest.main()
