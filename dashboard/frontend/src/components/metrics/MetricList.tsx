@@ -1,9 +1,10 @@
 // Shared layout for the Latest Data panels (weather, water quality, loggers, creek sampling sites).
 //
-// A titled group of metric tiles ("icon · name   value unit"). In the panel they run as a slowly scrolling strip
-// (one row per group, so the panel stays compact); in the modal they wrap so every tile is visible at once.
-// Each tile is as wide as its content, so a name never runs into its value. Old readings say when they were
-// taken, so a value from last night or from last year doesn't look current.
+// A titled group of metric tiles. In the panel each group's tiles fill its card as a strip: as many rows as the card
+// has room for, columns that widen to fill the card when everything fits, and otherwise a slow, seamless scroll.
+// A strip tile shows its name above its value; a name or caption too long for the strip ends in an ellipsis, but the
+// value is always whole. In the modal the tiles ("icon · name   value unit") wrap so every one is visible at once.
+// Old readings say when they were taken, so a value from last night or from last year doesn't look current.
 
 import React, { useEffect, useRef, useState } from "react";
 import { Clock } from "lucide-react";
@@ -309,10 +310,11 @@ function Ticker({ label, tileHeight, children }: { label: string; tileHeight: nu
   };
 
   // Columns as wide as their widest tile, sharing out any spare width when everything fits.
-  // While the strip scrolls, a tile's caption and name are at most the strip's width less the fade on its right and
-  // the tile's padding and border, so the tile can be seen whole.
+  // A tile's caption and name are at most the strip's width less the fade on its right and the tile's padding and
+  // border, so a tile can be seen whole. This holds whether or not the strip scrolls: tying it to the overflow check
+  // would change the width that check measures, and the two could flip each other back and forth.
   const grid: React.CSSProperties & { "--line-max"?: string } = {
-    ...(overflowing && stripWidth > FADE_PX + TILE_INSET_PX + 40 ? { "--line-max": `${stripWidth - FADE_PX - TILE_INSET_PX}px` } : {}),
+    ...(stripWidth > FADE_PX + TILE_INSET_PX + 40 ? { "--line-max": `${stripWidth - FADE_PX - TILE_INSET_PX}px` } : {}),
     gridTemplateRows: `repeat(${rows}, ${tileHeight}px)`,
     gridAutoFlow: "column",
     gridAutoColumns: "minmax(max-content, 1fr)",
