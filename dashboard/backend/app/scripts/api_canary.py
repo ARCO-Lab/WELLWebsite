@@ -82,8 +82,8 @@ def same_unit(unit, expected):
     """Whether LI-COR's unit names the expected one, as ingestion judges it (parsers.same_unit)."""
     if not isinstance(unit, str):
         return False
-    unit = unit.strip().casefold()
-    return unit == expected.casefold() or unit in UNIT_ALIASES.get(expected, ())
+    unit = unit.strip()
+    return unit == expected or unit.casefold() in UNIT_ALIASES.get(expected, ())
 
 
 def check_licor(body):
