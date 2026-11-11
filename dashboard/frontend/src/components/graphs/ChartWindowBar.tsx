@@ -62,20 +62,23 @@ const ChartWindowBar: React.FC = () => {
         // Clicks here must not open the chart card's larger view
         onClick={(e) => e.stopPropagation()}
       >
-        <button type="button" className={buttonClass} aria-label="Show earlier" title="Earlier"
-          disabled={w.start <= range.start} onClick={() => zoomTo(shiftWindow(w, range, -1))}>
-          <ChevronLeft aria-hidden className="h-4 w-4" />
-        </button>
-        <p className="flex min-w-0 items-center gap-2 text-sm text-gray-800">
-          <span>{windowLabel(w)}<span className="text-gray-600">{resolution}</span></span>
-          {view.detailLoading && (
-            <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
-          )}
-        </p>
-        <button type="button" className={buttonClass} aria-label="Show later" title="Later"
-          disabled={w.end >= range.end} onClick={() => zoomTo(shiftWindow(w, range, 1))}>
-          <ChevronRight aria-hidden className="h-4 w-4" />
-        </button>
+        {/* ◀ label ▶ stay on one row; on phones the zoom buttons wrap below them */}
+        <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <button type="button" className={`${buttonClass} shrink-0`} aria-label="Show earlier" title="Earlier"
+            disabled={w.start <= range.start} onClick={() => zoomTo(shiftWindow(w, range, -1))}>
+            <ChevronLeft aria-hidden className="h-4 w-4" />
+          </button>
+          <p className="flex min-w-0 flex-1 items-center gap-2 text-xs text-gray-800 sm:flex-none sm:text-sm">
+            <span>{windowLabel(w)}<span className="text-gray-600">{resolution}</span></span>
+            {view.detailLoading && (
+              <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
+            )}
+          </p>
+          <button type="button" className={`${buttonClass} shrink-0`} aria-label="Show later" title="Later"
+            disabled={w.end >= range.end} onClick={() => zoomTo(shiftWindow(w, range, 1))}>
+            <ChevronRight aria-hidden className="h-4 w-4" />
+          </button>
+        </div>
         <div className="ml-auto flex gap-2">
           <button type="button" className={buttonClass} aria-label="Zoom out: show twice as much time"
             onClick={() => zoomTo(zoomOutWindow(w, range))}>

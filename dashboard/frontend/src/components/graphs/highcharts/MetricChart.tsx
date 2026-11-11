@@ -90,6 +90,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
         },
       },
       title: { text: title, style: { fontFamily: FONT, fontSize: '16px', color: '#333' } },
+      subtitle: { text: undefined, style: { fontFamily: FONT, fontSize: '11px', color: '#4b5563' } },
       credits: { enabled: false },
       legend: { enabled: false, itemStyle: { fontFamily: FONT } },
       tooltip: { shared: true, followPointer: true, valueDecimals: 2, style: { fontFamily: FONT } },
@@ -182,7 +183,12 @@ const MetricChart: React.FC<MetricChartProps> = ({
   }, [win, series]);
 
   const isEmpty = !view.loading && !view.error && view.overview !== null && !hasData;
+
+  // The resolution badge ("12-hour averages") as the chart's subtitle, so it never covers the title.
   const badge = showBadge ? resolutionBadge(view.shownBucketS, view.shownAggregated, hasTotals) : null;
+  useEffect(() => {
+    chartRef.current?.chart?.setSubtitle({ text: badge ?? '' });
+  }, [badge]);
 
   // A drag that zooms ends in a click; keep it from reaching the card around the chart, which would open the
   // larger view. A plain click (or tap) still does.
@@ -202,11 +208,6 @@ const MetricChart: React.FC<MetricChartProps> = ({
         ref={chartRef}
         containerProps={{ style: { height: `${resolvedHeight}px` } }}
       />
-      {badge && (
-        <span className="pointer-events-none absolute left-2 top-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">
-          {badge}
-        </span>
-      )}
       {/* While a new range loads, the previous chart stays visible under a spinner. It is announced once for all
           charts (ChartWindowBar), not by each chart. */}
       {view.loading && (

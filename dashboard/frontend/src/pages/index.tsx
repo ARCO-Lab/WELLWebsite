@@ -745,7 +745,8 @@ export default function Dashboard() {
           type={modalType}
           subtypes={modalSubtypes}
           data={modalData}
-          header={modalSpec && !modalIsSampling && analysisType === "alltime" ? <ChartWindowBar /> : null}
+          header={modalSpec && !modalIsSampling && analysisType === "alltime" && !(modalSpec.key === "weather" && windShown)
+            ? <ChartWindowBar /> : null /* not over the wind rose, which shows all the picked days */}
           weatherTab={weatherTab}
           setWeatherTab={setWeatherTab}
         >
