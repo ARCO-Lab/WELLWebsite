@@ -101,6 +101,9 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Unit tests (chart zoom helpers)
+        run: npm test
+
       - run: npm run build
 
       - name: Lint

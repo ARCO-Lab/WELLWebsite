@@ -8,7 +8,8 @@
     "prebuild": "node scripts/copy-maplibre-worker.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "node --experimental-strip-types --test scripts/chartWindow.test.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
