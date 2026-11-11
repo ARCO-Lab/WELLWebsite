@@ -104,7 +104,8 @@ services:
     build:
       context: ./dashboard/backend
     # -B runs the beat scheduler inside this (single) worker, for the hourly cleanup of expired exports.
-    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--loglevel=info"]
+    # Two exports at a time at most (the default is one per CPU), so large exports can't take the VM's memory.
+    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--concurrency=2", "--loglevel=info"]
     env_file:
       - ./dashboard/backend/app/.env
     environment:

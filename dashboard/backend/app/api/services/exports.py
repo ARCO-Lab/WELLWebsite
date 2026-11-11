@@ -1,15 +1,75 @@
 import csv
 import os
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Callable, Dict, Iterable, List, Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_, select
 
+from config import Config
 from db.database import db
-from db.models import SamplingMeasurement, SensorMeasurement
+from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
 from utils.timezone import EST_TZ
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
+
+# Rows fetched from the database at a time while an export is written (and how often its progress is saved).
+STREAM_BATCH_ROWS = 5000
+
+# A text cell starting with one of these is read as a formula by Excel and other spreadsheets, so a value such as
+# "=HYPERLINK(...)" stored in a site or measurement name could run when the CSV is opened. Such cells get a leading
+# apostrophe, which spreadsheets show as plain text. Numbers are never changed: -3.2 stays a number.
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def safe_csv_cell(value):
+    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+class _SafeCsvWriter:
+    """csv.writer whose text cells are passed through safe_csv_cell."""
+
+    def __init__(self, file_obj):
+        self._writer = csv.writer(file_obj)
+
+    def writerow(self, row):
+        self._writer.writerow([safe_csv_cell(cell) for cell in row])
+
+
+@contextmanager
+def _streaming_connection():
+    """A connection of its own that reads results STREAM_BATCH_ROWS at a time (a server-side cursor on
+    PostgreSQL) instead of loading them all. Separate from db.session, whose progress commits would otherwise end
+    the transaction the cursor lives in."""
+    with db.engine.connect() as conn:
+        yield conn.execution_options(stream_results=True, yield_per=STREAM_BATCH_ROWS)
+
+
+def _iso(value) -> str:
+    return value.isoformat() if value else ""
+
+
+# A queued job that hasn't started after this long has lost its task (Redis restarted, say), and a running job
+# past the hard time limit has lost its worker process: neither will finish. The hourly cleanup marks them failed,
+# and until then they don't count against the job limits.
+QUEUED_STALE_AFTER = timedelta(hours=1)
+
+
+def running_stale_after() -> timedelta:
+    return timedelta(seconds=Config.EXPORT_HARD_TIME_LIMIT_SECONDS) + timedelta(minutes=5)
+
+
+def live_job_condition(now: datetime):
+    """SQL condition for export jobs that are queued or running and may still finish. `now` is est_now()."""
+    return or_(
+        and_(ExportJob.status == "queued", ExportJob.created_at >= now - QUEUED_STALE_AFTER),
+        and_(
+            ExportJob.status == "running",
+            func.coalesce(ExportJob.started_at, ExportJob.created_at) >= now - running_stale_after(),
+        ),
+    )
 
 SENSOR_FILTER_CONFIG = {
     "gauges": {
@@ -141,14 +201,14 @@ def write_export_csv(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     if filters["domain"] == "sensor":
-        rows_written = _write_sensor_frontend_style_csv(filters, output_path)
+        rows_written = _write_sensor_frontend_style_csv(filters, output_path, progress_callback, total)
         if progress_callback:
             progress_callback(rows_written, total)
         return rows_written
 
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
+        writer = _SafeCsvWriter(csv_file)
         writer.writerow(
             [
                 "domain",
@@ -178,7 +238,7 @@ def write_export_csv(
                 ]
             )
             rows_written += 1
-            if progress_callback and rows_written % 5000 == 0:
+            if progress_callback and rows_written % STREAM_BATCH_ROWS == 0:
                 progress_callback(rows_written, total)
 
     if progress_callback:
@@ -188,30 +248,28 @@ def write_export_csv(
 
 
 def iter_export_rows(filters: Dict) -> Iterable[Dict]:
-    if filters["domain"] == "sensor":
-        query = _sensor_query(filters)
-        for r in query.order_by(SensorMeasurement.recorded_at).yield_per(5000):
-            yield {
-                "domain": "sensor",
-                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else "",
-                "group_type": r.group_type or "",
-                "station_id": r.station_id or "",
-                "creek_id": "",
-                "site_id": "",
-                "measurement_type": r.measurement_type or "",
-                "value": r.value,
-                "unit": r.unit or "",
-            }
+    """The export's readings, one dict each, in time order, streamed from the database (_streaming_connection)."""
+    sensor = filters["domain"] == "sensor"
+    if sensor:
+        model = SensorMeasurement
+        columns = (model.recorded_at, model.group_type, model.station_id, model.measurement_type, model.value,
+                   model.unit)
+        conditions = _sensor_conditions(filters)
     else:
-        query = _sampling_query(filters)
-        for r in query.order_by(SamplingMeasurement.recorded_at).yield_per(5000):
+        model = SamplingMeasurement
+        columns = (model.recorded_at, model.creek_id, model.site_id, model.measurement_type, model.value, model.unit)
+        conditions = _sampling_conditions(filters)
+
+    statement = select(*columns).where(*conditions).order_by(model.recorded_at)
+    with _streaming_connection() as conn:
+        for r in conn.execute(statement):
             yield {
-                "domain": "sampling",
-                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else "",
-                "group_type": "",
-                "station_id": "",
-                "creek_id": r.creek_id or "",
-                "site_id": r.site_id or "",
+                "domain": filters["domain"],
+                "recorded_at": _iso(r.recorded_at),
+                "group_type": (r.group_type or "") if sensor else "",
+                "station_id": (r.station_id or "") if sensor else "",
+                "creek_id": "" if sensor else (r.creek_id or ""),
+                "site_id": "" if sensor else (r.site_id or ""),
                 "measurement_type": r.measurement_type or "",
                 "value": r.value,
                 "unit": r.unit or "",
@@ -219,13 +277,21 @@ def iter_export_rows(filters: Dict) -> Iterable[Dict]:
 
 
 def _sensor_query(filters: Dict):
+    return db.session.query(SensorMeasurement).filter(*_sensor_conditions(filters))
+
+
+def _sampling_query(filters: Dict):
+    return db.session.query(SamplingMeasurement).filter(*_sampling_conditions(filters))
+
+
+def _sensor_conditions(filters: Dict) -> List:
     start_dt = datetime.fromisoformat(filters["start"])
     end_dt = datetime.fromisoformat(filters["end"])
 
-    query = db.session.query(SensorMeasurement).filter(
+    conditions = [
         SensorMeasurement.recorded_at.between(start_dt, end_dt),
         SensorMeasurement.group_type.in_(filters["group_types"]),
-    )
+    ]
 
     group_measurement_types = filters.get("group_measurement_types") or {}
     if group_measurement_types:
@@ -243,39 +309,37 @@ def _sensor_query(filters: Dict):
                 per_group_clauses.append(SensorMeasurement.group_type == group)
 
         if per_group_clauses:
-            query = query.filter(or_(*per_group_clauses))
+            conditions.append(or_(*per_group_clauses))
     elif filters.get("measurement_types"):
-        query = query.filter(SensorMeasurement.measurement_type.in_(filters["measurement_types"]))
+        conditions.append(SensorMeasurement.measurement_type.in_(filters["measurement_types"]))
 
     if filters.get("station_ids"):
-        query = query.filter(
+        conditions.append(
             or_(
                 SensorMeasurement.group_type != "Logger",
                 SensorMeasurement.station_id.in_(filters["station_ids"]),
             )
         )
 
-    return query
+    return conditions
 
 
-def _sampling_query(filters: Dict):
+def _sampling_conditions(filters: Dict) -> List:
     start_dt = datetime.fromisoformat(filters["start"])
     end_dt = datetime.fromisoformat(filters["end"])
 
-    query = db.session.query(SamplingMeasurement).filter(
-        SamplingMeasurement.recorded_at.between(start_dt, end_dt)
-    )
+    conditions = [SamplingMeasurement.recorded_at.between(start_dt, end_dt)]
 
     if filters.get("creek_ids"):
-        query = query.filter(SamplingMeasurement.creek_id.in_(filters["creek_ids"]))
+        conditions.append(SamplingMeasurement.creek_id.in_(filters["creek_ids"]))
 
     if filters.get("measurement_types"):
-        query = query.filter(SamplingMeasurement.measurement_type.in_(filters["measurement_types"]))
+        conditions.append(SamplingMeasurement.measurement_type.in_(filters["measurement_types"]))
 
     if filters.get("site_ids"):
-        query = query.filter(SamplingMeasurement.site_id.in_(filters["site_ids"]))
+        conditions.append(SamplingMeasurement.site_id.in_(filters["site_ids"]))
 
-    return query
+    return conditions
 
 
 def _as_string_list(value):
@@ -302,51 +366,70 @@ def _as_group_metric_map(value):
     return normalized
 
 
-def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
+def _sensor_columns_summary(conditions) -> Dict:
+    """What the header of a sensor export needs, from one GROUP BY query instead of every row: the metrics seen in
+    each group, the logger stations seen, and each metric's unit (the one of its latest reading)."""
+    latest = func.max(SensorMeasurement.recorded_at)
+    summary = db.session.execute(
+        select(
+            SensorMeasurement.group_type,
+            SensorMeasurement.measurement_type,
+            SensorMeasurement.station_id,
+            SensorMeasurement.unit,
+            latest,
+        )
+        .where(*conditions)
+        .group_by(
+            SensorMeasurement.group_type,
+            SensorMeasurement.measurement_type,
+            SensorMeasurement.station_id,
+            SensorMeasurement.unit,
+        )
+    ).all()
+
+    metrics = {"Weather": set(), "Quality": set(), "Logger": set()}
+    logger_stations = set()
+    unit_seen_at = {}  # metric -> (latest reading, unit)
+    for group_type, measurement_type, station_id, unit, seen_at in summary:
+        metric = measurement_type or ""
+        unit = unit or ""
+        if metric not in unit_seen_at or (seen_at, unit) > unit_seen_at[metric]:
+            unit_seen_at[metric] = (seen_at, unit)
+        if group_type in ("Weather", "Quality"):
+            metrics[group_type].add(metric)
+        elif group_type == "Logger" and station_id:
+            metrics["Logger"].add(metric)
+            logger_stations.add(str(station_id))
+
+    return {
+        "metrics": metrics,
+        "logger_stations": logger_stations,
+        "units_by_metric": {metric: unit for metric, (_, unit) in unit_seen_at.items()},
+    }
+
+
+def _write_sensor_frontend_style_csv(
+    filters: Dict,
+    output_path: str,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    total: int = 0,
+) -> int:
     """
     Export sensor data matching the exact CSV format from upload_data.py
     Structure: [ID, Timestamp, Weather section, blank, Quality section, blank, Logger section]
     Each section has Group label, then metrics. Logger section repeats Sensor+metrics for each logger.
+
+    Readings are streamed in time order, STREAM_BATCH_ROWS at a time, and each CSV row is written as soon as its
+    timestamp's readings are all in, so memory stays flat however long the range. Returns the readings exported.
     """
     requested_groups = set(filters.get("group_types", []))
-
-    query = _sensor_query(filters)
-    records = query.order_by(SensorMeasurement.recorded_at).all()
-
-    # Build lookup dictionaries by group and timestamp
-    weather_data = {}  # (timestamp, metric) -> value
-    quality_data = {}  # (timestamp, metric) -> value
-    logger_data = {}   # (timestamp, station_id, metric) -> value
-    
-    all_timestamps = set()
-    all_weather_metrics = set()
-    all_quality_metrics = set()
-    all_logger_metrics = set()
-    all_logger_stations = set()
-    units_by_metric = {}
-
-    # First pass: collect all data and organize by group
-    for record in records:
-        timestamp = record.recorded_at.isoformat() if record.recorded_at else ""
-        metric = record.measurement_type or ""
-        value = record.value
-        unit = record.unit or ""
-        group_type = record.group_type or ""
-        station_id = str(record.station_id or "") if record.station_id else ""
-
-        all_timestamps.add(timestamp)
-        units_by_metric[metric] = unit
-
-        if group_type == "Weather" and "Weather" in requested_groups:
-            weather_data[(timestamp, metric)] = value
-            all_weather_metrics.add(metric)
-        elif group_type == "Quality" and "Quality" in requested_groups:
-            quality_data[(timestamp, metric)] = value
-            all_quality_metrics.add(metric)
-        elif group_type == "Logger" and "Logger" in requested_groups and station_id:
-            logger_data[(timestamp, station_id, metric)] = value
-            all_logger_metrics.add(metric)
-            all_logger_stations.add(station_id)
+    conditions = _sensor_conditions(filters)
+    summary = _sensor_columns_summary(conditions)
+    units_by_metric = summary["units_by_metric"]
+    all_weather_metrics = summary["metrics"]["Weather"]
+    all_quality_metrics = summary["metrics"]["Quality"]
+    all_logger_metrics = summary["metrics"]["Logger"]
+    all_logger_stations = summary["logger_stations"]
 
     # Set up which groups we should include (based on request, not just what has data)
     include_weather = "Weather" in requested_groups
@@ -376,89 +459,105 @@ def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
         extras = sorted(all_logger_stations.difference(set(configured_ids)))
         effective_logger_stations.extend(extras)
 
+    def metric_header(metric):
+        unit = units_by_metric.get(metric, "")
+        unit = unit.replace(" asl", "").strip() if unit else ""
+        return f"{metric}: {unit}" if unit else metric
+
     # Build header row - ALWAYS include requested groups in the output order: Weather, Quality, Logger
     headers = ["ID", "Timestamp"]
-    
+
     # Weather section: Include if requested (even if no data)
     if include_weather:
         headers.append("Group")
-        for metric in weather_metrics:
-            unit = units_by_metric.get(metric, "")
-            unit = unit.replace(" asl", "").strip() if unit else ""
-            headers.append(f"{metric}: {unit}" if unit else metric)
-    
+        headers.extend(metric_header(metric) for metric in weather_metrics)
+
     # Blank column separator between Weather and Quality
     if include_quality and include_weather:
         headers.append("")
-    
+
     # Quality section: Include if requested (even if no data)
     if include_quality:
         headers.append("Group")
-        for metric in quality_metrics:
-            unit = units_by_metric.get(metric, "")
-            unit = unit.replace(" asl", "").strip() if unit else ""
-            headers.append(f"{metric}: {unit}" if unit else metric)
-    
+        headers.extend(metric_header(metric) for metric in quality_metrics)
+
     # Blank column separator between Quality and Logger
     if include_logger and (include_weather or include_quality):
         headers.append("")
-    
+
     # Logger section: Include if requested (even if no data)
     if include_logger:
         headers.append("Group")
-        if effective_logger_stations:
-            for station_id in effective_logger_stations:
-                headers.append("Sensor")
-                for metric in logger_metrics:
-                    unit = units_by_metric.get(metric, "")
-                    unit = unit.replace(" asl", "").strip() if unit else ""
-                    headers.append(f"{metric}: {unit}" if unit else metric)
+        for station_id in effective_logger_stations:
+            headers.append("Sensor")
+            headers.extend(metric_header(metric) for metric in logger_metrics)
 
-    with open(output_path, "w", newline="", encoding="utf-8") as file_obj:
-        writer = csv.writer(file_obj)
+    def csv_row(row_num, timestamp, weather_data, quality_data, logger_data):
+        row = [row_num, timestamp]
+        if include_weather:
+            row.append("Weather")
+            row.extend(weather_data.get(metric, "") for metric in weather_metrics)
+        if include_quality and include_weather:
+            row.append("")
+        if include_quality:
+            row.append("Quality")
+            row.extend(quality_data.get(metric, "") for metric in quality_metrics)
+        if include_logger and (include_weather or include_quality):
+            row.append("")
+        if include_logger:
+            row.append("Logger")
+            for station_id in effective_logger_stations:
+                row.append(_get_logger_label(station_id))
+                row.extend(logger_data.get((station_id, metric), "") for metric in logger_metrics)
+        return row
+
+    readings = (
+        select(
+            SensorMeasurement.recorded_at,
+            SensorMeasurement.group_type,
+            SensorMeasurement.station_id,
+            SensorMeasurement.measurement_type,
+            SensorMeasurement.value,
+        )
+        .where(*conditions)
+        .order_by(SensorMeasurement.recorded_at)
+    )
+
+    records = 0
+    row_num = 0
+    with open(output_path, "w", newline="", encoding="utf-8") as file_obj, _streaming_connection() as conn:
+        writer = _SafeCsvWriter(file_obj)
         writer.writerow(headers)
 
-        # Write data rows
-        sorted_timestamps = sorted(all_timestamps)
-        for row_num, timestamp in enumerate(sorted_timestamps, 1):
-            csv_row = [row_num, timestamp]
+        # The readings of one timestamp: metric -> value for Weather and Quality, (station, metric) -> value for
+        # loggers. Rows arrive ordered by time, so a new timestamp means the previous one is complete.
+        current = None
+        weather_data, quality_data, logger_data = {}, {}, {}
+        for recorded_at, group_type, station_id, measurement_type, value in conn.execute(readings):
+            if records == 0 or recorded_at != current:
+                if records:
+                    row_num += 1
+                    writer.writerow(csv_row(row_num, _iso(current), weather_data, quality_data, logger_data))
+                current = recorded_at
+                weather_data, quality_data, logger_data = {}, {}, {}
 
-            # Weather section data
-            if include_weather:
-                csv_row.append("Weather")
-                for metric in weather_metrics:
-                    csv_row.append(weather_data.get((timestamp, metric), ""))
+            records += 1
+            metric = measurement_type or ""
+            if group_type == "Weather" and include_weather:
+                weather_data[metric] = value
+            elif group_type == "Quality" and include_quality:
+                quality_data[metric] = value
+            elif group_type == "Logger" and include_logger and station_id:
+                logger_data[(str(station_id), metric)] = value
 
-            # Blank separator
-            if include_quality and include_weather:
-                csv_row.append("")
+            if progress_callback and records % STREAM_BATCH_ROWS == 0:
+                progress_callback(records, total)
 
-            # Quality section data
-            if include_quality:
-                csv_row.append("Quality")
-                for metric in quality_metrics:
-                    csv_row.append(quality_data.get((timestamp, metric), ""))
+        if records:
+            row_num += 1
+            writer.writerow(csv_row(row_num, _iso(current), weather_data, quality_data, logger_data))
 
-            # Blank separator
-            if include_logger and (include_weather or include_quality):
-                csv_row.append("")
-
-            # Logger section data
-            if include_logger:
-                csv_row.append("Logger")
-                for station_id in effective_logger_stations:
-                    csv_row.append(_get_logger_label(station_id))
-                    for metric in logger_metrics:
-                        csv_row.append(logger_data.get((timestamp, station_id, metric), ""))
-
-            if len(csv_row) < len(headers):
-                csv_row.extend([""] * (len(headers) - len(csv_row)))
-            elif len(csv_row) > len(headers):
-                csv_row = csv_row[: len(headers)]
-
-            writer.writerow(csv_row)
-
-    return len(records)
+    return records
 
 
 def _get_station_coords(station_id: str):
