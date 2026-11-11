@@ -458,9 +458,8 @@ class PostgresTests(unittest.TestCase):
         with mock.patch.object(ingest, "app", self.app), \
                 mock.patch.multiple(ingest, **services), \
                 mock.patch.object(ingest.Config, "WQ_DEVICE_ID", WQ), \
-                mock.patch.object(weather.requests, "get", return_value=licor), \
+                mock.patch.object(requests, "get", side_effect=lambda url, **kw: licor if "licor" in url else wqdata), \
                 mock.patch.object(weather.time, "sleep"), \
-                mock.patch.object(quality.requests, "get", return_value=wqdata), \
                 mock.patch("builtins.print"):
             ingest.inject_all_new_data()
 
