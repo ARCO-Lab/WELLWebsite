@@ -77,8 +77,8 @@ Without it, every container fails with "No route to host" after the next reboot,
 | HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
 | WQData Live API | Automated ingestion & scheduled updates |
 | OpenAI API | AI analysis over downsampled series |
-| Borealis | Nightly cron export/upload |
-| SharePoint | Nightly cron export/upload |
+| Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
+| SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
 ### API canary
 
@@ -86,7 +86,7 @@ Without it, every container fails with "No route to host" after the next reboot,
 
 - **LI-COR**: the last 6 hours for the first logger in `HOBOLINK_LOGGERS` (`data[]` records with `sensor_sn`, and a `timestamp` and numeric `value` on every record ingestion stores; battery and unknown logger channels are skipped, as ingestion skips them).
 - **WQData**: the last 6 hours for `WQ_DEVICE_ID`, as exactly one request, because WQData's hourly quota is shared with the 10-minute ingestion (`data[]` points with `timestamp` and `values[].parameterId`, plus `info` for paging).
-- **Borealis**: the metadata of both datasets (`DEMO_BOREALIS_AW_PERSISTENT_ID`, which downloads read, and `DEMO_BOREALIS_WC_PERSISTENT_ID`, which uploads add to) with `BOREALIS_API_TOKEN` (`data.latestVersion` with `versionState` and `files[].dataFile`). This proves the token is accepted and can read both datasets, not that it may still add files: the monthly upload also needs edit rights on the upload dataset, which the canary doesn't test.
+- **Borealis**: the metadata of both datasets (`BOREALIS_SAMPLING_PERSISTENT_ID`, which downloads read, and `BOREALIS_UPLOAD_PERSISTENT_ID`, which uploads add to; the older `DEMO_BOREALIS_*` names are read when these are unset) with `BOREALIS_API_TOKEN` (`data.latestVersion` with `versionState` and `files[].dataFile`). This proves the token is accepted and can read both datasets, not that it may still add files: the monthly upload also needs edit rights on the upload dataset, which the canary doesn't test (`scripts/borealis_check.py --check` does).
 
 It prints one `OK` or `FAIL` line per source (HTTP status and reason only, never URLs, keys or response bodies) and fails the run if any source fails. An empty response counts as a failure too, since ingestion would have nothing to store. Every failure shows on the repository's Actions tab, and the workflow keeps one GitHub issue in step with it (`.github/scripts/canary_issue.sh`, run by the workflow's second job):
 
@@ -99,8 +99,109 @@ Being assigned (or watching the repository) means GitHub emails about the issue.
 Using it:
 
 - **Run it by hand**: Actions → API canary → Run workflow. On the VM, once the image includes the script: `docker compose exec worker python scripts/api_canary.py`.
-- **When a key is rotated**, update the matching repository secret (Settings → Secrets and variables → Actions) as well as `dashboard/backend/app/.env` on the VM, then run the canary by hand. The secrets are `HOBOLINK_API_URL`, `HOBOLINK_API_TOKEN`, `HOBOLINK_LOGGERS`, `WQ_API_URL`, `WQ_API_KEY`, `WQ_DEVICE_ID`, `DEMO_BOREALIS_URL`, `BOREALIS_API_TOKEN`, `DEMO_BOREALIS_AW_PERSISTENT_ID` and `DEMO_BOREALIS_WC_PERSISTENT_ID`. The Borealis token and the WQData key are both due for rotation.
+- **When a key is rotated**, update the matching repository secret (Settings → Secrets and variables → Actions) as well as `dashboard/backend/app/.env` on the VM, then run the canary by hand. The secrets are `HOBOLINK_API_URL`, `HOBOLINK_API_TOKEN`, `HOBOLINK_LOGGERS`, `WQ_API_URL`, `WQ_API_KEY`, `WQ_DEVICE_ID`, `BOREALIS_URL`, `BOREALIS_API_TOKEN`, `BOREALIS_SAMPLING_PERSISTENT_ID` and `BOREALIS_UPLOAD_PERSISTENT_ID` (or the older `DEMO_BOREALIS_URL`, `DEMO_BOREALIS_AW_PERSISTENT_ID` and `DEMO_BOREALIS_WC_PERSISTENT_ID`). The Borealis token and the WQData key are both due for rotation.
 - **Tests**: `dashboard/backend/tests/test_api_canary.py` (no network). The canary keeps copies of a few constants from `utils/parsers.py` so the workflow needs only `requests`; CI runs the tests that check those copies still match on every pull request, with the rest of the backend tests (by hand, from `dashboard/backend`: `python -m unittest discover -s tests -t .`). The issue logic is tested by `.github/scripts/test_canary_issue.sh` against a stub `gh` (`bash .github/scripts/test_canary_issue.sh`; CI runs it with the deploy script test).
+
+## Off-VM copies: Borealis and SharePoint
+
+The database lives on one VM, so each month's sensor data is also copied off it, twice:
+
+- **Borealis** (`borealisdata.ca`, the Scholars Portal Dataverse that McMaster uses). This is the public, citable copy. On the 1st of each month at 02:00 Toronto time the worker runs `scripts/upload_data.py`. It exports the month that just ended as `WELLWestCampus_<Mon><YYYY>.csv` (the dashboard's CSV layout), adds it to the upload dataset in a folder for the year, and publishes a new major version of the dataset.
+- **SharePoint**, a McMaster document library. Right after Borealis, `scripts/sharepoint_upload.py` uploads the same file to `<SHAREPOINT_FOLDER>/<year>/` through Microsoft Graph. The two copies are kept apart: each has its own record of uploaded months (`logs/uploaded_months.json` and `logs/sharepoint_uploaded_months.json`) and its own heartbeat (`HEALTHCHECK_URL_UPLOAD` and `HEALTHCHECK_URL_SHAREPOINT`). If one of them fails, it is retried every day at 02:00 and the other isn't held up.
+
+Borealis also carries data the other way. Creek **sampling** results are uploaded by people to a second dataset, and the weekly download (`scripts/download_data.py`, Sundays 00:00) checks each new file against [the sampling CSV format](docs/sampling-csv-format.md) and imports it into the Ancaster Watershed tab.
+
+### How the Borealis jobs behave
+
+- **Publishing.** Adding a file only changes the dataset's *draft*, which only its editors can see, so the upload publishes the draft afterwards. It publishes only a draft that holds this month's file unpublished (added or replaced by this run, or left by a run that failed before publishing); a draft with only someone else's changes, such as a curator's metadata edit, is left for them to publish. Dataverse has only one draft per dataset, though, so **a draft that is open when the month's file is added (a curator's unfinished edit) is published together with that file**, and the log warns when that happens. Curators should finish or discard edits on the upload dataset before the 1st of the month (the upload runs at 02:00 Toronto time, and retries daily until it succeeds), or set `BOREALIS_PUBLISH=0` while they work. Any version that changes files has to be published as a **major** version (Dataverse refuses a minor one), so the dataset goes 1.0, 2.0, and so on, one version per month. The first publish also needs the dataset's collection to be published. Set `BOREALIS_PUBLISH=0` to leave each month as a draft for a curator to publish instead.
+- **No tabular ingest.** Uploads are sent with `tabIngest=false`. That stores the CSV byte for byte, so its checksum matches the one the job computes, and no ingest lock delays publishing. (Ingest would turn it into a `.tab` file, and the CSV's blank separator columns and repeated headers don't convert well.)
+- **Safe to re-run.** If a file with the same name and checksum is already in the dataset, nothing is sent, and if that file is still waiting in a draft, the draft is published. A changed file *replaces* the published one, and Dataverse keeps the old copy in the earlier version. A changed file that was never published is deleted and added again, because Dataverse can't replace an unpublished file. So a run that failed between upload and publish is finished by the next run, without a duplicate file.
+- **Errors** name the cause without printing the token or URLs (the token is also scrubbed from anything Borealis says back, which can repeat it). 401 means the token is wrong or expired, 403 means the account lacks a role (Curator is needed), 404 means a wrong id or the demo server, and 409 means the dataset is locked or the collection isn't published. Each month's CSV is now built in seconds: the old version filtered the whole month once per cell and logged every cell, which took about 45 minutes and wrote about 110 MB to `logs/db_uploads.log` per run.
+- **The download reads only the published version.** A file someone uploaded but nobody has published yet is skipped, and the log says that a draft is waiting. It is imported on the first run after the dataset is published. Restricted files are skipped, so the download needs no token: a published sampling dataset works without one.
+
+### Settings (`dashboard/backend/app/.env`, read by the worker)
+
+| Variable | What |
+|---|---|
+| `BOREALIS_URL` | `https://borealisdata.ca`. A collection page such as `https://borealisdata.ca/dataverse/WELL` also works: the jobs use only its server part, and the preflight checks the collection `WELL`. |
+| `BOREALIS_API_TOKEN` | The API token of the account that uploads and publishes (it needs the Curator role on the upload dataset or its collection). |
+| `BOREALIS_UPLOAD_PERSISTENT_ID` | The sensor dataset, e.g. `doi:10.5683/SP3/ABCDEF` (dataset page > Metadata > Persistent Identifier). |
+| `BOREALIS_SAMPLING_PERSISTENT_ID` | The sampling dataset. |
+| `BOREALIS_UPLOAD_DATAVERSE`, `BOREALIS_SAMPLING_DATAVERSE` | The aliases of the two collections. Only the preflight uses them. |
+| `BOREALIS_PUBLISH` | `1` (default) publishes each month; `0` leaves a draft. |
+| `BOREALIS_UPLOAD_FIRST_MONTH` | The first month uploaded (default `2026-10`). |
+| `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET` | The Entra ID app that IT registers (see below). |
+| `SHAREPOINT_SITE` | e.g. `https://mcmaster.sharepoint.com/sites/WELL`. |
+| `SHAREPOINT_LIBRARY`, `SHAREPOINT_FOLDER` | The document library (default `Documents`) and the folder in it (default `WELL sensor data`). |
+| `SHAREPOINT_UPLOAD_FIRST_MONTH` | The first month copied to SharePoint (default: the Borealis one). |
+| `HEALTHCHECK_URL_SHAREPOINT` | Heartbeat for the SharePoint copy (see Monitoring). |
+
+The SharePoint copy is **off** while none of the first four `SHAREPOINT_*` variables is set. If only some are set, the worker logs which ones are missing and reports a failure at 02:00. The older `DEMO_BOREALIS_URL`, `DEMO_BOREALIS_WC_PERSISTENT_ID` (upload) and `DEMO_BOREALIS_AW_PERSISTENT_ID` (sampling) are still read when the new names are unset. They point at `demo.borealisdata.ca`, a test server that is reset from time to time and is not a backup, and the upload refuses to mix a production URL with a demo dataset id.
+
+### Checking it
+
+```sh
+docker compose exec worker python scripts/borealis_check.py --check      # read-only: GET requests only
+docker compose exec worker python scripts/sharepoint_upload.py --check   # read-only: sign-in, site, library, folder
+docker compose exec worker python scripts/upload_data.py --year 2026 --month 10 --dry-run   # build the CSV only
+```
+
+`borealis_check.py` checks the settings, whether the token is valid and when it expires, whether each collection is published and what your account may do in it, and each dataset's published version, licence, locks and permissions (`canEditDataset` and `canPublishDataset` on the upload dataset). For the sampling dataset it also checks that it is published and holds the template and a README. It ends with a numbered list of what is still missing, and exits 1 until that list is empty. It never prints the token.
+
+### Setting it up: what to obtain, in order
+
+**Borealis**
+
+1. **Ask for a role on the WELL collection.** The collection exists and is published: [borealisdata.ca/dataverse/WELL](https://borealisdata.ca/dataverse/WELL), inside the McMaster University collection. Email McMaster Library's Research Data Management team at **rdm@mcmaster.ca**, who administer the McMaster collection on Borealis (Scholars Portal runs the service and is reached through them). Ask for the **Curator** role on `WELL` (or **Admin**, if you will also manage other people's access) for the account that will own the token. Use a shared lab account if possible, so the token doesn't depend on one person. Curator can create collections and datasets and add and publish files.
+2. **Create the API token.** Log in to borealisdata.ca as that account, then go to your name (top right) > **API Token** > **Create Token** (or **Recreate Token**). Tokens expire, usually after a year: note the date, which `borealis_check.py` prints. The old token was issued on the demo server and has returned 401 since 2026-08-30.
+3. **Create two sub-collections** in `WELL` (Add Data > New Dataverse), for example "WELL West Campus sensor data" (alias `WELL-sensors`) and "WELL Ancaster Creek sampling" (alias `WELL-sampling`). Give each a contact email and a category such as Laboratory or Research Project. **Publish both**, since datasets can't be published before their collection.
+4. **Create one dataset in each** (Add Data > New Dataset). The citation metadata required to publish is the title, author (WELL / McMaster University), point-of-contact email, description and subject (Earth and Environmental Sciences). Keywords, geographic coverage (Hamilton, Ontario, Canada) and time period are recommended. **Licence:** choose one under Terms. **CC BY 4.0** is suggested (attribution required); CC0 1.0 is the Dataverse default if the lab prefers no conditions. Use the same licence for both datasets.
+5. **Sampling dataset:** before publishing it, upload
+   - the template, `dashboard/backend/app/sampling_template.csv`, under the name **`WELLAncasterWatershed_SAMPLE.csv`**. The import ignores that name.
+   - a **README** (e.g. `README.md`) that tells uploaders to follow the format in `docs/sampling-csv-format.md` (or link to it on GitHub), to name files `WELLAncasterWatershed_<description>.csv`, to check them with `scripts/check_sampling_csv.py`, and to **publish the dataset after adding files** (otherwise they aren't imported).
+
+   Then **publish** the dataset. Give the people who upload sampling files the **Contributor** role on it (they can add files; a Curator publishes) or Curator (they publish themselves).
+6. **Sensor dataset:** it can stay empty. The first monthly upload publishes version 1.0. Copy both persistent ids (`doi:10.5683/...`).
+7. **On the VM**, set `BOREALIS_URL`, `BOREALIS_API_TOKEN`, `BOREALIS_UPLOAD_PERSISTENT_ID`, `BOREALIS_SAMPLING_PERSISTENT_ID`, `BOREALIS_UPLOAD_DATAVERSE` and `BOREALIS_SAMPLING_DATAVERSE` in `dashboard/backend/app/.env`, then remove the `DEMO_BOREALIS_*` lines. Next, recreate the worker so it reads them: `docker compose up -d --no-deps worker`. Run `borealis_check.py --check` until it says Ready. Then upload October by hand, `docker compose exec worker python scripts/upload_data.py --year 2026 --month 10`, or wait for 02:00. Also update the canary's repository secrets: `BOREALIS_URL`, `BOREALIS_API_TOKEN`, `BOREALIS_UPLOAD_PERSISTENT_ID` and `BOREALIS_SAMPLING_PERSISTENT_ID`. The canary reads those names first; delete the `DEMO_BOREALIS_*` secrets afterwards.
+
+**SharePoint**
+
+8. **Choose the destination:** a SharePoint site the lab owns (or ask IT to create one, e.g. "WELL"), its document library (usually *Documents*), and a folder (default `WELL sensor data`; the job creates it and one subfolder per year).
+9. **Ask McMaster IT** (UTS service desk) for an app registration. The text below is ready to send, with the site URL filled in.
+10. **On the VM**, set `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`, `SHAREPOINT_SITE` (and `SHAREPOINT_LIBRARY` / `SHAREPOINT_FOLDER` if they differ from the defaults) in `dashboard/backend/app/.env`. Add a Healthchecks.io check, "WELL SharePoint copy" (cron `0 2 1 * *`, America/Toronto, grace 4 h), and set its ping URL as `HEALTHCHECK_URL_SHAREPOINT`. Then recreate the worker. Run `sharepoint_upload.py --check`, then `sharepoint_upload.py --year 2026 --month 10` once by hand to prove write access. Put a reminder in the calendar for the client secret's expiry date.
+
+Request for McMaster IT:
+
+```text
+Subject: Entra ID app registration with Microsoft Graph Sites.Selected (write) for one SharePoint site
+
+Hello,
+
+The Watershed Ecosystems Living Lab (WELL) dashboard (https://welldash.mcmaster.ca) runs on a McMaster VM
+and needs to copy one CSV file of sensor data per month into a SharePoint document library, unattended,
+as an off-server backup. We would like to use an app-only identity limited to that one site:
+
+1. An app registration in the McMaster Entra ID tenant, e.g. named "WELL dashboard SharePoint upload",
+   single tenant, no redirect URI.
+2. Microsoft Graph APPLICATION permission "Sites.Selected", with admin consent granted.
+   (Not Sites.ReadWrite.All: we only need the one site below.)
+3. A site-specific grant for that app with the "write" role on this site:
+     Site: https://mcmaster.sharepoint.com/sites/<SITE>
+   e.g. with Graph: POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
+     {"roles": ["write"],
+      "grantedToIdentities": [{"application": {"id": "<app client id>", "displayName": "WELL dashboard SharePoint upload"}}]}
+   or with PnP PowerShell: Grant-PnPAzureADAppSitePermission -AppId <app client id>
+     -DisplayName "WELL dashboard SharePoint upload" -Site https://mcmaster.sharepoint.com/sites/<SITE> -Permissions Write
+4. A client secret for the app (please tell us its expiry date).
+
+Please send us the tenant ID, the application (client) ID and the secret (through a secure channel).
+The app signs in with the OAuth 2.0 client-credentials flow and only creates and replaces files
+in the folder "WELL sensor data" of the site's Documents library. It never signs in as a user.
+
+Contact: <name>, <email>, WELL / <department>
+
+Thank you!
+```
 
 ---
 
@@ -110,7 +211,7 @@ Cron orchestrates all scheduled tasks:
 - **Ingestion**: HoboLink and WQData pulls on schedule
 - **Historical backfills**: Retroactive data imports
 - **Downsampling**: Bucket-based reduced-resolution series for chart performance
-- **Exports**: Nightly CSV exports to Borealis and SharePoint with checksum verification and logging
+- **Exports**: Monthly CSV uploads to Borealis and SharePoint (see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint))
 - **Health checks**: Readiness endpoints for external monitors
 
 ### Deploying
@@ -290,12 +391,14 @@ Three simple pieces, all optional and all off until configured. On the VM their 
 | `HEALTHCHECK_URL_INGESTION` | After every 10-minute ingestion run; `/fail` when LI-COR or WQData raised an error. |
 | `HEALTHCHECK_URL_UPLOAD` | After the monthly Borealis upload (02:00 on the 1st, and daily retries); `/fail` if a month didn't go up. Days with nothing to upload don't ping. |
 | `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
+| `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
 | `HEALTHCHECK_URL_BACKUP` | Reserved for the database backup job on the host, which is outside the containers: end it with `curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL_BACKUP"`. |
 
 To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough), create one check per job, and copy each check's ping URL into the matching variable:
 - **WELL ingestion**: Simple schedule, period 10 minutes, grace 30 minutes.
 - **WELL monthly upload**: Cron `0 2 1 * *`, time zone America/Toronto, grace 4 hours (an upload may take up to 2 h).
+- **WELL SharePoint copy**, once SharePoint is set up: the same schedule and grace.
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
 - **WELL backup**, if the backup job pings it: its own schedule, grace about an hour.
 
@@ -409,7 +512,7 @@ The platform should publish a simple privacy notice covering both the dashboard 
 Nginx terminates TLS and routes by host/path to either the dashboard container or WordPress. The frontend encodes filter state in URL query params. The API exposes versioned REST paths for stations, parameters, metrics, aggregate, download, ai, and health.
 
 **How are backups automated?**
-Nightly cron jobs export curated CSVs from PostgreSQL and upload them to Borealis and SharePoint, recording checksums and outcomes in logs.
+Each month the worker exports the month's sensor data as CSV and uploads it to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint).
 
 **How does the AI analysis feature work safely?**
 The API aggregates and downsamples the series first, then sends a bounded prompt with metadata to OpenAI. Responses are rendered in the UI and can be exported.
