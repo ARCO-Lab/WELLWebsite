@@ -37,10 +37,10 @@ function formatInstant(ms: number, withYear: boolean): string {
 }
 
 /** The window as "Nov 10 00:00 – Nov 11 05:00", with years when it isn't all in this year (e.g. after "All"). */
-export function windowLabel(w: Range): string {
+export function windowLabel(w: Range, now: number): string {
   const year = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: TIME_ZONE, year: "numeric" });
-  const now = year(Date.now());
-  const withYear = year(w.start) !== now || year(w.end - 1) !== now;
+  const thisYear = year(now);
+  const withYear = year(w.start) !== thisYear || year(w.end - 1) !== thisYear;
   return `${formatInstant(w.start, withYear)} – ${formatInstant(w.end, withYear)}`;
 }
 
@@ -97,7 +97,7 @@ const ChartWindowBar: React.FC<Props> = ({ inModal = false, group = "weather" })
             <ChevronLeft aria-hidden className="h-4 w-4" />
           </BarButton>
           <p className="flex min-w-0 flex-1 items-center gap-2 text-xs text-gray-800 sm:flex-none sm:text-sm">
-            <span>{windowLabel(w)}<span className="text-gray-600">{resolution}</span></span>
+            <span>{windowLabel(w, view.clock)}<span className="text-gray-600">{resolution}</span></span>
             {view.detailLoading && (
               <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
             )}
@@ -126,7 +126,8 @@ const ChartWindowBar: React.FC<Props> = ({ inModal = false, group = "weather" })
         {inModal && (
           <div className="flex w-full flex-wrap items-center gap-2" role="group" aria-label="Show a span of time">
             {PRESETS.map((p) => {
-              const target = presetWindow(p.days, w, Date.now());
+              // For the pressed state, the hour the charts go by; a press reads the clock itself
+              const target = presetWindow(p.days, w, view.clock + 1);
               // Pressed when the window already is that span (to the minute)
               const width = w.end - w.start;
               const pressed = p.days === "all"
@@ -135,7 +136,7 @@ const ChartWindowBar: React.FC<Props> = ({ inModal = false, group = "weather" })
               return (
                 <button key={p.label} type="button" title={p.title} aria-pressed={pressed}
                   className={`${buttonClass} aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary`}
-                  onClick={() => showWindow(target)}>
+                  onClick={() => showWindow(presetWindow(p.days, w, Date.now()))}>
                   {p.label}
                 </button>
               );

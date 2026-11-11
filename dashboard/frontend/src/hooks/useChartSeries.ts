@@ -17,6 +17,9 @@ import {
   Lru, clampToNow, detailRange, normalizeWindow, pickBucket, pickedDaysRange, planWindow, type Range,
 } from "@/utils/chartWindow";
 
+/** The start of the hour an instant falls in (default: now). Called from effects and handlers, never in render. */
+export const hourStart = (now: number = Date.now()): number => Math.floor(now / 3_600_000) * 3_600_000;
+
 export interface GroupSelection {
   gauges: boolean;
   weather: boolean;
@@ -129,6 +132,7 @@ export interface ChartView {
   detailLoading: boolean;
   detailError: Error | null;
   retryDetail: () => void;
+  clock: number; // the start of the current hour (epoch ms), as the charts last read it
   // Show a window that may reach outside the picked days (the range buttons, a shared link): the picked days move
   // to cover it. null: back to the picked days.
   showWindow: (w: Range) => void;
@@ -164,25 +168,28 @@ export default function useChartSeries(
   setViewWindow: (w: Range | null) => void,
   setDays: (startDay: Date, endDay: Date, viewWindow: Range | null) => void,
 ): Omit<ChartView, "wind"> {
-  // The hour now: the picked days end at the next whole hour (clampToNow), so on a page left open that end moves on
-  // as the hours pass, which loads a new overview with the newest hour. Not while zoomed in: that would swap the
-  // detail on screen for the coarse new overview at the top of the hour. The end catches up when the view is
-  // unzoomed (Reset, Zoom out to the whole range) or other days are picked.
-  const [hour, setHour] = useState(() => Math.floor(Date.now() / 3_600_000));
-  const hourTick = viewWindow ? "zoomed" : hour;
+  // The clock the charts go by: the start of the current hour, kept in state so rendering never reads the time.
+  // The picked days end at the next whole hour (clampToNow), so on a page left open that end moves on as the hours
+  // pass, which loads a new overview with the newest hour. Not while zoomed in: that would swap the detail on screen
+  // for the coarse new overview at the top of the hour. The clock catches up when the view is unzoomed (Reset, Zoom
+  // out to the whole range) and when the range buttons or a link move the picked days, in those handlers, or else
+  // at the next tick.
+  const [clock, setClock] = useState(hourStart);
+  const zoomedRef = useRef(viewWindow !== null);
   useEffect(() => {
-    const id = window.setInterval(() => setHour(Math.floor(Date.now() / 3_600_000)), 60_000);
+    zoomedRef.current = viewWindow !== null;
+  }, [viewWindow]);
+  useEffect(() => {
+    const id = window.setInterval(() => { if (!zoomedRef.current) setClock(hourStart()); }, 60_000);
     return () => window.clearInterval(id);
   }, []);
-  const rangeRef = useRef<Range | null>(null);
-  const range = useMemo(() => {
-    const r = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), Date.now()) : null;
-    // The same object while the values stay the same (past days don't change on the hour), so nothing re-runs
-    const prev = rangeRef.current;
-    if (r && prev && r.start === prev.start && r.end === prev.end) return prev;
-    rangeRef.current = r;
-    return r;
-  }, [startDate, endDate, hourTick]); // eslint-disable-line react-hooks/exhaustive-deps -- hourTick: see above
+  const picked = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), clock + 1) : null;
+  // Memoised on the two numbers: the same object while they stay the same (past days don't change on the hour)
+  const rangeStart = picked?.start, rangeEnd = picked?.end;
+  const range = useMemo<Range | null>(
+    () => (rangeStart !== undefined && rangeEnd !== undefined ? { start: rangeStart, end: rangeEnd } : null),
+    [rangeStart, rangeEnd]
+  );
   const groups = GROUP_KEYS.filter((g) => activeGroups[g]).join(",");
 
   const cache = useRef(new Lru<LoadedSeries>(CACHE_ENTRIES));
@@ -324,6 +331,7 @@ export default function useChartSeries(
 
   const zoomTo = useCallback((w: Range | null) => {
     const next = w && range ? normalizeWindow(w, range) : null;
+    if (!next) setClock(hourStart()); // unzoomed: catch up with the hour (the same hour: no re-render)
     setViewWindow(next);
   }, [range, setViewWindow]);
 
@@ -334,9 +342,13 @@ export default function useChartSeries(
       zoomTo(w);
       return;
     }
-    const plan = planWindow(w, Date.now());
+    const now = Date.now();
+    const plan = planWindow(w, now);
     // New days rebuild every chart: let React keep the page responsive meanwhile (e.g. to the next button press)
-    startTransition(() => setDays(plan.startDay, plan.endDay, plan.viewWindow));
+    startTransition(() => {
+      setClock(hourStart(now));
+      setDays(plan.startDay, plan.endDay, plan.viewWindow);
+    });
   }, [range, zoomTo, setDays]);
 
   // Detail counts only while zoomed and when it belongs to the groups and days picked now; while a new range
@@ -362,6 +374,7 @@ export default function useChartSeries(
     detailError,
     retryDetail,
     showWindow,
+    clock,
   }), [overview, range, viewWindow, zoomTo, activeDetail, shownBucketS, shownAggregated, loading, error, detailLoading,
-    detailError, retryDetail, showWindow]);
+    detailError, retryDetail, showWindow, clock]);
 }
