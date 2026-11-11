@@ -5,13 +5,19 @@ import {
 	getContext,
 	store,
 	getConfig,
+	getElement,
 	withSyncEvent as originalWithSyncEvent,
 } from '@wordpress/interactivity';
 /*
  * Internal dependencies
  */
-import { validateField, isEmptyValue } from '../../contact-form/js/validate-helper';
-import { focusNextInput, dispatchSubmitEvent, submitForm } from './shared';
+import { validateField, isEmptyValue } from '../../contact-form/js/validate-helper.js';
+import { getRating } from '../field-rating/view.js';
+import { isFieldHiddenByLogic } from './conditional-visibility.js';
+import { maybeAddColonToLabel, getImages, getUrl, getSubmissionDisplayValue } from './helpers.js';
+import { focusNextInput, getForm, submitForm } from './shared.ts';
+// Import field type icons view to register its callbacks.
+import './field-type-icons-view.js';
 
 const withSyncEvent =
 	originalWithSyncEvent ||
@@ -19,11 +25,70 @@ const withSyncEvent =
 		( ...args ) =>
 			cb( ...args ) );
 
+/**
+ * Re-read field values from the DOM after a back/forward restore.
+ *
+ * The interactivity context is only written by the input and change handlers, and neither
+ * fires when the browser restores a page from the bfcache -- it puts the visitor's values
+ * straight back into the DOM. Conditional logic then keeps resolving against the values the
+ * context still holds, so a dependent field can stay hidden even though the restored trigger
+ * should reveal it, with no way out short of re-touching the trigger. Autofill has the same
+ * shape across some engines.
+ *
+ * Dispatching `input` routes through the same handler the visitor's typing does, so there is
+ * no second code path to keep in step.
+ */
+if ( typeof window !== 'undefined' ) {
+	window.addEventListener( 'pageshow', event => {
+		if ( ! event.persisted ) {
+			return;
+		}
+
+		document
+			.querySelectorAll(
+				'[data-jp-field-id] input, [data-jp-field-id] select, [data-jp-field-id] textarea'
+			)
+			.forEach( element => element.dispatchEvent( new Event( 'input', { bubbles: true } ) ) );
+	} );
+}
+
 const NAMESPACE = 'jetpack/form';
 const config = getConfig( NAMESPACE );
 let errorTimeout = null;
 
-const updateField = ( fieldId, value, showFieldError = false, validatorCallback = null ) => {
+// Must match Feedback::FORM_FILL_DURATION_FIELD in src/contact-form/class-feedback.php.
+const FORM_FILL_DURATION_FIELD = 'jetpack_form_fill_duration';
+
+/**
+ * Validate a field value, preferring a validator its module registered.
+ *
+ * A field module that registers `state.validators[ type ]` owns validation for that type
+ * outright — including the empty/required check — and it applies on every update, not just on
+ * blur. Types with no registered validator fall through to the shared `validateField()` helper.
+ *
+ * SCOPE CONTRACT: a validator is called from two different places, and they do not see the same
+ * context. `registerField()` runs from `callbacks.initializeField`, bound on the field wrapper;
+ * `actions.updateField()` runs from whichever element the user interacted with, which is usually
+ * a descendant. Because Interactivity API context only inherits downwards, a validator that
+ * reads `getContext()` cannot rely on anything a descendant provides — during registration those
+ * keys are undefined. Validators should derive their answer from the `value`, `isRequired` and
+ * `extra` arguments, and any `getContext()` read must tolerate missing keys.
+ *
+ * @param {string}  type       - The field type.
+ * @param {*}       value      - The value to validate.
+ * @param {boolean} isRequired - Whether the field is required.
+ * @param {*}       extra      - The field's extra configuration.
+ * @return {string} The validation result.
+ */
+const validate = ( type, value, isRequired, extra ) => {
+	const validator = state.validators?.[ type ];
+
+	return validator
+		? validator( value, isRequired, extra )
+		: validateField( type, value, isRequired, extra );
+};
+
+const updateField = ( fieldId, value, showFieldError = false ) => {
 	const context = getContext();
 	let field = context.fields[ fieldId ];
 
@@ -35,9 +100,7 @@ const updateField = ( fieldId, value, showFieldError = false, validatorCallback 
 	if ( field ) {
 		const { type, isRequired, extra } = field;
 		field.value = value;
-		field.error = validatorCallback
-			? validatorCallback( value, isRequired, extra )
-			: validateField( type, value, isRequired, extra );
+		field.error = validate( type, value, isRequired, extra );
 		field.showFieldError = showFieldError;
 	}
 };
@@ -48,11 +111,31 @@ const setSubmissionData = ( data = [] ) => {
 	context.submissionData = data;
 
 	// This cannot be a derived state because it needs to be defined on the backend for first render to avoid hydration errors.
-	context.formattedSubmissionData = data.map( item => ( {
-		label: maybeAddColonToLabel( item.label ),
-		value: maybeTransformValue( item.value ),
-		images: getImages( item.value ),
-	} ) );
+	context.formattedSubmissionData = data.map( item => {
+		const images = getImages( item.value );
+		const url = getUrl( item.value );
+		const files = getFiles( item.value );
+		const rating = getRating( item.value );
+
+		return {
+			label: maybeAddColonToLabel( item.label ),
+			value: getSubmissionDisplayValue( item.value, item.type, config?.unchecked_label ?? '' ),
+			// The submitted answer, kept beside the label. The checkbox icon is chosen from
+			// it, and `isCheckedValue()` cannot read a translated "No". Mirrors `rawValue` in
+			// Contact_Form::format_submission_data(), which seeds this same context.
+			rawValue: item.value,
+			images,
+			url,
+			files,
+			rating,
+			type: item.type || 'text',
+			showPlainValue:
+				! url &&
+				! rating &&
+				( ! images || images.length === 0 ) &&
+				( ! files || files.length === 0 ),
+		};
+	} );
 };
 
 const registerField = (
@@ -65,7 +148,23 @@ const registerField = (
 ) => {
 	const context = getContext();
 
+	if ( ! context.fields ) {
+		context.fields = {};
+	}
+
 	if ( ! context.fields[ fieldId ] ) {
+		// Detect pre-filled "Other" radio values (pattern: "Label: custom text")
+		let isOtherSelected = false;
+		let otherLabel = null;
+		if ( type === 'radio' && value && value.includes( ': ' ) ) {
+			const colonIndex = value.indexOf( ': ' );
+			const possibleLabel = value.substring( 0, colonIndex );
+			if ( possibleLabel.length < 30 ) {
+				isOtherSelected = true;
+				otherLabel = possibleLabel;
+			}
+		}
+
 		context.fields[ fieldId ] = {
 			id: fieldId,
 			type,
@@ -73,8 +172,10 @@ const registerField = (
 			value,
 			isRequired,
 			extra,
-			error: validateField( type, value, isRequired, extra ),
+			error: validate( type, value, isRequired, extra ),
 			step: context?.step ? context.step : 1,
+			isOtherSelected,
+			otherLabel,
 		};
 	}
 };
@@ -93,43 +194,78 @@ const getError = field => {
 	return config.error_types && config.error_types[ field.error ];
 };
 
-const maybeAddColonToLabel = label => {
-	const formattedLabel = label ? label : null;
+/**
+ * Capture file preview data (thumbnail URLs and icons) from the DOM before form submission.
+ * This allows us to preserve the client-side preview for the confirmation page.
+ *
+ * @param {string} formHash - The form hash identifier.
+ * @return {Map<string, {previewUrl: string|null, iconUrl: string|null}>} Map of filename to preview data.
+ */
+const captureFilePreviews = formHash => {
+	const previews = new Map();
+	const form = document.getElementById( 'jp-form-' + formHash );
 
-	if ( ! formattedLabel ) {
-		return null;
+	if ( ! form ) {
+		return previews;
 	}
 
-	return formattedLabel.endsWith( '?' ) ? formattedLabel : formattedLabel.replace( /:$/, '' ) + ':';
+	// Find all file preview elements in the form
+	const filePreviewElements = form.querySelectorAll( '.jetpack-form-file-field__preview' );
+
+	filePreviewElements.forEach( preview => {
+		const nameElement = preview.querySelector( '.jetpack-form-file-field__file-name' );
+		const imageElement = preview.querySelector( '.jetpack-form-file-field__image' );
+
+		if ( nameElement && imageElement ) {
+			const fileName = nameElement.textContent?.trim();
+			const computedStyle = window.getComputedStyle( imageElement );
+
+			// Get the background-image (for image files) or mask-image (for non-image files)
+			const backgroundImage = computedStyle.backgroundImage;
+			const maskImage = computedStyle.maskImage || computedStyle.webkitMaskImage;
+
+			if ( fileName ) {
+				previews.set( fileName, {
+					// For images, the background-image contains the blob URL
+					previewUrl: backgroundImage && backgroundImage !== 'none' ? backgroundImage : null,
+					// For non-images, the mask-image contains the icon SVG URL
+					iconUrl: maskImage && maskImage !== 'none' ? maskImage : null,
+				} );
+			}
+		}
+	} );
+
+	return previews;
 };
 
-const maybeTransformValue = value => {
-	// For image select fields, we want to show the perceived values, as the choices can be shuffled.
-	if ( value?.type === 'image-select' ) {
-		return value.choices
-			.map( choice => {
-				let transformedValue = choice.perceived;
+// Store for file previews captured before submission
+let capturedFilePreviews = new Map();
 
-				if ( choice.showLabels && choice.label != null && choice.label !== '' ) {
-					transformedValue += ' - ' + choice.label;
-				}
+/**
+ * Extract file data from a file field value for display on the confirmation page.
+ * Merges server response data with captured preview URLs (for AJAX submissions).
+ *
+ * @param {Object|null} value - The field value object, expected to have type 'file' and files array.
+ * @return {Array<{name: string, size: string, url: string, previewUrl: string|null, iconUrl: string|null, hasPreview: boolean}>|null} Array of file objects or null if not a file field.
+ */
+const getFiles = value => {
+	if ( value?.type === 'file' && value?.files ) {
+		return value.files.map( file => {
+			const fileName = file.name ?? '';
+			const preview = capturedFilePreviews.get( fileName );
+			const hasPreview = !! ( preview?.previewUrl || preview?.iconUrl );
 
-				return transformedValue;
-			} )
-			.join( ', ' );
-	}
-
-	// For file upload fields, we want to show the file name and size
-	if ( value?.name && value?.size ) {
-		return value.name + ' (' + value.size + ')';
-	}
-
-	return value;
-};
-
-const getImages = value => {
-	if ( value?.type === 'image-select' ) {
-		return value.choices.filter( choice => choice.image?.src ).map( choice => choice.image?.src );
+			return {
+				name: fileName,
+				size: file.size ?? '',
+				url: file.url ?? '',
+				// Include preview data if available (for AJAX submissions)
+				previewUrl: preview?.previewUrl ?? null,
+				iconUrl: preview?.iconUrl ?? null,
+				// Boolean flag for easier binding evaluation
+				hasPreview,
+			};
+		} );
 	}
 
 	return null;
@@ -163,6 +299,23 @@ const toggleImageOptionInput = ( input, optionElement ) => {
 	}
 };
 
+/**
+ * Build the combined value for an "Other" radio option.
+ * Returns "label: text" when text is provided, or just the label.
+ *
+ * @param {string} label - The "Other" option label.
+ * @param {string} text  - The user-entered custom text.
+ * @return {string} The combined value.
+ */
+const buildOtherValue = ( label, text ) => {
+	return text ? `${ label }: ${ text }` : label;
+};
+
+const stripHtml = html => {
+	const doc = new DOMParser().parseFromString( html, 'text/html' );
+	return doc.body.textContent || '';
+};
+
 const { state, actions } = store( NAMESPACE, {
 	state: {
 		validators: {},
@@ -176,7 +329,37 @@ const { state, actions } = store( NAMESPACE, {
 				return false;
 			}
 
+			// For single input forms, show submission errors in the field error div (only one field).
+			if ( context.isSingleInputForm && context.submissionError ) {
+				return true;
+			}
+
+			// For forced horizontal forms with submission error: use per-field errors when we have
+			// validation errors (showErrors + field.error). Otherwise show generic error only on
+			// the first field to avoid showing it on all fields.
+			if ( context.isForcedHorizontal && context.submissionError ) {
+				const hasFieldError = field.error && field.error !== 'yes';
+				if ( context.showErrors && hasFieldError ) {
+					return true;
+				}
+				const firstFieldId = Object.keys( context.fields || {} )[ 0 ];
+				return fieldId === firstFieldId;
+			}
+
 			return ( context.showErrors || field.showFieldError ) && field.error && field.error !== 'yes';
+		},
+
+		get fieldAriaInvalid() {
+			// Return 'true' for invalid fields, null to remove the attribute entirely.
+			// Using null instead of false prevents VoiceOver from announcing "invalid" for valid fields.
+			return state.fieldHasErrors ? 'true' : null;
+		},
+
+		get isOtherSelected() {
+			const context = getContext();
+			const fieldId = context.fieldId;
+			const field = context.fields[ fieldId ];
+			return field?.isOtherSelected || false;
 		},
 
 		get isFormEmpty() {
@@ -188,7 +371,9 @@ const { state, actions } = store( NAMESPACE, {
 				return false;
 			}
 
-			return ! Object.values( context.fields ).some( field => ! isEmptyValue( field.value ) );
+			return ! Object.values( context.fields ).some(
+				field => ! isEmptyValue( field.value ) && ! isFieldHiddenByLogic( context, field.id )
+			);
 		},
 
 		get isStepActive() {
@@ -221,10 +406,30 @@ const { state, actions } = store( NAMESPACE, {
 			return state.isSubmitting;
 		},
 
+		get isSuccessMessageAriaHidden() {
+			const context = getContext();
+			return context.submissionSuccess ? null : 'true';
+		},
+
 		get errorMessage() {
 			const context = getContext();
 			const fieldId = context.fieldId;
 			const field = context.fields[ fieldId ] || {};
+
+			// For single input forms, show submission errors in the field error div.
+			if ( context.isSingleInputForm && context.submissionError ) {
+				return context.submissionError;
+			}
+
+			// For forced horizontal: use per-field errors when we have validation errors.
+			else if ( context.isForcedHorizontal && context.submissionError ) {
+				const hasFieldError = field.error && field.error !== 'yes';
+				if ( context.showErrors && hasFieldError ) {
+					return getError( field );
+				}
+				const firstFieldId = Object.keys( context.fields || {} )[ 0 ];
+				return fieldId === firstFieldId ? context.submissionError : '';
+			}
 
 			if ( ! ( context.showErrors || field.showFieldError ) || ! field.error ) {
 				return '';
@@ -238,25 +443,41 @@ const { state, actions } = store( NAMESPACE, {
 				return false;
 			}
 			const context = getContext();
+			// A field hidden by conditional logic is skipped: the visitor cannot see it, so an
+			// error against it would block submission with nothing on screen to explain why.
+			// The server re-checks visibility and drops the same fields before validating.
 			if ( context.isMultiStep ) {
 				// For multistep forms, we only validate fields that are part of the current step.
 				return ! Object.values( context.fields ).some(
-					field => field.error !== 'yes' && field.step === context.currentStep
+					field =>
+						field.error !== 'yes' &&
+						field.step === context.currentStep &&
+						! isFieldHiddenByLogic( context, field.id )
 				);
 			}
-			return ! Object.values( context.fields ).some( field => field.error !== 'yes' );
+			return ! Object.values( context.fields ).some(
+				field => field.error !== 'yes' && ! isFieldHiddenByLogic( context, field.id )
+			);
 		},
 
 		get showFormErrors() {
 			const context = getContext();
 
-			return ! state.isFormValid && context.showErrors;
+			return (
+				! state.isFormValid &&
+				context.showErrors &&
+				! ( context.isSingleInputForm || context.isForcedHorizontal )
+			);
 		},
 
 		get showSubmissionError() {
 			const context = getContext();
 
-			return !! context.submissionError && ! state.showFormErrors;
+			return (
+				! ( context.isForcedHorizontal || context.isSingleInputForm ) &&
+				!! context.submissionError &&
+				! state.showFormErrors
+			);
 		},
 
 		get getFormErrorMessage() {
@@ -281,10 +502,13 @@ const { state, actions } = store( NAMESPACE, {
 					if ( context.isMultiStep && field.step !== context.currentStep ) {
 						return;
 					}
+					if ( isFieldHiddenByLogic( context, field.id ) ) {
+						return;
+					}
 					if ( field.error && field.error !== 'yes' ) {
 						errors.push( {
 							anchor: '#' + field.id,
-							label: field.label + ' : ' + getError( field ),
+							label: stripHtml( field.label ) + ': ' + getError( field ),
 							id: field.id,
 						} );
 					}
@@ -299,18 +523,19 @@ const { state, actions } = store( NAMESPACE, {
 			const field = context.fields[ fieldId ];
 			return field?.value || '';
 		},
+
+		get isFieldHidden() {
+			// The shared helper rather than a second copy of the same three lines: a fix to
+			// how hiding is decided has to reach the class binding too.
+			const context = getContext();
+
+			return isFieldHiddenByLogic( context, context.fieldId );
+		},
 	},
 
 	actions: {
 		updateField: ( fieldId, value, showFieldError ) => {
-			const context = getContext();
-			const { fieldType } = context;
-			updateField(
-				fieldId,
-				value,
-				showFieldError,
-				showFieldError ? state.validators?.[ fieldType ] : null
-			);
+			updateField( fieldId, value, showFieldError );
 		},
 		updateFieldValue: ( fieldId, value ) => {
 			actions.updateField( fieldId, value );
@@ -332,12 +557,75 @@ const { state, actions } = store( NAMESPACE, {
 			let value = event.target.value;
 			const context = getContext();
 			const fieldId = context.fieldId;
+			const field = context.fields[ fieldId ];
 
-			if ( context.fieldType === 'checkbox' ) {
+			// Keyed off what the control actually is, not what the field is called. A consent
+			// field renders as a checkbox but carries fieldType 'consent', so it skipped this
+			// and stored its literal `Yes` value whether checked or not. Conditional logic
+			// reads consent as a boolean, so unchecking it still read as checked: the fields
+			// it was supposed to gate stayed on screen and got filled in, and the server then
+			// resolved them hidden and dropped the answers. Anything checkbox-rendered later
+			// is covered by the same test.
+			if ( event.target.type === 'checkbox' ) {
 				value = event.target.checked ? '1' : '';
 			}
 
+			// Deselect "Other" when a different radio option is chosen
+			if ( context.fieldType === 'radio' && field?.isOtherSelected ) {
+				const otherLabel = field.otherLabel || 'Other';
+				if ( value !== otherLabel ) {
+					field.isOtherSelected = false;
+					field.otherLabel = null;
+
+					const fieldset = event.target.closest( 'fieldset' );
+					const otherTextInput = fieldset?.querySelector( 'input[name$="-other-text"]' );
+					if ( otherTextInput ) {
+						otherTextInput.value = '';
+					}
+				}
+			}
+
 			actions.updateField( fieldId, value );
+		},
+
+		onOtherRadioChange: event => {
+			const context = getContext();
+			const fieldId = context.fieldId;
+			const field = context.fields[ fieldId ];
+
+			if ( ! event.target.checked ) {
+				return;
+			}
+
+			const otherLabel =
+				event.target.getAttribute( 'data-other-label' ) || event.target.value || 'Other';
+
+			field.isOtherSelected = true;
+			field.otherLabel = otherLabel;
+
+			const fieldset = event.target.closest( 'fieldset' );
+			const otherTextInput = fieldset?.querySelector( 'input[name$="-other-text"]' );
+			const otherText = otherTextInput?.value || '';
+
+			actions.updateField( fieldId, buildOtherValue( otherLabel, otherText ) );
+
+			// Focus the text input after a short delay to ensure it's visible
+			if ( otherTextInput ) {
+				setTimeout( () => otherTextInput.focus(), 100 );
+			}
+		},
+
+		onOtherTextInput: event => {
+			const context = getContext();
+			const fieldId = context.fieldId;
+			const field = context.fields[ fieldId ];
+
+			if ( ! field?.isOtherSelected ) {
+				return;
+			}
+
+			const otherLabel = field.otherLabel || 'Other';
+			actions.updateField( fieldId, buildOtherValue( otherLabel, event.target.value ) );
 		},
 
 		onMultipleFieldChange: event => {
@@ -403,10 +691,33 @@ const { state, actions } = store( NAMESPACE, {
 			actions.updateField( context.fieldId, event.target.value, true );
 		},
 
+		/**
+		 * Start the fill timer on the submitter's first interaction with the form.
+		 *
+		 * Bound to `focusin` on the form wrapper, which covers every focusable control. File
+		 * drag-and-drop fires no focus event, so the file field module calls this directly.
+		 *
+		 * Uses `performance.now()` rather than `Date.now()`: it is monotonic, so a wall-clock
+		 * step backward mid-fill cannot produce a negative duration. Compared against null
+		 * rather than tested for truthiness, since a legitimate reading can be 0.
+		 */
+		trackFirstInteraction: () => {
+			const context = getContext();
+
+			if ( context.formFirstInteractionTime == null ) {
+				context.formFirstInteractionTime = performance.now();
+			}
+		},
+
 		onFormReset: () => {
 			const context = getContext();
 			context.fields = [];
 			context.showErrors = false;
+			// Start the fill timer over. Without this, going back from the success panel and
+			// filling the form in again would report a duration that also covers the first
+			// submission and the time spent reading the confirmation. The hidden input needs no
+			// clearing here because the write on submit is unconditional.
+			context.formFirstInteractionTime = null;
 
 			// Dispatch custom events to reset all fields
 			const formElement = document.getElementById( context.elementId );
@@ -426,6 +737,11 @@ const { state, actions } = store( NAMESPACE, {
 
 		onFormSubmit: withSyncEvent( function* ( event ) {
 			const context = getContext();
+
+			// Form preview used to block submissions entirely. Now submissions
+			// from preview are allowed and marked as test responses on the
+			// server. Leave `window.jetpackFormsPreviewMode` untouched so other
+			// code can still detect preview context if needed.
 
 			if ( ! state.isFormValid ) {
 				context.showErrors = true;
@@ -454,10 +770,31 @@ const { state, actions } = store( NAMESPACE, {
 
 			context.isSubmitting = true;
 
+			// Record the fill duration in the DOM before submitting. This has to happen outside
+			// the `useAjax` branch below: non-AJAX forms submit natively, so the value is only
+			// sent if it is already on the hidden input by this point.
+			//
+			// The write is unconditional so the input can never carry a value left over from an
+			// earlier fill — an unknown duration explicitly writes an empty string, which the
+			// server stores as null.
+			const durationField = getForm( context.formHash )?.querySelector(
+				`input[name="${ FORM_FILL_DURATION_FIELD }"]`
+			);
+
+			if ( durationField ) {
+				durationField.value =
+					context.formFirstInteractionTime == null
+						? ''
+						: Math.round( ( performance.now() - context.formFirstInteractionTime ) / 1000 ); // Duration in seconds.
+			}
+
 			if ( context.useAjax ) {
 				event.preventDefault();
 				event.stopPropagation();
 				context.submissionError = null;
+
+				// Capture file preview URLs before submission (blob URLs for images, icon URLs for other files)
+				capturedFilePreviews = captureFilePreviews( context.formHash );
 
 				const { success, error, data, refreshArgs } = yield submitForm( context.formHash );
 
@@ -488,20 +825,10 @@ const { state, actions } = store( NAMESPACE, {
 				}
 
 				context.isSubmitting = false;
+
+				// Clear captured previews to avoid memory leaks on repeated submissions
+				capturedFilePreviews.clear();
 			}
-		} ),
-
-		onKeyDownTextarea: withSyncEvent( event => {
-			if ( ! ( event.key === 'Enter' && event.shiftKey ) ) {
-				return;
-			}
-			// Prevent the default behavior of adding a new line.
-			event.preventDefault();
-			event.stopPropagation();
-
-			const context = getContext();
-
-			dispatchSubmitEvent( context.formHash );
 		} ),
 
 		scrollIntoView: withSyncEvent( event => {
@@ -558,6 +885,43 @@ const { state, actions } = store( NAMESPACE, {
 	},
 
 	callbacks: {
+		/**
+		 * Keep focus somewhere usable when conditional logic hides the focused field.
+		 *
+		 * `display: none` is right for tab order and the accessibility tree, but a keyboard or
+		 * screen-reader user filling this field can have it disappear because their answer to
+		 * another field cascaded. Focus then falls to <body> with nothing to explain it.
+		 * scrollToWrapper() already moves focus for a store-driven DOM change; this matches.
+		 */
+		manageConditionalFocus() {
+			const context = getContext();
+			const { ref } = getElement();
+
+			if ( ! ref || ! isFieldHiddenByLogic( context, context.fieldId ) ) {
+				return;
+			}
+
+			// ownerDocument rather than the global: the form may be inside an iframe, as it is
+			// in the editor preview.
+			const activeElement = ref.ownerDocument?.activeElement;
+
+			if ( ! activeElement || ! ref.contains( activeElement ) ) {
+				return;
+			}
+
+			// The nearest still-visible control, so the visitor carries on where they were
+			// rather than being sent to the top of the form.
+			const form = ref.closest( 'form' );
+			const candidates = form
+				? Array.from( form.querySelectorAll( 'input, select, textarea, button' ) )
+				: [];
+			const next = candidates.find(
+				element => ! ref.contains( element ) && null !== element.offsetParent
+			);
+
+			( next || form )?.focus?.();
+		},
+
 		initializeField() {
 			const context = getContext();
 			const { fieldId, fieldType, fieldLabel, fieldValue, fieldIsRequired, fieldExtra } = context;
@@ -570,24 +934,108 @@ const { state, actions } = store( NAMESPACE, {
 			if ( context.submissionSuccess || context.hasClickedBack ) {
 				const wrapperElement = document.getElementById( `contact-form-${ context.formId }` );
 				wrapperElement?.scrollIntoView( { behavior: 'smooth' } );
+
+				// Move focus to the success wrapper for screen reader announcement.
+				// The wrapper has aria-labelledby pointing to the heading, so VoiceOver
+				// will read the heading content without announcing "heading level 4".
+				if ( context.submissionSuccess && ! context.hasClickedBack ) {
+					const successWrapper = document.getElementById(
+						`contact-form-success-${ context.formHash }`
+					);
+					successWrapper?.focus();
+				}
+
 				context.hasClickedBack = false;
 			}
 		},
 
-		setImageOptionCheckColor() {
+		focusOnValidationError() {
 			const context = getContext();
 
-			const { inputId } = context;
-			const input = document.getElementById( inputId );
+			if ( state.showFormErrors ) {
+				// Only move focus once per error episode to avoid trapping keyboard users.
+				if ( context.didFocusValidationError ) {
+					return;
+				}
 
-			if ( ! input ) {
+				const { ref } = getElement();
+
+				if ( ref ) {
+					ref.focus();
+					context.didFocusValidationError = true;
+				}
+			} else if ( context.didFocusValidationError ) {
+				// Reset when errors clear so future errors can move focus again.
+				context.didFocusValidationError = false;
+			}
+		},
+
+		focusOnSubmissionError() {
+			const context = getContext();
+
+			if ( state.showSubmissionError ) {
+				// Only move focus once per error episode to avoid trapping keyboard users.
+				if ( context.didFocusSubmissionError ) {
+					return;
+				}
+
+				const { ref } = getElement();
+
+				if ( ref ) {
+					ref.focus();
+					context.didFocusSubmissionError = true;
+				}
+			} else if ( context.didFocusSubmissionError ) {
+				// Reset when errors clear so future errors can move focus again.
+				context.didFocusSubmissionError = false;
+			}
+		},
+
+		setImageOptionCheckColor() {
+			const { ref } = getElement();
+
+			if ( ! ref ) {
 				return;
 			}
 
-			const color = window.getComputedStyle( input ).color;
+			const color = window.getComputedStyle( ref ).color;
 			const inverseColor = window.jetpackForms.getInverseReadableColor( color );
+			const style = ref.getAttribute( 'style' ) ?? '';
 
-			input.setAttribute( 'style', `--jetpack-input-image-option--check-color: ${ inverseColor }` );
+			ref.setAttribute(
+				'style',
+				style + `--jetpack-input-image-option--check-color: ${ inverseColor }`
+			);
+		},
+
+		setImageOptionOutlineColor() {
+			const { ref } = getElement();
+
+			if ( ! ref ) {
+				return;
+			}
+
+			const { borderColor } = window.getComputedStyle( ref );
+			const style = ref.getAttribute( 'style' ) ?? '';
+
+			ref.setAttribute(
+				'style',
+				style + `--jetpack-input-image-option--outline-color: ${ borderColor }`
+			);
+		},
+
+		watchSubmissionValueVisibility() {
+			const context = getContext();
+
+			// If context.submission is not available (hydration), preserve server-rendered state.
+			if ( ! context.submission ) {
+				return;
+			}
+
+			// For AJAX submissions, show/hide based on whether url or rating is present.
+			const { ref } = getElement();
+			const shouldHide = !! ( context.submission.url || context.submission.rating );
+			ref.hidden = shouldHide;
 		},
 	},
 } );

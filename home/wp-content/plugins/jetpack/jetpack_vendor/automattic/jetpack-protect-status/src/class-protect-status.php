@@ -20,6 +20,10 @@ use Automattic\Jetpack\Sync\Functions as Sync_Functions;
 use Jetpack_Options;
 use WP_Error;
 
+if ( ! defined( 'ABSPATH' ) ) {
+	exit( 0 );
+}
+
 /**
  * Class that handles fetching and caching the Status of vulnerabilities check from the WPCOM servers
  */
@@ -77,6 +81,18 @@ class Protect_Status extends Status {
 
 		self::$status = $status;
 		return $status;
+	}
+
+	/**
+	 * Gets the last Protect report stored on the site, even if it has expired, without asking WordPress.com.
+	 *
+	 * @since 0.9.0
+	 *
+	 * @return Status_Model|null Null when no report has been stored yet.
+	 */
+	public static function get_cached_status() {
+		$report_data = self::get_from_options();
+		return is_object( $report_data ) ? self::normalize_protect_report_data( $report_data ) : null;
 	}
 
 	/**
@@ -143,11 +159,11 @@ class Protect_Status extends Status {
 		$status->data_source = 'protect_report';
 
 		// map report data properties directly into the Status_Model
-		$status->status              = isset( $report_data->status ) ? $report_data->status : null;
-		$status->last_checked        = isset( $report_data->last_checked ) ? $report_data->last_checked : null;
-		$status->num_threats         = isset( $report_data->num_vulnerabilities ) ? $report_data->num_vulnerabilities : null;
-		$status->num_themes_threats  = isset( $report_data->num_themes_vulnerabilities ) ? $report_data->num_themes_vulnerabilities : null;
-		$status->num_plugins_threats = isset( $report_data->num_plugins_vulnerabilities ) ? $report_data->num_plugins_vulnerabilities : null;
+		$status->status              = $report_data->status ?? null;
+		$status->last_checked        = $report_data->last_checked ?? null;
+		$status->num_threats         = $report_data->num_vulnerabilities ?? null;
+		$status->num_themes_threats  = $report_data->num_themes_vulnerabilities ?? null;
+		$status->num_plugins_threats = $report_data->num_plugins_vulnerabilities ?? null;
 		$status->has_unchecked_items = false;
 
 		// normalize extension information
@@ -179,7 +195,7 @@ class Protect_Status extends Status {
 		}
 
 		$installed_extensions = 'plugins' === $extension_type ? Plugins_Installer::get_plugins() : Sync_Functions::get_themes();
-		$checked_extensions   = isset( $report_data->{ $extension_type } ) ? $report_data->{ $extension_type } : new \stdClass();
+		$checked_extensions   = $report_data->{ $extension_type } ?? new \stdClass();
 
 		/**
 		 * Extension slug <=> threats data map.

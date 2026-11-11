@@ -94,12 +94,15 @@ class LicorRows(unittest.TestCase):
 
 class BadValues(unittest.TestCase):
     """A reading without a usable number is skipped: never stored as 0 or NaN, and never fails the whole run."""
-    bad = (None, "", "N/A", "abc", float("nan"), float("inf"), float("-inf"), "NaN", True, [], {}, 10 ** 400)
+    # -100000 and the like: the vendors' "no reading" sentinel (every Quality measurement on 2026-06-12 11:10)
+    bad = (None, "", "N/A", "abc", float("nan"), float("inf"), float("-inf"), "NaN", True, [], {}, 10 ** 400,
+           -100000, "-100000", -99999, -1e9)
 
     def test_reading_value(self):
         for raw in self.bad:
             self.assertIsNone(parsers.reading_value(raw), repr(raw))
         self.assertEqual([parsers.reading_value(v) for v in (0, 0.0, "4.5", -1, " 2 ")], [0.0, 0.0, 4.5, -1.0, 2.0])
+        self.assertEqual(parsers.reading_value(-99998.5), -99998.5)  # just above the sentinel threshold
 
     def test_weather_and_logger_skip_bad_values(self):
         for raw in self.bad:
@@ -125,7 +128,8 @@ class BadValues(unittest.TestCase):
     def test_quality_skips_bad_and_missing_values(self):
         entry = {"timestamp": "2026-11-09 02:00:00", "values": [
             {"parameterId": 125001, "value": None}, {"parameterId": 125002, "value": "NaN"},
-            {"parameterId": 125004}, {"parameterId": 125008, "value": "1.5"}]}
+            {"parameterId": 125004}, {"parameterId": 125006, "value": -100000},
+            {"parameterId": 125008, "value": "1.5"}]}
         rows = parsers.parse_quality_entry(entry, "4501")
         self.assertEqual([(r.measurement_type, r.value) for r in rows], [("Turbidity", 1.5)])
 

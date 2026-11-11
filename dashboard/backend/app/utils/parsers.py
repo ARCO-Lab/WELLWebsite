@@ -84,17 +84,24 @@ def stored_unit(entry):
     return expected if expected is not None else entry.get("unit", "")
 
 
+# Vendors can report "no reading" as a huge negative number instead of leaving it out: every Quality measurement
+# was stored as -100000 on 2026-06-12 11:10. No sensor here reads anywhere near this low, so a value at or below it
+# is treated as missing. /api/series and scripts/clean_sentinels.py use the same threshold.
+SENTINEL_MAX = -99999
+
+
 def reading_value(raw):
     """A vendor reading as a finite float, or None when it can't be stored: missing (None or absent), not a
-    number ("N/A", ""), a boolean, or NaN/infinity (Python's json reads a bare NaN or Infinity). Such readings
-    are skipped rather than stored as 0, and one of them no longer fails a whole ingestion run."""
+    number ("N/A", ""), a boolean, NaN/infinity (Python's json reads a bare NaN or Infinity), or the "no reading"
+    sentinel (≤ SENTINEL_MAX, e.g. -100000). Such readings are skipped rather than stored as 0 or averaged into
+    charts, and one of them no longer fails a whole ingestion run."""
     if raw is None or isinstance(raw, bool):
         return None
     try:
         value = float(raw)
     except (TypeError, ValueError, OverflowError):   # OverflowError: an integer too large for a float
         return None
-    return value if math.isfinite(value) else None
+    return value if math.isfinite(value) and value > SENTINEL_MAX else None
 
 
 def parse_weather_entry(entry, logger_id):

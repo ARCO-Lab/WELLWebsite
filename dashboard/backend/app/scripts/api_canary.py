@@ -38,6 +38,7 @@ WEATHER_UNITS = {                                                            # p
     "Wind Speed": "m/s", "Gust Speed": "m/s", "Wind Direction": "°",
 }
 LOGGER_UNITS = {"1": "m", "3": "°C"}                                         # parsers.LOGGER_UNITS
+SENTINEL_MAX = -99999                                                         # parsers.SENTINEL_MAX
 UNIT_ALIASES = {"m": {"meters", "meter", "metres", "metre"}}                 # parsers.UNIT_ALIASES
 WEATHER_SENSOR_NAMES = {"21948438-1": "Air Temperature", "21948438-2": "Relative Humidity",  # utils/sensor_names.py
                         "22154270-1": "Soil Temperature"}
@@ -61,11 +62,13 @@ def licor_record_used(sensor_sn):
 
 
 def has_number(value):
-    """Whether ingestion (parsers.reading_value) stores this value: a finite number, not a boolean."""
+    """Whether ingestion (parsers.reading_value) stores this value: a finite number, not a boolean, above the
+    vendors' "no reading" sentinel."""
     if value is None or isinstance(value, bool):
         return False
     try:
-        return math.isfinite(float(value))
+        number = float(value)
+        return math.isfinite(number) and number > SENTINEL_MAX
     except (TypeError, ValueError, OverflowError):
         return False
 

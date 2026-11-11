@@ -7,8 +7,11 @@
 
 use Automattic\Jetpack\Current_Plan as Jetpack_Plan;
 use Automattic\Jetpack\Identity_Crisis;
+use Automattic\Jetpack\Plugin\Admin_Chrome_Logo;
+use Automattic\Jetpack\Plugin\Footer_Links;
 use Automattic\Jetpack\Redirect;
 use Automattic\Jetpack\Status;
+use Automattic\Jetpack\Status\Host;
 
 /**
  * Shared logic between Jetpack admin pages.
@@ -88,6 +91,9 @@ abstract class Jetpack_Admin_Page {
 
 		// Attach page specific actions in addition to the above.
 		$this->add_page_actions( $hook );
+
+		// Override the page title for the module list page and the debugger page.
+		add_action( 'current_screen', array( __CLASS__, 'override_page_title' ) );
 	}
 
 	/**
@@ -102,8 +108,8 @@ abstract class Jetpack_Admin_Page {
 			return;
 		}
 
-		// Check if we are looking at the main dashboard.
-		if ( isset( $_GET['page'] ) && 'jetpack' === $_GET['page'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- View logic.
+		// The Settings app draws its own header and footer.
+		if ( isset( $_GET['page'] ) && 'jetpack-settings' === $_GET['page'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- View logic.
 			$this->page_render();
 			return;
 		}
@@ -112,7 +118,8 @@ abstract class Jetpack_Admin_Page {
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		if ( isset( $_GET['page'] ) && 'jetpack_modules' === $_GET['page'] ) {
-			$args['is-wide'] = true;
+			$args['is-wide']  = true;
+			$args['show-nav'] = false;
 		}
 
 		self::wrap_ui( array( $this, 'page_render' ), $args );
@@ -152,10 +159,40 @@ abstract class Jetpack_Admin_Page {
 	 * @return bool
 	 */
 	public function is_rest_api_enabled() {
-		return /** This filter is documented in wp-includes/rest-api/class-wp-rest-server.php */
-			apply_filters( 'rest_enabled', true ) &&
+		/** This filter is documented in wp-includes/rest-api/class-wp-rest-server.php */
+		if ( ! apply_filters( 'rest_enabled', true ) ) {
+			return false;
+		}
+		// Keep this probe from changing the admin user; see My Jetpack's Initializer::is_modules_rest_api_enabled().
+		$user = wp_get_current_user();
+		$auth = false;
+		try {
 			/** This filter is documented in wp-includes/rest-api/class-wp-rest-server.php */
-			apply_filters( 'rest_authentication_errors', true );
+			$auth = apply_filters( 'rest_authentication_errors', true );
+		} finally {
+			wp_set_current_user( $user->ID );
+		}
+		return $auth && ! is_wp_error( $auth );
+	}
+
+	/**
+	 * Fallback redirect meta tag if the REST API is disabled.
+	 *
+	 * @return void
+	 */
+	public function add_fallback_head_meta() {
+		echo '<meta http-equiv="refresh" content="0; url=?page=jetpack_modules">';
+	}
+
+	/**
+	 * Fallback meta tag wrapped in noscript tags for all browsers in case they have JavaScript disabled.
+	 *
+	 * @return void
+	 */
+	public function add_noscript_head_meta() {
+		echo '<noscript>';
+		$this->add_fallback_head_meta();
+		echo '</noscript>';
 	}
 
 	/**
@@ -174,6 +211,7 @@ abstract class Jetpack_Admin_Page {
 				$page->base,
 				array(
 					'toplevel_page_jetpack',
+					'jetpack_page_jetpack-settings',
 					'admin_page_jetpack_modules',
 					'jetpack_page_vaultpress',
 					'jetpack_page_stats',
@@ -226,7 +264,6 @@ abstract class Jetpack_Admin_Page {
 	 */
 	public static function load_wrapper_styles() {
 		$rtl = is_rtl() ? '.rtl' : '';
-		wp_enqueue_style( 'dops-css', plugins_url( "_inc/build/admin{$rtl}.css", JETPACK__PLUGIN_FILE ), array(), JETPACK__VERSION );
 		wp_enqueue_style( 'components-css', plugins_url( "_inc/build/style.min{$rtl}.css", JETPACK__PLUGIN_FILE ), array( 'wp-components' ), JETPACK__VERSION );
 	}
 
@@ -250,16 +287,13 @@ abstract class Jetpack_Admin_Page {
 		// If Jetpack is connected OR in offline mode, this will be false.
 		$connectable = ! Jetpack::is_connection_ready() && ! ( new Status() )->is_offline_mode();
 
-		$jetpack_admin_url = admin_url( 'admin.php?page=jetpack' );
+		$my_jetpack_available = Footer_Links::is_my_jetpack_available();
+		$my_jetpack_url       = admin_url( 'admin.php?page=my-jetpack#/overview' );
+		$jetpack_logo         = Admin_Chrome_Logo::render( 20, '', __( 'Jetpack logo', 'jetpack' ) );
+
 		$jetpack_about_url = ! $connectable
 			? admin_url( 'admin.php?page=jetpack_about' )
 			: Redirect::get_url( 'jetpack' );
-
-		$jetpack_privacy_url = ! $connectable
-			? $jetpack_admin_url . '#/privacy'
-			: Redirect::get_url( 'a8c-privacy' );
-
-		$external_link_icon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" class="jp-footer__menu-item__icon" aria-hidden="true" focusable="false"><path d="M18.2 17c0 .7-.6 1.2-1.2 1.2H7c-.7 0-1.2-.6-1.2-1.2V7c0-.7.6-1.2 1.2-1.2h3.2V4.2H7C5.5 4.2 4.2 5.5 4.2 7v10c0 1.5 1.2 2.8 2.8 2.8h10c1.5 0 2.8-1.2 2.8-2.8v-3.6h-1.5V17zM14.9 3v1.5h3.7l-6.4 6.4 1.1 1.1 6.4-6.4v3.7h1.5V3h-6.3z"></path></svg>';
 
 		?>
 		<div id="jp-plugin-container" class="
@@ -269,15 +303,49 @@ abstract class Jetpack_Admin_Page {
 		?>
 		">
 
-			<div class="jp-masthead jp-masthead-middle">
+			<header class="jp-masthead">
 				<div class="jp-masthead__inside-container">
-					<div class="jp-masthead__logo-container">
-						<a class="jp-masthead__logo-link" href="<?php echo esc_url( $jetpack_admin_url ); ?>">
-							<svg class="jetpack-logo__masthead" xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" height="40" viewBox="0 0 118 32"><path fill="#069e08" d="M16,0C7.2,0,0,7.2,0,16s7.2,16,16,16s16-7.2,16-16S24.8,0,16,0z M15,19H7l8-16V19z M17,29V13h8L17,29z"></path><path d="M41.3,26.6c-0.5-0.7-0.9-1.4-1.3-2.1c2.3-1.4,3-2.5,3-4.6V8h-3V6h6v13.4C46,22.8,45,24.8,41.3,26.6z"></path><path d="M65,18.4c0,1.1,0.8,1.3,1.4,1.3c0.5,0,2-0.2,2.6-0.4v2.1c-0.9,0.3-2.5,0.5-3.7,0.5c-1.5,0-3.2-0.5-3.2-3.1V12H60v-2h2.1V7.1 H65V10h4v2h-4V18.4z"></path><path d="M71,10h3v1.3c1.1-0.8,1.9-1.3,3.3-1.3c2.5,0,4.5,1.8,4.5,5.6s-2.2,6.3-5.8,6.3c-0.9,0-1.3-0.1-2-0.3V28h-3V10z M76.5,12.3 c-0.8,0-1.6,0.4-2.5,1.2v5.9c0.6,0.1,0.9,0.2,1.8,0.2c2,0,3.2-1.3,3.2-3.9C79,13.4,78.1,12.3,76.5,12.3z"></path><path d="M93,22h-3v-1.5c-0.9,0.7-1.9,1.5-3.5,1.5c-1.5,0-3.1-1.1-3.1-3.2c0-2.9,2.5-3.4,4.2-3.7l2.4-0.3v-0.3c0-1.5-0.5-2.3-2-2.3 c-0.7,0-2.3,0.5-3.7,1.1L84,11c1.2-0.4,3-1,4.4-1c2.7,0,4.6,1.4,4.6,4.7L93,22z M90,16.4l-2.2,0.4c-0.7,0.1-1.4,0.5-1.4,1.6 c0,0.9,0.5,1.4,1.3,1.4s1.5-0.5,2.3-1V16.4z"></path><path d="M104.5,21.3c-1.1,0.4-2.2,0.6-3.5,0.6c-4.2,0-5.9-2.4-5.9-5.9c0-3.7,2.3-6,6.1-6c1.4,0,2.3,0.2,3.2,0.5V13 c-0.8-0.3-2-0.6-3.2-0.6c-1.7,0-3.2,0.9-3.2,3.6c0,2.9,1.5,3.8,3.3,3.8c0.9,0,1.9-0.2,3.2-0.7V21.3z"></path><path d="M110,15.2c0.2-0.3,0.2-0.8,3.8-5.2h3.7l-4.6,5.7l5,6.3h-3.7l-4.2-5.8V22h-3V6h3V15.2z"></path><path d="M58.5,21.3c-1.5,0.5-2.7,0.6-4.2,0.6c-3.6,0-5.8-1.8-5.8-6c0-3.1,1.9-5.9,5.5-5.9s4.9,2.5,4.9,4.9c0,0.8,0,1.5-0.1,2h-7.3 c0.1,2.5,1.5,2.8,3.6,2.8c1.1,0,2.2-0.3,3.4-0.7C58.5,19,58.5,21.3,58.5,21.3z M56,15c0-1.4-0.5-2.9-2-2.9c-1.4,0-2.3,1.3-2.4,2.9 C51.6,15,56,15,56,15z"></path></svg>
-						</a>
+					<div class="jp-masthead__title-container">
+						<?php if ( $my_jetpack_available ) : ?>
+							<a class="jp-masthead__logo-link" href="<?php echo esc_url( $my_jetpack_url ); ?>"><?php echo $jetpack_logo; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Static SVG built above. ?></a>
+						<?php else : ?>
+							<span class="jp-masthead__logo-link"><?php echo $jetpack_logo; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Static SVG built above. ?></span>
+						<?php endif; ?>
+						<h2 class="jp-masthead__title">
+							<?php
+							// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- View logic only.
+							$page            = isset( $_GET['page'] ) ? sanitize_text_field( wp_unslash( $_GET['page'] ) ) : '';
+							$is_offline_mode = ( new Status() )->is_offline_mode();
+							$current_label   = '';
+							if ( 'jetpack_modules' === $page ) {
+								$current_label = __( 'Modules', 'jetpack' );
+							} elseif ( 'jetpack_about' === $page ) {
+								$current_label = __( 'About', 'jetpack' );
+							} elseif ( 'jetpack-debugger' === $page ) {
+								$current_label = __( 'Debug', 'jetpack' );
+							}
+
+							// "Jetpack" is a product name, do not translate.
+							?>
+							<?php if ( $current_label ) : ?>
+								<?php if ( $my_jetpack_available ) : ?>
+									<a class="jp-masthead__title-link" href="<?php echo esc_url( $my_jetpack_url ); ?>">Jetpack</a>
+								<?php else : ?>
+									Jetpack
+								<?php endif; ?>
+								<span class="jp-masthead__title-separator" aria-hidden="true">/</span>
+								<?php if ( $is_offline_mode ) : ?>
+									<span class="jp-masthead__title-offline"><?php esc_html_e( 'Offline Mode', 'jetpack' ); ?></span>
+									<span class="jp-masthead__title-separator" aria-hidden="true">/</span>
+								<?php endif; ?>
+								<span class="jp-masthead__title-current"><?php echo esc_html( $current_label ); ?></span>
+							<?php else : ?>
+								Jetpack
+							<?php endif; ?>
+						</h2>
 					</div>
 					<?php
-					if ( $args['show-nav'] ) :
+					if ( $args['show-nav'] && ! ( new Host() )->is_wpcom_platform() ) :
 						?>
 						<div class="jp-masthead__nav">
 							<?php
@@ -300,22 +368,15 @@ abstract class Jetpack_Admin_Page {
 									}
 									?>
 								</span>
-							<?php } else { ?>
+							<?php } elseif ( current_user_can( 'jetpack_manage_modules' ) ) { ?>
 								<span class="dops-button-group">
-									<a href="<?php echo esc_url( $jetpack_admin_url ); ?>" type="button" class="dops-button is-compact"><?php esc_html_e( 'Dashboard', 'jetpack' ); ?></a>
-														<?php
-														if ( current_user_can( 'jetpack_manage_modules' ) ) {
-															?>
-										<a href="<?php echo esc_url( $jetpack_admin_url . '#/settings' ); ?>" type="button" class="dops-button is-compact"><?php esc_html_e( 'Settings', 'jetpack' ); ?></a>
-															<?php
-														}
-														?>
+									<a href="<?php echo esc_url( admin_url( 'admin.php?page=jetpack-settings#/settings' ) ); ?>" type="button" class="dops-button is-compact"><?php esc_html_e( 'Settings', 'jetpack' ); ?></a>
 								</span>
 							<?php } ?>
 						</div>
 					<?php endif; ?>
 				</div>
-			</div>
+			</header>
 			<div class="wrap"><div id="jp-admin-notices" aria-live="polite"></div></div>
 			<!-- START OF CALLBACK -->
 			<?php
@@ -352,39 +413,14 @@ abstract class Jetpack_Admin_Page {
 							</desc>
 							<path fill="#000" d="M16,0C7.2,0,0,7.2,0,16s7.2,16,16,16s16-7.2,16-16S24.8,0,16,0z M15,19H7l8-16V19z M17,29V13h8L17,29z"></path>
 						</svg>
-						<span class="jp-footer__module-name">
-							<a href="<?php echo esc_url( Redirect::get_url( 'jetpack' ) ); ?>" target="_blank" rel="noopener noreferrer" aria-label="Jetpack 12.2-a.0">
-								<?php esc_html_e( 'Jetpack', 'jetpack' ); ?>
-							</a>
-						</span>
+						<span class="jp-footer__module-name"><?php esc_html_e( 'Jetpack', 'jetpack' ); ?></span>
 					</div>
+					<?php if ( ! ( new Host() )->is_wpcom_platform() && $my_jetpack_available ) : ?>
 					<div class="jp-footer__menu">
-						<a href="<?php echo esc_url( $jetpack_about_url ); ?>" title="<?php esc_attr__( 'About Jetpack', 'jetpack' ); ?>" class="jp-footer__menu-item">
-							<?php echo esc_html__( 'About', 'jetpack' ); ?>
-						</a>
-						<a href="<?php echo esc_url( $jetpack_privacy_url ); ?>" rel="noopener noreferrer" title="<?php esc_html_e( "Automattic's Privacy Policy", 'jetpack' ); ?>" class="jp-footer__menu-item <?php echo ! $connectable ? 'is-external' : ''; ?> ?>" target="<?php echo ! $connectable ? '_blank' : '_self'; ?>">
-							<?php echo esc_html_x( 'Privacy', 'Navigation item', 'jetpack' ); ?>
-							<?php echo ! $connectable ? $external_link_icon : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-						</a>
-						<a href="<?php echo esc_url( Redirect::get_url( 'wpcom-tos' ) ); ?>" target="_blank" rel="noopener noreferrer" title="<?php esc_html__( 'WordPress.com Terms of Service', 'jetpack' ); ?>" class="jp-footer__menu-item is-external">
-							<?php echo esc_html_x( 'Terms', 'Navigation item', 'jetpack' ); ?>
-							<?php echo $external_link_icon; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-						</a>
-						<a href="<?php echo esc_url( Redirect::get_url( 'jetpack' ) ); ?>" target="_blank" rel="noopener noreferrer" aria-label="Jetpack 12.2-a.0" class="jp-footer__menu-item is-external">
-							Version <?php echo esc_html( JETPACK__VERSION ); ?>
-							<?php echo $external_link_icon; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-						</a>
-						<?php if ( is_multisite() && current_user_can( 'jetpack_network_sites_page' ) ) { ?>
-							<a href="<?php echo esc_url( network_admin_url( 'admin.php?page=jetpack' ) ); ?>" title="<?php esc_html_e( "Manage your network's Jetpack Sites.", 'jetpack' ); ?>" class="jp-footer__menu-item"><?php echo esc_html_x( 'Network Sites', 'Navigation item', 'jetpack' ); ?></a>
-						<?php } ?>
-						<?php if ( is_multisite() && current_user_can( 'jetpack_network_settings_page' ) ) { ?>
-							<a href="<?php echo esc_url( network_admin_url( 'admin.php?page=jetpack-settings' ) ); ?>" title="<?php esc_html_e( "Manage your network's Jetpack Sites.", 'jetpack' ); ?>" class="jp-footer__menu-item"><?php echo esc_html_x( 'Network Settings', 'Navigation item', 'jetpack' ); ?></a>
-						<?php } ?>
-						<?php if ( current_user_can( 'manage_options' ) ) { ?>
-							<a href="<?php echo esc_url( admin_url( 'admin.php?page=jetpack_modules' ) ); ?>" title="<?php esc_html_e( 'Access the full list of Jetpack modules available on your site.', 'jetpack' ); ?>" class="jp-footer__menu-item"><?php echo esc_html_x( 'Modules', 'Navigation item', 'jetpack' ); ?></a>
-							<a href="<?php echo esc_url( admin_url( 'admin.php?page=jetpack-debugger' ) ); ?>" title="<?php esc_html_e( "Test your site's compatibility with Jetpack.", 'jetpack' ); ?>" class="jp-footer__menu-item"><?php echo esc_html_x( 'Debug', 'Navigation item', 'jetpack' ); ?></a>
-						<?php } ?>
+						<a href="<?php echo esc_url( admin_url( 'admin.php?page=my-jetpack#/features' ) ); ?>" class="jp-footer__menu-item"><?php echo esc_html_x( 'Features', 'Navigation item', 'jetpack' ); ?></a>
+						<a href="<?php echo esc_url( admin_url( 'admin.php?page=my-jetpack#/help' ) ); ?>" class="jp-footer__menu-item"><?php echo esc_html_x( 'Help', 'Navigation item', 'jetpack' ); ?></a>
 					</div>
+					<?php endif; ?>
 					<a class="jp-footer__a8c-logo" href="<?php echo esc_url( $jetpack_about_url ); ?>" aria-label="<?php echo esc_attr__( 'An Automattic Airline', 'jetpack' ); ?>">
 						<svg role="img" x="0" y="0" viewBox="0 0 935 38.2" enable-background="new 0 0 935 38.2" aria-labelledby="jp-automattic-byline-logo-title" height="7" class="jp-automattic-byline-logo">
 							<desc id="jp-automattic-byline-logo-title">
@@ -406,5 +442,25 @@ abstract class Jetpack_Admin_Page {
 	 */
 	protected function block_page_rendering_for_idc() {
 		return Jetpack::is_connection_ready() && Identity_Crisis::validate_sync_error_idc_option() && ! Jetpack_Options::get_option( 'safe_mode_confirmed' );
+	}
+
+	/**
+	 * Set a page title for both the module list page and the debugger page.
+	 * We set these here because we do not register a page title when we register them,
+	 * so they do not appear in the admin navigation.
+	 *
+	 * @since 15.4
+	 *
+	 * @param WP_Screen $screen The screen object.
+	 *
+	 * @return void
+	 */
+	public static function override_page_title( WP_Screen $screen ) {
+		global $title;
+		if ( 'admin_page_jetpack_modules' === $screen->id ) {
+			$title = __( 'Jetpack Settings', 'jetpack' ); // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- we override the title global only on this page.
+		} elseif ( 'admin_page_jetpack-debugger' === $screen->id ) {
+			$title = __( 'Debugging Center', 'jetpack' ); // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- we override the title global only on this page.
+		}
 	}
 }

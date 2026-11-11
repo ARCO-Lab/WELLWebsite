@@ -1,4 +1,4 @@
-import { createReduxStore, register } from '@wordpress/data';
+import { createReduxStore, register, select } from '@wordpress/data';
 
 const DEFAULT_STATE = {
 	// Map of form client IDs to their single step mode state
@@ -59,7 +59,7 @@ const selectors = {
 	 * @return {boolean} Whether the form is in single step mode.
 	 */
 	isSingleStepMode( state, formClientId ) {
-		return !! state.singleStepMode[ formClientId ];
+		return state.singleStepMode[ formClientId ] !== false;
 	},
 
 	/**
@@ -74,13 +74,21 @@ const selectors = {
 	},
 
 	/**
+	 * @typedef {object} StepInfo
+	 * @property {string}  stepLabel   - The label of the current step.
+	 * @property {number}  index       - The index of the current step in the steps array.
+	 * @property {boolean} isFirstStep - Whether the current step is the first step.
+	 * @property {boolean} isLastStep  - Whether the current step is the last step.
+	 */
+
+	/**
 	 * Gets information about the current step (label and index) based on the steps array.
 	 * This is a higher-level selector that requires the steps array from the block editor.
 	 *
 	 * @param {object} state        - The store state
 	 * @param {string} formClientId - The ID of the form
 	 * @param {Array}  steps        - The array of step blocks from the block editor
-	 * @return {object} An object with step information
+	 * @return {StepInfo} An object with step information
 	 */
 	getCurrentStepInfo( state, formClientId, steps ) {
 		const selectedStepId = selectors.getActiveStepId( state, formClientId );
@@ -154,4 +162,6 @@ export const store = createReduxStore( STORE_NAME, {
 	selectors,
 } );
 
-register( store );
+if ( ! select( STORE_NAME ) ) {
+	register( store );
+}

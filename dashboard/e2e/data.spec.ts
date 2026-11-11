@@ -188,7 +188,7 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     await page.mouse.move(point.x - 40, point.y);
     await page.mouse.move(point.x, point.y, { steps: 5 });
     const tooltip = page.locator(".highcharts-tooltip", { hasText: "Air Temperature" });
-    await expect(tooltip).toContainText("9.50");
+    await expect(tooltip).toContainText(/(?<![\d.])9\.5 °C/); // °C is shown to 1 decimal
     await expect(tooltip).toContainText(/Oct 31\b/);
     await expect(tooltip).toContainText(/\b12:00\b/);
   });

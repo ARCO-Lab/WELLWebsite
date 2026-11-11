@@ -4,7 +4,7 @@
 # GET /api/series?start=<ISO>&end=<ISO>&group_type=Weather&group_type=Logger...
 # -> {"bucket_seconds": 43200, "aggregated": true,
 #     "series": [{"group_type", "station_id", "measurement_type", "unit", "agg",
-#                 "t": [epoch ms, UTC], "avg": [...], "min": [...], "max": [...]}, ...]}
+#                 "t": [epoch ms, UTC], "avg": [...], "min": [...], "max": [...], "n": [...]}, ...]}
 #
 # start/end: an ISO time with an offset (e.g. ...Z) is a real instant; one without is local wall-clock time
 # (utils.timezone.parse_instant). recorded_at is an instant (timestamptz); readings are bucketed on its America/Toronto
@@ -19,6 +19,9 @@
 #                 smallest and largest single reading, not totals.
 #   "vector_mean" (Wind Direction) the mean of the directions as unit vectors, so 350° and 10° give 0°, not 180°;
 #                 min/max are null, because a linear min/max of angles (10° and 350° for a northerly) means nothing.
+# `n` is how many readings each bucket holds (sensors report every 10 minutes, so a full 1-hour bucket has 6); charts
+# use it to mark buckets that are mostly gaps. Readings at or below the vendors' "no reading" sentinel (-100000,
+# utils/parsers.SENTINEL_MAX) or not finite are left out: older rows were stored before ingestion skipped them.
 #
 # Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
 # same readings as the request (no bucket is added at either edge), while visitors who open the same view a few
@@ -33,6 +36,7 @@ from sqlalchemy import bindparam, text
 from db.database import db
 from db.models import Instant
 from utils import response_cache
+from utils.parsers import SENTINEL_MAX
 from utils.timezone import EST_TZ, parse_instant
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
@@ -56,6 +60,7 @@ WITH b AS (
                     AT TIME ZONE 'UTC') AT TIME ZONE '{LOCAL_ZONE}' END AS bucket
   FROM sensor_measurements
   WHERE recorded_at BETWEEN :s AND :e AND group_type = ANY(:g) AND value IS NOT NULL
+        AND value > {SENTINEL_MAX} AND value < 'Infinity'::float8  -- PostgreSQL sorts NaN above Infinity
 )
 SELECT group_type, station_id, measurement_type, unit,
        (extract(epoch FROM bucket) * 1000)::bigint AS t,
@@ -64,7 +69,8 @@ SELECT group_type, station_id, measurement_type, unit,
               THEN mod((degrees(atan2(avg(sin(radians(value))), avg(cos(radians(value))))) + 360)::numeric, 360)::float
             ELSE avg(value) END AS v,
        CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE min(value) END AS lo,
-       CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE max(value) END AS hi
+       CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE max(value) END AS hi,
+       count(value) AS n
 FROM b
 GROUP BY group_type, station_id, measurement_type, unit, bucket
 ORDER BY group_type, station_id, measurement_type, unit, bucket
@@ -107,8 +113,9 @@ def max_age(end, now):
 
 def cache_key(bucket, start, end, groups):
     """Everything the answer depends on: the query's parameters, after snap_range. The bounds are instants, so the
-    two copies of the hour repeated when clocks fall back have different keys."""
-    return f"series:v2:{bucket}:{start.isoformat()}:{end.isoformat()}:{','.join(sorted(set(groups)))}"
+    two copies of the hour repeated when clocks fall back have different keys (v3: recorded_at became timestamptz,
+    so nothing cached before that change is reused)."""
+    return f"series:v3:{bucket}:{start.isoformat()}:{end.isoformat()}:{','.join(sorted(set(groups)))}"
 
 
 def _num(x):
@@ -116,20 +123,21 @@ def _num(x):
 
 
 def columnar(rows):
-    """Query rows -> one {metadata, agg, t, avg, min, max} object per series, in row order."""
+    """Query rows -> one {metadata, agg, t, avg, min, max, n} object per series, in row order."""
     series, out = {}, []
-    for g, station, measurement, unit, t, v, lo, hi in rows:
+    for g, station, measurement, unit, t, v, lo, hi, n in rows:
         key = (g, station, measurement, unit)
         s = series.get(key)
         if s is None:
             s = series[key] = {"group_type": g, "station_id": station, "measurement_type": measurement,
                                "unit": unit, "agg": AGG.get(measurement, "mean"),
-                               "t": [], "avg": [], "min": [], "max": []}
+                               "t": [], "avg": [], "min": [], "max": [], "n": []}
             out.append(s)
         s["t"].append(int(t))
         s["avg"].append(_num(v))
         s["min"].append(_num(lo))
         s["max"].append(_num(hi))
+        s["n"].append(int(n))
     return out
 
 

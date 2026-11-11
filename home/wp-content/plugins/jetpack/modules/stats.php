@@ -16,12 +16,14 @@
 
 use Automattic\Jetpack\Admin_UI\Admin_Menu;
 use Automattic\Jetpack\Connection\Client;
+use Automattic\Jetpack\PremiumAnalytics\Classic_Stats;
 use Automattic\Jetpack\Redirect;
 use Automattic\Jetpack\Stats\Main as Stats;
 use Automattic\Jetpack\Stats\Options as Stats_Options;
 use Automattic\Jetpack\Stats\Tracking_Pixel as Stats_Tracking_Pixel;
 use Automattic\Jetpack\Stats\WPCOM_Stats;
 use Automattic\Jetpack\Stats\XMLRPC_Provider as Stats_XMLRPC;
+use Automattic\Jetpack\Stats_Admin\Admin_Bar as Stats_Admin_Bar;
 use Automattic\Jetpack\Stats_Admin\Admin_Post_List_Column;
 use Automattic\Jetpack\Stats_Admin\Dashboard as Stats_Dashboard;
 use Automattic\Jetpack\Stats_Admin\Main as Stats_Main;
@@ -56,17 +58,13 @@ add_action( 'jetpack_modules_loaded', 'stats_load' );
 function stats_load() {
 	Jetpack::enable_module_configurable( __FILE__ );
 
-	// Only run the callback for those who can see the stats.
-	if ( is_user_logged_in() && current_user_can( 'view_stats' ) ) {
-		add_action( 'admin_head', 'stats_admin_bar_head', 100 );
-		add_action( 'wp_head', 'stats_admin_bar_head', 100 );
-	}
-
+	Stats_Admin_Bar::init();
 	Admin_Post_List_Column::register();
 
-	add_action( 'jetpack_admin_menu', 'stats_admin_menu' );
-
-	add_filter( 'pre_option_db_version', 'stats_ignore_db_version' );
+	// Keep the classic page unless Stats v2 can take over; old links then open it via Stats_Links::open_retired_stats_page().
+	if ( ! class_exists( Classic_Stats::class ) || ! Classic_Stats::is_retired() || ! Jetpack::is_premium_analytics_enabled() ) {
+		add_action( 'jetpack_admin_menu', 'stats_admin_menu' );
+	}
 
 	// Filter for adding the Jetpack plugin version to tracking stats.
 	add_filter( 'stats_array', 'filter_stats_array_add_jp_version' );
@@ -88,22 +86,16 @@ function jetpack_is_dnt_enabled() {
 
 /**
  * Prevent sparkline img requests being redirected to upgrade.php.
- * See wp-admin/admin.php where it checks $wp_db_version.
+ *
+ * @deprecated 16.3
  *
  * @access public
  * @param mixed $version Version.
  * @return string $version.
  */
 function stats_ignore_db_version( $version ) {
-	if (
-		is_admin() &&
-		isset( $_GET['page'] ) && 'stats' === $_GET['page'] && // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		isset( $_GET['chart'] ) && strpos( $_GET['chart'], 'admin-bar-hours' ) === 0 // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput
-	) {
-		global $wp_db_version;
-		return $wp_db_version;
-	}
-	return $version;
+	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Stats_Admin\Admin_Bar::ignore_db_version' );
+	return Stats_Admin_Bar::ignore_db_version( $version );
 }
 
 /**
@@ -248,7 +240,18 @@ function stats_admin_menu() {
 		// Show old Jetpack Stats interface for:
 		// - When the "enable_odyssey_stats" option is disabled.
 		// - When being shown in the adminbar outside of wp-admin.
-		$hook = Admin_Menu::add_menu( __( 'Stats', 'jetpack' ), __( 'Stats', 'jetpack' ), 'view_stats', 'stats', 'jetpack_admin_ui_stats_report_page_wrapper' );
+		$hook = Admin_Menu::add_menu(
+			__( 'Stats', 'jetpack' ),
+			__( 'Stats', 'jetpack' ),
+			'view_stats',
+			'stats',
+			'jetpack_admin_ui_stats_report_page_wrapper',
+			null,
+			array(
+				'product' => 'stats',
+				'key'     => 'jetpack-stats',
+			)
+		);
 		add_action( "load-$hook", 'stats_reports_load' );
 	} else {
 		// Enable the new Odyssey Stats experience.
@@ -314,8 +317,8 @@ function stats_script_dismiss_nudge_handler() {
 		// Send an AJAX request.
 		// Note we can provide a 'postponed_for' parameter to set the delay.
 		// Without a parameter it defaults to 30 days which is what we want here.
-		let nonce = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ) ); ?>;
-		let url = <?php echo wp_json_encode( rest_url( '/jetpack/v4/stats-app/stats/notices' ) ); ?>;
+		let nonce = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
+		let url = <?php echo wp_json_encode( rest_url( '/jetpack/v4/stats-app/stats/notices' ), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
 		let data = {
 			id: 'opt_in_new_stats',
 			status: 'postponed',
@@ -360,7 +363,7 @@ function stats_js_remove_stnojs_cookie() {
 	?>
 <script type="text/javascript">
 /* <![CDATA[ */
-document.cookie = 'stnojs=0; expires=Wed, 9 Mar 2011 16:55:50 UTC; path=<?php echo esc_js( $parsed['path'] ); ?>';
+document.cookie = <?php echo wp_json_encode( 'stnojs=0; expires=Wed, 9 Mar 2011 16:55:50 UTC; path=' . $parsed['path'], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG ); ?>;
 /* ]]> */
 </script>
 	<?php
@@ -496,7 +499,7 @@ function stats_reports_page( $main_chart_only = false ) {
 				?>
 				<a
 					style="font-size:13px;"
-					href="<?php echo esc_url( admin_url( 'admin.php?page=jetpack#/settings?term=' . rawurlencode( $i18n_headers['name'] ) ) ); ?>"
+					href="<?php echo esc_url( admin_url( 'admin.php?page=jetpack-settings#/settings?term=' . rawurlencode( $i18n_headers['name'] ?? '' ) ) ); ?>"
 				>
 				<?php esc_html_e( 'Configure', 'jetpack' ); ?>
 				</a>
@@ -601,7 +604,7 @@ function stats_reports_page( $main_chart_only = false ) {
 
 	$get      = Client::remote_request( compact( 'url', 'method', 'timeout', 'user_id' ) );
 	$get_code = wp_remote_retrieve_response_code( $get );
-	if ( is_wp_error( $get ) || ( 2 !== (int) ( $get_code / 100 ) && 304 !== $get_code ) || empty( $get['body'] ) ) {
+	if ( is_wp_error( $get ) || $get_code === '' || ( 2 !== (int) ( $get_code / 100 ) && 304 !== $get_code ) || empty( $get['body'] ) ) {
 		stats_print_wp_remote_error( $get, $url );
 	} elseif ( ! empty( $get['headers']['content-type'] ) ) {
 		$type = $get['headers']['content-type'];
@@ -727,66 +730,33 @@ function stats_hide_smile_css() {
 /**
  * Stats Admin Bar Head.
  *
+ * @deprecated 16.3
+ *
  * @access public
  * @return void
  */
 function stats_admin_bar_head() {
-	// Let's not show the stats admin bar to users who are not logged in.
-	if ( ! is_user_logged_in() ) {
-		return;
-	}
-
-	if ( ! Stats_Options::get_option( 'admin_bar' ) ) {
-		return;
-	}
-
-	if ( ! current_user_can( 'view_stats' ) ) {
-		return;
-	}
-
-	if ( ! is_admin_bar_showing() ) {
-		return;
-	}
-
-	add_action( 'admin_bar_menu', 'stats_admin_bar_menu', 100 );
-	?>
-
-<style data-ampdevmode type='text/css'>
-#wpadminbar .quicklinks li#wp-admin-bar-stats {
-	height: 32px;
-}
-#wpadminbar .quicklinks li#wp-admin-bar-stats a {
-	height: 32px;
-	padding: 0;
-}
-#wpadminbar .quicklinks li#wp-admin-bar-stats a div {
-	height: 32px;
-	width: 95px;
-	overflow: hidden;
-	margin: 0 10px;
-}
-#wpadminbar .quicklinks li#wp-admin-bar-stats a:hover div {
-	width: auto;
-	margin: 0 8px 0 10px;
-}
-#wpadminbar .quicklinks li#wp-admin-bar-stats a img {
-	height: 24px;
-	margin: 4px 0;
-	max-width: none;
-	border: none;
-}
-</style>
-	<?php
+	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Stats_Admin\Admin_Bar::maybe_add_chart' );
+	Stats_Admin_Bar::maybe_add_chart();
 }
 
 /**
  * Gets the image source of the given stats chart.
+ *
+ * @deprecated 16.3
  *
  * @param string $chart Name of the chart.
  * @param array  $args Extra list of argument to use in the image source.
  * @return string An image source.
  */
 function stats_get_image_chart_src( $chart, $args = array() ) {
+	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Stats_Admin\Admin_Bar::get_chart_src' );
+
+	// The admin bar chart handler takes no extra arguments, so `$args` is dropped for these charts.
+	if ( in_array( $chart, Stats_Admin_Bar::CHARTS, true ) ) {
+		return Stats_Admin_Bar::get_chart_src( $chart );
+	}
+
 	$url = add_query_arg( 'page', 'stats', admin_url( 'admin.php' ) );
 
 	return add_query_arg(
@@ -805,23 +775,28 @@ function stats_get_image_chart_src( $chart, $args = array() ) {
 /**
  * Stats AdminBar.
  *
+ * @deprecated 16.3
+ *
  * @access public
  * @param mixed $wp_admin_bar WPAdminBar.
  * @return void
  */
 function stats_admin_bar_menu( &$wp_admin_bar ) {
-	$img_src    = esc_attr( stats_get_image_chart_src( 'admin-bar-hours-scale' ) );
-	$img_src_2x = esc_attr( stats_get_image_chart_src( 'admin-bar-hours-scale-2x' ) );
-	$alt        = esc_attr( __( 'Stats', 'jetpack' ) );
-	$title      = esc_attr( __( 'Views over 48 hours. Click for more Jetpack Stats.', 'jetpack' ) );
+	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Stats_Admin\Admin_Bar::add_chart_node' );
+	Stats_Admin_Bar::add_chart_node( $wp_admin_bar );
+}
 
-	$menu = array(
-		'id'    => 'stats',
-		'href'  => add_query_arg( 'page', 'stats', admin_url( 'admin.php' ) ), // no menu_page_url() blog-side.
-		'title' => "<div><img fetchpriority='low' loading='lazy' decoding='async' src='$img_src' srcset='$img_src 1x, $img_src_2x 2x' width='112' height='24' alt='$alt' title='$title'></div>",
-	);
-
-	$wp_admin_bar->add_menu( $menu );
+/**
+ * Adds a Stats link to the site-name admin bar submenu, alongside Dashboard.
+ *
+ * @deprecated 16.3
+ *
+ * @access public
+ * @return void
+ */
+function stats_add_link_to_admin_bar_site_menu() {
+	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Stats_Admin\Admin_Bar::add_site_menu_link' );
+	Stats_Admin_Bar::add_site_menu_link();
 }
 
 /**
@@ -1054,7 +1029,7 @@ function stats_dashboard_widget_content() {
 
 	$get      = Client::remote_request( compact( 'url', 'method', 'timeout', 'user_id' ) );
 	$get_code = wp_remote_retrieve_response_code( $get );
-	if ( is_wp_error( $get ) || ( 2 !== (int) ( $get_code / 100 ) && 304 !== $get_code ) || empty( $get['body'] ) ) {
+	if ( is_wp_error( $get ) || $get_code === '' || ( 2 !== (int) ( $get_code / 100 ) && 304 !== $get_code ) || empty( $get['body'] ) ) {
 		stats_print_wp_remote_error( $get, $url );
 	} else {
 		$body = stats_convert_post_titles( $get['body'] );
@@ -1173,7 +1148,7 @@ function stats_dashboard_widget_content() {
 function stats_print_wp_remote_error( $get, $url ) {
 	$state_name     = 'stats_remote_error_' . substr( md5( $url ), 0, 8 );
 	$previous_error = Jetpack::state( $state_name );
-	$error          = md5( wp_json_encode( compact( 'get', 'url' ) ) );
+	$error          = md5( wp_json_encode( compact( 'get', 'url' ), JSON_UNESCAPED_SLASHES ) );
 	Jetpack::state( $state_name, $error );
 	if ( $error !== $previous_error ) {
 		?>
@@ -1335,7 +1310,7 @@ function stats_get_remote_csv( $url ) {
 
 	$get      = Client::remote_request( compact( 'url', 'method', 'timeout', 'user_id' ) );
 	$get_code = wp_remote_retrieve_response_code( $get );
-	if ( is_wp_error( $get ) || ( 2 !== (int) ( $get_code / 100 ) && 304 !== $get_code ) || empty( $get['body'] ) ) {
+	if ( is_wp_error( $get ) || $get_code === '' || ( 2 !== (int) ( $get_code / 100 ) && 304 !== $get_code ) || empty( $get['body'] ) ) {
 		return array(); // @todo: return an error?
 	} else {
 		return stats_str_getcsv( $get['body'] );
@@ -1355,8 +1330,7 @@ function stats_str_getcsv( $csv ) {
 	$lines = explode( "\n", rtrim( $csv, "\n" ) );
 	return array_map(
 		function ( $line ) {
-			// @todo When we drop support for PHP <7.4, consider passing empty-string for `$escape` here for better spec compatibility.
-			return str_getcsv( $line, ',', '"', '\\' );
+			return str_getcsv( $line, ',', '"', '' );
 		},
 		$lines
 	);
@@ -1388,7 +1362,7 @@ function stats_get_from_restapi( $args = array(), $resource = '' ) {
 	$endpoint    = jetpack_stats_api_path( $resource );
 	$api_version = '1.1';
 	$args        = wp_parse_args( $args, array() );
-	$cache_key   = md5( implode( '|', array( $endpoint, $api_version, wp_json_encode( $args ) ) ) );
+	$cache_key   = md5( implode( '|', array( $endpoint, $api_version, wp_json_encode( $args, JSON_UNESCAPED_SLASHES ) ) ) );
 
 	$transient_name = "jetpack_restapi_stats_cache_{$cache_key}";
 

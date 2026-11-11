@@ -73,9 +73,9 @@ const LoggerGraph = ({
       case 3:
         return 'grid-cols-1 lg:grid-cols-3';
       case 4:
-        return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-4';
+        return 'grid-cols-1 md:grid-cols-2'; // two by two: with both y-axes shown, a quarter of the card is too narrow
       case 5:
-        return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-5';
+        return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3';
       default:
         return 'grid-cols-1 md:grid-cols-2'; // Default fallback
     }
