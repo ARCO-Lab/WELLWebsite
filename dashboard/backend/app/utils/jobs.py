@@ -7,6 +7,10 @@ import subprocess
 import threading
 import time
 
+import sentry_sdk
+
+from utils.sentry import capture_job_error
+
 
 def run_in_background(job, log=print, name=None):
     """Wrap `job` so each call starts it in its own thread and returns at once.
@@ -30,12 +34,16 @@ def run_in_background(job, log=print, name=None):
         started_at[0] = time.monotonic()
 
         def target():
-            try:
-                job()
-            except Exception as e:  # never let a failed run leave the lock held
-                log(f"[ERROR] {label} failed: {e}")
-            finally:
-                lock.release()
+            # Errors reported to Sentry during this run (utils/sentry.py; a no-op when it is off) carry the job name.
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("job", label)
+                try:
+                    job()
+                except Exception as e:  # never let a failed run leave the lock held
+                    log(f"[ERROR] {label} failed: {e}")
+                    capture_job_error(e)
+                finally:
+                    lock.release()
 
         thread = threading.Thread(target=target, name=label, daemon=True)
         thread.start()
@@ -52,8 +60,15 @@ def run_bounded(cmd, timeout, grace=10):
     The command runs in its own process group (POSIX), so a child it spawned, e.g. download_data.py
     running inject_sampling.py, can't outlive it and keep writing after the scheduler thinks the run
     is over. The group gets SIGTERM first, then SIGKILL after `grace` seconds.
+
+    The command runs with SENTRY_DSN empty (empty, not unset, so load_dotenv can't fill it in from a .env), so
+    it never reports to Sentry itself: the scheduler reports a failed run once, with its exit code and the end of
+    its stderr (utils/sentry.capture_job_error). Otherwise a crash in, say, upload_data.py would arrive twice,
+    as its own traceback and as the scheduler's CalledProcessError.
     """
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    env = {**os.environ, "SENTRY_DSN": ""}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                            env=env)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

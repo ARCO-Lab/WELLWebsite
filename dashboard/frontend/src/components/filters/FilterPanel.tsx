@@ -16,18 +16,23 @@ import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG, SAMPLING_METRICS } from "
 // ADD M asl (Metres above sea level) for water surface elevation
 
 // --- PROPS ---
+// The dashboard keeps one on/off flag per sensor group and per creek, keyed as in the filter configs.
+type SensorGroup = keyof typeof SENSOR_FILTER_CONFIG;
+type Creek = keyof typeof SAMPLING_FILTER_CONFIG;
+type FlagSetter<K extends string> = React.Dispatch<React.SetStateAction<Record<K, boolean>>>;
+
 interface FilterPanelProps {
   activeTab: "sensor" | "sampling";
   activeGroups: { [key: string]: boolean };
-  setActiveGroups: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  setActiveGroups: FlagSetter<SensorGroup>;
   subFilters: { [key: string]: string[] };
   setSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
   activeCreeks: { [key: string]: boolean };
-  setActiveCreeks: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  setActiveCreeks: FlagSetter<Creek>;
   samplingSubFilters: { [key: string]: string[] };
   setSamplingSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
   open: { [key: string]: boolean };
-  setOpen: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
+  setOpen: FlagSetter<SensorGroup | Creek>;
   chevronState: { [key: string]: boolean };
   setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
 }
@@ -51,7 +56,6 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
   // Handles toggling the main group checkbox (select/deselect all)
   const handleMainToggle = (groupKey: string) => {
     const isSensor = activeTab === 'sensor';
-    const setActive = isSensor ? setActiveGroups : setActiveCreeks;
     const setSubs = isSensor ? setSubFilters : setSamplingSubFilters;
     
     // Correctly get config based on tab
@@ -74,7 +78,11 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
 
     const isOpening = !currentlyActive;
 
-    setActive((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
+    if (isSensor) {
+      setActiveGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey as SensorGroup] }));
+    } else {
+      setActiveCreeks((prev) => ({ ...prev, [groupKey]: !prev[groupKey as Creek] }));
+    }
 
     // When opening a group, select all metrics and "All Items" (if it exists)
     if (isOpening) {

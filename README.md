@@ -88,17 +88,19 @@ Without it, every container fails with "No route to host" after the next reboot,
 - **WQData**: the last 6 hours for `WQ_DEVICE_ID`, as exactly one request, because WQData's hourly quota is shared with the 10-minute ingestion (`data[]` points with `timestamp` and `values[].parameterId`, plus `info` for paging).
 - **Borealis**: the metadata of both datasets (`DEMO_BOREALIS_AW_PERSISTENT_ID`, which downloads read, and `DEMO_BOREALIS_WC_PERSISTENT_ID`, which uploads add to) with `BOREALIS_API_TOKEN` (`data.latestVersion` with `versionState` and `files[].dataFile`). This proves the token is accepted and can read both datasets, not that it may still add files: the monthly upload also needs edit rights on the upload dataset, which the canary doesn't test.
 
-It prints one `OK` or `FAIL` line per source (HTTP status and reason only, never URLs, keys or response bodies) and fails the run if any source fails. An empty response counts as a failure too, since ingestion would have nothing to store. Every failure shows on the repository's Actions tab. Who GitHub emails about it (if their notification settings include Actions):
+It prints one `OK` or `FAIL` line per source (HTTP status and reason only, never URLs, keys or response bodies) and fails the run if any source fails. An empty response counts as a failure too, since ingestion would have nothing to store. Every failure shows on the repository's Actions tab, and the workflow keeps one GitHub issue in step with it (`.github/scripts/canary_issue.sh`, run by the workflow's second job):
 
-- A scheduled run: the person who last changed the workflow's `cron` line, or, once the workflow has been disabled and re-enabled, the person who re-enabled it.
-- A manual run: whoever started it.
-- Nobody, once GitHub has disabled the schedule: it turns scheduled workflows off after 60 days without activity in the repository, and a disabled schedule sends nothing. After a quiet period, check the Actions tab and re-enable the workflow there.
+- **A failed run** opens an issue titled "API canary failing", labelled `canary` (the label is created if missing) and assigned to `lukhsaankumar`, with the run's `OK`/`FAIL` lines and a link to the run. If a `canary` issue is already open, the run adds the same as a comment instead, so a long outage stays in one issue. A run that fails before the canary prints anything (a failed install, a timeout) still counts as a failure, and says so. The issue also says "printed no results" if GitHub withheld the lines: it drops a job output that contains any secret's value (the run log then shows "Skip output 'report' since it may contain secret"), which can happen if a short secret such as `WQ_DEVICE_ID` matches a printed number. The run log still has the lines.
+- **The next passing run** comments "Recovered" with its link and closes the issue. A passing run with no open issue does nothing.
+- Only the canary's own `OK`/`FAIL` lines are posted. The issue job uses the workflow's `GITHUB_TOKEN` with `issues: write` (and `contents: read`), runs on a separate runner from the vendor secrets, and only runs for scheduled and manual runs, never for pull requests.
+
+Being assigned (or watching the repository) means GitHub emails about the issue. The usual "workflow run failed" email also still goes out, if the person's notification settings include Actions: for a scheduled run, to whoever last changed the workflow's `cron` line (or last re-enabled the workflow); for a manual run, to whoever started it. GitHub turns scheduled workflows off after 60 days without activity in the repository, and a disabled schedule sends nothing and opens no issue: after a quiet period, check the Actions tab and re-enable the workflow there.
 
 Using it:
 
 - **Run it by hand**: Actions → API canary → Run workflow. On the VM, once the image includes the script: `docker compose exec worker python scripts/api_canary.py`.
 - **When a key is rotated**, update the matching repository secret (Settings → Secrets and variables → Actions) as well as `dashboard/backend/app/.env` on the VM, then run the canary by hand. The secrets are `HOBOLINK_API_URL`, `HOBOLINK_API_TOKEN`, `HOBOLINK_LOGGERS`, `WQ_API_URL`, `WQ_API_KEY`, `WQ_DEVICE_ID`, `DEMO_BOREALIS_URL`, `BOREALIS_API_TOKEN`, `DEMO_BOREALIS_AW_PERSISTENT_ID` and `DEMO_BOREALIS_WC_PERSISTENT_ID`. The Borealis token and the WQData key are both due for rotation.
-- **Tests**: `dashboard/backend/tests/test_api_canary.py` (no network). The canary keeps copies of a few constants from `utils/parsers.py` so the workflow needs only `requests`; CI runs the tests that check those copies still match on every pull request, with the rest of the backend tests (by hand, from `dashboard/backend`: `python -m unittest discover -s tests -t .`).
+- **Tests**: `dashboard/backend/tests/test_api_canary.py` (no network). The canary keeps copies of a few constants from `utils/parsers.py` so the workflow needs only `requests`; CI runs the tests that check those copies still match on every pull request, with the rest of the backend tests (by hand, from `dashboard/backend`: `python -m unittest discover -s tests -t .`). The issue logic is tested by `.github/scripts/test_canary_issue.sh` against a stub `gh` (`bash .github/scripts/test_canary_issue.sh`; CI runs it with the deploy script test).
 
 ---
 
@@ -156,11 +158,68 @@ Then add this to your crontab (`crontab -e`):
 
 `DEPLOY_HEALTHCHECK_URL` is optional. The script pings it on success (up to date, or deployed and healthy) and pings `<url>/fail` on a failure or a held commit. Runs that are waiting (CI still running, a problem already reported, another deploy in progress) don't ping. So set the Healthchecks period to 5 minutes and the grace time longer than CI takes (30 minutes is safe), or a slow CI run will look like an outage.
 
+### Error reporting (Sentry)
+
+Unexpected errors are reported to Sentry (organization `well-cs`, free tier), from the Flask API, the worker
+scheduler, the Celery export worker and the dashboard (browser and Next.js server). Each backend event is tagged
+`component` (`backend`, `worker` or `export_worker`); scheduler errors also carry `job` (e.g. `api_injection_job`)
+and, for a vendor ingestion failure, `source` (`LI-COR` or `WQData`).
+
+- **Sent:** the error type, message and stack trace (file and line, no local variables), the endpoint's method and
+  path, the environment, and recent breadcrumbs (log lines, page changes and outgoing requests, with their query
+  strings replaced by `[Filtered]`). For a failed scheduler subprocess, also its command, exit code and the last
+  2,000 characters of its stderr (a traceback when the script crashed) and the `ERROR:` and `[ERROR]` lines it
+  printed to stdout (its handled failures, e.g. "No sensor data found"; the rest of stdout is not sent).
+- **Not sent:** request bodies, cookies, headers, query strings, IP addresses or any user identity
+  (`send_default_pii` off, plus a `before_send` filter in `dashboard/backend/app/utils/sentry.py` and
+  `dashboard/frontend/src/lib/sentry.ts`). No performance tracing and no session replay, so nothing counts against
+  the free tier's transaction or replay quotas. Source maps are not uploaded, so dashboard stack traces show the
+  minified code.
+
+How backend failures are reported:
+- The scheduler runs the Borealis download, the monthly upload and the daily digest as subprocesses with
+  `SENTRY_DSN` emptied, so those scripts never report themselves. When one fails or times out, the scheduler sends
+  a single event for it. Most of those scripts catch their errors and exit non-zero, so a script reporting
+  itself would miss them, and a crash would be sent twice (the script's traceback plus the scheduler's
+  `CalledProcessError`).
+- A caught failure (a job, or one vendor's ingestion) is sent at most once an hour for the same job, vendor, error
+  type and message (its first line with numbers collapsed, HTTP statuses kept; for a failed subprocess, its arguments
+  such as the month, its exit code, and its last stderr line or, with no stderr, its last `ERROR:` or `[ERROR]`
+  stdout line).
+  So an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144, while a
+  different error is still sent at once. This limit covers only these scheduler failures; Flask and Celery errors
+  are sent each time.
+- A script run by hand (`docker compose exec worker python scripts/...`) reports its own uncaught errors, tagged
+  with the container's `SENTRY_COMPONENT`.
+
+Settings:
+- Backend, in `dashboard/backend/app/.env` (read by `backend`, `worker` and `export_worker`): `SENTRY_DSN` (unset or
+  empty turns reporting off; tests and local runs leave it unset, and the test suite removes it), `SENTRY_ENVIRONMENT`
+  (default `production`) and, optionally, `GIT_SHA` as the release. `SENTRY_COMPONENT` (the `component` tag, default
+  `backend`) is set in `docker-compose.yml` for `worker` and `export_worker`.
+- Dashboard: `NEXT_PUBLIC_SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` (default `production`), build args in
+  `dashboard/frontend/Dockerfile`. The DSN defaults to the dashboard project's key. It is inlined into the browser
+  bundle at build time, which is fine: a DSN can only send events. When you build an image for local testing, use
+  `docker build --build-arg NEXT_PUBLIC_SENTRY_ENVIRONMENT=development dashboard/frontend` (or
+  `--build-arg NEXT_PUBLIC_SENTRY_DSN=` to send nothing), so its errors aren't filed as production. `next dev` and
+  `next build` outside Docker send nothing unless `NEXT_PUBLIC_SENTRY_DSN` is set.
+
+Quota: the free tier allows 5,000 errors a month. In Sentry, turn on *Settings > Spike Protection* for the
+organization. Also give each project's key a rate limit under *Project Settings > Client Keys (DSN) > Configure > Rate
+Limits*, for example 100 events an hour, so one noisy failure can't use up the month.
+
+To rotate a key, create a new client key under the Sentry project's *Settings > Client Keys (DSN)*, put it in the
+`.env` (backend) or the Dockerfile default (dashboard), redeploy (`docker compose up -d --build --no-deps backend
+worker export_worker` or `dashboard`), then disable the old key. To turn reporting off, empty `SENTRY_DSN` and
+recreate the three backend containers, or build the dashboard with `--build-arg NEXT_PUBLIC_SENTRY_DSN=`; disabling
+the key in Sentry also stops everything at once. In the Sentry project settings, keep *Prevent storing of IP
+addresses* on as a second guard.
+
 ---
 
 ## AI Analysis
 
-> **Currently disabled.** The UI entry points and API routes are commented out, each marked `AI ANALYSIS DISABLED`. To turn the feature back on, search the code for that marker, uncomment those blocks, delete the four 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts`, and set `OPENAI_API_KEY`.
+> **Currently disabled.** The UI entry points and API routes are commented out, each marked `AI ANALYSIS DISABLED`. To turn the feature back on, search the code for that marker, uncomment those blocks, delete the four 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts`, and set `OPENAI_API_KEY`. Uncommenting alone is not enough: the background summaries the analysis routes read (`latest_summaries`, filled after each `/api/data` request, and `latest_sampling_summaries`, after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so that summary step has to be rebuilt too. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
 
 An API endpoint aggregates/downsamples a series and sends a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend renders the output inside an analysis modal and allows exporting the narrative.
 
@@ -196,6 +255,8 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 
 > `HOBOLINK_LOGGERS` should be the serial number of each logger, comma-separated.
+
+> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number logs a warning and uses the default. The cap matters because gunicorn's 3 sync workers can't tell when a browser gives up: the Next.js proxy stops waiting, but the worker stays busy until the query and JSON encoding finish, or until gunicorn's 30 s timeout kills it.
 
 ---
 

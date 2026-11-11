@@ -5,6 +5,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
+import type MapComponent from "@/components/map/Map";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import FilterPanel from "@/components/filters/FilterPanel";
@@ -42,7 +43,8 @@ type SensorGroup = "weather" | "quality" | "gauges";
 const WEATHER_ONLY = { gauges: false, weather: true, quality: false };
 const NO_GROUPS = { gauges: false, weather: false, quality: false };
 
-const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
+// next/dynamic drops the map's generic props (sensor groups or creeks); keep them so both setters type-check.
+const Map = dynamic(() => import("@/components/map/Map"), { ssr: false }) as typeof MapComponent;
 
 export default function Dashboard() {
 
@@ -166,10 +168,6 @@ export default function Dashboard() {
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
     
-  const cachedSamplingMetrics = {
-    creeks: <CreekMetrics key="creeks" subFilters={samplingSubFilters} /* Error necessary */ metrics={recentSamples} loading={recentSamplesLoading} />
-  };
-  
 
   const samplingMetricComponents = Object.entries(activeCreeks)
     .filter(([, isActive]) => isActive)
@@ -276,13 +274,13 @@ export default function Dashboard() {
   // element itself froze its props when it was opened: a chart opened while loading stayed on "Loading data…".)
   const [modalSpec, setModalSpec] = useState<{
     key: string; // weather / quality / gauges, or a creek
-    type: "weather" | "logger" | "quality" | "sampling";
+    type: "weather" | "logger" | "gauges" | "quality" | "sampling";
   } | null>(null);
 
   const openModal = (
     key: string,
     analysisType: "recent" | "alltime",
-    type: "weather" | "logger" | "quality" | "sampling",
+    type: "weather" | "logger" | "gauges" | "quality" | "sampling",
   ) => {
     setAnalysisType(analysisType);
     setModalSpec({ key, type });
@@ -344,7 +342,6 @@ export default function Dashboard() {
                       <Information id={1} />
                     </h2>
                     <div className="space-y-4">
-                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={activeGroups}
@@ -409,7 +406,7 @@ export default function Dashboard() {
                               <ExpandableCard
                                 key={comp.key as string}
                                 label={`the latest ${groupNames[comp.key as string] ?? ""} readings`}
-                                onOpen={() => openModal(comp.key as string, "recent", comp.key as any /* weather, quality or gauges */)}
+                                onOpen={() => openModal(comp.key as string, "recent", comp.key as "weather" | "quality" | "gauges")}
                                 className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
@@ -496,7 +493,7 @@ export default function Dashboard() {
                                   <ExpandableCard
                                     key={comp.key}
                                     label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                    onOpen={() => openModal(comp.key as string, "alltime", comp.key as any)}
+                                    onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
                                     className="p-4 animate-fade-in-up"
                                   >
                                     {comp}
@@ -517,7 +514,7 @@ export default function Dashboard() {
                               <ExpandableCard
                                 key={comp.key}
                                 label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                onOpen={() => openModal(comp.key as string, "alltime", comp.key as any)}
+                                onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
                                 className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 150}ms` }}
                               >
@@ -568,7 +565,6 @@ export default function Dashboard() {
                       <Information id={6} />
                     </h2>
                     <div className="space-y-4">
-                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={{}}  // Empty object for sampling mode
@@ -650,7 +646,7 @@ export default function Dashboard() {
                         <div className="min-h-0 flex-1">
                           <Map
                             activeGroups={activeCreeks}
-                            setActiveGroups={() => {}} // No-op to satisfy type, since Map expects sensor groups setter
+                            setActiveGroups={setActiveCreeks}
                             subFilters={samplingSubFilters}
                             setSubFilters={setSamplingSubFilters}
                             open={open}

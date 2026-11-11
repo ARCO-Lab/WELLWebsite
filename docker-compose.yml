@@ -86,6 +86,8 @@ services:
       DATABASE_URL: ${BACKEND_DATABASE_URL}
       # Set to 1 to mirror logs to Docker stdout in addition to files
       WORKER_LOG_TO_STDOUT: ${WORKER_LOG_TO_STDOUT}
+      # Sentry tag for errors from this container, including scripts run here by hand (utils/sentry.py)
+      SENTRY_COMPONENT: worker
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -110,6 +112,7 @@ services:
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       EXPORTS_DIR: ${EXPORTS_DIR:-/app/app/exports}
+      SENTRY_COMPONENT: export_worker   # Sentry tag for errors from this container (utils/sentry.py)
     depends_on:
       redis:
         condition: service_started
@@ -130,14 +133,12 @@ services:
         # Build-time only (for next.config.js rewrites & public env)
         FLASK_API_URL: ${BACKEND_INTERNAL_URL}
         NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
-        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
     env_file:
       - ./dashboard/frontend/.env.local  # runtime server-side vars if you have any
     environment:
       # Runtime (Node/SSR or API routes) can also use these:
       FLASK_API_URL: ${BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
-      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
     depends_on:
       backend:
         condition: service_started

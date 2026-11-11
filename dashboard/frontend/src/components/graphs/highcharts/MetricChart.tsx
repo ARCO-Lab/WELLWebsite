@@ -198,10 +198,8 @@ const MetricChart: React.FC<MetricChartProps> = ({
     chartRef.current?.chart?.setSubtitle({ text: badge ?? '' });
   }, [badge]);
 
-  // A drag that zooms ends in a click; keep it from reaching the card around the chart, which would open the
-  // larger view. A plain click (or tap) still does.
-  const pointerDown = useRef<{ x: number; y: number } | null>(null);
-  const onPointerDown = (e: React.PointerEvent) => { pointerDown.current = { x: e.clientX, y: e.clientY }; };
+  // A drag that zooms ends in a click; the card around the chart (ExpandableCard) ignores clicks that moved, so it
+  // doesn't open the larger view. A pinch commits the shared window once the fingers lift.
   const onTouchEnd = (e: React.TouchEvent) => {
     if (pinchRef.current && e.touches.length < 2) {
       zoomRef.current(pinchRef.current);
@@ -214,14 +212,8 @@ const MetricChart: React.FC<MetricChartProps> = ({
       });
     }
   };
-  const onClickCapture = (e: React.MouseEvent) => {
-    const d = pointerDown.current;
-    if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) e.stopPropagation();
-  };
-
   return (
-    <div className="relative" onPointerDown={onPointerDown} onClickCapture={onClickCapture}
-      onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
+    <div className="relative" onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
       <HighchartsReact
         highcharts={Highcharts}
         options={initialOptions}
