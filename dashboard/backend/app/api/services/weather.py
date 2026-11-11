@@ -7,6 +7,25 @@ from config import Config
 from utils.fetching import BadVendorResponse
 from datetime import datetime, timedelta, timezone
 
+# Keys of a LI-COR error reply. A 200 reply carrying one of them (or that isn't a JSON object at all) is a failed call.
+LICOR_ERROR_KEYS = ("error", "errors", "message", "error_description")
+
+
+def licor_records(body):
+    """The records of a LI-COR reply. A reply with no "data" list isn't "no readings": it raises BadVendorResponse,
+    so the outage is seen, unless it is the normal envelope ("max_results", no error keys) with "data" left out or
+    null, which is read as an empty time range: the repo has no example of how LI-COR answers one, and a station
+    outage mustn't be mistaken for a vendor outage."""
+    if not isinstance(body, dict):
+        raise BadVendorResponse("LI-COR replied without a data list")
+    data = body.get("data")
+    if isinstance(data, list):
+        return data
+    if data is None and "max_results" in body and not any(k in body for k in LICOR_ERROR_KEYS):
+        return []
+    raise BadVendorResponse("LI-COR replied without a data list")
+
+
 class WeatherService:
     def __init__(self, api_url, api_token, logger_ids):
         # Initialize with API URL, token, and logger IDs
@@ -46,10 +65,7 @@ class WeatherService:
             time.sleep(10 * (attempt + 1))
         response.raise_for_status()
         body = response.json()
-        # A reply without "data" isn't "no readings": count it as a failed call, so the outage is seen.
-        if not isinstance(body, dict) or not isinstance(body.get("data"), list):
-            raise BadVendorResponse("LI-COR replied without a data list")
-        return body["data"], bool(body.get("max_results"))
+        return licor_records(body), bool(body.get("max_results"))
 
     def get_weather_data(self, start_time=None, end_time=None):
         # Fetch weather data from the API, optionally for a time range

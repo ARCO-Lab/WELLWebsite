@@ -16,6 +16,9 @@ Settings (environment):
   ALERT_VENDOR_FAILURES       failed runs in a row before VENDOR_DOWN (default 3, i.e. 30 min)
   ALERT_REMINDER_HOURS        how often an ongoing incident is emailed again (default 24)
   ALERT_SUSPECT_HOURS         window of the SUSPECT_VALUES rules (default 6); ALERT_SUSPECT_VALUES=off turns them off
+  ALERT_CLEAR_MINUTES         how long a condition must be gone before its incident clears (default 30)
+  ALERT_REOPEN_HOURS          a condition back within this long of clearing reopens its incident (default 6)
+  ALERT_EXCLUDED_SERIES       series to mute, like HEALTH_EXCLUDED_SERIES ("station:measurement" or "station:*")
   ALERT_DASHBOARD_URL         dashboard link in the emails (default https://welldash.mcmaster.ca/)
 The quiet hours and excluded series of /health/data (HEALTH_QUIET_HOURS_<GROUP>, HEALTH_EXCLUDED_SERIES) apply
 here too, so the water quality sonde's usual night-time silence isn't an alert.
@@ -29,7 +32,7 @@ import requests
 
 from utils.digest import (DEPTH_NEAR_ZERO, FLATLINE_MIN_READINGS, FLATLINE_TYPES, FLATLINE_ZERO_OK, LOGGER_SENSORS,
                           ODO_NEAR_ZERO, PLAUSIBLE_RANGES)
-from utils.monitoring import as_site_time, env_key, parse_hours
+from utils.monitoring import DEFAULT_EXCLUDED_SERIES, as_site_time, env_key, parse_excluded_series, parse_hours
 from utils.timezone import EST_TZ
 
 STALE_SENSOR, VENDOR_DOWN, SUSPECT_VALUES = "STALE_SENSOR", "VENDOR_DOWN", "SUSPECT_VALUES"
@@ -49,6 +52,8 @@ DEFAULT_STALE_HOURS = {"Weather": 3.0, "Logger": 3.0, "Quality": 2.0}
 DEFAULT_VENDOR_FAILURES = 3
 DEFAULT_REMINDER_HOURS = 24.0
 DEFAULT_SUSPECT_HOURS = 6.0
+DEFAULT_CLEAR_MINUTES = 30.0
+DEFAULT_REOPEN_HOURS = 6.0
 DEFAULT_DASHBOARD_URL = "https://welldash.mcmaster.ca/"
 RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long is dropped
 
@@ -60,6 +65,9 @@ class Settings:
     suspect_window: timedelta = timedelta(hours=DEFAULT_SUSPECT_HOURS)
     suspect_values: bool = True
     dashboard_url: str = DEFAULT_DASHBOARD_URL
+    clear_after: timedelta = timedelta(minutes=DEFAULT_CLEAR_MINUTES)
+    reopen_within: timedelta = timedelta(hours=DEFAULT_REOPEN_HOURS)
+    muted: frozenset = frozenset()   # (station_id, measurement_type or "*") from ALERT_EXCLUDED_SERIES
 
 
 @dataclass
@@ -74,10 +82,12 @@ class Condition:
 @dataclass
 class Plan:
     """What one alert check does with the incidents table and the email."""
-    open_new: list = field(default_factory=list)      # Conditions to insert
+    open_new: list = field(default_factory=list)      # (Condition, coarser open incident it replaces or None)
+    reopen: list = field(default_factory=list)        # recently closed incidents whose condition is back
     update: list = field(default_factory=list)        # (incident, Condition) still going: refresh title/detail
     resolve: list = field(default_factory=list)       # open incidents whose condition cleared
-    notify_new: list = field(default_factory=list)    # incidents (or Conditions) never emailed
+    supersede: list = field(default_factory=list)     # open incidents replaced by a coarser/finer one, or muted
+    notify_new: list = field(default_factory=list)    # open incidents never emailed (new rows: see open_new)
     remind: list = field(default_factory=list)        # emailed incidents due a reminder
     recovered: list = field(default_factory=list)     # emailed incidents that cleared, recovery not yet emailed
 
@@ -92,6 +102,12 @@ def settings_from_env(env=None):
         value = (env.get(name) or "").strip()
         return timedelta(hours=parse_hours(value, name) if value else default)
 
+    muted_text = (env.get("ALERT_EXCLUDED_SERIES") or "").strip()
+    try:
+        muted = frozenset(parse_excluded_series(muted_text))
+    except ValueError:
+        raise ValueError(f"ALERT_EXCLUDED_SERIES entries must look like 4501:ODO or 2577533:*, got {muted_text!r}") from None
+    clear = (env.get("ALERT_CLEAR_MINUTES") or "").strip()   # a positive number, like the hour settings
     suspect = (env.get("ALERT_SUSPECT_VALUES") or "on").strip().lower()
     if suspect not in ("on", "off", "1", "0", "true", "false", "yes", "no"):
         raise ValueError(f"ALERT_SUSPECT_VALUES must be on or off, got {suspect!r}")
@@ -101,13 +117,16 @@ def settings_from_env(env=None):
         suspect_window=hours("ALERT_SUSPECT_HOURS", DEFAULT_SUSPECT_HOURS),
         suspect_values=suspect in ("on", "1", "true", "yes"),
         dashboard_url=(env.get("ALERT_DASHBOARD_URL") or "").strip() or DEFAULT_DASHBOARD_URL,
+        clear_after=timedelta(minutes=parse_hours(clear, "ALERT_CLEAR_MINUTES") if clear else DEFAULT_CLEAR_MINUTES),
+        reopen_within=hours("ALERT_REOPEN_HOURS", DEFAULT_REOPEN_HOURS),
+        muted=muted,
     )
 
 
 def freshness_env(env=None):
     """The environment for utils.monitoring.assess_freshness with the alert limits in place of /health/data's:
     HEALTH_MAX_AGE_HOURS[_<GROUP>] are replaced by ALERT_STALE_HOURS[_<GROUP>] or the defaults above. The quiet
-    hours and excluded series stay shared."""
+    hours and excluded series stay shared, plus the series muted by ALERT_EXCLUDED_SERIES."""
     env = os.environ if env is None else env
     out = dict(env)
     overall = (env.get("ALERT_STALE_HOURS") or "").strip()
@@ -122,6 +141,10 @@ def freshness_env(env=None):
         if value:
             parse_hours(value, name)
         out[f"HEALTH_MAX_AGE_HOURS_{key}"] = value or overall or (str(default) if default else "")
+    muted = (env.get("ALERT_EXCLUDED_SERIES") or "").strip()
+    if muted:
+        shared = env.get("HEALTH_EXCLUDED_SERIES", DEFAULT_EXCLUDED_SERIES)
+        out["HEALTH_EXCLUDED_SERIES"] = ",".join(part for part in (shared, muted) if part.strip())
     return out
 
 
@@ -183,11 +206,14 @@ def station_label(group, station_id):
 
 
 def vendor_conditions(vendors, now, settings):
-    """VENDOR_DOWN conditions from the vendor_status rows ({source: row dict})."""
-    found = {}
+    """(conditions, held) for VENDOR_DOWN from the vendor_status rows ({source: row dict}). A vendor that failed, but
+    fewer times in a row than ALERT_VENDOR_FAILURES, is held: an open incident for it neither clears nor changes."""
+    found, held = {}, set()
     for source, row in sorted(vendors.items()):
         failures = row.get("consecutive_failures") or 0
         if failures < settings.vendor_failures:
+            if failures:
+                held.add(f"vendor:{source}")
             continue
         since = aware(row.get("failing_since") or row.get("last_failure_at") or now)
         status = row.get("last_http_status")
@@ -214,30 +240,37 @@ def vendor_conditions(vendors, now, settings):
                       f"vendor's status page or support; our sensors may be fine. Ingestion catches up on missed "
                       f"readings by itself once the API answers (up to 14 days back).")
         found[f"vendor:{source}"] = Condition(f"vendor:{source}", VENDOR_DOWN, title, detail, since)
-    return found
+    return found, held
+
+
+def vendor_of(group):
+    return VENDOR_OF_GROUP.get(group, group)
+
+
+def is_under(key, prefix):
+    """Whether `key` is `prefix` itself or nested under it ("stale:LI-COR:2577531" is under "stale:LI-COR")."""
+    return key == prefix or key.startswith(prefix + ":")
 
 
 def stale_conditions(freshness, vendors, now):
-    """STALE_SENSOR conditions from assess_freshness()'s report, for groups whose vendor answered on the latest
-    run. All series of a vendor stale -> one condition for the vendor's whole site; all series of a station stale
-    -> one for the station; otherwise one per silent sensor."""
-    found = {}
+    """(conditions, held) for STALE_SENSOR, from assess_freshness()'s report. Keys nest: "stale:<vendor>" (every
+    station of the vendor silent), "stale:<vendor>:<station>", "stale:<vendor>:<station>:<measurement>". `held` are
+    key prefixes that can't be judged now (the vendor's latest call failed): their open incidents stay as they are."""
+    found, held = {}, set()
     by_vendor = {}   # vendor -> {(group, station): [series]}
     for group, info in freshness["groups"].items():
-        vendor = VENDOR_OF_GROUP.get(group)
         for s in info["series"]:
             if s["status"] != "excluded":
-                by_vendor.setdefault(vendor, {}).setdefault((group, s["station_id"]), []).append(s)
-    for vendor, stations in sorted(by_vendor.items(), key=lambda item: str(item[0])):
-        row = vendors.get(vendor) if vendor else None
+                by_vendor.setdefault(vendor_of(group), {}).setdefault((group, s["station_id"]), []).append(s)
+    for vendor, stations in sorted(by_vendor.items()):
+        row = vendors.get(vendor)
         if row and (row.get("consecutive_failures") or 0) > 0:
-            continue   # the vendor failed on the latest run: VENDOR_DOWN covers it once it persists
+            held.add(f"stale:{vendor}")   # no new data is expected: say nothing either way until it answers
+            continue
         if row and row.get("last_success_at"):
             vendor_ok = f"{vendor} is responding (latest call {site_time(row['last_success_at'])})"
-        elif vendor:
-            vendor_ok = f"{vendor}'s latest call isn't recorded yet, so this may also be a vendor problem"
         else:
-            vendor_ok = "The vendor of this group isn't known"
+            vendor_ok = f"{vendor}'s latest call isn't recorded yet, so this may also be a vendor problem"
         fix = "Check the sensor, its power and its telemetry in the field."
         everything = [s for series in stations.values() for s in series]
         if len(stations) > 1 and all(s["status"] == "stale" for s in everything):
@@ -247,7 +280,8 @@ def stale_conditions(freshness, vendors, now):
             detail = (f"{vendor_ok}, but none of its stations ({names}) has sent anything since "
                       f"{site_time(newest)} ({duration(now - newest)}). The water level loggers report through the "
                       f"weather station, so check the weather station's power, cellular modem and data plan first.")
-            found[f"stale:{vendor}"] = Condition(f"stale:{vendor}", STALE_SENSOR, title, detail, newest)
+            key = f"stale:{vendor}"
+            found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
             continue
         for (group, station), series in sorted(stations.items()):
             stale = [s for s in series if s["status"] == "stale"]
@@ -256,29 +290,34 @@ def stale_conditions(freshness, vendors, now):
             label = station_label(group, station)
             if len(stale) == len(series):
                 newest = max(as_site_time(s["newest"]) for s in series)
-                key = f"stale:{station}"
+                key = f"stale:{vendor}:{station}"
                 title = f"{label} silent for {duration(now - newest)} — vendor OK, check the sensor"
                 detail = f"{vendor_ok}; {label} has sent nothing since {site_time(newest)} ({duration(now - newest)}). {fix}"
                 found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
                 continue
             for s in stale:
                 newest = as_site_time(s["newest"])
-                key = f"stale:{station}:{s['measurement_type']}"
+                key = f"stale:{vendor}:{station}:{s['measurement_type']}"
                 title = (f"{label} {s['measurement_type']} silent for {duration(now - newest)} — "
                          f"vendor OK, check the sensor")
                 detail = (f"{vendor_ok} and {label}'s other sensors are reporting, but {s['measurement_type']} has "
                           f"sent nothing since {site_time(newest)} ({duration(now - newest)}). Check that sensor and "
                           f"its cable in the field.")
                 found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
-    return found
+    return found, held
+
+
+def enough_readings(readings):
+    return sum(v is not None for _, v in readings) >= FLATLINE_MIN_READINGS
 
 
 def suspect_finding(group, station_id, measurement_type, readings, window):
     """A short description of what looks wrong with one series' readings [(recorded_at, value)] of the window, or
-    None. Conservative on purpose: one odd reading is not an alert, only a pattern over the whole window."""
-    values = [v for _, v in readings if v is not None]
-    if len(values) < FLATLINE_MIN_READINGS:
+    None, including when there are too few readings to judge. Conservative on purpose: one odd reading is not an
+    alert, only a pattern over the whole window."""
+    if not enough_readings(readings):
         return None
+    values = [v for _, v in readings if v is not None]
     hours = f"{window.total_seconds() / 3600:g} h"
     median = statistics.median(values)
     if (group == "Quality" and measurement_type in FLATLINE_TYPES and len(set(values)) == 1
@@ -301,52 +340,94 @@ def suspect_finding(group, station_id, measurement_type, readings, window):
 
 
 def suspect_conditions(freshness, recent, settings):
-    """SUSPECT_VALUES conditions. recent: {(station_id, measurement_type): [(recorded_at, value)]} over the window,
-    for the series that aren't excluded or stale (a silent series is STALE_SENSOR's)."""
-    found = {}
+    """(conditions, held) for SUSPECT_VALUES. recent: {(station_id, measurement_type): [(recorded_at, value)]} over
+    the window. A series that is stale, or has too few readings to judge (e.g. the water quality sonde at night),
+    is held: an open incident for it stays open rather than "recovering" for lack of data."""
+    found, held = {}, set()
     if not settings.suspect_values:
-        return found
+        return found, held
     for group, info in freshness["groups"].items():
         for s in info["series"]:
-            if s["status"] != "ok":
+            if s["status"] == "excluded":
                 continue
+            key = f"suspect:{vendor_of(group)}:{s['station_id']}:{s['measurement_type']}"
             readings = recent.get((s["station_id"], s["measurement_type"])) or []
+            if s["status"] != "ok" or not enough_readings(readings):
+                held.add(key)
+                continue
             finding = suspect_finding(group, s["station_id"], s["measurement_type"], readings, settings.suspect_window)
             if not finding:
                 continue
             label = station_label(group, s["station_id"])
-            key = f"suspect:{s['station_id']}:{s['measurement_type']}"
-            started = as_site_time(readings[0][0])
             title = f"{label} {s['measurement_type']} looks wrong — check the probe"
             detail = (f"Readings are arriving, but {label} {s['measurement_type']}: {finding}. Look at the chart on "
                       f"the dashboard, then check and clean the sensor in the field if it isn't a real event.")
-            found[key] = Condition(key, SUSPECT_VALUES, title, detail, started)
-    return found
+            found[key] = Condition(key, SUSPECT_VALUES, title, detail, as_site_time(readings[0][0]))
+    return found, held
 
 
-def plan(conditions, open_incidents, pending_recoveries, now, settings):
-    """Compare the conditions found now with the open incidents (objects with incident_key, last_notified_at,
-    resolved_at, ...) and decide what to store and email. pending_recoveries: incidents resolved earlier whose
-    recovery email hasn't gone out yet."""
+def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, now, settings,
+         muted=lambda key: False):
+    """Compare the conditions found now with the incidents and decide what to store and email.
+
+    conditions: {key: Condition}. held: key prefixes that can't be judged this run; their open incidents are left
+    exactly as they are. open_incidents: incidents with resolved_at NULL. recently_closed: {key: incident} closed
+    within ALERT_REOPEN_HOURS, newest per key. pending_recoveries: cleared, emailed incidents whose recovery email
+    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES).
+
+    - An incident only clears after its condition has been gone for ALERT_CLEAR_MINUTES, and a condition that comes
+      back within ALERT_REOPEN_HOURS of closing reopens its incident instead of being emailed as new. So a
+      flickering condition (a vendor failing on and off, a value hovering at a limit) doesn't email new/recovered
+      every few runs; while it is open it is reminded about as usual.
+    - Keys nest (site > station > sensor). When a coarser condition replaces finer open incidents, or finer
+      conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
+      new finer incident takes over its coarser incident's notification state, so nothing already reported is
+      emailed as new. A muted series' incidents close the same way.
+    """
     result = Plan()
-    by_key = {i.incident_key: i for i in open_incidents}
+    open_by_key = {i.incident_key: i for i in open_incidents}
+    present = set(conditions)
+    reopened = set()
+
+    def is_held(key):
+        return any(is_under(key, prefix) for prefix in held)
+
     for key, condition in conditions.items():
-        incident = by_key.get(key)
+        incident = open_by_key.get(key)
+        if incident is None and key in recently_closed:
+            incident = recently_closed[key]
+            result.reopen.append(incident)
+            reopened.add(id(incident))
         if incident is None:
-            result.open_new.append(condition)
+            parent = next((i for k, i in open_by_key.items() if k not in present and key.startswith(k + ":")), None)
+            result.open_new.append((condition, parent))
             continue
         result.update.append((incident, condition))
         if incident.last_notified_at is None:
             result.notify_new.append(incident)
         elif now - aware(incident.last_notified_at) >= settings.reminder:
             result.remind.append(incident)
-    for key, incident in by_key.items():
-        if key not in conditions:
+    for key, incident in open_by_key.items():
+        if key in present or is_held(key):
+            continue
+        if muted(key) or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
+            result.supersede.append(incident)
+        elif now - aware(incident.last_seen_at) >= settings.clear_after:
             result.resolve.append(incident)
-            if incident.last_notified_at is not None:
+            if incident.last_notified_at is not None and incident.recovery_notified_at is None:
                 result.recovered.append(incident)
-    result.recovered += [i for i in pending_recoveries if now - aware(i.resolved_at) <= RECOVERY_WINDOW]
+    result.recovered += [i for i in pending_recoveries
+                         if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
+
+
+def is_muted(key, muted):
+    """Whether a stale/suspect key is about a series muted by ALERT_EXCLUDED_SERIES (vendor and site keys never are)."""
+    parts = key.split(":", 3)
+    if parts[0] not in ("stale", "suspect") or len(parts) < 3:
+        return False
+    station, measurement = parts[2], parts[3] if len(parts) > 3 else "*"
+    return (station, "*") in muted or (station, measurement) in muted
 
 
 def sort_key(item):

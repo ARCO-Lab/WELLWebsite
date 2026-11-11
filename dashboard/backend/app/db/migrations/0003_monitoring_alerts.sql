@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS alert_incidents (
     last_notified_at     timestamptz,
     notifications        integer NOT NULL DEFAULT 0,
     resolved_at          timestamptz,
+    close_reason         varchar(16),
     recovery_notified_at timestamptz
 );
 

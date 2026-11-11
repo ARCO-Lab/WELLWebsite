@@ -51,11 +51,18 @@ def open_incidents():
             .order_by(AlertIncident.opened_at, AlertIncident.id).all())
 
 
-def pending_recoveries():
-    """Incidents that cleared after being emailed, whose recovery hasn't been emailed yet."""
-    return (AlertIncident.query.filter(AlertIncident.resolved_at.isnot(None),
+def pending_recoveries(since):
+    """Incidents that cleared (not superseded) since `since` after being emailed, whose recovery hasn't been emailed."""
+    return (AlertIncident.query.filter(AlertIncident.resolved_at >= since, AlertIncident.close_reason == "cleared",
                                        AlertIncident.last_notified_at.isnot(None),
                                        AlertIncident.recovery_notified_at.is_(None)).all())
+
+
+def recently_closed(since):
+    """{incident_key: the newest incident closed since `since`}, for incidents whose condition comes back."""
+    rows = (AlertIncident.query.filter(AlertIncident.resolved_at >= since)
+            .order_by(AlertIncident.resolved_at, AlertIncident.id).all())
+    return {i.incident_key: i for i in rows}   # later rows win
 
 
 def iso(ts):
@@ -64,8 +71,10 @@ def iso(ts):
 
 
 def alerts_report():
-    """The open incidents and the vendor call outcomes, as JSON-ready dicts, for /health/data and the digest."""
-    incidents = [{"kind": i.kind, "key": i.incident_key, "title": i.title, "detail": i.detail,
+    """The open incidents and the vendor call outcomes, as JSON-ready dicts, for /health/data and the digest. Public
+    (/health/data is), so only the kind, key, title and times: the detail, with setting names and advice, is for
+    the emails."""
+    incidents = [{"kind": i.kind, "key": i.incident_key, "title": i.title,
                   "started_at": iso(i.started_at), "opened_at": iso(i.opened_at),
                   "last_emailed_at": iso(i.last_notified_at)} for i in open_incidents()]
     vendors = {source: {"last_attempt_at": iso(r["last_attempt_at"]), "last_success_at": iso(r["last_success_at"]),

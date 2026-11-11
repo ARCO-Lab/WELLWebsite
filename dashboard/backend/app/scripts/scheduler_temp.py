@@ -302,8 +302,8 @@ def alert_check_job():
     logged to logs/alerts.log and reported to Sentry, and pings the alerts heartbeat with /fail, as does an email
     that couldn't be sent."""
     try:
-        import inject_from_api   # its app (and database connection pool) is reused, not built every run
-        with inject_from_api.app.app_context():
+        from inject_from_api import app as ingestion_app   # its app (and connection pool) is reused, not rebuilt
+        with ingestion_app.app_context():
             summary = check_alerts.run(log=timestamped_print_alerts)
         ok = summary["email"] != "failed"
     except Exception as e:

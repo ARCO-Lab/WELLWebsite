@@ -7,9 +7,11 @@ import os
 import pathlib
 import sys
 import unittest
-from unittest import mock
+import unittest.mock
 
 import requests
+
+mock = unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -103,21 +105,25 @@ class VendorDownTests(unittest.TestCase):
 
     def test_needs_n_failures_in_a_row(self):
         settings = Settings()
+        # Failing, but not yet N times: nothing new, and an open incident is held as it is.
         self.assertEqual(vendor_conditions({"LI-COR": vendor(2, "server", 503, "HTTPError (HTTP 503)", self.since)},
-                                           NOW, settings), {})
-        found = vendor_conditions({"LI-COR": vendor(6, "server", 503, "HTTPError (HTTP 503)", self.since)}, NOW, settings)
+                                           NOW, settings), ({}, {"vendor:LI-COR"}))
+        found, held = vendor_conditions({"LI-COR": vendor(6, "server", 503, "HTTPError (HTTP 503)", self.since)},
+                                        NOW, settings)
+        self.assertEqual(held, set())
         c = found["vendor:LI-COR"]
         self.assertEqual(c.kind, VENDOR_DOWN)
         self.assertIn("LI-COR API not responding since 2026-11-11 13:00 (HTTP 503 ×6)", c.title)
         self.assertIn("our sensors may be fine", c.detail)
 
     def test_auth_and_quota_have_their_own_advice(self):
-        found = vendor_conditions({"WQData": vendor(3, "auth", 401, "HTTPError (HTTP 401)", self.since),
-                                   "LI-COR": vendor(3, "timeout", None, "ReadTimeout", self.since)}, NOW, Settings())
+        found, _ = vendor_conditions({"WQData": vendor(3, "auth", 401, "HTTPError (HTTP 401)", self.since),
+                                      "LI-COR": vendor(3, "timeout", None, "ReadTimeout", self.since)}, NOW, Settings())
         self.assertIn("rejects our credentials (HTTP 401 ×3) — rotate the API key", found["vendor:WQData"].title)
         self.assertIn("WQ_API_KEY", found["vendor:WQData"].detail)
         self.assertIn("ReadTimeout ×3", found["vendor:LI-COR"].title)
-        found = vendor_conditions({"WQData": vendor(3, "quota", 429, "HTTPError (HTTP 429)", self.since)}, NOW, Settings())
+        found, _ = vendor_conditions({"WQData": vendor(3, "quota", 429, "HTTPError (HTTP 429)", self.since)}, NOW,
+                                     Settings())
         self.assertIn("quota exceeded (HTTP 429 ×3)", found["vendor:WQData"].title)
 
 
@@ -128,9 +134,9 @@ class StaleTests(unittest.TestCase):
     def test_station_silent_while_vendor_answers(self):
         rows = [latest_row("Quality", WQ, m, dt.timedelta(hours=3)) for m in ("ODO", "Turbidity")]
         rows += [latest_row("Weather", WEATHER, "Rain", dt.timedelta(minutes=50))]
-        found = stale_conditions(self.report(rows), {"WQData": vendor(), "LI-COR": vendor()}, NOW)
-        self.assertEqual(list(found), [f"stale:{WQ}"])
-        c = found[f"stale:{WQ}"]
+        found, held = stale_conditions(self.report(rows), {"WQData": vendor(), "LI-COR": vendor()}, NOW)
+        self.assertEqual((list(found), held), ([f"stale:WQData:{WQ}"], set()))
+        c = found[f"stale:WQData:{WQ}"]
         self.assertEqual(c.kind, STALE_SENSOR)
         self.assertEqual(c.title, "Water quality station 4501 silent for 3 h — vendor OK, check the sensor")
         self.assertIn("WQData is responding", c.detail)
@@ -139,31 +145,33 @@ class StaleTests(unittest.TestCase):
     def test_one_sensor_of_a_station(self):
         rows = [latest_row("Weather", WEATHER, "Rain", dt.timedelta(hours=5)),
                 latest_row("Weather", WEATHER, "Air Temperature", dt.timedelta(minutes=40))]
-        found = stale_conditions(self.report(rows), {"LI-COR": vendor()}, NOW)
-        self.assertEqual(list(found), [f"stale:{WEATHER}:Rain"])
-        self.assertIn("Weather station 22051538 Rain silent for 5 h", found[f"stale:{WEATHER}:Rain"].title)
+        found, _ = stale_conditions(self.report(rows), {"LI-COR": vendor()}, NOW)
+        self.assertEqual(list(found), [f"stale:LI-COR:{WEATHER}:Rain"])
+        self.assertIn("Weather station 22051538 Rain silent for 5 h", found[f"stale:LI-COR:{WEATHER}:Rain"].title)
 
     def test_whole_licor_site_is_one_alert(self):
         rows = [latest_row("Weather", WEATHER, "Rain", dt.timedelta(hours=4)),
                 latest_row("Logger", "2577531", "Water Surface Elevation", dt.timedelta(hours=4)),
                 latest_row("Logger", "2577535", "Water Surface Elevation", dt.timedelta(days=300))]   # excluded
-        found = stale_conditions(self.report(rows), {"LI-COR": vendor()}, NOW)
+        found, _ = stale_conditions(self.report(rows), {"LI-COR": vendor()}, NOW)
         self.assertEqual(list(found), ["stale:LI-COR"])
         self.assertIn("Water level logger 1", found["stale:LI-COR"].detail)
 
     def test_not_while_the_vendor_is_failing(self):
         rows = [latest_row("Quality", WQ, "ODO", dt.timedelta(hours=3))]
-        self.assertEqual(stale_conditions(self.report(rows), {"WQData": vendor(1, "server", 503)}, NOW), {})
+        # The latest call failed: no verdict, and the vendor's open stale incidents are held as they are.
+        self.assertEqual(stale_conditions(self.report(rows), {"WQData": vendor(1, "server", 503)}, NOW),
+                         ({}, {"stale:WQData"}))
         # No recorded outcome yet: still alerted, but without claiming the vendor is fine.
-        found = stale_conditions(self.report(rows), {}, NOW)
-        self.assertIn("isn't recorded yet", found[f"stale:{WQ}"].detail)
+        found, _ = stale_conditions(self.report(rows), {}, NOW)
+        self.assertIn("isn't recorded yet", found[f"stale:WQData:{WQ}"].detail)
 
     def test_quality_quiet_hours(self):
         night = dt.datetime(2026, 11, 12, 3, 0, tzinfo=UTC)   # 22:00 Toronto, sonde silent since 18:10
         rows = [{"station_id": WQ, "group_type": "Quality", "measurement_type": "ODO",
                  "recorded_at": "2026-11-11T18:10:00"}]
         report = assess_freshness(rows, night, freshness_env({}))
-        self.assertEqual(stale_conditions(report, {"WQData": vendor()}, night), {})
+        self.assertEqual(stale_conditions(report, {"WQData": vendor()}, night), ({}, set()))
 
 
 class SuspectTests(unittest.TestCase):
@@ -192,10 +200,17 @@ class SuspectTests(unittest.TestCase):
                 latest_row("Quality", WQ, "Conductivity", dt.timedelta(hours=5))]
         report = assess_freshness(rows, NOW, freshness_env({}))
         recent = {(WQ, "ODO"): self.readings([7.2] * 36), (WQ, "Conductivity"): self.readings([300.0] * 36)}
-        found = suspect_conditions(report, recent, Settings())
-        self.assertEqual(list(found), [f"suspect:{WQ}:ODO"])
-        self.assertEqual(found[f"suspect:{WQ}:ODO"].kind, SUSPECT_VALUES)
-        self.assertEqual(suspect_conditions(report, recent, Settings(suspect_values=False)), {})
+        found, held = suspect_conditions(report, recent, Settings())
+        self.assertEqual(list(found), [f"suspect:WQData:{WQ}:ODO"])
+        self.assertEqual(found[f"suspect:WQData:{WQ}:ODO"].kind, SUSPECT_VALUES)
+        self.assertEqual(held, {f"suspect:WQData:{WQ}:Conductivity"})   # stale: no verdict on its values
+        self.assertEqual(suspect_conditions(report, recent, Settings(suspect_values=False)), ({}, set()))
+
+    def test_too_few_readings_is_no_verdict(self):
+        rows = [latest_row("Quality", WQ, "ODO", dt.timedelta(minutes=10))]
+        report = assess_freshness(rows, NOW, freshness_env({}))
+        found, held = suspect_conditions(report, {(WQ, "ODO"): self.readings([7.2] * 5)}, Settings())
+        self.assertEqual((found, held), ({}, {f"suspect:WQData:{WQ}:ODO"}))
 
 
 class EmailTextTests(unittest.TestCase):
@@ -244,6 +259,7 @@ class CheckAlertsTests(unittest.TestCase):
         self.db.create_all()
         self.sent = []
         self.logs = []
+        check_alerts._last_unsent["signature"] = None
 
     def tearDown(self):
         self.db.session.remove()
@@ -363,8 +379,90 @@ class CheckAlertsTests(unittest.TestCase):
             clock.now.return_value = NOW
             body = self.app.test_client().get("/health/data").get_json()
         [incident] = body["alerts"]["open"]
-        self.assertEqual((incident["kind"], incident["key"]), (STALE_SENSOR, f"stale:{WQ}"))
+        self.assertEqual((incident["kind"], incident["key"]), (STALE_SENSOR, f"stale:WQData:{WQ}"))
+        self.assertNotIn("detail", incident)   # public: the advice and setting names are for the emails only
         self.assertEqual(body["alerts"]["vendors"]["WQData"]["consecutive_failures"], 0)
+
+    def open_keys(self):
+        return sorted(i.incident_key for i in self.incidents() if i.resolved_at is None)
+
+    def test_a_failed_vendor_call_holds_open_stale_incidents(self):
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        self.run_at(NOW)
+        self.record("WQData", http_error(503), now=NOW + dt.timedelta(minutes=10))
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=50))["email"])   # no false "Recovered"
+        self.assertEqual(self.open_keys(), [f"stale:WQData:{WQ}"])
+        self.record("WQData", now=NOW + dt.timedelta(minutes=60))
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=60))["email"])   # and no "new" again
+        self.assertEqual((len(self.sent), len(self.incidents())), (1, 1))
+
+    def test_flicker_clears_after_a_delay_and_reopens_quietly(self):
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        self.run_at(NOW)                                                      # 1: new
+        self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(minutes=5), count=1)
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=10))["email"])   # gone 10 min: still open
+        self.assertEqual(self.open_keys(), [f"stale:WQData:{WQ}"])
+        self.run_at(NOW + dt.timedelta(minutes=40))                           # gone 40 min: 2: recovered
+        self.assertTrue(self.sent[1][1].startswith("[WELL] Recovered: Water quality station 4501"))
+        self.assertEqual(self.open_keys(), [])
+        # Silent again 2.5 h later: the same incident reopens, no "new" email.
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=2, minutes=30))["email"])
+        self.assertEqual((self.open_keys(), len(self.incidents()), len(self.sent)), ([f"stale:WQData:{WQ}"], 1, 2))
+        # ... and is reminded about as usual, after which its recovery is worth an email again.
+        self.run_at(NOW + dt.timedelta(hours=24))
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Still ongoing:"))
+        self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(hours=24, minutes=5), count=1)
+        self.run_at(NOW + dt.timedelta(hours=24, minutes=40))
+        self.assertTrue(self.sent[3][1].startswith("[WELL] Recovered:"))
+
+    def test_a_stuck_probe_doesnt_recover_overnight(self):
+        stuck = lambda i: 7.2   # noqa: E731
+        self.add_readings("Quality", WQ, "ODO", NOW, count=36, value=stuck)
+        self.record("WQData")
+        self.run_at(NOW)
+        self.assertIn("ODO looks wrong", self.sent[0][1])
+        evening = NOW + dt.timedelta(hours=4, minutes=10)   # 18:10 Toronto, the sonde's last reading of the day
+        self.add_readings("Quality", WQ, "ODO", evening, count=25, value=stuck)
+        self.record("WQData", now=NOW + dt.timedelta(hours=9))
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=9))["email"])   # 23:00: 8 readings in the window
+        self.assertEqual(self.open_keys(), [f"suspect:WQData:{WQ}:ODO"])
+
+    def test_widening_and_narrowing_send_no_false_recovery(self):
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=5))
+        self.add_readings("Weather", WEATHER, "Air Temperature", NOW - dt.timedelta(minutes=40))
+        self.record("LI-COR")
+        self.run_at(NOW)
+        self.assertIn("Weather station 22051538 Rain silent", self.sent[0][1])
+        later = NOW + dt.timedelta(hours=3)                 # now the whole station is silent
+        self.record("LI-COR", now=later)
+        self.run_at(later)
+        self.assertEqual(len(self.sent), 2)
+        self.assertTrue(self.sent[1][1].startswith("[WELL] Weather station 22051538 silent"), self.sent[1][1])
+        self.assertNotIn("RECOVERED", self.sent[1][2])     # the Rain incident was superseded, not recovered
+        self.assertEqual(self.open_keys(), [f"stale:LI-COR:{WEATHER}"])
+        self.add_readings("Weather", WEATHER, "Air Temperature", later + dt.timedelta(minutes=5), count=1)
+        self.assertIsNone(self.run_at(later + dt.timedelta(minutes=10))["email"])   # back to just Rain: quiet
+        self.assertEqual(self.open_keys(), [f"stale:LI-COR:{WEATHER}:Rain"])
+
+    def test_without_smtp_the_email_is_logged_once(self):
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        for minutes in (0, 10, 20):
+            self.run_at(NOW + dt.timedelta(minutes=minutes), env={})
+        self.assertEqual(sum("would be:" in line for line in self.logs), 1)
+        self.assertEqual(sum("same alerts as already logged" in line for line in self.logs), 2)
+
+    def test_muted_series(self):
+        muted = {**SMTP, "ALERT_EXCLUDED_SERIES": f"{WQ}:*"}
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        self.run_at(NOW)
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=10), env=muted)["email"])   # closed, no "Recovered"
+        self.assertEqual((self.open_keys(), self.incidents()[0].close_reason), ([], "superseded"))
+        with self.assertRaisesRegex(ValueError, "ALERT_EXCLUDED_SERIES"):
+            self.run_at(NOW, env={**SMTP, "ALERT_EXCLUDED_SERIES": "4501"})
 
     def test_record_never_raises(self):
         from utils.alert_state import record_vendor_result
@@ -406,6 +504,15 @@ class VendorReplyTests(unittest.TestCase):
                 service.get_page(start, start + dt.timedelta(hours=1))
         with mock.patch.object(weather.requests, "get", return_value=reply(200, {"data": []})):
             self.assertEqual(service.get_page(start, start + dt.timedelta(hours=1)), ([], False))
+        # The normal envelope with "data" left out or null reads as an empty range, not a vendor failure ...
+        for body in ({"max_results": False}, {"max_results": False, "data": None}):
+            with mock.patch.object(weather.requests, "get", return_value=reply(200, body)):
+                self.assertEqual(service.get_page(start, start + dt.timedelta(hours=1)), ([], False))
+        # ... but not with an error in it, or a data field of the wrong kind.
+        for body in ({"max_results": False, "error": "x"}, {"max_results": False, "data": "x"}, []):
+            with mock.patch.object(weather.requests, "get", return_value=reply(200, body)), \
+                    self.assertRaises(BadVendorResponse):
+                service.get_page(start, start + dt.timedelta(hours=1))
         with mock.patch.object(weather.requests, "get", return_value=reply(401)), self.assertRaises(requests.HTTPError):
             service.get_page(start, start + dt.timedelta(hours=1))
 
@@ -455,10 +562,13 @@ class PostgresTests(unittest.TestCase):
         ingest = self.ingest
         services = {"weather_service": weather.WeatherService("https://licor.test", "token", WEATHER),
                     "quality_service": quality.QualityService("https://wq.test", "SECRET", WQ)}
+        services["quality_service"].sleep = lambda seconds: None
+        wq_replies = iter(wqdata if isinstance(wqdata, list) else [wqdata] * 100)
         with mock.patch.object(ingest, "app", self.app), \
                 mock.patch.multiple(ingest, **services), \
                 mock.patch.object(ingest.Config, "WQ_DEVICE_ID", WQ), \
-                mock.patch.object(requests, "get", side_effect=lambda url, **kw: licor if "licor" in url else wqdata), \
+                mock.patch.object(requests, "get",
+                                  side_effect=lambda url, **kw: licor if "licor" in url else next(wq_replies)), \
                 mock.patch.object(weather.time, "sleep"), \
                 mock.patch("builtins.print"):
             ingest.inject_all_new_data()
@@ -493,3 +603,16 @@ class PostgresTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_wqdata_failing_on_page_two_keeps_page_one_and_fails_the_run(self):
+        from utils.alert_state import vendor_statuses
+        stamp = (dt.datetime.now(UTC) - dt.timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        page_one = reply(200, {"data": [{"timestamp": stamp, "values": [{"parameterId": 125001, "value": "8.5"}]}],
+                               "info": {"more": True, "lastDataPointTimestamp": stamp, "count": 1, "total": 2}})
+        with self.assertRaisesRegex(RuntimeError, "WQData request failed: HTTPError \\(HTTP 503\\)"):
+            self.ingest_with(reply(200, {"data": []}), [page_one, reply(503)])
+        self.db.session.remove()
+        stored = self.db.session.execute(self.db.text(
+            "SELECT measurement_type, value FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).all()
+        self.assertEqual([tuple(r) for r in stored], [("Water Temperature", 8.5)])
+        self.assertEqual(vendor_statuses()["WQData"]["consecutive_failures"], 1)

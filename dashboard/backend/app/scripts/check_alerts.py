@@ -21,8 +21,8 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
 from utils.alerts import (  # noqa: E402
-    Plan, build_email, freshness_env, plan, settings_from_env, stale_conditions, suspect_conditions,
-    vendor_conditions,
+    RECOVERY_WINDOW, Plan, build_email, freshness_env, is_muted, plan, settings_from_env, stale_conditions,
+    suspect_conditions, vendor_conditions,
 )
 from utils.digest import parse_alert_emails, smtp_settings  # noqa: E402
 from utils.monitoring import assess_freshness  # noqa: E402
@@ -47,7 +47,7 @@ def read_recent(db, groups, since_utc):
 
 
 def find_conditions(now, env, settings):
-    """Every alert condition now: {key: Condition}."""
+    """Every alert condition now, and the key prefixes that can't be judged this run: ({key: Condition}, held)."""
     from db.database import db
     from api.routes.latest import query_latest_per_series
     from utils.alert_state import vendor_statuses
@@ -55,10 +55,12 @@ def find_conditions(now, env, settings):
     freshness = assess_freshness(query_latest_per_series(), now, freshness_env(env))
     vendors = vendor_statuses()
     recent = read_recent(db, freshness["groups"], now - settings.suspect_window) if settings.suspect_values else {}
-    conditions = vendor_conditions(vendors, now, settings)
-    conditions.update(stale_conditions(freshness, vendors, now))
-    conditions.update(suspect_conditions(freshness, recent, settings))
-    return conditions
+    conditions, held = {}, set()
+    for found, unknown in (vendor_conditions(vendors, now, settings), stale_conditions(freshness, vendors, now),
+                           suspect_conditions(freshness, recent, settings)):
+        conditions.update(found)
+        held |= unknown
+    return conditions, held
 
 
 def send_email(settings, recipients, subject, body):
@@ -66,8 +68,13 @@ def send_email(settings, recipients, subject, body):
     send(settings, recipients, subject, body)
 
 
-def deliver(subject, body, env, send, log):
-    """Email it. "sent", "off" (SMTP not set up: printed instead) or "failed"."""
+# What was last written to the log in place of an email while SMTP is off, so an unchanged email isn't written out
+# again every 10 minutes (it would be, since nothing is marked as emailed then).
+_last_unsent = {"signature": None}
+
+
+def deliver(subject, body, env, send, log, signature=None):
+    """Email it. "sent", "off" (SMTP not set up: logged instead, in full only when `signature` changed) or "failed"."""
     recipients, invalid = parse_alert_emails(env.get("ALERT_EMAILS"))
     if invalid:
         log(f"[WARN] ALERT_EMAILS: ignoring {len(invalid)} entries that aren't email addresses")
@@ -77,7 +84,12 @@ def deliver(subject, body, env, send, log):
         log(f"[ERROR] {e}; the alert email was:\nSubject: {subject}\n\n{body}")
         return "failed"
     if not smtp:
-        log(f"[INFO] Not emailing (SMTP_HOST/SMTP_PORT not set); the alert email would be:\nSubject: {subject}\n\n{body}")
+        if signature is not None and signature == _last_unsent["signature"]:
+            log(f"[INFO] Not emailing (SMTP_HOST/SMTP_PORT not set); same alerts as already logged: {subject}")
+        else:
+            log(f"[INFO] Not emailing (SMTP_HOST/SMTP_PORT not set); the alert email would be:\n"
+                f"Subject: {subject}\n\n{body}")
+            _last_unsent["signature"] = signature
         return "off"
     if not recipients:
         log(f"[ERROR] SMTP is configured but ALERT_EMAILS has no valid address; the alert email was:\n"
@@ -98,24 +110,38 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
     "off", "failed" or "dry-run". Raises on a bad setting or a database error (the scheduler reports those)."""
     from db.database import db
     from db.models import AlertIncident
-    from utils.alert_state import open_incidents, pending_recoveries
+    from utils.alert_state import open_incidents, pending_recoveries, recently_closed
 
     now = now or datetime.now(timezone.utc)
     env = os.environ if env is None else env
     settings = settings_from_env(env)
-    conditions = find_conditions(now, env, settings)
+    conditions, held = find_conditions(now, env, settings)
     current = open_incidents()
-    actions: Plan = plan(conditions, current, pending_recoveries(), now, settings)
+    actions: Plan = plan(conditions, held, current, recently_closed(now - settings.reopen_within),
+                         pending_recoveries(now - RECOVERY_WINDOW), now, settings,
+                         muted=lambda key: is_muted(key, settings.muted))
 
-    new_rows = [AlertIncident(incident_key=c.key, kind=c.kind, title=c.title, detail=c.detail,
-                              started_at=c.started_at.astimezone(timezone.utc),   # SQLite (tests) drops the offset
-                              opened_at=now, last_seen_at=now, notifications=0) for c in actions.open_new]
+    new_rows, new = [], list(actions.notify_new)
+    for condition, parent in actions.open_new:
+        row = AlertIncident(incident_key=condition.key, kind=condition.kind, title=condition.title,
+                            detail=condition.detail,
+                            started_at=condition.started_at.astimezone(timezone.utc),   # SQLite (tests) drops the offset
+                            opened_at=now, last_seen_at=now, notifications=0)
+        if parent is not None and parent.last_notified_at is not None:
+            # A finer incident split off one already emailed: it has been reported, so it isn't new.
+            row.last_notified_at, row.notifications = parent.last_notified_at, parent.notifications
+        else:
+            new.append(row)
+        new_rows.append(row)
+    for incident in actions.reopen:   # back soon after closing: the same incident again, not a new one
+        incident.resolved_at, incident.close_reason = None, None
     for incident, condition in actions.update:   # keep the wording current (durations, failure counts)
         incident.title, incident.detail, incident.last_seen_at = condition.title, condition.detail, now
     for incident in actions.resolve:
-        incident.resolved_at = now
-    new = actions.notify_new + new_rows
-    open_count = len(current) - len(actions.resolve) + len(new_rows)
+        incident.resolved_at, incident.close_reason = now, "cleared"
+    for incident in actions.supersede:
+        incident.resolved_at, incident.close_reason = now, "superseded"
+    open_count = len(current) + len(actions.reopen) + len(new_rows) - len(actions.resolve) - len(actions.supersede)
     email = build_email(new, actions.remind, actions.recovered, open_count, now, settings)
     summary = {"open": open_count, "new": len(new), "reminders": len(actions.remind),
                "recovered": len(actions.recovered), "email": None}
@@ -129,11 +155,15 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
     db.session.add_all(new_rows)
     db.session.commit()   # record the incidents first: they show in /health/data even if the email fails
     if email:
-        summary["email"] = deliver(email[0], email[1], env, send, log)
+        signature = tuple(sorted((section, i.incident_key) for section, items in
+                                 (("new", new), ("remind", actions.remind), ("recovered", actions.recovered))
+                                 for i in items))
+        summary["email"] = deliver(email[0], email[1], env, send, log, signature)
         if summary["email"] == "sent":
             for incident in new + actions.remind:
                 incident.last_notified_at = now
                 incident.notifications = (incident.notifications or 0) + 1
+                incident.recovery_notified_at = None   # told it's on again, so its recovery is worth an email
             for incident in actions.recovered:
                 incident.recovery_notified_at = now
             db.session.commit()
