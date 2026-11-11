@@ -4,6 +4,7 @@
 from flask import Flask
 from flask_cors import CORS
 from api.routes import register_routes
+from api.routes.health import register_health_routes
 from db.database import db
 from config import Config
 
@@ -18,6 +19,9 @@ def create_app():
     @app.route('/health')
     def health():
         return {"status": "ok", "message": "Backend is running"}, 200
+
+    # Registered next to /health rather than in api/routes, since it is a health check, not data API.
+    register_health_routes(app)
 
     return app
 
