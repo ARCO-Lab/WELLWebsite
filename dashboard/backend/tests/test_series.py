@@ -243,28 +243,39 @@ class SeriesSqlTests(unittest.TestCase):
         def put(key, body, ttl):
             bodies[key], ttls[key] = body, ttl
 
-        with mock.patch.object(response_cache, "get", side_effect=bodies.get), \
+        def get(key):
+            return (bodies[key], ttls[key]) if key in bodies else None
+
+        with mock.patch.object(response_cache, "get", side_effect=get), \
                 mock.patch.object(response_cache, "put", side_effect=put):
             # A past range: cacheable for 5 minutes, and stored for as long.
             r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=300")
             (key, body), = bodies.items()
             self.assertEqual(ttls[key], 300)
-            self.assertIn(":2026-11-01T00:00:00:2026-11-01T01:00:00:Weather", key)  # rounded to 10-minute marks
+            self.assertIn(":2026-11-01T00:10:00:2026-11-01T00:50:00:Weather", key)  # rounded inward to 10-min marks
             self.assertEqual(body, r.get_data())
-            self.assertEqual(r.get_json()["series"][0]["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
+            self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])  # as unrounded
 
-            # A request a few minutes apart is the same rounded range, answered from the cache, not the database.
-            bodies[key] = b'{"cached": true}'
+            # A request a few minutes apart is the same rounded range, answered from the cache, not the database,
+            # and browsers are told only what is left of the cached copy's time.
+            bodies[key], ttls[key] = b'{"cached": true}', 42
             r = self.client.get("/api/series?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00&group_type=Weather")
             self.assertEqual(r.get_json(), {"cached": True})
-            self.assertEqual(r.headers["Cache-Control"], "public, max-age=300")
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=42")
 
         # A range that runs to now: a minute only.
         now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         r = self.client.get(f"/api/series?start=2026-11-01T00:00:00Z&end={now}&group_type=Weather")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.headers["Cache-Control"], "public, max-age=60")
+
+    def test_an_end_just_before_a_bucket_adds_no_point(self):
+        # Charts send end = range end - 1 ms; the next bucket's first reading must not appear as an extra point.
+        _, by = self.series("2026-10-31T00:00:00", "2026-10-31T23:59:59.999", "Weather")
+        self.assertNotIn("Air Temperature", by)  # its first reading is at 2026-11-01 00:00
+        _, by = self.series("2026-11-01T00:00:00", "2026-11-01T00:29:59.999", "Weather")
+        self.assertEqual(by["Air Temperature"]["avg"], [10.0, 11.0, 12.0])
 
     def test_bad_requests(self):
         self.assertEqual(self.client.get("/api/series?start=2026-11-01&end=2026-11-02").status_code, 400)

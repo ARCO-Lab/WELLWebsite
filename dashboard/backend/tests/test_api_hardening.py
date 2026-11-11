@@ -9,8 +9,7 @@ import os
 import pathlib
 import sys
 import time
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock, skipUnless
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real database
@@ -18,9 +17,8 @@ os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.exc import OperationalError  # noqa: E402
 
-import config  # noqa: E402
-from config import Config  # noqa: E402
-from server import create_app  # noqa: E402
+from config import Config, parse_timeout_ms  # noqa: E402
+import server  # noqa: E402
 from db.database import db, engine_options  # noqa: E402
 from api.routes.series import MAX_AGE_PAST, MAX_AGE_RECENT, cache_key, max_age, snap_range  # noqa: E402
 from utils import response_cache  # noqa: E402
@@ -29,23 +27,23 @@ from utils import response_cache  # noqa: E402
 Config.SQLALCHEMY_DATABASE_URI = "sqlite://"
 
 
-class TimeoutSettingTests(unittest.TestCase):
+class TimeoutSettingTests(TestCase):
     def test_unset_empty_or_zero_means_no_timeout(self):
         for value in (None, "", "  ", "0"):
-            self.assertEqual(config.parse_timeout_ms("X", value), 0, value)
+            self.assertEqual(parse_timeout_ms("X", value), 0, value)
 
     def test_a_whole_number_is_used(self):
-        self.assertEqual(config.parse_timeout_ms("X", "25000"), 25000)
-        self.assertEqual(config.parse_timeout_ms("X", " 500 "), 500)
+        self.assertEqual(parse_timeout_ms("X", "25000"), 25000)
+        self.assertEqual(parse_timeout_ms("X", " 500 "), 500)
 
     def test_anything_else_warns_and_means_no_timeout(self):
         for value in ("25s", "-1", "1.5"):
             with self.assertLogs("config", "WARNING") as logs:
-                self.assertEqual(config.parse_timeout_ms("DB_STATEMENT_TIMEOUT_MS", value), 0)
+                self.assertEqual(parse_timeout_ms("DB_STATEMENT_TIMEOUT_MS", value), 0)
             self.assertIn("DB_STATEMENT_TIMEOUT_MS", logs.output[0])
 
 
-class EngineOptionsTests(unittest.TestCase):
+class EngineOptionsTests(TestCase):
     def test_postgres_gets_the_timeout_at_connect(self):
         self.assertEqual(engine_options("postgresql://u:p@h/db", 25000),
                          {"pool_pre_ping": True, "connect_args": {"options": "-c statement_timeout=25000"}})
@@ -59,7 +57,7 @@ class EngineOptionsTests(unittest.TestCase):
     def test_the_app_uses_them(self):
         with mock.patch.object(Config, "DB_STATEMENT_TIMEOUT_MS", 1234), \
                 mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", "postgresql://u:p@h/db"):
-            app = create_app()
+            app = server.create_app()
         self.assertEqual(app.config["SQLALCHEMY_ENGINE_OPTIONS"]["connect_args"],
                          {"options": "-c statement_timeout=1234"})
 
@@ -67,13 +65,13 @@ class EngineOptionsTests(unittest.TestCase):
 class FakePgError(Exception):
     def __init__(self, pgcode):
         super().__init__("boom")
-        self.pgcode = pgcode
+        self.pgcode = None if pgcode == "none" else pgcode
 
 
-class DatabaseErrorHandlerTests(unittest.TestCase):
+class DatabaseErrorHandlerTests(TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = create_app()
+        cls.app = server.create_app()
 
         @cls.app.route("/_test/fail/<code>")
         def fail(code):
@@ -87,17 +85,31 @@ class DatabaseErrorHandlerTests(unittest.TestCase):
         self.assertEqual(r.status_code, 504)
         self.assertIn("took too long", r.get_json()["error"])
 
-    def test_other_database_errors_are_a_503_with_a_message(self):
-        with self.assertLogs(self.app.logger, "WARNING"):
-            r = self.client.get("/_test/fail/08006")
-        self.assertEqual(r.status_code, 503)
-        self.assertIn("can't reach its database", r.get_json()["error"])
-        self.assertNotIn("boom", r.get_data(as_text=True))  # no driver details
+    def test_connection_errors_are_a_503_that_says_so_and_skip_sentry(self):
+        for code in ("08006", "53300", "none"):  # lost connection, too many connections, no code (refused)
+            with self.subTest(code=code), mock.patch.object(server, "capture_job_error") as capture:
+                with self.assertLogs(self.app.logger, "WARNING"):
+                    r = self.client.get(f"/_test/fail/{code}")
+                self.assertEqual(r.status_code, 503)
+                self.assertIn("can't reach its database", r.get_json()["error"])
+                self.assertNotIn("boom", r.get_data(as_text=True))  # no driver details
+                capture.assert_not_called()
+
+    def test_other_database_errors_are_a_generic_503_and_go_to_sentry(self):
+        for code in ("40P01", "55P03", "53100", "53200"):  # deadlock, lock not available, disk full, out of memory
+            with self.subTest(code=code), mock.patch.object(server, "capture_job_error") as capture:
+                with self.assertLogs(self.app.logger, "ERROR"):
+                    r = self.client.get(f"/_test/fail/{code}")
+                self.assertEqual(r.status_code, 503)
+                self.assertIn("hit a database error", r.get_json()["error"])
+                self.assertNotIn("boom", r.get_data(as_text=True))
+                capture.assert_called_once()
+                self.assertEqual(capture.call_args.kwargs, {"source": "api"})
 
 
-class LatestCacheControlTests(unittest.TestCase):
+class LatestCacheControlTests(TestCase):
     def test_latest_may_be_reused_for_a_minute(self):
-        app = create_app()
+        app = server.create_app()
         with app.app_context():
             db.create_all()
             try:
@@ -108,18 +120,27 @@ class LatestCacheControlTests(unittest.TestCase):
         self.assertEqual(r.headers["Cache-Control"], "public, max-age=60")
 
 
-class SeriesCacheRulesTests(unittest.TestCase):
-    def test_snap_widens_to_ten_minute_marks(self):
+class SeriesCacheRulesTests(TestCase):
+    def test_snap_narrows_to_ten_minute_marks(self):
         start, end = snap_range(dt.datetime(2026, 11, 1, 0, 7, 30, 5), dt.datetime(2026, 11, 2, 12, 31, 0, 1))
-        self.assertEqual((start, end), (dt.datetime(2026, 11, 1, 0, 0), dt.datetime(2026, 11, 2, 12, 40)))
+        self.assertEqual((start, end), (dt.datetime(2026, 11, 1, 0, 10), dt.datetime(2026, 11, 2, 12, 30)))
+
+    def test_an_end_just_before_midnight_adds_no_bucket(self):
+        # Charts ask for [start, end - 1 ms]; rounding that end up would add the next day's first reading.
+        self.assertEqual(snap_range(dt.datetime(2026, 11, 1), dt.datetime(2026, 11, 1, 23, 59, 59, 999000)),
+                         (dt.datetime(2026, 11, 1), dt.datetime(2026, 11, 1, 23, 50)))
+
+    def test_a_range_with_no_mark_inside_matches_nothing(self):
+        start, end = snap_range(dt.datetime(2026, 11, 1, 0, 3), dt.datetime(2026, 11, 1, 0, 7))
+        self.assertGreater(start, end)
 
     def test_snap_keeps_times_already_on_a_mark(self):
         t0, t1 = dt.datetime(2026, 11, 1, 0, 20), dt.datetime(2026, 11, 1, 1, 0)
         self.assertEqual(snap_range(t0, t1), (t0, t1))
 
     def test_snap_near_the_end_of_time(self):
-        end = dt.datetime.max - dt.timedelta(minutes=1)
-        self.assertEqual(snap_range(end, end)[1], end)
+        start = dt.datetime.max - dt.timedelta(minutes=1)
+        self.assertEqual(snap_range(start, dt.datetime.max)[0], start)
 
     def test_requests_minutes_apart_share_a_key(self):
         a = snap_range(dt.datetime(2026, 10, 1, 9, 1), dt.datetime(2026, 11, 1, 9, 1))
@@ -138,20 +159,34 @@ class SeriesCacheRulesTests(unittest.TestCase):
 
 
 class FakeRedis:
+    """Enough of redis.Redis for response_cache: set with a TTL, and a pipeline of get and ttl."""
     def __init__(self):
         self.store, self.ttl = {}, {}
 
-    def get(self, key):
-        return self.store.get(key)
-
     def set(self, key, value, ex=None):
         self.store[key], self.ttl[key] = value, ex
+
+    def pipeline(self, transaction=True):
+        fake, results = self, []
+
+        class Pipeline:
+            def get(self, key):
+                results.append(fake.store.get(key))
+                return self
+
+            def ttl(self, key):
+                results.append(fake.ttl.get(key, -2))
+                return self
+
+            def execute(self):
+                return results
+        return Pipeline()
 
 
 class BrokenRedis:
     calls = 0
 
-    def get(self, key):
+    def pipeline(self, transaction=True):
         BrokenRedis.calls += 1
         raise response_cache.redis.ConnectionError("down")
 
@@ -160,7 +195,7 @@ class BrokenRedis:
         raise response_cache.redis.ConnectionError("down")
 
 
-class ResponseCacheTests(unittest.TestCase):
+class ResponseCacheTests(TestCase):
     def setUp(self):
         response_cache._client, response_cache._down_until = None, 0.0
         self.addCleanup(setattr, response_cache, "_client", None)
@@ -178,7 +213,8 @@ class ResponseCacheTests(unittest.TestCase):
         with mock.patch.object(Config, "API_CACHE_REDIS_URL", "redis://cache/2"), \
                 mock.patch.object(response_cache.redis.Redis, "from_url", return_value=fake):
             response_cache.put("k", b"v", 300)
-            self.assertEqual(response_cache.get("k"), b"v")
+            self.assertEqual(response_cache.get("k"), (b"v", 300))  # the body and the seconds it has left
+            self.assertIsNone(response_cache.get("other"))
         self.assertEqual(fake.ttl["k"], 300)
 
     def test_large_bodies_are_not_stored(self):
@@ -211,13 +247,13 @@ class ResponseCacheTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 2)
 
 
-@unittest.skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the statement-timeout tests")
-class StatementTimeoutTests(unittest.TestCase):
+@skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the statement-timeout tests")
+class StatementTimeoutTests(TestCase):
     @staticmethod
     def make_app(timeout_ms):
         with mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"]), \
                 mock.patch.object(Config, "DB_STATEMENT_TIMEOUT_MS", timeout_ms):
-            app = create_app()
+            app = server.create_app()
 
         @app.route("/_test/sleep/<seconds>")
         def sleep(seconds):
@@ -285,4 +321,4 @@ class StatementTimeoutTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

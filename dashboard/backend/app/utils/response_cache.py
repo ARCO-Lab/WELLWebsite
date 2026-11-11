@@ -46,15 +46,19 @@ def _failed(action, exc):
 
 
 def get(key):
-    """The stored bytes for `key`, or None (not stored, expired, cache off or unreachable)."""
+    """(stored bytes, whole seconds until they expire) for `key`, or None (not stored, expired, cache off or
+    unreachable)."""
     client = _get_client()
     if client is None:
         return None
     try:
-        return client.get(key)
+        body, seconds_left = client.pipeline(transaction=False).get(key).ttl(key).execute()
     except (redis.RedisError, OSError) as exc:
         _failed("read", exc)
         return None
+    if body is None or seconds_left is None or seconds_left < 0:  # gone, or (never here) stored without a TTL
+        return None
+    return body, seconds_left
 
 
 def put(key, body, ttl_seconds):

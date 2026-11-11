@@ -9,7 +9,7 @@ import { proxyToBackend } from "@/lib/proxyBackend";
 
 export const config = {
   api: {
-    // The backend caps responses at DATA_MAX_ROWS (about 17 MB of JSON by default); don't warn about large bodies.
+    // The backend caps responses at DATA_MAX_ROWS (about 50 MB of JSON); don't warn about large bodies below that.
     responseLimit: false,
   },
 };

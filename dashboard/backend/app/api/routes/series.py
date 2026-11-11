@@ -18,9 +18,10 @@
 #   "vector_mean" (Wind Direction) the mean of the directions as unit vectors, so 350° and 10° give 0°, not 180°;
 #                 min/max are null, because a linear min/max of angles (10° and 350° for a northerly) means nothing.
 #
-# Caching: start is rounded down and end up to a 10-minute mark (where readings fall), so visitors who open the
-# same view a little apart ask for the same range, and the answer is kept in Redis (utils/response_cache.py) and
-# marked cacheable for browsers: 5 minutes for a range that ended over an hour ago, 1 minute otherwise.
+# Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
+# same readings as the request (no bucket is added at either edge), while visitors who open the same view a few
+# minutes apart share one cache key. The answer is kept in Redis (utils/response_cache.py) for 5 minutes for a
+# range that ended over an hour ago, 1 minute otherwise, and browsers may reuse it for what is left of that time.
 
 from datetime import datetime, timedelta
 
@@ -74,17 +75,21 @@ def pick_bucket(span_seconds, max_points=MAX_POINTS):
     return LADDER[-1]
 
 
+def floor_mark(t):
+    """`t` rounded down to a 10-minute mark."""
+    return t - timedelta(minutes=t.minute % 10, seconds=t.second, microseconds=t.microsecond)
+
+
 def snap_range(start, end):
-    """The range widened to 10-minute marks: start rounded down, end rounded up (unchanged if already on one)."""
-    def floor(t):
-        return t - timedelta(minutes=t.minute % 10, seconds=t.second, microseconds=t.microsecond)
-    end_floor = floor(end)
-    if end_floor == end:
-        return floor(start), end
-    try:
-        return floor(start), end_floor + SNAP
-    except OverflowError:  # within 10 minutes of datetime.max
-        return floor(start), end
+    """The range narrowed to 10-minute marks: start rounded up, end rounded down (unchanged if already on one).
+    A range with no mark inside comes out with start after end, which matches nothing, as the request would."""
+    start_up = floor_mark(start)
+    if start_up != start:
+        try:
+            start_up += SNAP
+        except OverflowError:  # within 10 minutes of datetime.max
+            start_up = start
+    return start_up, floor_mark(end)
 
 
 def max_age(end, now):
@@ -162,9 +167,11 @@ def register_series_route(app):
         age = max_age(end_dt, datetime.now(EST_TZ).replace(tzinfo=None))
         start_dt, end_dt = snap_range(start_dt, end_dt)
         key = cache_key(bucket, start_dt, end_dt, groups)
-        body = response_cache.get(key)
-        if body is not None:
+        hit = response_cache.get(key)
+        if hit is not None:
+            body, seconds_left = hit
             response = current_app.response_class(body, mimetype="application/json")
+            age = min(age, seconds_left)  # so browsers don't keep it past the moment it expires here
         else:
             db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
             rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups}).fetchall()
