@@ -236,7 +236,11 @@ def run_tool(cmd, env, timeout):
 
 
 def human_size(size):
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+    """A byte count for a log line, e.g. 7.9 KB or 1.2 GB."""
+    if size < 1024:
+        return f"{size} B"
+    for unit in ("KB", "MB"):
         size /= 1024
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+    return f"{size / 1024:.1f} GB"

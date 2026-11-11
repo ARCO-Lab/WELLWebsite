@@ -13,7 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -45,7 +45,7 @@ class RetentionTests(unittest.TestCase):
         names = self.names("2026-09-01", 70)   # 1 Sep .. 9 Nov 2026, one a night
         keep = backup.dumps_to_keep(names, keep_daily=7, keep_weekly=4)
         daily = {f"welldb-202611{d:02d}-0315.dump" for d in range(3, 10)}
-        self.assertTrue(daily <= keep)
+        self.assertLessEqual(daily, keep)
         # Weeks are ISO weeks (Monday to Sunday); each keeps its newest dump. Week 45 (2-8 Nov) and 46 (9 Nov) are
         # already covered by the daily ones; the two before end on Sundays 1 Nov and 25 Oct.
         self.assertEqual(keep - daily, {"welldb-20261101-0315.dump", "welldb-20261025-0315.dump"})
