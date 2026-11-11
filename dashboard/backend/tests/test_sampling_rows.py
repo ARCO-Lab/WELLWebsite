@@ -1,5 +1,5 @@
 """Tests for utils/sampling_rows.py (sampling-sheet entries -> database rows). Run from dashboard/backend:
-python -m unittest discover -s tests"""
+python -m unittest discover -s tests -t ."""
 import datetime as dt
 import pathlib
 import sys

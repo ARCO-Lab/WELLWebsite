@@ -1,5 +1,5 @@
 """Tests for the /api/latest route, run against an in-memory SQLite database. Run from dashboard/backend:
-python -m unittest discover -s tests"""
+python -m unittest discover -s tests -t ."""
 import datetime as dt
 import os
 import pathlib

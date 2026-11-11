@@ -1,4 +1,4 @@
-"""Tests for utils/jobs.py (the worker scheduler's helpers). Run from dashboard/backend: python -m unittest discover -s tests"""
+"""Tests for utils/jobs.py (the worker scheduler's helpers). Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import os
 import pathlib
