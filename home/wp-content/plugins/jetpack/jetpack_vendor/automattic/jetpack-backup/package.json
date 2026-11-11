@@ -49,7 +49,7 @@
 	"devDependencies": {
 		"@automattic/jetpack-base-styles": "^1.0.10",
 		"@automattic/jetpack-webpack-config": "workspace:*",
-		"@babel/core": "7.28.4",
+		"@babel/core": "7.29.6",
 		"@babel/preset-env": "7.28.3",
 		"@babel/runtime": "7.28.4",
 		"@testing-library/dom": "10.4.0",
