@@ -436,6 +436,8 @@ const Download: React.FC<DownloadProps> = ({
 
       setStatusText("Downloading file");
       const downloadRes = await request(`/api/exports/jobs/${encodeURIComponent(job.jobId)}/download`);
+      // 404/410: the job or its file is gone (expired or cleaned up), so Try again must start a new export.
+      if (downloadRes.status === 404 || downloadRes.status === 410) resumeJobRef.current = null;
       await triggerDownload(downloadRes, getFileName());
       resumeJobRef.current = null;
     } catch (error) {
