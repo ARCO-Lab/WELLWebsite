@@ -1,0 +1,23 @@
+// This file defines the Next.js API route for /api/series: chart-ready sensor series, aggregated by the Flask
+// backend (see dashboard/backend/app/api/routes/series.py). It translates the frontend's group toggles to
+// group_type filters and passes the backend's status and body through unchanged (see lib/proxyBackend).
+
+import type { NextApiRequest, NextApiResponse } from "next";
+import { proxyToBackend } from "@/lib/proxyBackend";
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const { start, end, weather, quality, gauges } = req.query;
+
+  const params = new URLSearchParams();
+  if (typeof start === "string") params.append("start", start);
+  if (typeof end === "string") params.append("end", end);
+  if (weather === "true") params.append("group_type", "Weather");
+  if (quality === "true") params.append("group_type", "Quality");
+  if (gauges === "true") params.append("group_type", "Logger");
+
+  if (!params.get("start") || !params.get("end") || !params.has("group_type")) {
+    return res.status(400).json({ error: "Missing or invalid query parameters" });
+  }
+
+  return proxyToBackend(req, res, `/api/series?${params.toString()}`, {}, "chart series");
+}
