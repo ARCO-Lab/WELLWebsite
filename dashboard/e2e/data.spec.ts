@@ -146,13 +146,14 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     const plot = chart.locator(".highcharts-plot-background");
     await expect(plot).toBeVisible();
     await expect(page.getByText("Loading data…")).toHaveCount(0);
+    await plot.scrollIntoViewIfNeeded(); // the mouse can only point at what is on screen
     const box = (await plot.boundingBox())!;
     // The x-axis spans exactly the picked days; point at 07:40Z, the newest air temperature (3.55 °C).
     const start = Date.parse(RANGE_START), end = Date.parse(RANGE_END) + 1;
     const x = box.x + (box.width * (Date.parse("2026-11-01T07:40:00Z") - start)) / (end - start);
     await page.mouse.move(box.x + 5, box.y + box.height / 2);
     await page.mouse.move(x, box.y + box.height / 2, { steps: 5 });
-    const tooltip = chart.locator(".highcharts-tooltip");
+    const tooltip = page.locator(".highcharts-tooltip", { hasText: "Air Temperature" });
     await expect(tooltip).toContainText("3.55");
     await expect(tooltip).toContainText(/Nov 1\b/);
     await expect(tooltip).toContainText(/\b0?2:40\b/);

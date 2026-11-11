@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from zoneinfo import ZoneInfo
 
