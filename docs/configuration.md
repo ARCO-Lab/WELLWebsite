@@ -1,7 +1,7 @@
 # Configuration
 
-Every setting the code reads from the environment, where it goes, and its default. No env file is committed; on the
-VM they live next to the checkout. Longer explanations of some groups are in the README (linked below).
+Every setting the code reads from the environment, where it goes, and its default. No env file is committed: on the
+VM they sit in the checkout, ignored by git. Longer explanations of some groups are in the README (linked below).
 
 | File | Read by |
 |---|---|
@@ -10,7 +10,7 @@ VM they live next to the checkout. Longer explanations of some groups are in the
 | `dashboard/frontend/.env.local` | The `dashboard` container at run time (`env_file`). It must exist for `docker compose` to start, but it can be empty. |
 
 A variable that a service's `environment:` block in `docker-compose.yml` sets wins over the same name in
-`dashboard/backend/app/.env`. So the ones marked "root `.env`" below must be changed there, not in `app/.env`.
+`dashboard/backend/app/.env`. So the variables in the first table below are set in the root `.env`, not in `app/.env`.
 
 After changing an env file, recreate the containers that read it, e.g. `docker compose up -d --no-deps backend worker
 export_worker`. `NEXT_PUBLIC_*` values are built into the dashboard, so they need a rebuild
