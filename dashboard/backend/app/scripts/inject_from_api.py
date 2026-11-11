@@ -11,6 +11,9 @@
 #    see utils/fetching.py). Longer requests used to lose whole sensors silently.
 #  - Rows are inserted with ON CONFLICT DO NOTHING, so the overlap costs nothing and repeats don't
 #    fill the database log with duplicate-key errors. Each run logs one summary line per source.
+#  - The outcome of each vendor call (answered, or the error it failed with) is recorded in the vendor_status
+#    table for the email alerts (scripts/check_alerts.py), which use it to tell "the vendor is down" from
+#    "the vendor answers but a sensor sent nothing". A WQData request that fails fails the run, like LI-COR's.
 
 import sys
 import pathlib
@@ -29,6 +32,8 @@ from api.services.quality import QualityService
 from config import Config
 from utils.fetching import FMT, MAX_DAYS, RUN_LOOKBACK, fetch_range, start_from_newest
 from utils.sentry import capture_job_error
+from utils.alerts import describe_vendor_error
+from utils.alert_state import record_vendor_result
 from utils.parsers import (LOGGER_CONFIG, QUALITY_PARAM_ID_MAP, licor_rows,  # noqa: F401 (re-exported for other scripts)
                            parse_logger_entry, parse_quality_entry, parse_weather_entry, quality_rows)
 
@@ -68,7 +73,12 @@ def run_start(group, now):
 def inject_licor(now):
     # One read of LI-COR covers both the weather station and the water-level loggers.
     start = max(min(run_start("Weather", now), run_start("Logger", now)), now - timedelta(days=MAX_DAYS))
-    records = fetch_range(weather_service.get_page, start, now)
+    try:
+        records = fetch_range(weather_service.get_page, start, now)
+    except Exception as e:
+        record_vendor_result("LI-COR", e)
+        raise
+    record_vendor_result("LI-COR")
     rows = licor_rows(records, {"Weather", "Logger"}, weather_service.get_logger_id())
     new = store(list(rows.values()))
     print(f"[INFO] LI-COR: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(records)} records, "
@@ -80,10 +90,15 @@ def inject_quality(now):
     # covers the range.
     start = run_start("Quality", now)
     entries = quality_service.get_quality_data(start.strftime(FMT), now.strftime(FMT))
+    error = quality_service.last_error   # get_quality_data logs a failed request and returns what it read
+    record_vendor_result("WQData", error)
     rows = quality_rows(entries, Config.WQ_DEVICE_ID)
     new = store(list(rows.values()))
     print(f"[INFO] WQData: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(entries)} points, "
           f"{len(rows)} readings, {new} new")
+    if error is not None:
+        # What was read is stored above; the run still fails, so the heartbeat and Sentry see the outage.
+        raise RuntimeError(f"WQData request failed: {describe_vendor_error(error)[2]}")
 
 
 def inject_all_new_data():

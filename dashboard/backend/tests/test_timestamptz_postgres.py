@@ -10,7 +10,6 @@ import datetime as dt
 import os
 import pathlib
 import sys
-import unittest
 import unittest.mock
 
 from sqlalchemy import create_engine, text

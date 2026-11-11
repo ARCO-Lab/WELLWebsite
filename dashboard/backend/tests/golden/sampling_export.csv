@@ -1,0 +1,12 @@
+domain,recorded_at,group_type,station_id,creek_id,site_id,measurement_type,value,unit
+sampling,2026-10-31T09:40:00,,,20962187,1,Ammonia nitrogen,0.01,mg/L
+sampling,2026-10-31T09:40:00,,,20962187,1,E. coli,48.0,CFU/100 mL
+sampling,2026-10-31T09:40:00,,,20962187,1,pH,8.06,pH units
+sampling,2026-10-31T10:15:00,,,19431905,2,Conductivity,1295.0,µS/cm
+sampling,2026-10-31T10:15:00,,,19431905,2,Turbidity,3.5,NTU
+sampling,2026-11-01T00:00:00,,,3212839,3,Total phosphorus,15.5,µg/L
+sampling,2026-11-01T01:30:00,,,19431905,5,E. coli,2420.0,CFU/100 mL
+sampling,2026-11-02T14:05:00,,,19755185,10,Nitrate nitrogen,0.0015,mg/L
+sampling,2026-11-02T14:05:00,,,336415129,8,Conductivity,980.25,µS/cm
+sampling,2026-11-02T14:05:00,,,336415129,8,Total coliform,0.0,CFU/100 mL
+sampling,2026-11-02T15:00:00,,,'+19431905,"'=HYPERLINK(""http://example.invalid"")",'@pH,-3.5,'-

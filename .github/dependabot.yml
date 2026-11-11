@@ -21,6 +21,21 @@ updates:
         update-types: [minor, patch]
     assignees: [lukhsaankumar]
 
+  # Playwright and the PostgreSQL client used by the end-to-end checks (pinned; CI runs them on every PR).
+  - package-ecosystem: npm
+    directory: /dashboard/e2e
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 1
+    groups:
+      e2e-npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    assignees: [lukhsaankumar]
+
   # requirements.txt pins every package, dependencies of dependencies included, so each bump is explicit.
   - package-ecosystem: pip
     directory: /dashboard/backend
@@ -33,6 +48,18 @@ updates:
     groups:
       pip-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # numpy 2.5 needs Python 3.12 and the image runs 3.11. SQLAlchemy 2.1 defaults to psycopg 3, which isn't
+      # installed (it crashed the worker on 2026-11-10). Both move by hand, with a deliberate Python 3.12 / psycopg 3
+      # upgrade, rather than in the grouped pull request, which would otherwise fail CI every week.
+      - dependency-name: numpy
+        versions: [">=2.5"]
+      - dependency-name: sqlalchemy
+        versions: [">=2.1"]
+      # celery 5.7.0 requires exactly python-dateutil 2.9.0.post0, so dateutil 4 cannot be installed with it.
+      # Remove when a celery release after 5.7.0 drops the ==2.9.0.post0 pin (celery/celery#11031).
+      - dependency-name: python-dateutil
+        versions: [">=3"]
     assignees: [lukhsaankumar]
 
   # Base images of the two images built on the server.

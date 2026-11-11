@@ -62,6 +62,18 @@ class Runner(unittest.TestCase):
         with self.engine.connect() as conn:
             self.assertEqual(conn.execute(text("SELECT count(*) FROM log")).scalar(), 1)
 
+    def test_a_missing_lower_number_runs_after_a_higher_one_was_applied(self):
+        # Production applied 0001 and 0003 before 0002 existed there: what isn't recorded runs, whatever its number
+        self.write("0001_first.sql", "CREATE TABLE log (name text)")
+        self.write("0003_third.sql", "INSERT INTO log VALUES ('0003')")
+        self.run_migrate()
+        self.write("0002_second.sql", "INSERT INTO log VALUES ('0002')")
+        self.assertEqual(migrate.pending(self.engine, self.dir), [self.dir / "0002_second.sql"])
+        self.assertEqual(self.run_migrate(), ["0002_second"])
+        self.assertEqual(self.recorded(), ["0001_first", "0002_second", "0003_third"])
+        with self.engine.connect() as conn:
+            self.assertEqual(sorted(r[0] for r in conn.execute(text("SELECT name FROM log"))), ["0002", "0003"])
+
     def test_a_failing_migration_is_not_recorded_and_stops_the_run(self):
         self.write("0001_first.sql", "CREATE TABLE log (name text)")
         self.write("0002_broken.sql", "INSERT INTO missing_table VALUES (1)")

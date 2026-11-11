@@ -56,8 +56,7 @@ def query_latest_per_series():
     return [{**r, "recorded_at": site_wall_time(r["recorded_at"]).isoformat()} for r in latest_rows()]
 
 
-# routes/__init__.py still passes a latest_metrics_cache; it is accepted and ignored, because nothing reads it.
-def register_latest_route(app, latest_metrics_cache=None):
+def register_latest_route(app):
     @app.route("/api/latest", methods=["GET"])
     def get_latest_metrics():
         response = jsonify(query_latest_per_series())

@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, or_, select
 from config import Config
 from db.database import db
 from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
-from utils.timezone import EST_TZ, est_now, parse_instant, site_wall_time
+from utils.timezone import EST_TZ, as_utc, est_now, parse_instant, site_wall_time
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
 
@@ -156,6 +156,16 @@ def normalize_export_payload(payload: Dict) -> Dict:
     except ValueError as exc:
         raise ValueError("Invalid ISO datetime in start/end") from exc
 
+    # Both bounds in one form before they are compared (comparing an aware with a naive time raises TypeError), and
+    # the form each table's recorded_at holds. sensor_measurements stores instants (timestamptz): the bounds become
+    # UTC instants, a time without an offset being site wall time, so a range inside the repeated fall-back hour
+    # stays exact. sampling_measurements stores naive America/Toronto wall-clock time: aware bounds become site wall
+    # time, which doesn't depend on the database session's time zone.
+    if domain == "sensor":
+        start_dt, end_dt = as_utc(start_dt), as_utc(end_dt)
+    else:
+        start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+
     if start_dt > end_dt:
         raise ValueError("start must be before end")
 
@@ -200,6 +210,11 @@ def estimate_rows(payload: Dict) -> int:
     else:
         query = _sampling_query(filters)
     return int(query.count())
+
+
+def _site_naive(ts: datetime) -> datetime:
+    """An aware time as naive site (America/Toronto) wall-clock time; naive times are taken as site time already."""
+    return ts.astimezone(EST_TZ).replace(tzinfo=None) if ts.tzinfo is not None else ts
 
 
 def _local_date(value: str) -> str:
