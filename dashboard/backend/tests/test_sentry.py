@@ -4,6 +4,7 @@ import os
 import pathlib
 import sys
 import unittest
+import uuid
 from unittest import mock
 
 import sentry_sdk
@@ -133,8 +134,10 @@ class EndToEndTests(unittest.TestCase):
         def boom():
             raise ValueError("boom")
 
-        app.test_client().get("/boom?station=1&apiKey=SECRET", headers={"Cookie": "session=s"},
-                              environ_base={"REMOTE_ADDR": "203.0.113.9"})
+        # Made at run time, so they don't also appear in the source lines Sentry sends around each frame.
+        key, session, ip = uuid.uuid4().hex, uuid.uuid4().hex, f"203.0.113.{uuid.uuid4().int % 250 + 1}"
+        app.test_client().get(f"/boom?station=1&apiKey={key}", headers={"Cookie": f"session={session}"},
+                              environ_base={"REMOTE_ADDR": ip})
         events = self.flush()
         self.assertEqual(len(events), 1)
         event = events[0]
@@ -142,7 +145,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(event["exception"]["values"][-1]["value"], "boom")
         self.assertEqual(set(event["request"]), {"method", "url"})
         text = repr(event)
-        for leaked in ("SECRET", "session=s", "203.0.113.9"):
+        for leaked in (key, session, ip):
             self.assertNotIn(leaked, text)
         frames = event["exception"]["values"][-1]["stacktrace"]["frames"]
         self.assertFalse(any("vars" in f for f in frames), "local variables must not be sent")
