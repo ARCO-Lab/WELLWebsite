@@ -23,9 +23,6 @@ on:
       backend_cpus:
         description: CPU limit for the backend container (e.g. "2", to mimic a smaller VM); empty for none
         default: ""
-  # TEMPORARY: runs on pushes to this branch until the workflow is on main (workflow_dispatch needs that).
-  push:
-    branches: [ci/load-test]
   schedule:
     - cron: "0 6 * * 1"  # Mondays 06:00 UTC, only when vars.LOAD_TEST_WEEKLY == 'true'
 
@@ -133,8 +130,9 @@ jobs:
             -e K6_WEB_DASHBOARD=true -e K6_WEB_DASHBOARD_EXPORT=/out/report.html \
             grafana/k6:1.8.2 run --quiet /scripts/page-load.js || status=$?
           kill "$sampler" || true
-          # Which processes hold PostgreSQL connections when the run ends (containers' processes show on the host).
-          sudo ss -Htnp state established '( dport = :5432 )' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort | uniq -c |
+          # Which processes hold PostgreSQL connections when the run ends (containers' processes show on the host;
+          # docker-proxy, which forwards the published port, opens a second connection for each and is left out).
+          sudo ss -Htnp state established '( dport = :5432 )' | grep -v docker-proxy | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort | uniq -c |
             while read -r n pid; do
               echo "| $n | $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-90) |"
             done > "$OUT/pg-connections.md" || true
