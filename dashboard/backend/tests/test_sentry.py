@@ -249,6 +249,17 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("DEBUG", repr(context))
         self.assertNotIn(key, repr(context))
 
+    def test_digest_style_error_lines_are_attached_and_tell_failures_apart(self):
+        def digest_failed(stdout):
+            return subprocess.CalledProcessError(1, ["python", "scripts/daily_digest.py"], output=stdout, stderr="")
+        smtp = "[INFO] building\n[ERROR] Emailing the digest failed: SMTPAuthenticationError: 535; the digest was:\n"
+        recipients = "[ERROR] SMTP is configured but ALERT_EMAILS has no valid address; the digest was:\n"
+        for stdout in (smtp, smtp, recipients):
+            well_sentry.capture_job_error(digest_failed(stdout))
+        events = self.flush()
+        self.assertEqual([e["contexts"]["subprocess"]["error_lines"] for e in events],
+                         [[smtp.splitlines()[1]], [recipients.strip()]])
+
     def test_http_statuses_are_not_collapsed(self):
         sig = well_sentry.failure_signature
         self.assertNotEqual(sig(RuntimeError("HTTP 401 from LI-COR")), sig(RuntimeError("HTTP 503 from LI-COR")))

@@ -119,7 +119,8 @@ def failure_signature(exc):
     """What makes one failure the same as another, for the throttle: the first line of the message, with numbers
     and hex ids collapsed so timestamps, ports and ids don't make every repeat look new. For a failed subprocess:
     its arguments (e.g. which month it uploads, kept as they are), its exit code, and its last stderr line, or, when
-    stderr is empty, its last stdout line starting with ERROR: (the scripts print their handled errors there)."""
+    stderr is empty, its last stdout line starting with ERROR: or [ERROR] (the scripts print their handled errors
+    there)."""
     if _is_subprocess_error(exc):
         lines = [line.strip() for line in _stderr(exc).splitlines() if line.strip()] or error_lines(exc)
         code = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else exc.returncode
@@ -145,11 +146,13 @@ def stderr_tail(exc):
 
 
 def error_lines(exc):
-    """A failed subprocess's stdout lines that start with ERROR: (download_data.py and upload_data.py print their
-    handled failures there, e.g. "ERROR: No sensor data found ..."), scrubbed, the last STDERR_TAIL_CHARS of them.
+    """A failed subprocess's stdout lines that start with ERROR: (download_data.py, upload_data.py) or [ERROR]
+    (daily_digest.py): the scripts print their handled failures there, e.g. "ERROR: No sensor data found ...".
+    Scrubbed, the last STDERR_TAIL_CHARS of them.
     The rest of stdout (progress and data) isn't sent."""
     stdout = _text(getattr(exc, "output", None))
-    lines = [line.strip() for line in scrub_urls(stdout).splitlines() if line.strip().startswith("ERROR:")]
+    lines = [line.strip() for line in scrub_urls(stdout).splitlines()
+             if line.strip().startswith(("ERROR:", "[ERROR]"))]
     if not lines:
         return []
     kept, size = [], 0
