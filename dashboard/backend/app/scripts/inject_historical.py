@@ -17,6 +17,7 @@ from api.services.quality import QualityService
 from config import Config
 from utils.guards import require_wipe_permission
 from utils.sensor_names import weather_measurement_name
+from utils.parsers import reading_value
 
 app = create_app()
 
@@ -54,7 +55,10 @@ def parse_weather_entry(entry, logger_id):
     # Skip battery sensors
     if sensor_sn and sensor_sn.endswith("-B"):
         return None
-    
+    value = reading_value(entry.get("value"))
+    if value is None:
+        return None  # missing or unreadable: skipped, not stored as 0
+
     measurement_type = weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type"))
     if measurement_type == "RH":
         measurement_type = "Relative Humidity"
@@ -63,7 +67,7 @@ def parse_weather_entry(entry, logger_id):
         station_id=logger_id,
         group_type="Weather",
         measurement_type=measurement_type,
-        value=float(entry.get("value", 0)),
+        value=value,
         unit=entry.get("unit"),
         recorded_at=datetime.fromisoformat(entry.get("timestamp"))
     )
@@ -105,7 +109,9 @@ def parse_logger_entry(entry):
 
     config = LOGGER_CONFIG[base_sn]
     station_id = config["station_id"]
-    h = float(entry.get("value", 0))
+    h = reading_value(entry.get("value"))
+    if h is None:
+        return None  # missing or unreadable: skipped, not stored as 0
     recorded_at = datetime.fromisoformat(entry.get("timestamp"))
     
     measurement = None
@@ -165,9 +171,8 @@ def parse_quality_entry(entry, station_id):
         param_id = reading["parameterId"]
         if param_id not in QUALITY_PARAM_ID_MAP:
             continue
-        try:
-            value = float(reading["value"])
-        except (ValueError, TypeError):
+        value = reading_value(reading.get("value"))
+        if value is None:
             continue
         results.append(SensorMeasurement(
             station_id=station_id,
