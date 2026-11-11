@@ -119,7 +119,7 @@ class WooCommerce_HPOS_Orders extends Module {
 	public function init_listeners( $callable ) {
 		foreach ( self::get_order_types_to_sync() as $type ) {
 			add_action( "woocommerce_after_{$type}_object_save", $callable );
-			add_filter( "jetpack_sync_before_enqueue_woocommerce_after_{$type}_object_save", array( $this, 'expand_order_object' ) );
+			add_filter( "jetpack_sync_before_enqueue_woocommerce_after_{$type}_object_save", array( $this, 'on_before_enqueue_order_save' ) );
 		}
 		add_action( 'woocommerce_delete_order', $callable );
 		add_action( 'woocommerce_delete_subscription', $callable );
@@ -148,6 +148,10 @@ class WooCommerce_HPOS_Orders extends Module {
 	 * @access public
 	 */
 	public function init_before_send() {
+		// Incremental Sync
+		foreach ( self::get_order_types_to_sync() as $type ) {
+			add_filter( "jetpack_sync_before_send_woocommerce_after_{$type}_object_save", array( $this, 'expand_order_object' ) );
+		}
 		// Full sync.
 		add_filter( 'jetpack_sync_before_send_jetpack_full_sync_woocommerce_hpos_orders', array( $this, 'build_full_sync_action_array' ) );
 	}
@@ -189,7 +193,7 @@ class WooCommerce_HPOS_Orders extends Module {
 			return $id;
 		}
 		$order_objects = $this->get_objects_by_id( $object_type, array( $id ) );
-		return isset( $order_objects[ $id ] ) ? $order_objects[ $id ] : false;
+		return $order_objects[ $id ] ?? false;
 	}
 
 	/**
@@ -263,15 +267,41 @@ class WooCommerce_HPOS_Orders extends Module {
 	}
 
 	/**
+	 * Retrieve filtered order data before sending.
+	 *
+	 * @access public
+	 *
+	 * @param array $args An array with order data.
+	 *
+	 * @return array|false
+	 */
+	public function expand_order_object( $args ) {
+		if ( empty( $args['id'] ) ) {
+			return false;
+		}
+
+		$order_object = wc_get_order( $args['id'] );
+
+		if ( ! $order_object instanceof \WC_Abstract_Order ) {
+			return false;
+		}
+
+		return $this->filter_order_data( $order_object );
+	}
+
+	/**
 	 * Retrieve order data by its ID.
 	 *
 	 * @access public
 	 *
 	 * @param array $args Order ID.
 	 *
-	 * @return array
+	 * @return array|false
 	 */
-	public function expand_order_object( $args ) {
+	public function on_before_enqueue_order_save( $args ) {
+		// Prevent multiple triggers on a single request.
+		static $processed = array();
+
 		if ( ! is_array( $args ) || ! isset( $args[0] ) ) {
 			return false;
 		}
@@ -285,7 +315,19 @@ class WooCommerce_HPOS_Orders extends Module {
 			return false;
 		}
 
-		return $this->filter_order_data( $order_object );
+		$order_id = $order_object->get_id();
+
+		if ( empty( $order_id ) ) {
+			return false;
+		}
+
+		if ( isset( $processed[ $order_id ] ) ) {
+			return false;
+		}
+
+		$processed[ $order_id ] = true;
+
+		return array( 'id' => $order_id );
 	}
 
 	/**
@@ -369,22 +411,22 @@ class WooCommerce_HPOS_Orders extends Module {
 
 			switch ( $key ) {
 				case 'cart_discount':
-					$filtered_order_data[ $key ] = isset( $order_data['discount_total'] ) ? $order_data['discount_total'] : '';
+					$filtered_order_data[ $key ] = $order_data['discount_total'] ?? '';
 					break;
 				case 'cart_discount_tax':
-					$filtered_order_data[ $key ] = isset( $order_data['discount_tax'] ) ? $order_data['discount_tax'] : '';
+					$filtered_order_data[ $key ] = $order_data['discount_tax'] ?? '';
 					break;
 				case 'order_shipping':
-					$filtered_order_data[ $key ] = isset( $order_data['shipping_total'] ) ? $order_data['shipping_total'] : '';
+					$filtered_order_data[ $key ] = $order_data['shipping_total'] ?? '';
 					break;
 				case 'order_shipping_tax':
-					$filtered_order_data[ $key ] = isset( $order_data['shipping_tax'] ) ? $order_data['shipping_tax'] : '';
+					$filtered_order_data[ $key ] = $order_data['shipping_tax'] ?? '';
 					break;
 				case 'order_tax':
-					$filtered_order_data[ $key ] = isset( $order_data['cart_tax'] ) ? $order_data['cart_tax'] : '';
+					$filtered_order_data[ $key ] = $order_data['cart_tax'] ?? '';
 					break;
 				case 'order_total':
-					$filtered_order_data[ $key ] = isset( $order_data['total'] ) ? $order_data['total'] : '';
+					$filtered_order_data[ $key ] = $order_data['total'] ?? '';
 					break;
 			}
 		}
@@ -425,7 +467,7 @@ class WooCommerce_HPOS_Orders extends Module {
 	 *
 	 * @return string The WC order status with the 'wc-' prefix if it's a valid order status, initial $status otherwise.
 	 */
-	protected static function get_wc_order_status_with_prefix( string $status ) {
+	public static function get_wc_order_status_with_prefix( string $status ) {
 		return in_array( 'wc-' . $status, self::wc_get_order_status_keys(), true ) ? 'wc-' . $status : $status;
 	}
 
@@ -486,7 +528,7 @@ class WooCommerce_HPOS_Orders extends Module {
 	 * @param array $config Full sync configuration for this sync module.
 	 * @return int Number of items yet to be enqueued.
 	 */
-	public function estimate_full_sync_actions( $config ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- We return all order count for full sync, so confit is not required.
+	public function estimate_full_sync_actions( $config ) {
 		global $wpdb;
 
 		$query = "SELECT count(*) FROM {$this->table()} WHERE {$this->get_where_sql( $config ) }";

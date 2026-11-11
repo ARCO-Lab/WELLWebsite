@@ -41,7 +41,7 @@ class WP_MS_Users_List_Table extends WP_List_Table {
 
 		$users_per_page = $this->get_items_per_page( 'users_network_per_page' );
 
-		$role = isset( $_REQUEST['role'] ) ? $_REQUEST['role'] : '';
+		$role = $_REQUEST['role'] ?? '';
 
 		$paged = $this->get_pagenum();
 
@@ -240,7 +240,7 @@ class WP_MS_Users_List_Table extends WP_List_Table {
 			<span class="screen-reader-text">
 			<?php
 			/* translators: Hidden accessibility text. %s: User login. */
-			printf( __( 'Select %s' ), $user->user_login );
+			printf( __( 'Select %s' ), esc_html( $user->user_login ) );
 			?>
 			</span>
 		</label>
@@ -273,9 +273,9 @@ class WP_MS_Users_List_Table extends WP_List_Table {
 
 		if ( current_user_can( 'edit_user', $user->ID ) ) {
 			$edit_link = esc_url( add_query_arg( 'wp_http_referer', urlencode( wp_unslash( $_SERVER['REQUEST_URI'] ) ), get_edit_user_link( $user->ID ) ) );
-			$edit      = "<a href=\"{$edit_link}\">{$user->user_login}</a>";
+			$edit      = "<a href=\"{$edit_link}\">" . esc_html( $user->user_login ) . '</a>';
 		} else {
-			$edit = $user->user_login;
+			$edit = esc_html( $user->user_login );
 		}
 
 		?>
@@ -502,7 +502,7 @@ class WP_MS_Users_List_Table extends WP_List_Table {
 			}
 
 			?>
-			<tr class="<?php echo trim( $class ); ?>">
+			<tr id="user-<?php echo (int) $user->ID; ?>" class="<?php echo trim( $class ); ?>">
 				<?php $this->single_row_columns( $user ); ?>
 			</tr>
 			<?php
@@ -563,5 +563,20 @@ class WP_MS_Users_List_Table extends WP_List_Table {
 		$actions = apply_filters( 'ms_user_row_actions', $actions, $user );
 
 		return $this->row_actions( $actions );
+	}
+
+	/**
+	 * Returns a clean label for the primary (Username) column's row header `aria-label`.
+	 *
+	 * Provides screen readers with just the user login as the row header name,
+	 * preventing them from computing the name from the full cell content.
+	 *
+	 * @since 7.1.0
+	 *
+	 * @param WP_User $user The current WP_User object.
+	 * @return string The user login.
+	 */
+	protected function get_primary_column_aria_label( $user ) {
+		return $user->user_login;
 	}
 }

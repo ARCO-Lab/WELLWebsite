@@ -5,6 +5,8 @@
  * @package automattic/jetpack
  */
 
+use Automattic\Jetpack\Post_Media\Images;
+
 if ( ! defined( 'ABSPATH' ) ) {
 	exit( 0 );
 }
@@ -30,12 +32,24 @@ function enhanced_og_image( $tags ) {
 		return $tags;
 	}
 
+	// A gated body's embedded media is withheld along with the body.
+	if ( \Automattic\Jetpack\SEO\Content_Gate::is_gated( $post ) ) {
+		return $tags;
+	}
+
 	// Always favor featured images.
 	if ( enhanced_og_has_featured_image( $post->ID ) ) {
 		return $tags;
 	}
 
-	$summary = Jetpack_Media_Summary::get( $post->ID );
+	$summary = Jetpack_Media_Summary::get(
+		$post->ID,
+		0,
+		array(
+			'include_excerpt' => false,
+			'include_count'   => false,
+		)
+	);
 
 	if ( 'image' !== $summary['type'] ) {
 		return $tags;
@@ -65,12 +79,24 @@ function enhanced_og_gallery( $tags ) {
 		return $tags;
 	}
 
+	// A gated body's embedded media is withheld along with the body.
+	if ( \Automattic\Jetpack\SEO\Content_Gate::is_gated( $post ) ) {
+		return $tags;
+	}
+
 	// Always favor featured images.
 	if ( enhanced_og_has_featured_image( $post->ID ) ) {
 		return $tags;
 	}
 
-	$summary = Jetpack_Media_Summary::get( $post->ID );
+	$summary = Jetpack_Media_Summary::get(
+		$post->ID,
+		0,
+		array(
+			'include_excerpt' => false,
+			'include_count'   => false,
+		)
+	);
 
 	if ( 'gallery' !== $summary['type'] ) {
 		return $tags;
@@ -112,12 +138,24 @@ function enhanced_og_video( $tags ) {
 		return $tags;
 	}
 
+	// A gated body's embedded media is withheld along with the body.
+	if ( \Automattic\Jetpack\SEO\Content_Gate::is_gated( $post ) ) {
+		return $tags;
+	}
+
 	// Always favor featured images.
 	if ( enhanced_og_has_featured_image( $post->ID ) ) {
 		return $tags;
 	}
 
-	$summary = Jetpack_Media_Summary::get( $post->ID );
+	$summary = Jetpack_Media_Summary::get(
+		$post->ID,
+		0,
+		array(
+			'include_excerpt' => false,
+			'include_count'   => false,
+		)
+	);
 
 	if ( 'video' !== $summary['type'] ) {
 		if ( $summary['count']['video'] > 0 && $summary['count']['image'] < 1 ) {
@@ -131,7 +169,7 @@ function enhanced_og_video( $tags ) {
 	$tags['og:image:secure_url'] = $summary['secure']['image'];
 
 	// This should be html by default for youtube/vimeo, since we're linking to HTML pages.
-	$tags['og:video:type'] = isset( $summary['video_type'] ) ? $summary['video_type'] : 'text/html';
+	$tags['og:video:type'] = $summary['video_type'] ?? 'text/html';
 
 	$video_url        = $summary['video'];
 	$secure_video_url = $summary['secure']['video'];
@@ -170,5 +208,5 @@ add_filter( 'jetpack_open_graph_tags', 'enhanced_og_video' );
  * @return bool True if the post has a suitable featured image, false otherwise.
  */
 function enhanced_og_has_featured_image( $post_id ) {
-	return ! empty( Jetpack_PostImages::from_thumbnail( $post_id ) );
+	return ! empty( Images::from_thumbnail( $post_id ) );
 }

@@ -1,0 +1,5 @@
+# WordPress core and the plugins under home/ are vendor releases. Store them byte-for-byte,
+# without line-ending conversion, so they keep matching the official checksums.
+home/** -text
+# The site's own theme is ordinary source code, normalized as usual.
+home/wp-content/themes/well/** text=auto

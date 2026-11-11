@@ -23,6 +23,7 @@ export interface ApiSeries {
   avg: (number | null)[];
   min: (number | null)[];
   max: (number | null)[];
+  n?: number[]; // readings in each bucket (absent from an older backend)
 }
 
 export interface SeriesResponse {
@@ -31,8 +32,8 @@ export interface SeriesResponse {
   series: ApiSeries[];
 }
 
-// One series as kept in memory: only what the charts draw. Typed arrays (16 bytes a point; NaN for a missing
-// value) instead of the response's four arrays of boxed numbers.
+// One series as kept in memory: only what the charts draw. Typed arrays (40 bytes a point; NaN for a missing
+// value) instead of the response's five arrays of boxed numbers.
 export interface ChartSeries {
   group_type: string;
   station_id: string | number;
@@ -41,6 +42,9 @@ export interface ChartSeries {
   agg: "mean" | "sum" | "vector_mean";
   t: Float64Array;
   avg: Float64Array;
+  min: Float64Array; // for the tooltip's range
+  max: Float64Array;
+  n: Float64Array; // all NaN when the backend doesn't send counts
 }
 
 // One loaded response, with what it was loaded for and its series indexed by seriesKey.
@@ -53,18 +57,24 @@ export interface LoadedSeries {
   series: ChartSeries[];
 }
 
+const typed = (a: (number | null)[] | undefined, length: number) =>
+  a ? Float64Array.from(a, (v) => (v === null ? NaN : v)) : new Float64Array(length).fill(NaN);
+
 const slim = (s: ApiSeries): ChartSeries => ({
   group_type: s.group_type, station_id: s.station_id, measurement_type: s.measurement_type, unit: s.unit,
   agg: s.agg ?? "mean",
   t: Float64Array.from(s.t),
-  avg: Float64Array.from(s.avg, (v) => (v === null ? NaN : v)),
+  avg: typed(s.avg, s.t.length),
+  min: typed(s.min, s.t.length),
+  max: typed(s.max, s.t.length),
+  n: typed(s.n, s.t.length),
 });
 
 export const seriesKey = (s: Pick<ApiSeries, "group_type" | "station_id" | "measurement_type" | "unit">) =>
   `${s.group_type}|${s.station_id}|${s.measurement_type}|${s.unit}`;
 
-// Responses kept. One with every group is ~29 series of up to ~2,000 points: about 1 MB as typed arrays, so
-// at most ~12 MB.
+// Responses kept. One with every group is ~29 series of up to ~2,000 points: about 2.3 MB as typed arrays, so
+// at most ~28 MB.
 const CACHE_ENTRIES = 12;
 const DEBOUNCE_MS = 300;
 const GROUP_KEYS = ["weather", "quality", "gauges"] as const;

@@ -79,7 +79,8 @@ abstract class SAL_Site {
 	 * @return string
 	 */
 	public function get_name() {
-		return (string) htmlspecialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
+		$name = get_bloginfo( 'name' );
+		return is_string( $name ) ? htmlspecialchars_decode( $name, ENT_QUOTES ) : '';
 	}
 
 	/**
@@ -88,7 +89,8 @@ abstract class SAL_Site {
 	 * @return string
 	 */
 	public function get_description() {
-		return (string) htmlspecialchars_decode( get_bloginfo( 'description' ), ENT_QUOTES );
+		$description = get_bloginfo( 'description' );
+		return is_string( $description ) ? htmlspecialchars_decode( $description, ENT_QUOTES ) : '';
 	}
 
 	/**
@@ -1013,7 +1015,7 @@ abstract class SAL_Site {
 	public function get_logo() {
 		// Set an empty response array.
 		$logo_setting = array(
-			'id'    => (int) 0,
+			'id'    => 0,
 			'sizes' => array(),
 			'url'   => '',
 		);
@@ -1254,7 +1256,7 @@ abstract class SAL_Site {
 			$blog_services          = $ss->get_blog_services();
 			$default_sharing_status = ! empty( $blog_services['visible'] );
 		}
-		return (bool) $default_sharing_status;
+		return $default_sharing_status;
 	}
 
 	/**
@@ -1518,18 +1520,76 @@ abstract class SAL_Site {
 	}
 
 	/**
-	 * Check if the site has the summer-special-2025 blog sticker.
+	 * Get the DIFM Lite site options exposed to the frontend while a build is in progress.
+	 *
+	 * Returns null unless the site has an active DIFM Lite build and the code is
+	 * running on WordPress.com, where the DIFM Lite library exists.
+	 *
+	 * @return array|null
+	 */
+	public function get_difm_lite_site_options() {
+		if ( ! $this->is_difm_lite_in_progress() ) {
+			return null;
+		}
+		if ( ! defined( 'IS_WPCOM' ) || ! IS_WPCOM || ! function_exists( 'require_lib' ) ) {
+			return null;
+		}
+		require_lib( 'difm-lite' );
+		if ( ! class_exists( '\DIFM_Lite_Options' ) ) {
+			// Fail closed if the library did not define the class; this method
+			// documents null for every path where the options are unavailable.
+			return null;
+		}
+		// The submission state is canonical on the purchase blog. This site may be
+		// the stickered staging build target, whose own options blob is empty, so
+		// resolve to the purchase blog before reading — otherwise a post-submit
+		// staging target reports itself as pre-submit.
+		//
+		// resolve_purchase_site_id() ships in the wpcom DIFM Lite site-role
+		// pointers change. This Jetpack code can deploy before that lands, so
+		// fall back to the current blog when it is unavailable — no retargeted
+		// builds can exist until that change is live, so the current blog is the
+		// purchase blog in that window.
+		$purchase_blog_id = $this->blog_id;
+		// @phan-suppress-next-line PhanUndeclaredClassReference -- wpcom-only class, guarded above.
+		if ( method_exists( '\DIFM_Lite_Options', 'resolve_purchase_site_id' ) ) {
+			// @phan-suppress-next-line PhanUndeclaredClassMethod -- wpcom-only class, guarded above.
+			$purchase_blog_id = \DIFM_Lite_Options::resolve_purchase_site_id( $this->blog_id );
+		}
+		// @phan-suppress-next-line PhanUndeclaredClassMethod -- wpcom-only class, guarded above.
+		$difm_lite_options = new \DIFM_Lite_Options( $purchase_blog_id );
+		return array(
+			// @phan-suppress-next-line PhanUndeclaredClassProperty -- wpcom-only class, guarded above.
+			'is_website_content_submitted' => (bool) $difm_lite_options->is_website_content_submitted,
+		);
+	}
+
+	/**
+	 * Check if the site has the gating-business-q1 blog sticker.
 	 *
 	 * @return bool
 	 */
-	public function is_summer_special_2025() {
+	public function is_gating_business_q1() {
 		if ( function_exists( 'has_blog_sticker' ) ) {
-			return has_blog_sticker( 'summer-special-2025' );
+			return has_blog_sticker( 'gating-business-q1' );
 		} elseif ( function_exists( 'wpcomsh_is_site_sticker_active' ) ) {
 			// For atomic sites
-			return wpcomsh_is_site_sticker_active( 'summer-special-2025' );
+			return wpcomsh_is_site_sticker_active( 'gating-business-q1' );
 		}
 		return false;
+	}
+
+	/**
+	 * Whether the site is still on the pre-2026 feature gating.
+	 *
+	 * @return bool
+	 */
+	public function is_legacy_gating_site() {
+		if ( ! method_exists( 'WPCOM_Features', 'is_legacy_gating_site' ) ) {
+			return false;
+		}
+
+		return (bool) WPCOM_Features::is_legacy_gating_site( $this->blog_id );
 	}
 
 	/**
@@ -1581,6 +1641,47 @@ abstract class SAL_Site {
 		}
 
 		return array();
+	}
+
+	/**
+	 * Whether the AI Launchpad is enabled for this site. Mirrors AI_Launchpad::is_enabled_for_site() in jetpack-mu-wpcom.
+	 *
+	 * @return bool
+	 */
+	public function is_ai_launchpad_enabled() {
+		return (bool) get_option( 'wpcom_ai_launchpad_enabled' ) && ! $this->is_ai_launchpad_no_guidance();
+	}
+
+	/**
+	 * Whether the AI Launchpad was dismissed (skipped), which leaves the site with no setup guidance.
+	 *
+	 * @return bool
+	 */
+	public function is_ai_launchpad_dismissed() {
+		return (bool) get_option( 'wpcom_ai_launchpad_dismissed' );
+	}
+
+	/**
+	 * Whether every AI Launchpad task has been completed.
+	 *
+	 * @return bool
+	 */
+	public function is_ai_launchpad_completed() {
+		return (bool) get_option( 'wpcom_ai_launchpad_completed' );
+	}
+
+	/**
+	 * Whether the site gets no setup guidance: no My Home, Site Setup, or launchpad. Mirrors
+	 * wpcom_launchpad_is_no_guidance() in jetpack-mu-wpcom, which also counts a skipped AI Launchpad.
+	 *
+	 * @return bool
+	 */
+	public function is_ai_launchpad_no_guidance() {
+		if ( get_option( 'wpcom_ai_launchpad_no_guidance' ) ) {
+			return true;
+		}
+
+		return (bool) get_option( 'wpcom_ai_launchpad_enabled' ) && (bool) get_option( 'wpcom_ai_launchpad_dismissed' );
 	}
 
 	/**
@@ -1694,6 +1795,18 @@ abstract class SAL_Site {
 	}
 
 	/**
+	 * Returns whether APM (Application Performance Monitoring) is enabled for the site.
+	 *
+	 * APM is an Atomic-only hosting feature. Non-Atomic site types (Simple wpcom, real
+	 * Jetpack) return false; Jetpack_Shadow_Site overrides with the actual read.
+	 *
+	 * @return bool
+	 **/
+	public function get_apm_enabled() {
+		return false;
+	}
+
+	/**
 	 * Get Zendesk site meta.
 	 *
 	 * @return array|null
@@ -1741,5 +1854,56 @@ abstract class SAL_Site {
 	 */
 	public function garden_is_provisioned() {
 		return null;
+	}
+
+	/**
+	 * Detect whether the site is a Flex site.
+	 *
+	 * @return bool
+	 */
+	public function is_wpcom_flex() {
+		if ( function_exists( 'has_blog_sticker' ) ) {
+			return has_blog_sticker( 'flex-cache-site' );
+		}
+		return false;
+	}
+
+	/**
+	 * Detect whether Big Sky AI assistant is enabled for this site.
+	 *
+	 * @return bool
+	 */
+	public function is_big_sky_enabled() {
+		return false;
+	}
+
+	/**
+	 * Get the state of any block on the site's outgoing email.
+	 *
+	 * @return array|null `status` (`blocked` or `at_risk`), `reason` and `expires_on`,
+	 *                    or null if the site has never been blocked.
+	 */
+	public function get_atomic_email_block() {
+		return null;
+	}
+
+	/**
+	 * Get Jetpack recovery mode status.
+	 *
+	 * @return array|null
+	 */
+	public function get_jetpack_recovery_mode_status() {
+		$status = get_option( 'jetpack_recovery_mode_status' );
+		return is_array( $status ) ? $status : null;
+	}
+
+	/**
+	 * Whether WordPress.com accounts must have two-step authentication to log in through SSO.
+	 *
+	 * @return bool
+	 */
+	public function get_jetpack_sso_require_two_step() {
+		/** This filter is documented in projects/packages/connection/src/sso/class-helpers.php */
+		return (bool) apply_filters( 'jetpack_sso_require_two_step', get_option( 'jetpack_sso_require_two_step', false ) );
 	}
 }

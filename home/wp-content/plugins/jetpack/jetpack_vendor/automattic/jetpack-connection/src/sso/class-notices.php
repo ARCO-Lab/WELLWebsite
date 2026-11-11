@@ -22,22 +22,47 @@ class Notices {
 	 * the user's account on WordPress.com does not have two step enabled.
 	 *
 	 * @since jetpack-2.7
-	 * @param string $message Error message.
+	 * @since 9.10.0 Added the `$user_data` parameter.
+	 * @param string      $message   Error message.
+	 * @param object|null $user_data WordPress.com user information returned by the SSO attempt.
 	 * @return string
 	 **/
-	public static function error_msg_enable_two_step( $message ) {
-		$error = sprintf(
-			wp_kses(
-			/* translators: URL to settings page */
-				__(
-					'Two-Step Authentication is required to access this site. Please visit your <a href="%1$s" rel="noopener noreferrer" target="_blank">Security Settings</a> to configure <a href="%2$s" rel="noopener noreferrer" target="_blank">Two-step Authentication</a> for your account.',
-					'jetpack-connection'
-				),
-				array( 'a' => array( 'href' => array() ) )
+	public static function error_msg_enable_two_step( $message, $user_data = null ) {
+		$account_name = '';
+		if ( is_object( $user_data ) ) {
+			$account_name = ! empty( $user_data->display_name ) ? $user_data->display_name : ( $user_data->login ?? '' );
+		}
+
+		$allowed_html = array(
+			'a'      => array(
+				'href'   => array(),
+				'rel'    => array(),
+				'target' => array(),
 			),
-			Redirect::get_url( 'calypso-me-security-two-step' ),
-			Redirect::get_url( 'wpcom-support-security-two-step-authentication' )
+			'strong' => array(),
 		);
+		$setup_url    = esc_url( Redirect::get_url( 'calypso-me-security-two-step' ) );
+
+		if ( $account_name ) {
+			$error = sprintf(
+				wp_kses(
+					/* translators: %1$s is a WordPress.com account name, %2$s is the URL of the two-step authentication settings. */
+					__( 'You are logged in to WordPress.com as <strong>%1$s</strong>, but this site requires two-step authentication for added security. <a href="%2$s" rel="noopener noreferrer" target="_blank">Set it up for your account</a>, then log in again.', 'jetpack-connection' ),
+					$allowed_html
+				),
+				esc_html( $account_name ),
+				$setup_url
+			);
+		} else {
+			$error = sprintf(
+				wp_kses(
+					/* translators: %s is the URL of the two-step authentication settings. */
+					__( 'This site requires two-step authentication for added security. <a href="%s" rel="noopener noreferrer" target="_blank">Set it up for your WordPress.com account</a>, then log in again.', 'jetpack-connection' ),
+					$allowed_html
+				),
+				$setup_url
+			);
+		}
 
 		$message .= sprintf( '<p class="message" id="login_error">%s</p>', $error );
 
@@ -207,37 +232,6 @@ class Notices {
 
 		$message .= sprintf( '<p class="message" id="login_error">%s</p>', esc_html( $error ) );
 
-		return $message;
-	}
-
-	/**
-	 * Error message that is displayed when the current site is in an identity crisis and SSO cannot be used.
-	 *
-	 * @since jetpack-4.4.0
-	 * @deprecated since 2.10.0
-	 *
-	 * @param string $message Error message.
-	 *
-	 * @return string
-	 */
-	public static function sso_not_allowed_in_staging( $message ) {
-		_deprecated_function( __FUNCTION__, '2.10.0', 'sso_not_allowed_in_safe_mode' );
-		$error = __(
-			'Logging in with WordPress.com is disabled for sites that are in staging mode.',
-			'jetpack-connection'
-		);
-
-		/**
-		 * Filters the disallowed notice for staging sites attempting SSO.
-		 *
-		 * @module sso
-		 *
-		 * @since jetpack-10.5.0
-		 *
-		 * @param string $error Error text.
-		 */
-		$error    = apply_filters_deprecated( 'jetpack_sso_disallowed_staging_notice', array( $error ), '2.9.1', 'jetpack_sso_disallowed_safe_mode_notice' );
-		$message .= sprintf( '<p class="message">%s</p>', esc_html( $error ) );
 		return $message;
 	}
 

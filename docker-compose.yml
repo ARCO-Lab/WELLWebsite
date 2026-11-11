@@ -22,13 +22,17 @@ services:
       MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
 
   wordpress:
-    image: wordpress:latest
+    # Only PHP and Apache come from this image. WordPress core and plugins live in ./home
+    # (tracked in git) and are updated there, so bump this tag for PHP/Apache fixes.
+    image: wordpress:7.1.4-php8.3-apache
     depends_on:
       - db
     volumes:
+      - ./home:/var/www/html
+      - ./wordpress/php-hardening.ini:/usr/local/etc/php/conf.d/zz-hardening.ini:ro
+      - ./wordpress/apache-hardening.conf:/etc/apache2/conf-enabled/zz-hardening.conf:ro
       # Browser caching and compression for the site (wordpress/zz-performance.conf explains each rule).
       - ./wordpress/zz-performance.conf:/etc/apache2/conf-enabled/zz-performance.conf:ro
-      - ./home:/var/www/html
     ports:
       - "8080:80"
     restart: always
