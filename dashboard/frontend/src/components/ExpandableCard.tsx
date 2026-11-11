@@ -1,5 +1,7 @@
 // A card that opens a larger view (the dashboard modal): a click anywhere on it opens it, and a corner button
 // does the same for keyboard and screen-reader users, so the card's content stays readable as normal content.
+// Clicks on the content's own controls (a chart legend, a chart's accessibility buttons, any button, link or
+// input) do their own job and don't open the modal.
 
 import React from "react";
 import { Maximize2 } from "lucide-react";
@@ -12,8 +14,17 @@ interface ExpandableCardProps {
   children: React.ReactNode;
 }
 
+// Highcharts' accessibility layer puts its proxy buttons in .highcharts-a11y-proxy-container-before/-after.
+const OWN_CONTROLS = ".highcharts-legend, [class*='highcharts-a11y-proxy'], button, a, input, select, textarea";
+
 const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, className = "", style, children }) => (
-  <div onClick={onOpen} className={`mcmaster-card mcmaster-card-interactive group relative cursor-pointer ${className}`} style={style}>
+  <div
+    onClick={(e) => {
+      const target = e.target as Element | null;
+      if (target?.closest?.(OWN_CONTROLS)) return;
+      onOpen();
+    }}
+    className={`mcmaster-card mcmaster-card-interactive group relative cursor-pointer ${className}`} style={style}>
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onOpen(); }}
