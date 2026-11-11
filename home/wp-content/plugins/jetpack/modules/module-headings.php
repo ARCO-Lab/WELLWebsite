@@ -10,15 +10,30 @@
  *
  * @param string $key Module file name without `.php`.
  *
- * @return array
+ * @return array|null
  */
 function jetpack_get_module_i18n( $key ) {
 	static $modules;
 	if ( ! isset( $modules ) ) {
 		$modules = array(
 			'account-protection' => array(
-				'name' => _x( 'Account protection', 'Module Name', 'jetpack' ),
-				'description' => _x( 'Shield your login page with rate‑limiting and secure authentication safeguards.', 'Module Description', 'jetpack' ),
+				'name' => _x( 'Account Protection', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Detect compromised passwords at login and flag weak ones when users set a new password.', 'Module Description', 'jetpack' ),
+			),
+
+			'activity-log' => array(
+				'name' => _x( 'Activity Log', 'Module Name', 'jetpack' ),
+				'description' => _x( 'A record of every event on your site, so you can see what happened and roll back when something goes wrong.', 'Module Description', 'jetpack' ),
+			),
+
+			'ai' => array(
+				'name' => _x( 'AI', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Turn your ideas into ready-to-publish content and generate images with the power of AI.', 'Module Description', 'jetpack' ),
+			),
+
+			'backup' => array(
+				'name' => _x( 'Backup', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Browse your backups and restore your site right from your dashboard.', 'Module Description', 'jetpack' ),
 			),
 
 			'blaze' => array(
@@ -29,6 +44,11 @@ function jetpack_get_module_i18n( $key ) {
 			'blocks' => array(
 				'name' => _x( 'Blocks', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Expand your editor with custom Jetpack blocks for rich content and layout options.', 'Module Description', 'jetpack' ),
+			),
+
+			'canonical-urls' => array(
+				'name' => _x( 'Canonical URLs', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Add canonical URL tags to archive pages to prevent duplicate content in search engines.', 'Module Description', 'jetpack' ),
 			),
 
 			'carousel' => array(
@@ -57,13 +77,13 @@ function jetpack_get_module_i18n( $key ) {
 			),
 
 			'custom-content-types' => array(
-				'name' => _x( 'Custom content types', 'Module Name', 'jetpack' ),
+				'name' => _x( 'Custom Content Types', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Display different types of content on your site with custom content types.', 'Module Description', 'jetpack' ),
 			),
 
 			'google-fonts' => array(
 				'name' => _x( 'Google Fonts (Beta)', 'Module Name', 'jetpack' ),
-				'description' => _x( 'Customize your site\'s typography with a selection of Google Fonts.', 'Module Description', 'jetpack' ),
+				'description' => _x( 'This feature is now supported natively in WordPress when using any block theme. To use Google Fonts, refer to the WordPress.org Font Library documentation.', 'Module Description', 'jetpack' ),
 			),
 
 			'gravatar-hovercards' => array(
@@ -116,18 +136,28 @@ function jetpack_get_module_i18n( $key ) {
 				'description' => _x( 'Deliver images quickly with automatic resizing from Jetpack’s global image CDN.', 'Module Description', 'jetpack' ),
 			),
 
+			'podcast' => array(
+				'name' => _x( 'Podcast', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Publish, manage, and grow your podcast right from your site.', 'Module Description', 'jetpack' ),
+			),
+
 			'post-by-email' => array(
-				'name' => _x( 'Post by email', 'Module Name', 'jetpack' ),
+				'name' => _x( 'Post by Email', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Publish blog posts simply by sending an email to a custom address.', 'Module Description', 'jetpack' ),
 			),
 
 			'post-list' => array(
 				'name' => _x( 'Post List', 'Module Name', 'jetpack' ),
-				'description' => _x( 'Display a customizable list of your latest posts anywhere on your site.', 'Module Description', 'jetpack' ),
+				'description' => _x( 'Show featured images and a copy link action in your WP Admin post and page lists.', 'Module Description', 'jetpack' ),
+			),
+
+			'protect-dashboard' => array(
+				'name' => _x( 'Protect Dashboard', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Security tools that keep your site safe and sound, from posts to plugins.', 'Module Description', 'jetpack' ),
 			),
 
 			'protect' => array(
-				'name' => _x( 'Brute force protection', 'Module Name', 'jetpack' ),
+				'name' => _x( 'Brute Force Protection', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Block malicious login attempts automatically and keep hackers out.', 'Module Description', 'jetpack' ),
 			),
 
@@ -137,7 +167,7 @@ function jetpack_get_module_i18n( $key ) {
 			),
 
 			'related-posts' => array(
-				'name' => _x( 'Related posts', 'Module Name', 'jetpack' ),
+				'name' => _x( 'Related Posts', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Automatically display related articles to keep visitors reading longer.', 'Module Description', 'jetpack' ),
 			),
 
@@ -197,7 +227,7 @@ function jetpack_get_module_i18n( $key ) {
 			),
 
 			'verification-tools' => array(
-				'name' => _x( 'Site verification', 'Module Name', 'jetpack' ),
+				'name' => _x( 'Site Verification', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Verify your site with search engines and social platforms in a couple of clicks.', 'Module Description', 'jetpack' ),
 			),
 
@@ -230,9 +260,14 @@ function jetpack_get_module_i18n( $key ) {
 				'name' => _x( 'Ads', 'Module Name', 'jetpack' ),
 				'description' => _x( 'Earn revenue by displaying high‑quality ads on your site.', 'Module Description', 'jetpack' ),
 			),
+
+			'wpcom-reader' => array(
+				'name' => _x( 'WordPress.com Reader', 'Module Name', 'jetpack' ),
+				'description' => _x( 'Quickly access the WordPress.com Reader from your site\'s admin bar.', 'Module Description', 'jetpack' ),
+			),
 		);
 	}
-	return isset( $modules[ $key ] ) ? $modules[ $key ] : null;
+	return $modules[ $key ] ?? null;
 }
 
 /**
@@ -256,8 +291,36 @@ function jetpack_get_module_i18n_tag( $key ) {
 			// - modules/account-protection.php
 			'Account Protection' => _x( 'Account Protection', 'Module Tag', 'jetpack' ),
 
+			// Modules with `Recommended` tag:
+			// - modules/activity-log.php
+			// - modules/google-fonts.php
+			// - modules/monitor.php
+			// - modules/photon-cdn.php
+			// - modules/photon.php
+			// - modules/protect.php
+			// - modules/publicize.php
+			// - modules/related-posts.php
+			// - modules/sharedaddy.php
+			// - modules/sitemaps.php
+			// - modules/stats.php
+			// - modules/woocommerce-analytics.php
+			'Recommended' => _x( 'Recommended', 'Module Tag', 'jetpack' ),
+
+			// Modules with `Writing` tag:
+			// - modules/ai.php
+			// - modules/copy-post.php
+			// - modules/custom-content-types.php
+			// - modules/json-api.php
+			// - modules/latex.php
+			// - modules/markdown.php
+			// - modules/podcast.php
+			// - modules/post-by-email.php
+			// - modules/shortcodes.php
+			'Writing' => _x( 'Writing', 'Module Tag', 'jetpack' ),
+
 			// Modules with `Traffic` tag:
 			// - modules/blaze.php
+			// - modules/canonical-urls.php
 			// - modules/sitemaps.php
 			// - modules/wordads.php
 			'Traffic' => _x( 'Traffic', 'Module Tag', 'jetpack' ),
@@ -275,6 +338,7 @@ function jetpack_get_module_i18n_tag( $key ) {
 			// - modules/shortlinks.php
 			// - modules/subscriptions.php
 			// - modules/widgets.php
+			// - modules/wpcom-reader.php
 			'Social' => _x( 'Social', 'Module Tag', 'jetpack' ),
 
 			// Modules with `blocks` tag:
@@ -290,33 +354,9 @@ function jetpack_get_module_i18n_tag( $key ) {
 			// - modules/videopress.php
 			'Photos and Videos' => _x( 'Photos and Videos', 'Module Tag', 'jetpack' ),
 
-			// Modules with `Writing` tag:
-			// - modules/copy-post.php
-			// - modules/custom-content-types.php
-			// - modules/json-api.php
-			// - modules/latex.php
-			// - modules/markdown.php
-			// - modules/post-by-email.php
-			// - modules/shortcodes.php
-			'Writing' => _x( 'Writing', 'Module Tag', 'jetpack' ),
-
 			// Modules with `Fonts` tag:
 			// - modules/google-fonts.php
 			'Fonts' => _x( 'Fonts', 'Module Tag', 'jetpack' ),
-
-			// Modules with `Recommended` tag:
-			// - modules/google-fonts.php
-			// - modules/monitor.php
-			// - modules/photon-cdn.php
-			// - modules/photon.php
-			// - modules/protect.php
-			// - modules/publicize.php
-			// - modules/related-posts.php
-			// - modules/sharedaddy.php
-			// - modules/sitemaps.php
-			// - modules/stats.php
-			// - modules/woocommerce-analytics.php
-			'Recommended' => _x( 'Recommended', 'Module Tag', 'jetpack' ),
 
 			// Modules with `Appearance` tag:
 			// - modules/gravatar-hovercards.php
@@ -338,6 +378,10 @@ function jetpack_get_module_i18n_tag( $key ) {
 			// Modules with `Admin` tag:
 			// - modules/post-list.php
 			'Admin' => _x( 'Admin', 'Module Tag', 'jetpack' ),
+
+			// Modules with `Security` tag:
+			// - modules/protect-dashboard.php
+			'Security' => _x( 'Security', 'Module Tag', 'jetpack' ),
 
 			// Modules with `Jetpack Stats` tag:
 			// - modules/stats.php
@@ -364,14 +408,14 @@ function jetpack_get_module_i18n_tag( $key ) {
  *
  * @param string $key Module file name without `.php`.
  *
- * return array|string An array containing the module info or an empty string if the given module isn't known.
+ * return array|string|null An array containing the module info or an empty string if the given module isn't known.
  */
 function jetpack_get_module_info( $key ) {
 	static $module_info = array (
 	  'account-protection' => 
 	  array (
-	    'name' => 'Account protection',
-	    'description' => 'Shield your login page with rate‑limiting and secure authentication safeguards.',
+	    'name' => 'Account Protection',
+	    'description' => 'Detect compromised passwords at login and flag weak ones when users set a new password.',
 	    'sort' => '4',
 	    'recommendation_order' => '',
 	    'introduced' => '14.5',
@@ -380,10 +424,64 @@ function jetpack_get_module_info( $key ) {
 	    'free' => '',
 	    'requires_connection' => 'Yes',
 	    'requires_user_connection' => 'No',
-	    'auto_activate' => 'Yes',
+	    'auto_activate' => 'No',
 	    'module_tags' => 'Account Protection',
 	    'feature' => 'Security',
 	    'additional_search_queries' => '',
+	    'plan_classes' => '',
+	  ),
+	  'activity-log' => 
+	  array (
+	    'name' => 'Activity Log',
+	    'description' => 'A record of every event on your site, so you can see what happened and roll back when something goes wrong.',
+	    'sort' => '38',
+	    'recommendation_order' => '12',
+	    'introduced' => '16.3-a.3',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'Yes',
+	    'requires_user_connection' => 'Yes',
+	    'auto_activate' => 'Yes',
+	    'module_tags' => 'Recommended',
+	    'feature' => 'Security',
+	    'additional_search_queries' => 'activity, log, activity log, history, events, audit, audit log, rewind, restore, roll back, rollback',
+	    'plan_classes' => '',
+	  ),
+	  'ai' => 
+	  array (
+	    'name' => 'AI',
+	    'description' => 'Turn your ideas into ready-to-publish content and generate images with the power of AI.',
+	    'sort' => '40',
+	    'recommendation_order' => '15',
+	    'introduced' => '16.2-a.3',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'Yes',
+	    'requires_user_connection' => 'Yes',
+	    'auto_activate' => 'Yes',
+	    'module_tags' => 'Writing',
+	    'feature' => 'Writing',
+	    'additional_search_queries' => 'ai, artificial intelligence, jetpack ai, ai assistant, generate, content, images',
+	    'plan_classes' => '',
+	  ),
+	  'backup' => 
+	  array (
+	    'name' => 'Backup',
+	    'description' => 'Browse your backups and restore your site right from your dashboard.',
+	    'sort' => '33',
+	    'recommendation_order' => '',
+	    'introduced' => '16.3-a.8',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'Yes',
+	    'requires_user_connection' => 'Yes',
+	    'auto_activate' => 'Yes',
+	    'module_tags' => '',
+	    'feature' => 'Security',
+	    'additional_search_queries' => 'backup, backups, restore, vaultpress, rewind, cloud backup, off-site backup',
 	    'plan_classes' => '',
 	  ),
 	  'blaze' => 
@@ -420,6 +518,24 @@ function jetpack_get_module_info( $key ) {
 	    'module_tags' => 'blocks',
 	    'feature' => 'Writing',
 	    'additional_search_queries' => '',
+	    'plan_classes' => '',
+	  ),
+	  'canonical-urls' => 
+	  array (
+	    'name' => 'Canonical URLs',
+	    'description' => 'Add canonical URL tags to archive pages to prevent duplicate content in search engines.',
+	    'sort' => '36',
+	    'recommendation_order' => '',
+	    'introduced' => '15.6',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'No',
+	    'requires_user_connection' => 'No',
+	    'auto_activate' => 'No',
+	    'module_tags' => 'Traffic',
+	    'feature' => 'Traffic',
+	    'additional_search_queries' => 'canonical, seo, duplicate content, woocommerce, archive',
 	    'plan_classes' => '',
 	  ),
 	  'carousel' => 
@@ -514,7 +630,7 @@ function jetpack_get_module_info( $key ) {
 	  ),
 	  'custom-content-types' => 
 	  array (
-	    'name' => 'Custom content types',
+	    'name' => 'Custom Content Types',
 	    'description' => 'Display different types of content on your site with custom content types.',
 	    'sort' => '34',
 	    'recommendation_order' => '',
@@ -533,7 +649,7 @@ function jetpack_get_module_info( $key ) {
 	  'google-fonts' => 
 	  array (
 	    'name' => 'Google Fonts (Beta)',
-	    'description' => 'Customize your site\'s typography with a selection of Google Fonts.',
+	    'description' => 'This feature is now supported natively in WordPress when using any block theme. To use Google Fonts, refer to the WordPress.org Font Library documentation.',
 	    'sort' => '1',
 	    'recommendation_order' => '2',
 	    'introduced' => '10.8.0',
@@ -728,9 +844,27 @@ function jetpack_get_module_info( $key ) {
 	    'additional_search_queries' => 'photon, photo cdn, image cdn, speed, compression, resize, responsive images, responsive, content distribution network, optimize, page speed, image optimize, photon jetpack',
 	    'plan_classes' => '',
 	  ),
+	  'podcast' => 
+	  array (
+	    'name' => 'Podcast',
+	    'description' => 'Publish, manage, and grow your podcast right from your site.',
+	    'sort' => '38',
+	    'recommendation_order' => '',
+	    'introduced' => '',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'No',
+	    'requires_user_connection' => '',
+	    'auto_activate' => 'Yes',
+	    'module_tags' => 'Writing',
+	    'feature' => 'Writing',
+	    'additional_search_queries' => 'podcast, podcasts, podcasting, audio, episodes, rss, feed, distribution',
+	    'plan_classes' => '',
+	  ),
 	  'post-by-email' => 
 	  array (
-	    'name' => 'Post by email',
+	    'name' => 'Post by Email',
 	    'description' => 'Publish blog posts simply by sending an email to a custom address.',
 	    'sort' => '14',
 	    'recommendation_order' => '',
@@ -749,7 +883,7 @@ function jetpack_get_module_info( $key ) {
 	  'post-list' => 
 	  array (
 	    'name' => 'Post List',
-	    'description' => 'Display a customizable list of your latest posts anywhere on your site.',
+	    'description' => 'Show featured images and a copy link action in your WP Admin post and page lists.',
 	    'sort' => '31',
 	    'recommendation_order' => '12',
 	    'introduced' => '11.3',
@@ -764,9 +898,27 @@ function jetpack_get_module_info( $key ) {
 	    'additional_search_queries' => 'post, admin, list',
 	    'plan_classes' => '',
 	  ),
+	  'protect-dashboard' => 
+	  array (
+	    'name' => 'Protect Dashboard',
+	    'description' => 'Security tools that keep your site safe and sound, from posts to plugins.',
+	    'sort' => '4',
+	    'recommendation_order' => '',
+	    'introduced' => '16.4-a.4',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'Yes',
+	    'requires_user_connection' => '',
+	    'auto_activate' => 'Yes',
+	    'module_tags' => 'Security',
+	    'feature' => 'Security',
+	    'additional_search_queries' => '',
+	    'plan_classes' => '',
+	  ),
 	  'protect' => 
 	  array (
-	    'name' => 'Brute force protection',
+	    'name' => 'Brute Force Protection',
 	    'description' => 'Block malicious login attempts automatically and keep hackers out.',
 	    'sort' => '1',
 	    'recommendation_order' => '4',
@@ -802,7 +954,7 @@ function jetpack_get_module_info( $key ) {
 	  ),
 	  'related-posts' => 
 	  array (
-	    'name' => 'Related posts',
+	    'name' => 'Related Posts',
 	    'description' => 'Automatically display related articles to keep visitors reading longer.',
 	    'sort' => '29',
 	    'recommendation_order' => '9',
@@ -851,7 +1003,7 @@ function jetpack_get_module_info( $key ) {
 	    'auto_activate' => 'No',
 	    'module_tags' => 'Social, Appearance',
 	    'feature' => 'Traffic',
-	    'additional_search_queries' => 'search engine optimization, social preview, meta description, custom title format',
+	    'additional_search_queries' => 'search engine optimization, social preview, meta description, custom title format, seo, sitemap, open graph, search engine, title tag',
 	    'plan_classes' => '',
 	  ),
 	  'sharedaddy' => 
@@ -869,7 +1021,7 @@ function jetpack_get_module_info( $key ) {
 	    'auto_activate' => 'No',
 	    'module_tags' => 'Social, Recommended',
 	    'feature' => 'Engagement',
-	    'additional_search_queries' => 'share, sharing, sharedaddy, social buttons, buttons, share facebook, share twitter, social media sharing, social media share, social share, icons, email, facebook, twitter, linkedin, pinterest, pocket, social widget, social media',
+	    'additional_search_queries' => 'share, sharing, sharedaddy, social buttons, buttons, share facebook, share twitter, social media sharing, social media share, social share, icons, email, facebook, twitter, linkedin, pinterest, social widget, social media',
 	    'plan_classes' => '',
 	  ),
 	  'shortcodes' => 
@@ -974,7 +1126,7 @@ function jetpack_get_module_info( $key ) {
 	    'free' => '',
 	    'requires_connection' => 'Yes',
 	    'requires_user_connection' => 'Yes',
-	    'auto_activate' => 'No',
+	    'auto_activate' => 'Yes',
 	    'module_tags' => 'Social',
 	    'feature' => 'Engagement',
 	    'additional_search_queries' => 'subscriptions, subscription, email, follow, followers, subscribers, signup, newsletter, creator',
@@ -1018,7 +1170,7 @@ function jetpack_get_module_info( $key ) {
 	  ),
 	  'verification-tools' => 
 	  array (
-	    'name' => 'Site verification',
+	    'name' => 'Site Verification',
 	    'description' => 'Verify your site with search engines and social platforms in a couple of clicks.',
 	    'sort' => '33',
 	    'recommendation_order' => '',
@@ -1142,8 +1294,26 @@ function jetpack_get_module_info( $key ) {
 	    'additional_search_queries' => 'advertising, ad codes, ads, creator',
 	    'plan_classes' => 'premium, business, security, complete',
 	  ),
+	  'wpcom-reader' => 
+	  array (
+	    'name' => 'WordPress.com Reader',
+	    'description' => 'Quickly access the WordPress.com Reader from your site\'s admin bar.',
+	    'sort' => '12',
+	    'recommendation_order' => '',
+	    'introduced' => '15.5',
+	    'changed' => '',
+	    'deactivate' => '',
+	    'free' => '',
+	    'requires_connection' => 'No',
+	    'requires_user_connection' => '',
+	    'auto_activate' => 'No',
+	    'module_tags' => 'Social',
+	    'feature' => 'Engagement',
+	    'additional_search_queries' => 'read, subscriptions, subscribe, reader, follow',
+	    'plan_classes' => '',
+	  ),
 	);
-	return isset( $module_info[ $key ] ) ? $module_info[ $key ] : null;
+	return $module_info[ $key ] ?? null;
 }
 
 /**
@@ -1183,8 +1353,9 @@ function jetpack_has_no_module_info( $slug ) {
 	  0 => 'module-extras',
 	  1 => 'module-info',
 	  2 => 'plugin-search',
-	  3 => 'simple-payments',
-	  4 => 'theme-tools',
+	  3 => 'reprint-export',
+	  4 => 'simple-payments',
+	  5 => 'theme-tools',
 	);
 
 	return in_array( $slug, $no_info_slugs, true );

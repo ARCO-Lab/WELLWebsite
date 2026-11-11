@@ -5,6 +5,195 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.18.1 - 2026-10-21
+### Changed
+- Stop loading the stats.wp.com tracking script and its referrer cookies when analytics proxy tracking is enabled. [#70010]
+- Update shared analytics URL utilities to version 1.1.0. [#69704]
+
+### Fixed
+- Add a content hash to lazy-loaded script URLs so a cached copy from an older release no longer breaks analytics after an update. [#69423]
+- Hold the analytics tracking script until visitors consent to statistics when a consent plugin is active. [#69748]
+- Remove non-allowlisted query parameters and fragments from analytics document location and referrer properties. [#69526]
+- Remove Tracks cookies and stop sending queued events as soon as a visitor withdraws statistics consent. [#69981]
+- Send nested arrays and objects from the event properties filter as JSON instead of breaking the tracking request. [#70009]
+- Stop recording server-side events for shoppers who denied statistics consent with a consent plugin that works in the browser. [#70008]
+- Wait for a consent plugin's delayed script before tracking, instead of tracking visitors who have not consented yet. [#69980]
+
+## 0.18.0 - 2026-09-24
+### Security
+- Always initialize the front-end `window.wcAnalytics` object from scratch and only accept a string as the webpack public path. [#68346]
+- Bound what the unauthenticated tracking proxy endpoint accepts: events per request, properties per event, array members, value and name lengths, an encoded payload budget per event, and a ceiling on the pixel URL that is fired. [#68314]
+- Keep the tracking proxy route registered once a site has used proxy tracking and answer 403 while the feature is off, so events from pages still held in a cache fail visibly instead of disappearing into a 404. Mirrors the speed module's authorization into an option it can read before plugins load, and has an unauthorized module fall through to the REST route rather than refuse on its own. [#68315]
+- Stop the tracking proxy endpoint from accepting client-supplied values for server-derived event properties, and register it only on sites with proxy tracking enabled. Adds `WC_Analytics_Tracking::record_client_event()` and a third `$is_client_supplied` argument to the `jetpack_woocommerce_analytics_event_props` filter. [#68313]
+
+### Added
+- Send the package version on every event as `package_version`, so Tracks data can be attributed to the package release that emitted it. The published copy has `PACKAGE_VERSION` stamped from `composer.json` at build time. [#68908]
+
+### Fixed
+- Rename the store search event so Tracks ingest stops rejecting it. [#68313]
+- Stop URL-encoding array event properties twice so Tracks stores the plain comma-joined value. [#69027]
+
+## 0.17.0 - 2026-08-24
+### Security
+- Update wp-coding-standards/wpcs to 3.4.1 (security release). [#67036]
+
+### Changed
+- Update PHP development dependencies to versions that resolve reported security advisories. [#67595]
+- Use the tooling catalog for shared Babel, PostCSS, and webpack versions. [#67842]
+
+### Removed
+- Minimum supported PHP version is now 7.4. [#67983]
+
+## 0.16.7 - 2026-07-27
+### Security
+- Stop emitting request-derived properties into cacheable front-end page HTML. [#67003]
+
+### Changed
+- Update package dependencies. [#65999]
+
+### Fixed
+- Recognize active WooCommerce installations in custom plugin directories. [#66665]
+
+## 0.16.6 - 2026-06-17
+### Fixed
+- Stop minting throwaway anonymous IDs for events from clients without a persisted visitor cookie (e.g. UA-spoofing crawlers hitting add-to-cart), which inflated session counts. Such events are now skipped instead. [#65792]
+
+## 0.16.5 - 2026-06-02
+### Fixed
+- Guard cart hook handlers against missing cart item data to prevent PHP warnings. [#64963]
+
+## 0.16.4 - 2026-05-11
+### Changed
+- Update package dependencies. [#64040]
+
+### Fixed
+- Skip server-side analytics events from cookie-less contexts (REST API, XMLRPC, cron, WP-CLI) to prevent inflated session counts. [#64686]
+
+## [0.16.3] - 2026-04-06
+### Changed
+- Update dependencies. [#46383]
+
+## [0.16.2] - 2026-03-30
+### Changed
+- Update package dependencies. [#47799]
+
+### Fixed
+- Ensure store_admin property reports 1 for admin users in REST API tracking requests. [#47731]
+
+## [0.16.1] - 2026-03-23
+### Changed
+- Update package dependencies. [#47684]
+
+### Fixed
+- Disable batched analytics requests when a SOCKS proxy is configured, falling back to wp*remote_get() which respects WP_PROXY*\* settings. [#47707]
+
+## [0.16.0] - 2026-03-16
+### Changed
+- Handle proxy requests at MU plugin stage and exit early for faster response time. [#46757]
+- Update dependencies. [#47472]
+
+## [0.15.7] - 2026-03-09
+### Changed
+- Switch to Native TypeScript compiler based on Go. [#47375]
+
+### Fixed
+- Fix TypeScipt type errors detected by `tsgo`. [#47423]
+
+## [0.15.6] - 2026-02-26
+### Changed
+- Update package dependencies. [#47300]
+
+## [0.15.5] - 2026-02-23
+### Changed
+- Update package dependencies. [#47173]
+
+## [0.15.4] - 2026-02-16
+### Changed
+- Update package dependencies. [#47099]
+
+## [0.15.3] - 2026-02-10
+### Changed
+- Update package dependencies. [#47002]
+- Update tracking classes to work without WooCommerce dependency. [#46756]
+
+## [0.15.2] - 2026-02-02
+### Changed
+- Update package dependencies. [#46854]
+
+## [0.15.1] - 2026-01-26
+### Changed
+- Update dependencies. [#46383]
+
+## [0.15.0] - 2026-01-23
+### Added
+- Add woocommerce_analytics_auto_install_proxy_speed_module filter to control auto-installation of proxy speed module mu-plugin. [#46719]
+
+## [0.14.0] - 2026-01-19
+### Added
+- Add tablet device detection to the 'device' event property, distinguishing between mobile, tablet, and desktop devices. [#46631]
+
+### Changed
+- Update package dependencies. [#46647]
+
+## [0.13.4] - 2026-01-12
+### Changed
+- Update package dependencies. [#46456]
+
+### Fixed
+- Fix product_purchase event not tracking for shortcode checkout due to incorrect order ID type check. [#46467]
+
+## [0.13.3] - 2025-12-22
+### Changed
+- Update dependencies. [#46381]
+
+## [0.13.2] - 2025-12-15
+### Changed
+- Update dependencies. [#46271]
+
+## [0.13.1] - 2025-12-08
+### Fixed
+- Ensure proper flags are used with `json_encode()`. [#46092]
+
+## [0.13.0] - 2025-12-01
+### Changed
+- Added Beacon API support and replaced @wordpress/api-fetch with native fetch. [#45891]
+- Update package dependencies. [#46143]
+
+### Fixed
+- Fix proxy speed module installation using WP_Filesystem API with proper error handling. [#45801]
+
+## [0.12.2] - 2025-11-24
+### Fixed
+- Improve compatibility with old WooCommerce versions. [#46003]
+
+## [0.12.1] - 2025-11-19
+### Fixed
+- Fix compatibility issue with WooCommerce older than 9.7.0. [#45988]
+
+## [0.12.0] - 2025-11-17
+### Changed
+- Implement batched pixel requests for improved performance when sending tracking events. [#45869]
+- Update package dependencies. [#45915] [#45958]
+
+## [0.11.0] - 2025-11-03
+### Changed
+- Enable ClickHouse by default. [#45696] [#45723]
+- Update package dependencies. [#45652]
+
+### Fixed
+- Fix data handling with invalid prop names. [#45544]
+- Phan: Address PhanRedundantCondition, PhanRedundantArrayValuesCall, and PhanPluginRedundantAssignment violations. [#45681]
+- Set dynamic webpack public path for split assets. [#45654]
+
+## [0.10.1] - 2025-10-27
+### Changed
+- Enhance JSON encoding by adding `JSON_HEX_TAG` and `JSON_UNESCAPED_SLASHES` options. [#45393]
+- Ensure anonymous ID is set. [#45547]
+
+### Fixed
+- Fix call to undefined method `WC_Tracks::get_server_details()`. [#45394]
+- Use existing bot detection from Device Detection package to skip event recording in analytics tracking. [#45552]
+
 ## [0.10.0] - 2025-10-02
 ### Added
 - Implement WP Consent API Integration [#45323]
@@ -140,7 +329,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.9] - 2024-09-09
 ### Added
-- Add Store ID property in common woocommerce analytics  properties. [#38857]
+- Add Store ID property in common woocommerce analytics properties. [#38857]
 
 ## [0.1.8] - 2024-08-26
 ### Changed
@@ -184,6 +373,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix namespace issue with WooCommerce class reference. [#35857]
 - General: bail early when WooCommerce is not active. [#36278]
 
+[0.16.3]: https://github.com/Automattic/woocommerce-analytics/compare/v0.16.2...v0.16.3
+[0.16.2]: https://github.com/Automattic/woocommerce-analytics/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/Automattic/woocommerce-analytics/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.7...v0.16.0
+[0.15.7]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.6...v0.15.7
+[0.15.6]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.5...v0.15.6
+[0.15.5]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.4...v0.15.5
+[0.15.4]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.3...v0.15.4
+[0.15.3]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.2...v0.15.3
+[0.15.2]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.1...v0.15.2
+[0.15.1]: https://github.com/Automattic/woocommerce-analytics/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.13.4...v0.14.0
+[0.13.4]: https://github.com/Automattic/woocommerce-analytics/compare/v0.13.3...v0.13.4
+[0.13.3]: https://github.com/Automattic/woocommerce-analytics/compare/v0.13.2...v0.13.3
+[0.13.2]: https://github.com/Automattic/woocommerce-analytics/compare/v0.13.1...v0.13.2
+[0.13.1]: https://github.com/Automattic/woocommerce-analytics/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.12.2...v0.13.0
+[0.12.2]: https://github.com/Automattic/woocommerce-analytics/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/Automattic/woocommerce-analytics/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/Automattic/woocommerce-analytics/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Automattic/woocommerce-analytics/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/Automattic/woocommerce-analytics/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/Automattic/woocommerce-analytics/compare/v0.9.0...v0.9.1

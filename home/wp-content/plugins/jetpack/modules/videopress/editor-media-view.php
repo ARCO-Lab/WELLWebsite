@@ -59,7 +59,6 @@ function videopress_handle_editor_view_js() {
 				'autoplay'  => esc_html__( 'Autoplay video on page load', 'jetpack' ),
 				'loop'      => esc_html__( 'Loop video playback', 'jetpack' ),
 				'freedom'   => esc_html__( 'Use only Open Source codecs (may degrade performance)', 'jetpack' ),
-				'flashonly' => esc_html__( 'Use legacy Flash Player (not recommended)', 'jetpack' ),
 			),
 		)
 	);
@@ -127,7 +126,7 @@ function videopress_media_list_table_query( $query ) {
 /**
  * Make sure that any Video that has a VideoPress GUID passes that data back.
  *
- * @param WP_Post $post Attachment object.
+ * @param array $post Attachment data array.
  * @deprecated 11.4
  */
 function videopress_prepare_attachment_for_js( $post ) {

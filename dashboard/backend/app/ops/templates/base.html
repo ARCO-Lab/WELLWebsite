@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="data:,">
+  <title>{% block title %}{% endblock %} · welldash²</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='ops.css') }}">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="{{ url_for('overview') }}">welldash<sup>2</sup></a>
+    <nav>
+      {% for endpoint, label in [('overview', 'Overview'), ('uptime', 'Uptime'), ('traffic', 'Traffic'), ('system', 'System'), ('visitors', 'Visitors')] %}
+      <a href="{{ url_for(endpoint) }}"{% if active == endpoint %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <form method="post" action="{{ url_for('logout') }}" class="logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Sign out</button>
+    </form>
+  </header>
+  <main>
+    <h1>{{ self.title() }}</h1>
+    <p class="meta">WELL operations, read-only. Times are Toronto time; page built {{ now | site_time }}.</p>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

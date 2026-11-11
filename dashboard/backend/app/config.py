@@ -41,6 +41,11 @@ class Config:
     # after the request has failed. The worker and export worker leave it unset: ingestion, backfills and big
     # exports may legitimately run for minutes. scripts/migrate.py makes its own connection and never uses it.
     DB_STATEMENT_TIMEOUT_MS = parse_timeout_ms("DB_STATEMENT_TIMEOUT_MS", os.getenv("DB_STATEMENT_TIMEOUT_MS"))
+    # The name this process gives its PostgreSQL connections (application_name, shown in pg_stat_activity), so
+    # each container's connections can be told apart: well-backend, well-worker or well-export_worker, from the
+    # SENTRY_COMPONENT docker-compose.yml sets for the worker and export worker. DB_APPLICATION_NAME overrides it.
+    DB_APPLICATION_NAME = (os.getenv("DB_APPLICATION_NAME", "").strip()
+                           or "well-" + (os.getenv("SENTRY_COMPONENT", "").strip() or "backend"))
     # Redis database for the short-lived /api/series response cache (utils/response_cache.py); empty = no cache.
     API_CACHE_REDIS_URL = os.getenv("API_CACHE_REDIS_URL", "").strip()
 

@@ -11,6 +11,10 @@
 
 use Automattic\Jetpack\Connection\Manager as Connection_Manager;
 
+if ( ! defined( 'ABSPATH' ) ) {
+	exit( 0 );
+}
+
 /**
  * Render a page with an iframe to track and redirect user content links in emails.
  *
@@ -41,8 +45,7 @@ function jetpack_user_content_link_redirection() {
 	$query_params = sanitize_text_field( wp_unslash( $_SERVER['QUERY_STRING'] ) );
 	$iframe_url   = "https://subscribe.wordpress.com/?$query_params";
 
-	// phpcs:disable WordPress.Security.EscapeOutput.OutputNotEscaped
-	echo <<<EOF
+	echo <<<'EOF'
 <!DOCTYPE html>
 <html>
 <head>
@@ -62,11 +65,10 @@ function jetpack_user_content_link_redirection() {
 <body>
 EOF;
 	echo '<iframe id="user-content-link-redirection" hidden aria-hidden="true" tabindex="-1" width="0" height="0" style="display: none" src="' . esc_url( $iframe_url ) . '"></iframe>';
-	echo <<<EOF
+	echo <<<'EOF'
 </body>
 </html>
 EOF;
-    // phpcs:enable WordPress.Security.EscapeOutput.OutputNotEscaped
 	exit( 0 );
 }
 

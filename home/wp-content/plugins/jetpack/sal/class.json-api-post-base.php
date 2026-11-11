@@ -462,7 +462,7 @@ abstract class SAL_Post {
 				}
 			}
 		}
-		return (array) $publicize_urls;
+		return $publicize_urls;
 	}
 
 	/**
@@ -581,7 +581,7 @@ abstract class SAL_Post {
 		if ( 'display' === $this->context ) {
 			return (string) get_the_title( $this->post->ID );
 		} else {
-			return (string) htmlspecialchars_decode( $this->post->post_title, ENT_QUOTES );
+			return htmlspecialchars_decode( $this->post->post_title, ENT_QUOTES );
 		}
 	}
 
@@ -677,9 +677,18 @@ abstract class SAL_Post {
 	public function get_password() {
 		$password = (string) $this->post->post_password;
 		if ( 'edit' === $this->context ) {
-			$password = htmlspecialchars_decode( (string) $password, ENT_QUOTES );
+			$password = htmlspecialchars_decode( $password, ENT_QUOTES );
 		}
 		return $password;
+	}
+
+	/**
+	 * Returns true if the post has a password set, regardless of whether the current user can view or receive the password value.
+	 *
+	 * @return bool
+	 */
+	public function get_has_password(): bool {
+		return strlen( (string) $this->post->post_password ) > 0;
 	}
 
 	/**
@@ -696,7 +705,7 @@ abstract class SAL_Post {
 			if ( 'display' === $this->context ) {
 				$parent_title = (string) get_the_title( $parent->ID );
 			} else {
-				$parent_title = (string) htmlspecialchars_decode( $this->post->post_title, ENT_QUOTES );
+				$parent_title = htmlspecialchars_decode( $this->post->post_title, ENT_QUOTES );
 			}
 			return (object) array(
 				'ID'    => (int) $parent->ID,
@@ -945,7 +954,7 @@ abstract class SAL_Post {
 
 		$file      = basename( wp_get_attachment_url( $media_item->ID ) );
 		$file_info = pathinfo( $file );
-		$ext       = isset( $file_info['extension'] ) ? $file_info['extension'] : '';
+		$ext       = $file_info['extension'] ?? '';
 
 		$response = array(
 			'ID'          => $media_item->ID,

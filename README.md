@@ -13,23 +13,50 @@ The platform consists of two main components:
 1. **WELL Environmental Sensor Dashboard** — A standalone Next.js dashboard with a Flask backend, hosted at `welldash.mcmaster.ca` and embedded into the WordPress site via iframe.
 2. **WELL WordPress Home Page** — A custom PHP WordPress theme at `well.mcmaster.ca` with a banner carousel, responsive imagery, and links to the dashboard.
 
-Both apps run as separate Docker containers on a Linux VM, fronted by a single Nginx reverse proxy with unified TLS.
+Both run in Docker on one Linux VM (`docker-compose.yml`): WordPress on port 8080 and the dashboard on port 8081. Neither container serves HTTPS: both hostnames point at McMaster's reverse proxy (`haproxy.cas.mcmaster.ca`), which terminates TLS and forwards to the VM. That proxy's configuration isn't in this repository. `nginx.conf` and the commented-out `proxy` service in `docker-compose.yml` are for local development only.
 
 ---
 
 ## Architecture
-<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/ad6d07d8-6c18-4ddd-8cef-f761087d6675" />
+
+```mermaid
+flowchart LR
+  vendors["LI-COR (HOBOlink) and WQData APIs"] -->|every 10 min| worker
+  borealis[("Borealis")] <-->|monthly sensor CSV up, sampling CSVs down weekly| worker
+  worker["worker (scheduler)"] --> pg[("PostgreSQL 13 on the VM host")]
+  pg --> backend["backend (Flask on gunicorn)"]
+  backend <--> redis[("redis")]
+  redis <--> exp["export_worker (Celery)"]
+  exp --> pg
+  backend --> nxt["dashboard (Next.js API routes)"]
+  nxt --> browser["Browser"]
+  wp["wordpress + MySQL"] -->|page with the dashboard in an iframe| browser
+```
+
+How data flows:
+1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the weekly Borealis sampling download, the monthly Borealis upload (followed by the SharePoint copy, once that is configured) and the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
+2. **Storage.** PostgreSQL 13 runs on the VM itself, not in Docker; the containers reach it on the host's IP (see the firewall note below). Readings are in `sensor_measurements`, one row per reading with a unique index on (station, measurement, time); creek sampling results are in `sampling_measurements`.
+3. **API.** The `backend` container is a Flask app on gunicorn with no public port. Chart data is aggregated in SQL for each request; nothing is precomputed.
+4. **Dashboard.** The `dashboard` container is Next.js. The browser loads the page, then fetches all data from the dashboard's own API routes (`dashboard/frontend/src/pages/api/`), which pass each request on to Flask (`src/lib/proxyBackend.ts`). The browser never talks to Flask directly.
+5. **Downloads.** A CSV export of up to `EXPORT_SYNC_ROW_THRESHOLD` readings is built while the visitor waits. A larger one is queued in Redis and built by the `export_worker` container (Celery), whose built-in beat scheduler deletes expired files every hour.
+6. **Monitoring.** Errors go to Sentry, job heartbeats to Healthchecks.io, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+
+Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
 ### Frontend (Dashboard)
-- **Next.js** (pages router) with **TypeScript**, **React**, and **TailwindCSS**
-- **Highcharts** for rich visualizations: time-series charts, wind-rose, and interactive station map
-- Custom React hooks encapsulate data fetching and memoized filter state (station, parameter, date range)
-- Performance: SSR, code-splitting, memoization, debounced inputs, optimized static assets
-- Frontend state synchronized via URL query parameters (shareable/linkable views)
+- **Next.js** 16 (pages router) with **TypeScript**, **React** 19 and **Tailwind CSS**, built as a standalone Node server (`dashboard/frontend/Dockerfile`)
+- **Highcharts** for the time-series charts and the wind rose; the station map is **MapLibre GL** with OpenFreeMap tiles (`src/components/map/Map.tsx`)
+- No server-side data fetching: custom React hooks (`src/hooks/`) load the data in the browser, through the API routes above
 
 ### Backend
-- **Flask** WSGI app served by **Gunicorn** (3 workers)
-- REST endpoints for: `stations`, `parameters`, `metrics`, `aggregate`, `download`, `ai/analyze`, `health`
+- **Flask** WSGI app served by **Gunicorn** (3 processes with 4 threads each, `dashboard/backend/Dockerfile`)
+- Routes (`dashboard/backend/app/api/routes/`). The browser reaches each through the dashboard's API route of the same path, except where noted:
+  - `/api/series`: the sensor charts (below)
+  - `/api/data`: raw readings for a range, used for the wind rose; capped by `DATA_MAX_ROWS` (413 beyond it)
+  - `/api/latest`: the newest reading of every series (the Latest Data panel)
+  - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement; `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
+  - `/api/exports/estimate`, `/api/exports/sync`, `/api/exports/jobs`, `/api/exports/jobs/<id>` and `/api/exports/jobs/<id>/download`: CSV downloads
+  - `/health` (the process is up; not passed through) and `/health/data` (data freshness, see Monitoring; the dashboard's `/api/health/data`)
 - `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL: about 2,000 points per series
   (raw 10-minute readings up to ~2 weeks, coarser buckets beyond; ranges longer than ~5.5 years are capped at daily
   buckets, so they get more). Times with an offset (`...Z`) are real instants, times without one are Toronto local
@@ -37,15 +64,15 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
   Rain (the bucket total; `min`/`max` stay the smallest and largest single reading), and `vector_mean` for Wind
   Direction (350° and 10° average to 0°; `min`/`max` are null, since a linear min/max of angles means nothing).
   Details in `dashboard/backend/app/api/routes/series.py`.
-- Smart caching: DB-level query tuning + application caching + HTTP cache headers (ETag/Cache-Control)
-- Optional Nginx proxy cache for heavy CSV/static responses
-- Config via environment variables; request/ingestion activity logging for observability
+- Under load: a statement timeout on every API query (`DB_STATEMENT_TIMEOUT_MS`, a 504 past it), a short Redis cache of `/api/series` answers, and `Cache-Control` headers on `/api/latest` and `/api/series` (see "How the API stays responsive under load" below). There is no ETag and no proxy cache.
+- Flask accepts requests from any origin (`CORS(app)` in `server.py`); what keeps it private is that it has no public port, so only the dashboard container reaches it.
 
 ### Storage
-- **PostgreSQL** primary datastore for time-series and sampling data
-- Indexes on station identifiers, parameters, and timestamps for fast queries
-- Downsampling jobs materialize reduced-resolution series for commonly requested windows
-- Staging area supports CSV/Excel imports; logs area persists operational logs
+- **PostgreSQL** 13 on the VM host: sensor readings, sampling results, export jobs, alert state, and the record of applied migrations (`dashboard/backend/app/db/models.py`)
+- Schema changes are numbered SQL migrations, applied by hand (see [Database migrations](#database-migrations))
+- Worker logs and the records of uploaded months are files in `dashboard/backend/app/logs/`, mounted from the host
+- Export CSVs stay in the `exports_data` Docker volume for `EXPORT_FILE_TTL_MINUTES`
+- WordPress keeps its own data in MySQL 5.7 (the `db` container, `db_data` volume)
 
 ### WordPress Home Page
 - Custom PHP template under `wp-content/themes/well`
@@ -55,10 +82,11 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 - Links to a dedicated page that embeds the dashboard via iframe
 
 ### Hosting & Infrastructure
-- Both apps containerized with **Docker**
-- **Nginx** reverse proxy: TLS termination, host/path routing to WordPress or dashboard container
-- `frame-ancestors` / CSP configured to permit iframe embedding between apps
-- CORS constrained to trusted origins; secrets injected via environment variables
+- Seven Docker Compose services: `db` (MySQL), `wordpress` (the stock image with `home/` mounted), `backend`, `redis`, `worker`, `export_worker` and `dashboard` (`backend`, `worker` and `export_worker` are built from one image)
+- TLS and the public hostnames are handled by McMaster's reverse proxy, outside this repository
+- No Content-Security-Policy, `frame-ancestors` or `X-Frame-Options` header is set, by this repository or (as of November 2026) on the live sites, so any site can frame the dashboard
+- Secrets are injected through env files that aren't committed (see [docs/configuration.md](docs/configuration.md))
+- The VM runs `main`, deployed by `deploy.sh` (see [Deploying](#deploying))
 
 **Host firewall (required).** PostgreSQL runs on the VM itself, not in Docker, and the containers connect to it on the host's IP, port 5432. The host's iptables service loads `/etc/sysconfig/iptables` at boot, and that file must contain this line above its final `-A INPUT -j REJECT` line:
 
@@ -68,6 +96,8 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 
 Without it, every container fails with "No route to host" after the next reboot, and ingestion stops. To add it without a reboot as well, run `sudo iptables -I INPUT -s 10.20.0.0/16 -p tcp --dport 5432 -j ACCEPT`. Never run `systemctl restart iptables`, which wipes Docker's own rules until Docker restarts. Never run `iptables-save > /etc/sysconfig/iptables` either, which would save Docker's temporary rules into the file.
 
+Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used only by welldash²'s check of WordPress (see [welldash²](#welldash²-operations-dashboard)). Nothing on it needs PostgreSQL, so a narrower rule should leave it out: welldash² reaches PostgreSQL from `internal_api`, which carries its default route.
+
 ---
 
 ## Data Sources & APIs
@@ -76,7 +106,6 @@ Without it, every container fails with "No route to host" after the next reboot,
 |---|---|
 | HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
 | WQData Live API | Automated ingestion & scheduled updates |
-| OpenAI API | AI analysis over downsampled series |
 | Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 | SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
@@ -109,7 +138,7 @@ The database lives on one VM, so each month's sensor data is also copied off it,
 - **Borealis** (`borealisdata.ca`, the Scholars Portal Dataverse that McMaster uses). This is the public, citable copy. On the 1st of each month at 02:00 Toronto time the worker runs `scripts/upload_data.py`. It exports the month that just ended as `WELLWestCampus_<Mon><YYYY>.csv` (the dashboard's CSV layout), adds it to the upload dataset in a folder for the year, and publishes a new major version of the dataset.
 - **SharePoint**, a McMaster document library. Right after Borealis, `scripts/sharepoint_upload.py` uploads the same file to `<SHAREPOINT_FOLDER>/<year>/` through Microsoft Graph. The two copies are kept apart: each has its own record of uploaded months (`logs/uploaded_months.json` and `logs/sharepoint_uploaded_months.json`) and its own heartbeat (`HEALTHCHECK_URL_UPLOAD` and `HEALTHCHECK_URL_SHAREPOINT`). If one of them fails, it is retried every day at 02:00 and the other isn't held up.
 
-Borealis also carries data the other way. Creek **sampling** results are uploaded by people to a second dataset, and the weekly download (`scripts/download_data.py`, Sundays 00:00) checks each new file against [the sampling CSV format](docs/sampling-csv-format.md) and imports it into the Ancaster Watershed tab.
+Borealis also carries data the other way. Creek **sampling** results are uploaded by people to a second dataset, and the weekly download (`scripts/download_data.py`, Sundays 00:00 by the container clock, UTC) checks each new file against [the sampling CSV format](docs/sampling-csv-format.md) and imports it into the Ancaster Watershed tab.
 
 ### How the Borealis jobs behave
 
@@ -207,12 +236,13 @@ Thank you!
 
 ## Automation
 
-Cron orchestrates all scheduled tasks:
-- **Ingestion**: HoboLink and WQData pulls on schedule
-- **Historical backfills**: Retroactive data imports
-- **Downsampling**: Bucket-based reduced-resolution series for chart performance
-- **Exports**: Monthly CSV uploads to Borealis and SharePoint (see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint))
-- **Health checks**: Readiness endpoints for external monitors
+The scheduled jobs run inside the containers, not from cron. The `worker` container runs `scripts/scheduler_temp.py`, one Python `schedule` loop that starts each job in its own thread:
+- **Ingestion** every 10 minutes: new LI-COR and WQData readings, then the alert check (see [Monitoring](#monitoring)). It also runs once when the worker starts, to catch up after a restart.
+- **Sampling download** every Sunday at 00:00 by the container's clock (UTC unless `TZ` is set): new sampling CSVs from Borealis (see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint)).
+- **Monthly upload** at 02:00 Toronto time: each month that has ended and isn't uploaded yet goes to Borealis (so last month goes up on the 1st, and a failed month is retried the next day), then the same file to SharePoint, which stays off until its settings are filled in.
+- **Daily digest** at `DIGEST_HOUR` (default 07:00 Toronto time).
+
+The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their headers explain how). The only cron job is the optional `deploy.sh --auto` line below.
 
 ### Deploying
 
@@ -220,7 +250,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
 - pulls `main`;
 - rebuilds only the services whose files changed:
   - `dashboard/frontend/` → `dashboard`;
-  - `dashboard/backend/` → `backend`, `worker`, `export_worker`;
+  - `dashboard/backend/` → `backend`, `worker`, `export_worker`, and `ops` (welldash²) when it is running. A minute later `ops` is checked like the workers, but a failing `ops` is only logged ("welldash² needs a look"): it isn't public, so it never rolls the site back;
   - `docker-compose.yml` → everything;
   - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress` container is recreated, since Apache and PHP read them only at start;
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's live once pulled.
@@ -231,7 +261,7 @@ If the site is already unhealthy before a deploy, `--auto` doesn't deploy (so th
 
 Each run is logged in `deploy.log` (best effort: a log it can't write never stops a deploy halfway), and any failure, expected or not, logs a `FAILED:` line. Over 5 MB, `deploy.log` is moved to `deploy.log.1` and a new one started. `./deploy.sh --dry-run` only shows what would happen: no log, no pings, no state. It refuses to run over local edits to tracked files, so change the VM only through `main`.
 
-`./deploy.sh --auto` deploys a new commit on `main` only once all its CI checks have passed (`.github/workflows/ci.yml`). It holds changes that need a person, logging them and leaving them for you:
+`./deploy.sh --auto` deploys a new commit on `main` only once the CI jobs listed in `REQUIRED_CHECKS` at the top of `deploy.sh` have passed (`.github/workflows/ci.yml`): "Backend image and tests", "Dashboard build", "Dashboard image", "Deploy script" and "End-to-end data (vendors to browser)". The "Lint Python, shell and compose" job isn't waited for, so a lint failure alone doesn't stop a deploy. A job that is renamed in `ci.yml` but not in `REQUIRED_CHECKS` counts as still running, so nothing deploys until both match. It holds changes that need a person, logging them and leaving them for you:
 - a new database migration;
 - `docker-compose.yml`;
 - a WordPress core update, which needs its database update run from wp-admin.
@@ -321,17 +351,20 @@ addresses* on as a second guard.
 
 ## AI Analysis
 
-> **Currently disabled.** The UI entry points and API routes are commented out, each marked `AI ANALYSIS DISABLED`. To turn the feature back on, search the code for that marker, uncomment those blocks, delete the four 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts`, and set `OPENAI_API_KEY`. Uncommenting alone is not enough: the background summaries the analysis routes read (`latest_summaries`, filled after each `/api/data` request, and `latest_sampling_summaries`, after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so that summary step has to be rebuilt too. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
-
-An API endpoint aggregates/downsamples a series and sends a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend renders the output inside an analysis modal and allows exporting the narrative.
+Removed. The dashboard once had OpenAI-written summaries of the charts; it was switched off in PR #3 and its backend routes, Next.js proxies and the `openai` dependency were deleted later. The old code is in the git history (`git log --diff-filter=D -- dashboard/backend/app/api/routes/analysis`). A few commented-out UI blocks marked `AI ANALYSIS DISABLED` remain in the dashboard frontend until its next clean-up; uncommenting them has nothing left to call.
 
 ---
 
 ## Python Environment Setup
 
+The backend needs Python 3.11, as in its image (`dashboard/backend/Dockerfile`):
+
 ```bash
+cd dashboard/backend
 python -m venv venv
 
+# Linux/macOS
+source venv/bin/activate
 # Windows
 .\venv\Scripts\activate
 # or
@@ -344,21 +377,24 @@ pip install -r requirements.txt
 
 ## Environment Variables
 
-Create a `.env` file in the `backend/` directory:
+The backend's settings go in `dashboard/backend/app/.env` (the `backend`, `worker` and `export_worker` containers read it, and so do scripts run by hand). Docker Compose reads a second file, `.env` at the repository root, for the database URL, passwords and ports. Neither is committed. **[docs/configuration.md](docs/configuration.md) lists every variable**, with its default and where it goes. The ones ingestion can't run without:
 
 ```bash
+# dashboard/backend/app/.env
 HOBOLINK_API_URL=https://api.hobolink.licor.cloud/v1/data
 HOBOLINK_API_TOKEN=your-api-token-here
-HOBOLINK_LOGGERS=weatherlogger,waterlogger1,waterlogger2,...,waterlogger5
+HOBOLINK_LOGGERS=weather-station-serial,logger-serial,...
 
-WQDATA_API_URL=https://www.wqdatalive.com/api/v1
-WQDATA_API_KEY=your-api-key-here
-WQDATA_DEVICE_ID=your-device-id-here
+WQ_API_URL=https://www.wqdatalive.com/api/v1
+WQ_API_KEY=your-api-key-here
+WQ_DEVICE_ID=your-device-id-here
 ```
 
-> `HOBOLINK_LOGGERS` should be the serial number of each logger, comma-separated.
+> `HOBOLINK_LOGGERS` is the LI-COR logger serial numbers, comma-separated. Only the first is queried: it must be the weather station's, since the water-level loggers report through it.
 
-> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group, ~50 MB of JSON) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number logs a warning and uses the default. The cap matters because the backend can't tell when a browser gives up: the Next.js proxy stops waiting, but the backend thread stays busy until the query and JSON encoding finish.
+> In Docker, `DATABASE_URL` comes from `BACKEND_DATABASE_URL` in the root `.env`. Set `DATABASE_URL` in `app/.env` only to run the backend or a script outside Docker.
+
+> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group, ~50 MB of JSON) is the most readings one `/api/data` request may return (the dashboard uses `/api/data` only for the wind rose; the charts use `/api/series`); a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number logs a warning and uses the default. The cap matters because the backend can't tell when a browser gives up: the Next.js proxy stops waiting, but the backend thread stays busy until the query and JSON encoding finish.
 
 **How the API stays responsive under load.** Gunicorn runs 3 worker processes with 4 threads each (`dashboard/backend/Dockerfile`), so a few slow chart requests don't hold up `/api/latest` or the health checks. Two settings in the backend's `environment:` in `docker-compose.yml` (override them in the root `.env`, not in `app/.env`, which they take precedence over):
 
@@ -394,7 +430,7 @@ Four simple pieces, all optional and all off until configured. On the VM their s
 | `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
-| `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
+| `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
 | `HEALTHCHECK_URL_BACKUP` | Reserved for the database backup job on the host, which is outside the containers: end it with `curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL_BACKUP"`. |
 
 To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough), create one check per job, and copy each check's ping URL into the matching variable:
@@ -407,7 +443,7 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
 
-**Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); and every series' newest reading. It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
+**Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); every series' newest reading; and yesterday's API traffic (requests, errors, p95 response time, data sent, CSV downloads, busiest minute; see [welldash²](#welldash²-operations-dashboard)). It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -459,28 +495,137 @@ ALERT_EMAILS=someone@mcmaster.ca,someone-else@mcmaster.ca
 
 ---
 
+## welldash² (operations dashboard)
+
+welldash² ("WELLdashSquared") is a small, read-only dashboard for whoever runs the site. It is reachable **only on McMaster's network or the McMaster VPN**, at **http://well.cas.mcmaster.ca:8090** (the port is `OPS_PORT`), and asks for one shared password; there is no user name. It has five pages:
+
+- **Overview**: whether the dashboard (with its data API and database) and the WordPress site answer right now; data freshness per group (the `/health/data` rules); open and recently cleared email alerts; the vendor APIs' latest call outcome; CI of `main` (GitHub Actions); recent deploys (from `deploy.log`, see below); and, when their read-only keys are set, unresolved Sentry issues of the last 24 h and the Healthchecks.io job heartbeats.
+- **Uptime**: availability over 24 h, 7 and 30 days, response time, and every stretch of downtime in the last 30 days. welldash² itself checks the dashboard's home page, the data API's `/api/latest` (which reads the database) and the WordPress home page once a minute, from inside the VM (WordPress over a small network of its own, `wp_probe`, so welldash² never shares a network with MySQL). These checks aren't counted as traffic.
+- **Traffic**: the data API's requests, server and client errors, p95 response time, data sent, busiest minute and CSV downloads, per hour or day and per route; plus the export jobs (by status, rows written, run times, failures, the queue now). The backend counts its requests per minute by route pattern, method and status class (`utils/traffic.py`); no IP addresses, query strings or browser details are recorded. The daily digest has a "Traffic yesterday" summary from the same numbers.
+- **System**: database version and size, the largest tables, applied migrations, and the size of each log file in `dashboard/backend/app/logs`. Container states and disk space aren't shown: they would need the Docker socket, which gives full control of the VM.
+- **Visitors**: page-view counts from [GoatCounter](https://www.goatcounter.com) when it is set up (below); otherwise "not configured".
+
+It runs as the `ops` service in `docker-compose.yml` (code in `dashboard/backend/app/ops/`, built from the backend's image, with no JavaScript or outside files), and stores its uptime checks and the request counts in two tables from migration `0005_ops_metrics.sql`, kept for 90 days (`OPS_RETENTION_DAYS`). The service starts only when the `ops` compose profile is on, and refuses to start without its password hash and secret key.
+
+**Never route it through the public proxy.** `haproxy.cas.mcmaster.ca` forwards `welldash.mcmaster.ca` to port 8081 and `well.mcmaster.ca` to port 8080; it must never forward anything to 8090. welldash² takes the client's address straight from the connection for its login limit, and is meant to be reachable from the McMaster network only.
+
+### Setting it up
+
+On the VM, from `~/WELLWebsite`:
+
+1. Apply the migration (take a backup first, as in [Database migrations](#database-migrations)) and rebuild the backend, which then starts counting requests:
+   ```bash
+   ./git_pull.sh && docker compose up -d --build --no-deps backend
+   docker compose exec backend python scripts/migrate.py           # applies 0005_ops_metrics
+   ```
+2. Make the password hash and a secret key. This asks for the password twice (at least 12 characters; nothing is shown or stored) and prints two lines, `OPS_PASSWORD_HASH='...'` and `OPS_SECRET_KEY='...'`:
+   ```bash
+   docker compose exec backend python -m ops.hashpw
+   ```
+3. Add those two lines, `COMPOSE_PROFILES=ops` and `OPS_BIND=130.113.68.63` (the VM's campus address, which `well.cas.mcmaster.ca` resolves to; check with `getent hosts well.cas.mcmaster.ca`) to `.env` in `~/WELLWebsite` (the env file docker compose reads, which already holds the other passwords), and keep it readable by you only:
+   ```bash
+   umask 077
+   nano .env            # paste the two lines as printed (keep the single quotes); add COMPOSE_PROFILES=ops and OPS_BIND=...
+   chmod 600 .env
+   ```
+   `OPS_BIND` publishes the port on that address only. Without it, Docker publishes it on every address the VM has, and ports Docker publishes bypass the VM's own firewall rules (ufw, iptables INPUT).
+   The single quotes matter: the hash contains `$` signs, which compose would otherwise read as variables (welldash² then refuses to start, and says so). Never put the password itself in any file, only its hash.
+4. Start it:
+   ```bash
+   docker compose up -d --build --no-deps ops
+   ```
+5. Check it:
+   ```bash
+   docker compose logs --tail 20 ops      # no "welldash² not started" line
+   curl -s -o /dev/null -w '%{http_code}\n' http://130.113.68.63:8090/login   # 200 (your OPS_BIND address)
+   curl -s -o /dev/null -w '%{http_code}\n' http://130.113.68.63:8090/        # 302 (to the login page)
+   ```
+   Then, on the VPN, open http://well.cas.mcmaster.ca:8090 and sign in. The Uptime page shows its first checks after a minute, and the Traffic page the first requests a minute or two after someone uses the dashboard. If the page doesn't load from your laptop but the `curl` lines work on the VM, a firewall blocks port 8090: see the request to IT below.
+
+With `COMPOSE_PROFILES=ops` set, `docker compose up -d --build` includes welldash², and `./deploy.sh` rebuilds it with the backend whenever it is running. To stop it: `docker compose stop ops`, and remove `COMPOSE_PROFILES=ops` from `.env` to keep it off.
+
+**Changing the password.** Run `docker compose exec backend python -m ops.hashpw --hash-only`, replace the `OPS_PASSWORD_HASH` line in `.env` with the one it prints, and recreate the container: `docker compose up -d --no-deps ops`. Everyone is signed out. A new `OPS_SECRET_KEY` also signs everyone out.
+
+**How it is protected.** One password, checked against its scrypt hash in constant time. After 5 wrong passwords from one address in 15 minutes (or 50 from all addresses together), login is refused until the 15 minutes have passed. (Clients that reach the VM from the same address, as through some NAT or IPv6 paths, share one count; at worst a stranger's attempts lock them out for 15 minutes.) The session is a signed cookie (`OPS_SECRET_KEY`), HttpOnly and SameSite=Strict, that lasts 8 hours from login however it is used; "Sign out" ends it sooner. The login and sign-out forms carry a CSRF token. Every page except the login page needs the session, and every page is read-only: the pages read the database in read-only transactions, and no value from a request reaches the SQL. Pages send a Content-Security-Policy (`default-src 'self'`, no scripts, `frame-ancestors 'none'`), `nosniff` and `noindex`. welldash²'s only writes are its uptime checks and the daily deletion of rows older than 90 days.
+
+**HTTP or HTTPS.** Over plain HTTP, the password and the session cookie travel unencrypted between the VPN and the VM, so someone able to watch McMaster's internal network could read them. That is a reasonable trade-off for read-only operational numbers, but HTTPS is better: once IT provides a certificate (below) and TLS is set up in front of port 8090, set `OPS_COOKIE_SECURE=1` in `.env` and recreate the container, so the cookie is never sent over HTTP. With it on but no HTTPS, signing in silently fails (the browser drops the cookie).
+
+**A read-only database role (recommended).** By default welldash² uses the backend's role (`BACKEND_DATABASE_URL`). A role of its own limits what it could do if it were ever compromised. As the PostgreSQL superuser (e.g. `sudo -u postgres psql -d <database>`):
+```sql
+CREATE ROLE well_ops LOGIN PASSWORD '<a new random password>';
+GRANT CONNECT ON DATABASE <database> TO well_ops;
+GRANT USAGE ON SCHEMA public TO well_ops;
+GRANT SELECT ON sensor_measurements, vendor_status, alert_incidents, export_jobs, schema_migrations,
+                request_metrics, uptime_probes TO well_ops;
+GRANT INSERT, DELETE ON uptime_probes TO well_ops;     -- its uptime checks, and their 90-day cleanup
+GRANT USAGE ON SEQUENCE uptime_probes_id_seq TO well_ops;
+GRANT DELETE ON request_metrics TO well_ops;           -- the 90-day cleanup
+```
+Then set `OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/<database>` in `.env` (in single quotes if the password has a `$`), allow `well_ops` from the Docker network in `pg_hba.conf` the same way as the backend's role, and recreate the container. The System page shows which role welldash² reads with. `export_jobs` is owned by `postgres`: without `well_ops`, check that the backend's role can read it (`\dp export_jobs` in psql); the Traffic page says so if it can't.
+
+**Showing deploys.** The Overview lists deploys from `deploy.log` in the logs folder it can read (`dashboard/backend/app/logs`, mounted read-only). `deploy.sh` writes `~/WELLWebsite/deploy.log` by default, which welldash² can't see; to show deploys, set `DEPLOY_LOG=$HOME/WELLWebsite/dashboard/backend/app/logs/deploy.log` in the cron line (and send cron's stderr there too), if that folder is writable by your user.
+
+**Optional settings** (in `.env`; recreate the container after changing them):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OPS_PORT` | `8090` | Port on the VM. |
+| `OPS_BIND` | `0.0.0.0` | Address the port is published on. Set it to the VM's campus address (setup step 3). |
+| `OPS_COOKIE_SECURE` | `0` | `1` once welldash² is served over HTTPS (see above). |
+| `OPS_DATABASE_URL` | `BACKEND_DATABASE_URL` | Database URL, e.g. with the `well_ops` role above. |
+| `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
+| `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |
+| `OPS_HEALTHCHECKS_API_KEY` | none | The Healthchecks.io project's **read-only** API key (Project Settings, API Access). |
+| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Counting visits needs GoatCounter's script on the dashboard, which isn't added yet. |
+| `REQUEST_METRICS` | on | In `dashboard/backend/app/.env`: `0` stops the backend counting requests (recreate `backend`). |
+
+**Request to McMaster IT** (copy, fill in, send):
+
+> Subject: Internal DNS name and certificate for the WELL VM (well.cas.mcmaster.ca)
+>
+> Hello,
+>
+> The WELL project (Watershed and Ecosystems Living Lab) runs an internal operations dashboard on our VM well.cas.mcmaster.ca, on TCP port 8090. It is for project staff only and must stay internal: please do not add it to haproxy.cas.mcmaster.ca or expose it outside the McMaster network.
+>
+> Could you please:
+> 1. Create an internal DNS name, welldashsquared.cas.mcmaster.ca, for the same address as well.cas.mcmaster.ca (a CNAME or an A record), resolvable on campus and on the McMaster VPN only.
+> 2. Allow TCP port 8090 to well.cas.mcmaster.ca from the campus network and the VPN address ranges, if a firewall blocks it now.
+> 3. If possible, issue a TLS certificate for welldashsquared.cas.mcmaster.ca from McMaster's internal certificate authority (or tell us how to request one), so we can serve it over HTTPS.
+>
+> Thank you,
+> [name], WELL project, [email]
+
+Once the name exists, welldash² answers at http://welldashsquared.cas.mcmaster.ca:8090 as well, with no change on the VM. Serving it over HTTPS on that name needs the certificate and a TLS-terminating proxy in front of port 8090, a later change.
+
+---
+
 ## Data Upload (Manual)
 
+To upload one month to the live Borealis dataset now, instead of waiting for the scheduler:
+
 ```bash
-python upload_data.py --year 2023 --month 7
+docker compose exec worker python scripts/upload_data.py --year 2026 --month 10            # uploads and publishes
+docker compose exec worker python scripts/upload_data.py --year 2026 --month 10 --dry-run  # builds the CSV only
 ```
+
+A month uploaded by hand isn't recorded in `logs/uploaded_months.json`, so the scheduler may run it again; that is safe, since an identical file isn't sent twice. See [Off-VM copies](#off-vm-copies-borealis-and-sharepoint).
 
 ---
 
 ## Database migrations
 
-New tables are created by `db.create_all()` (`dashboard/backend/app/db/init_db.py`), which never changes a table that already exists. Changes to existing tables (an index, a new column) go in a numbered SQL file in `dashboard/backend/app/db/migrations/` (`0001_name.sql`, `0002_name.sql`, ...), applied with `scripts/migrate.py`. It runs the files that haven't run yet, in order, and records each in the `schema_migrations` table so none runs twice. Nothing applies them automatically; on the VM, run them by hand:
+New tables are created by `db.create_all()` (`dashboard/backend/app/db/init_db.py`), which never changes a table that already exists. Changes to existing tables (an index, a new column) go in a numbered SQL file in `dashboard/backend/app/db/migrations/` (`0001_name.sql`, `0002_name.sql`, ...), applied with `scripts/migrate.py`. It runs the files that haven't run yet, in order, and records each in the `schema_migrations` table so none runs twice. Nothing applies them automatically; on the VM, run them by hand. The steps below are for online migrations, such as adding an index, which the running code doesn't depend on. A migration whose notes (in this section or the file's comments) give its own procedure, for example one the new code can't start without, follows those notes instead (typically: stop the services, run `migrate.py` with the new image, then start them).
 
 ```bash
 cd ~/WELLWebsite
-./git_pull.sh && docker compose up -d --build --no-deps backend   # the migration files are baked into the image
+./deploy.sh                                                       # pull main, rebuild backend (the migration files are baked into the image)
 pg_dump "<database url>" -Fc -f ~/welldb-$(date +%F).dump        # a backup first, kept outside the repo
 docker compose exec backend python scripts/migrate.py --status   # what has run and what is pending
 docker compose exec backend python scripts/migrate.py --dry-run  # the SQL that would run
 docker compose exec backend python scripts/migrate.py            # apply
 ```
 
-- The first step is needed because `docker compose exec backend` only sees the files in the running image. Rebuilding restarts gunicorn, so the API returns errors for a few seconds.
+- The first step is needed because `docker compose exec backend` only sees the files in the running image. `./deploy.sh` by hand deploys a commit that `--auto` held for its migration (see [Deploying](#deploying)); it rebuilds `backend`, `worker` and `export_worker`, which restarts gunicorn, so the API returns errors for a few seconds. Older notes use `./git_pull.sh`, a helper that exists only on the VM, not in this repository: it sets up the GitHub SSH key and runs `git pull`, without rebuilding anything or checking the site, so use `deploy.sh` instead.
 - Each file runs in one transaction, so a failed migration leaves nothing half-done. A file whose first line is `-- migrate: no-transaction` runs outside a transaction instead, as `CREATE INDEX CONCURRENTLY` requires; such a file holds one statement.
 - Indexes are built with `CONCURRENTLY`, which doesn't block reads or inserts, so the index build itself needs no downtime: the site and the ingestion keep running while it builds.
 - If a concurrent index build fails part way, PostgreSQL leaves an INVALID index behind. When that index is one the migration names, the runner refuses to record the migration, names the index and exits with an error: drop it with `DROP INDEX CONCURRENTLY <name>;` and run the migration again. Invalid indexes the migration doesn't name only get a warning.
@@ -495,13 +640,15 @@ docker compose exec backend python scripts/migrate.py            # apply
 
 | Layer | Technologies |
 |---|---|
-| Frontend | Next.js, React, TypeScript, TailwindCSS, Highcharts |
-| Backend | Python, Flask, Gunicorn (WSGI) |
-| Database | PostgreSQL |
-| Infrastructure | Docker, Nginx, Linux VM |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS, Highcharts, MapLibre GL |
+| Backend | Python 3.11, Flask, Gunicorn (WSGI), SQLAlchemy |
+| Jobs and queue | `schedule` loop in the worker; Celery with Redis for large exports |
+| Database | PostgreSQL 13 (VM host); MySQL 5.7 for WordPress |
+| Infrastructure | Docker Compose on a Linux VM, behind McMaster's reverse proxy |
 | CMS | WordPress (PHP, Bootstrap, Flickity) |
-| APIs | HoboLink, WQData, OpenAI, Borealis, SharePoint |
-| Automation | Cron, shell scripts |
+| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured) |
+| Monitoring | Sentry, Healthchecks.io, email digest and alerts, daily API canary (GitHub Actions) |
+| Deploy and CI | `deploy.sh` (by hand or from cron), GitHub Actions |
 
 ---
 
@@ -511,9 +658,9 @@ The WELL Environmental Data Platform and the associated WordPress site are inten
 
 - **Informational use only:** Data, charts, summaries, and downloadable files are provided for informational, educational, and research-support purposes and should not be treated as legal, regulatory, engineering, safety-critical, or emergency-response advice.
 - **No guarantee of uninterrupted service:** While the platform is designed for near real-time availability, uptime, data freshness, and feature availability are not guaranteed at all times because of scheduled maintenance, upstream API outages, network issues, or infrastructure failures.
-- **Data accuracy and completeness:** Sensor readings, derived metrics, AI-generated summaries, and exports may contain delays, gaps, approximations, processing errors, or third-party source inconsistencies. Users should independently validate important findings before relying on them.
+- **Data accuracy and completeness:** Sensor readings, derived metrics, and exports may contain delays, gaps, approximations, processing errors, or third-party source inconsistencies. Users should independently validate important findings before relying on them.
 - **Acceptable use:** Users must not misuse the dashboard, APIs, iframe integration, or WordPress site, including by attempting unauthorized access, bypassing rate limits, scraping protected content, interfering with service availability, or introducing malicious content.
-- **Third-party services:** The platform depends on external providers including HoboLink, WQData Live, OpenAI, Borealis, SharePoint, WordPress, and hosting/network services. Their availability and terms may affect platform behavior.
+- **Third-party services:** The platform depends on external providers including HoboLink, WQData Live, Borealis, SharePoint, WordPress, and hosting/network services. Their availability and terms may affect platform behavior.
 - **Intellectual property:** Project branding, code, visual assets, and original content remain subject to the rights and licenses defined by the WELL project, McMaster University, and any third-party licensors.
 - **Changes to the service:** Features, APIs, visualizations, exports, and access controls may be updated, restricted, or removed without notice as the platform evolves.
 
@@ -528,7 +675,7 @@ The platform should publish a simple privacy notice covering both the dashboard 
 - **Operational data collected:** The system may log request metadata such as IP address, timestamp, requested path, response status, browser/user-agent details, and application errors for security, troubleshooting, and performance monitoring.
 - **Analytics and observability:** Monitoring tools, logs, metrics, and alerts may be used to understand uptime, failures, and performance across Nginx, Flask, Next.js, WordPress, and PostgreSQL.
 - **User-submitted or uploaded files:** Research uploads such as CSV or Excel sampling files may contain user-supplied content and should be handled as institutional research data, with access limited to authorized project administrators.
-- **Third-party processing:** Data sent to third-party services, such as OpenAI for AI analysis or external APIs for ingestion/export workflows, is subject to those providers' terms and privacy practices.
+- **Third-party processing:** Data sent to third-party services, such as the external APIs used for ingestion and export workflows, is subject to those providers' terms and privacy practices.
 - **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content. If analytics or non-essential cookies are added later, a cookie notice/consent flow should be considered.
 - **Data retention:** Application logs, backups, exports, and uploaded files should follow a defined retention and deletion policy appropriate for operational, institutional, and research needs.
 - **Access and protection:** Secrets should be stored securely, admin access should be restricted, backups should be protected, and production systems should use TLS and least-privilege access controls.
@@ -538,20 +685,15 @@ The platform should publish a simple privacy notice covering both the dashboard 
 
 ## FAQ
 
+
 **How does routing work end-to-end?**
-Nginx terminates TLS and routes by host/path to either the dashboard container or WordPress. The frontend encodes filter state in URL query params. The API exposes versioned REST paths for stations, parameters, metrics, aggregate, download, ai, and health.
+`welldash.mcmaster.ca` and `well.mcmaster.ca` both point at McMaster's reverse proxy, which terminates TLS and forwards to the VM: the dashboard container on port 8081, WordPress on port 8080. The browser calls the dashboard's own API routes (`/api/...`), which pass the request to the Flask backend on the internal Docker network. The API routes are listed under [Backend](#backend); none are versioned.
 
 **How are backups automated?**
 Each month the worker exports the month's sensor data as CSV and uploads it to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint).
 
-**How does the AI analysis feature work safely?**
-The API aggregates and downsamples the series first, then sends a bounded prompt with metadata to OpenAI. Responses are rendered in the UI and can be exported.
-
 **What keeps the dashboard responsive with large datasets?**
-Indexed PostgreSQL queries, precomputed downsampled series, cached API responses, and client-side SSR/memoization.
+`/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.
 
 **How is the dashboard embedded and secured?**
-It's embedded via iframe on a dedicated WordPress page. CSP `frame-ancestors` and CORS rules allow only the trusted WordPress origin.
-
-
-
+It's embedded via iframe on a dedicated WordPress page. Nothing restricts who may frame it (no CSP `frame-ancestors` or `X-Frame-Options`), and the Flask API accepts any origin, but Flask has no public port: browsers only reach the dashboard's API routes. The data is public and read-only; nothing on the dashboard needs a login.

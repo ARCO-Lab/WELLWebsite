@@ -38,7 +38,7 @@ class Utils {
 		if ( is_object( $error ) ) {
 			return array(
 				'name'    => 'Error',
-				'message' => json_decode( wp_json_encode( $error ), true ),
+				'message' => json_decode( wp_json_encode( $error, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ), true ),
 			);
 		}
 
@@ -114,7 +114,7 @@ class Utils {
 			$endpoint,
 			'2',
 			array_merge( $default_args, empty( $args ) ? array() : $args ),
-			empty( $body ) ? null : wp_json_encode( $body ),
+			empty( $body ) ? null : wp_json_encode( $body, JSON_UNESCAPED_SLASHES ),
 			'wpcom'
 		);
 
@@ -139,9 +139,7 @@ class Utils {
 			 * When WordPress.com returns an error from Boost Cloud, the body contains
 			 * statusCode and error. When it returns a WP_Error, it contains code and message.
 			 */
-			// phpcs:disable WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
 			if ( isset( $data['statusCode'] ) && isset( $data['error'] ) ) {
-				// phpcs:disable WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
 				$data_code    = $data['statusCode'];
 				$data_message = $data['error'];
 			} elseif ( isset( $data['code'] ) && isset( $data['message'] ) ) {

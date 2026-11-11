@@ -5,9 +5,9 @@ import {
 	getElement,
 	withSyncEvent as originalWithSyncEvent,
 } from '@wordpress/interactivity';
-import parsePhoneNumber, { AsYouType } from 'libphonenumber-js';
-import { countries } from '../../blocks/field-telephone/country-list';
-import { isEmptyValue } from '../../contact-form/js/validate-helper';
+import parsePhoneNumber, { AsYouType } from 'libphonenumber-js/min/es6';
+import { countries } from '../../blocks/field-telephone/country-list.js';
+import { isEmptyValue } from '../../contact-form/js/validate-helper.js';
 const NAMESPACE = 'jetpack/form';
 
 const withSyncEvent =
@@ -20,6 +20,82 @@ const asYouTypes = {};
 const phoneInputRefs = {};
 const searchInputRefs = {};
 const optionsListRefs = {};
+
+/**
+ * Ensures the phone field is fully initialized. Serves as both the primary
+ * initialization path (called from data-wp-init) and a safety net for event
+ * handlers in case the init callback was missed — which can happen when the
+ * module loads after DOMContentLoaded and the Interactivity API has already
+ * processed the DOM.
+ *
+ * @param {string} fieldId - The field ID to initialize.
+ * @return {boolean} Whether the field is initialized and ready.
+ */
+const ensureInitialized = fieldId => {
+	if ( asYouTypes[ fieldId ] ) {
+		return true;
+	}
+
+	const context = getContext();
+	if ( ! context.showCountrySelector ) {
+		return true;
+	}
+
+	// Resolve refs via DOM query if register callbacks haven't fired.
+	const { ref } = getElement();
+	const wrapper = ref.closest( '.jetpack-field__input-phone-wrapper' );
+	if ( ! wrapper ) {
+		return false;
+	}
+
+	if ( ! phoneInputRefs[ fieldId ] ) {
+		phoneInputRefs[ fieldId ] = wrapper.querySelector( '.jetpack-field__input-element' );
+	}
+	if ( ! searchInputRefs[ fieldId ] ) {
+		searchInputRefs[ fieldId ] = wrapper.querySelector( '.jetpack-combobox-search' );
+	}
+	if ( ! optionsListRefs[ fieldId ] ) {
+		optionsListRefs[ fieldId ] = wrapper.querySelector( '.jetpack-combobox-options' );
+	}
+
+	if (
+		! phoneInputRefs[ fieldId ] ||
+		! searchInputRefs[ fieldId ] ||
+		! optionsListRefs[ fieldId ]
+	) {
+		return false;
+	}
+
+	const config = getConfig( 'jetpack/field-phone' );
+	context.allCountries = countries.map( country => ( {
+		...country,
+		country: config?.i18n?.countryNames?.[ country.code ] || country.country,
+		selected: country.code === context.defaultCountry,
+	} ) );
+	context.filteredCountries = [ ...context.allCountries ];
+	context.selectedCountry = context.filteredCountries.find(
+		country => country.code === context.defaultCountry
+	);
+	asYouTypes[ fieldId ] = new AsYouType( context.defaultCountry );
+	return true;
+};
+
+/**
+ * Sets flag text on an element by modifying existing text node data instead of
+ * replacing textContent. This avoids triggering wp-emoji's MutationObserver
+ * (which only watches childList, not characterData) that converts emoji to SVG.
+ *
+ * @param {HTMLElement} element - The element to set flag text on.
+ * @param {string}      flag    - The flag emoji to display.
+ */
+const setFlagText = ( element, flag ) => {
+	const text = flag || '';
+	if ( element.firstChild?.nodeType === 3 ) {
+		element.firstChild.data = text;
+	} else {
+		element.textContent = text;
+	}
+};
 const updateSelection = selectedCountry => {
 	const context = getContext();
 	context.phoneCountryCode = selectedCountry.code;
@@ -36,29 +112,54 @@ const updateSelection = selectedCountry => {
 	} ) );
 };
 
+/**
+ * Revalidate the field after the visitor commits to a country.
+ *
+ * `fullPhoneNumber` is the only value `validators.phone` judges, so without this a number that was
+ * invalid for the previous country keeps its stale `invalid_phone` after the visitor picks the
+ * country that makes it valid, and the error blocks submission until the input is touched again.
+ *
+ * Only the paths that commit call this. `updateSelection()` also runs while the visitor merely
+ * arrows through the list, and revalidating there would reset `showFieldError` on every keypress,
+ * hiding an error that is still true of the number they have typed.
+ */
+const revalidateAfterCountryCommit = () => {
+	const context = getContext();
+
+	actions.updateField(
+		context.fieldId,
+		context.phoneNumber,
+		context.fields?.[ context.fieldId ]?.showFieldError ?? false
+	);
+};
+
 const { actions } = store( NAMESPACE, {
 	state: {
 		validators: {
 			phone: ( value, isRequired ) => {
-				const context = getContext();
+				// Defaults matter here: this validator also runs from `registerField()`, which is
+				// scoped to the field wrapper rather than to the phone wrapper that provides these
+				// keys, so during registration they are all undefined. See the scope contract on
+				// `validate()` in ../form/view.js.
+				const {
+					phoneNumber = '',
+					fullPhoneNumber = '',
+					showCountrySelector = false,
+				} = getContext();
 
-				if ( isEmptyValue( context.phoneNumber ) && isRequired ) {
+				if ( isEmptyValue( phoneNumber ) && isRequired ) {
 					// this is not triggering any error, but then no other input does either
 					return 'is_required';
 				}
-				if ( ! isRequired && isEmptyValue( context.phoneNumber ) ) {
+				if ( ! isRequired && isEmptyValue( phoneNumber ) ) {
 					// No need to validate anything.
 					return 'yes';
 				}
 
 				// from this point on, we discard the value as we
 				// use our internal full phone number state getter:
-				value = context.fullPhoneNumber;
-				if (
-					context.showCountrySelector ||
-					value.indexOf( '+' ) === 0 ||
-					value.indexOf( '00' ) === 0
-				) {
+				value = fullPhoneNumber;
+				if ( showCountrySelector || value.indexOf( '+' ) === 0 || value.indexOf( '00' ) === 0 ) {
 					const internationalNumber = parsePhoneNumber( value );
 					if ( ! internationalNumber || ! internationalNumber.isValid() ) {
 						return 'invalid_phone';
@@ -88,6 +189,9 @@ const { actions } = store( NAMESPACE, {
 				context.phoneNumber = context.fullPhoneNumber = value;
 				return;
 			}
+			if ( ! ensureInitialized( fieldId ) ) {
+				return;
+			}
 			const groomedValue = value.indexOf( '00' ) === 0 ? '+' + value.slice( 2 ) : value;
 
 			asYouTypes[ fieldId ].reset();
@@ -107,14 +211,21 @@ const { actions } = store( NAMESPACE, {
 		},
 		phoneCountryChangeHandler() {
 			const context = getContext();
+			if ( ! ensureInitialized( context.fieldId ) ) {
+				return;
+			}
 			// this context.filtered is from the template iterator
 			context.selectedCountry = { ...context.filtered };
 			updateSelection( context.selectedCountry );
+			revalidateAfterCountryCommit();
 			context.comboboxOpen = false;
 			phoneInputRefs[ context.fieldId ]?.focus?.();
 		},
 		phoneComboboxInputHandler( event ) {
 			const context = getContext();
+			if ( ! ensureInitialized( context.fieldId ) ) {
+				return;
+			}
 			const searchTerm = event.target.value.toLowerCase();
 			context.filteredCountries = context.allCountries.filter(
 				country =>
@@ -126,6 +237,9 @@ const { actions } = store( NAMESPACE, {
 		},
 		phoneComboboxKeydownHandler: withSyncEvent( event => {
 			const context = getContext();
+			if ( ! ensureInitialized( context.fieldId ) ) {
+				return;
+			}
 			if ( event.key === 'Escape' ) {
 				context.comboboxOpen = false;
 			} else if ( event.key === 'Enter' ) {
@@ -137,6 +251,7 @@ const { actions } = store( NAMESPACE, {
 						context.filteredCountries[ 0 ];
 					context.selectedCountry = selectedCountry;
 					updateSelection( context.selectedCountry );
+					revalidateAfterCountryCommit();
 					context.comboboxOpen = false;
 					// Focus on the ref input
 					phoneInputRefs[ context.fieldId ]?.focus?.();
@@ -195,6 +310,9 @@ const { actions } = store( NAMESPACE, {
 		},
 		phoneComboboxToggle() {
 			const context = getContext();
+			if ( ! ensureInitialized( context.fieldId ) ) {
+				return;
+			}
 			context.comboboxOpen = ! context.comboboxOpen;
 			if ( context.comboboxOpen ) {
 				setTimeout( () => {
@@ -215,34 +333,39 @@ const { actions } = store( NAMESPACE, {
 		},
 	},
 	callbacks: {
-		initializePhoneField() {
+		/**
+		 * Sets flag text by modifying existing text node data (nodeType 3 = TEXT_NODE)
+		 * instead of replacing textContent, to avoid triggering wp-emoji's MutationObserver
+		 * which only watches childList (not characterData) and converts emoji to SVG images.
+		 */
+		updateSelectedFlag() {
+			const { ref } = getElement();
+			const context = getContext();
+			setFlagText( ref, context.selectedCountry?.flag );
+		},
+		updateOptionFlag() {
+			const { ref } = getElement();
+			const context = getContext();
+			setFlagText( ref, context.filtered?.flag );
+		},
+		registerPhoneInput() {
 			const element = getElement().ref;
 			const context = getContext();
-			// store refs for quick access later and less intensive dom scouting
-			phoneInputRefs[ context.fieldId ] = element.querySelector( 'input[type="tel"]' );
-			searchInputRefs[ context.fieldId ] = element.parentElement.querySelector(
-				'.jetpack-combobox-search'
-			);
-			optionsListRefs[ context.fieldId ] = element.parentElement.querySelector(
-				'.jetpack-combobox-options'
-			);
+			phoneInputRefs[ context.fieldId ] = element;
+		},
+		registerPhoneComboboxSearchInput() {
+			const element = getElement().ref;
+			const context = getContext();
+			searchInputRefs[ context.fieldId ] = element;
+		},
+		registerPhoneComboboxOptionsList() {
+			const element = getElement().ref;
+			const context = getContext();
+			optionsListRefs[ context.fieldId ] = element;
 		},
 		initializePhoneFieldCustomComboBox() {
 			const context = getContext();
-			if ( ! context.showCountrySelector ) {
-				return;
-			}
-			const config = getConfig( 'jetpack/field-phone' );
-			context.allCountries = countries.map( country => ( {
-				...country,
-				country: config?.i18n?.countryNames?.[ country.code ] || '',
-				selected: country.code === context.defaultCountry,
-			} ) );
-			context.filteredCountries = [ ...context.allCountries ];
-			context.selectedCountry = context.filteredCountries.find(
-				country => country.code === context.defaultCountry
-			);
-			asYouTypes[ context.fieldId ] = new AsYouType( context.defaultCountry );
+			ensureInitialized( context.fieldId );
 		},
 	},
 } );

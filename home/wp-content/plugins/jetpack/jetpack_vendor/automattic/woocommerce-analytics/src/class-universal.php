@@ -76,18 +76,36 @@ class Universal {
 		$is_clickhouse_enabled     = Features::is_clickhouse_enabled();
 		$is_proxy_tracking_enabled = Features::is_proxy_tracking_enabled();
 		// When proxy tracking is enabled, we don't need to send the common properties to the client.
-		$common_properties = $is_proxy_tracking_enabled ? array() : $this->get_common_properties();
+		// Otherwise send only the page-safe properties: this markup is cacheable, so nothing
+		// derived from the current request may go into it.
+		$common_properties = $is_proxy_tracking_enabled ? array() : $this->get_page_common_properties();
 		?>
 		<script type="text/javascript">
 			(function() {
-				window.wcAnalytics = window.wcAnalytics || {};
+				// Always start from a fresh object: a `||` fallback would keep a same-named DOM element alive.
+				window.wcAnalytics = {};
 				const wcAnalytics = window.wcAnalytics;
 
+				// Set the assets URL for webpack to find the split assets.
+				wcAnalytics.assets_url = '<?php echo esc_url( plugins_url( '../build/', __DIR__ . '/class-woocommerce-analytics.php' ) ); ?>';
+
+				// Set the REST API tracking endpoint URL.
+				<?php
+				$track_endpoint = rest_url( 'woocommerce-analytics/v1/track' );
+				// Include the WP REST nonce for logged-in users so WordPress can identify
+				// the current user via cookie auth. This is needed for the store_admin
+				// property detection, not for endpoint authorization.
+				if ( is_user_logged_in() ) {
+					$track_endpoint = add_query_arg( '_wpnonce', wp_create_nonce( 'wp_rest' ), $track_endpoint );
+				}
+				?>
+				wcAnalytics.trackEndpoint = <?php echo wp_json_encode( esc_url_raw( $track_endpoint ), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
+
 				// Set common properties for all events.
-				wcAnalytics.commonProps = <?php echo wp_json_encode( $common_properties ); ?>;
+				wcAnalytics.commonProps = <?php echo wp_json_encode( $common_properties, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
 
 				// Set the event queue.
-				wcAnalytics.eventQueue = <?php echo wp_json_encode( WC_Analytics_Tracking::get_event_queue() ); ?>;
+				wcAnalytics.eventQueue = <?php echo wp_json_encode( WC_Analytics_Tracking::get_event_queue(), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
 
 				// Features.
 				wcAnalytics.features = {
@@ -96,7 +114,10 @@ class Universal {
 					proxy: <?php echo $is_proxy_tracking_enabled ? 'true' : 'false'; ?>,
 				};
 
-				wcAnalytics.breadcrumbs = <?php echo wp_json_encode( $this->get_breadcrumb_titles() ); ?>;
+				// A delay-JS plugin can hold back the consent API script, so the client cannot rely on its functions to know it has to wait.
+				wcAnalytics.consentManaged = <?php echo Consent_Manager::is_consent_managed() ? 'true' : 'false'; ?>;
+
+				wcAnalytics.breadcrumbs = <?php echo wp_json_encode( $this->get_breadcrumb_titles(), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
 
 				// Page context flags.
 				wcAnalytics.pages = {
@@ -118,6 +139,10 @@ class Universal {
 	 */
 	public function capture_remove_from_cart( $cart_item_key, $cart ) {
 		$item = $cart->removed_cart_contents[ $cart_item_key ] ?? null;
+
+		if ( ! is_array( $item ) || ! isset( $item['product_id'], $item['quantity'] ) ) {
+			return;
+		}
 
 		WC_Analytics_Tracking::record_event(
 			'remove_from_cart',
@@ -141,6 +166,10 @@ class Universal {
 	 * @return void
 	 */
 	public function capture_cart_quantity_update( $cart_item_key, $quantity, $old_quantity, $cart ) {
+		if ( ! isset( $cart->cart_contents[ $cart_item_key ]['product_id'] ) ) {
+			return;
+		}
+
 		$product_id = $cart->cart_contents[ $cart_item_key ]['product_id'];
 		if ( $quantity > $old_quantity ) {
 			WC_Analytics_Tracking::record_event(
@@ -283,19 +312,12 @@ class Universal {
 	/**
 	 * After the order processed, fire an event for each item in the order
 	 *
-	 * @param string|WC_Order $order_id_or_order Order Id or Order object.
+	 * @param int|string|WC_Order $order_id_or_order Order Id or Order object.
 	 */
 	public function order_process( $order_id_or_order ) {
-		if ( is_string( $order_id_or_order ) ) {
-			$order = wc_get_order( $order_id_or_order );
-		} else {
-			$order = $order_id_or_order;
-		}
+		$order = wc_get_order( $order_id_or_order );
 
-		if (
-			! $order
-			|| ! $order instanceof WC_Order
-		) {
+		if ( ! $order ) {
 			return;
 		}
 
@@ -331,10 +353,8 @@ class Universal {
 
 		$order_source = $order->get_created_via();
 		if ( 'store-api' === $order_source ) {
-			$checkout_page_contains_checkout_block     = '1';
-			$checkout_page_contains_checkout_shortcode = '0';
+			$checkout_page_contains_checkout_block = '1';
 		} elseif ( 'checkout' === $order_source ) {
-			$checkout_page_contains_checkout_block     = '0';
 			$checkout_page_contains_checkout_shortcode = '1';
 		}
 
@@ -522,14 +542,18 @@ class Universal {
 
 	/**
 	 * Capture a search event.
+	 *
+	 * The term is capped because this event is assembled here but fired by the
+	 * client, so it travels through the page markup and then reaches the pixel
+	 * URL. See `cap_page_string()`.
 	 */
 	public function capture_search_query() {
 		if ( is_search() ) {
 			global $wp_query;
 			$this->enqueue_event(
-				'search',
+				'search_performed',
 				array(
-					'search_query' => $wp_query->get( 's' ),
+					'search_query' => $this->cap_page_string( $wp_query->get( 's' ) ),
 					'qty'          => $wp_query->found_posts,
 				)
 			);
@@ -598,10 +622,8 @@ class Universal {
 		$checkout_page_contains_checkout_shortcode = '0';
 
 		if ( 'store-api' === $order_source ) {
-			$checkout_page_contains_checkout_block     = '1';
-			$checkout_page_contains_checkout_shortcode = '0';
+			$checkout_page_contains_checkout_block = '1';
 		} elseif ( 'checkout' === $order_source ) {
-			$checkout_page_contains_checkout_block     = '0';
 			$checkout_page_contains_checkout_shortcode = '1';
 		}
 
