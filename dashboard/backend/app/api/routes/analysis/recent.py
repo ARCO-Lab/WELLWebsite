@@ -58,7 +58,7 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
             
             # 4. Create context with friendly names
             station_names = [LOGGER_CONFIG['sites'].get(sid, sid) for sid in selected_stations]
-            station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."
+            station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."  # noqa: F841 (never added to the prompt below)
         
         elif subtypes:
             # Filter results for weather and quality types based on subtypes

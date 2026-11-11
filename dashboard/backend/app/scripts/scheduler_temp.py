@@ -245,7 +245,7 @@ def api_injection_job():
         print("inject_all_new_data() function completed")
         print("========== API INJECTION COMPLETED ==========")
     except Exception as e:
-        print(f"========== API INJECTION FAILED ==========")
+        print("========== API INJECTION FAILED ==========")
         print(f"[ERROR] inject_all_new_data failed: {e}")
         import traceback
         print(f"[ERROR] Full traceback: {traceback.format_exc()}")

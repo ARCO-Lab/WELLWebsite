@@ -2,8 +2,6 @@
 # It maps columns to standardized measurement types and units for downstream processing.
 
 import pandas as pd
-from datetime import datetime
-import io
 
 class SamplingService:
     def __init__(self, excel_file: str):

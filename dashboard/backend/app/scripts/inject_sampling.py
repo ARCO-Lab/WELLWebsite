@@ -1,7 +1,6 @@
 # This script loads creek/point sampling data from an Excel file into the database.
 # Incremental mode (the default) adds every row that isn't stored yet; --full-reload replaces everything.
 
-import os
 import sys
 import pathlib
 from sqlalchemy import select, tuple_
