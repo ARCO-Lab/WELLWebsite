@@ -86,6 +86,15 @@ export function weatherPanels(
   const panels = WEATHER_PANELS
     .map((p) => ({ id: p.id, title: p.title, measurements: p.measurements.filter((m) => selected.includes(m)) }))
     .filter((p) => p.measurements.length > 0);
-  for (const m of selected) if (!known.has(m) && available.has(m)) panels.push({ id: slug(m), title: m, measurements: [m] });
+  // Ids for these are prefixed, so they can't collide with the fixed ones ("Humidity" -> extra-humidity), and
+  // numbered if two slug the same
+  const ids = new Set<string>();
+  for (const m of selected) {
+    if (known.has(m) || !available.has(m)) continue;
+    let id = `extra-${slug(m)}`;
+    for (let n = 2; ids.has(id); n++) id = `extra-${slug(m)}-${n}`;
+    ids.add(id);
+    panels.push({ id, title: m, measurements: [m] });
+  }
   return panels;
 }

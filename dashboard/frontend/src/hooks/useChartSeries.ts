@@ -164,22 +164,25 @@ export default function useChartSeries(
   setViewWindow: (w: Range | null) => void,
   setDays: (startDay: Date, endDay: Date, viewWindow: Range | null) => void,
 ): Omit<ChartView, "wind"> {
-  // The hour now: the picked days end at the next whole hour (clampToNow), so a page left open moves that end on
-  // as the hours pass (the newest hour then loads on the next overview, e.g. after Reset).
+  // The hour now: the picked days end at the next whole hour (clampToNow), so on a page left open that end moves on
+  // as the hours pass, which loads a new overview with the newest hour. Not while zoomed in: that would swap the
+  // detail on screen for the coarse new overview at the top of the hour. The end catches up when the view is
+  // unzoomed (Reset, Zoom out to the whole range) or other days are picked.
   const [hour, setHour] = useState(() => Math.floor(Date.now() / 3_600_000));
+  const hourTick = viewWindow ? "zoomed" : hour;
   useEffect(() => {
     const id = window.setInterval(() => setHour(Math.floor(Date.now() / 3_600_000)), 60_000);
     return () => window.clearInterval(id);
   }, []);
   const rangeRef = useRef<Range | null>(null);
   const range = useMemo(() => {
-    const r = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), hour * 3_600_000 + 1) : null;
+    const r = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), Date.now()) : null;
     // The same object while the values stay the same (past days don't change on the hour), so nothing re-runs
     const prev = rangeRef.current;
     if (r && prev && r.start === prev.start && r.end === prev.end) return prev;
     rangeRef.current = r;
     return r;
-  }, [startDate, endDate, hour]);
+  }, [startDate, endDate, hourTick]); // eslint-disable-line react-hooks/exhaustive-deps -- hourTick: see above
   const groups = GROUP_KEYS.filter((g) => activeGroups[g]).join(",");
 
   const cache = useRef(new Lru<LoadedSeries>(CACHE_ENTRIES));
