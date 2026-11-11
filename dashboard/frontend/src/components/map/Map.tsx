@@ -134,6 +134,8 @@ function Map<G extends { [key: string]: boolean }>({
   const markerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   // Set while focus goes back to a marker after its card closed, so that focus doesn't reopen the card.
   const returningFocus = useRef(false);
+  // Set by Enter/Space on a marker, so its click opens the card instead of toggling the data.
+  const keyActivation = useRef(false);
 
   const sites: Site[] = isSampling ? SAMPLING_SITE_COORDINATES : SENSOR_STATION_COORDINATES;
   const containerId = isSampling ? "well-map-sampling" : "well-map-sensors";
@@ -401,20 +403,23 @@ function Map<G extends { [key: string]: boolean }>({
                 style={{ ["--marker-color" as string]: look.color }}
                 aria-haspopup="dialog"
                 aria-expanded={!!card?.pinned && cardSite === site}
-                aria-label={`${site.label} (${look.name}). ${active ? "Shown" : "Not shown"} on the dashboard. Press for its details and a ${active ? "Hide" : "Show"} button.`}
+                aria-label={`${site.label} (${look.name}). ${active ? "Shown" : "Not shown"} on the dashboard. Opens its details card.`}
                 onMouseEnter={() => { cancelHide(); setCard((c) => (c?.pinned ? c : { site, pinned: false })); }}
                 onMouseLeave={scheduleHide}
                 onFocus={() => {
                   cancelHide();
                   if (!returningFocus.current) setCard((c) => (c?.pinned ? c : { site, pinned: false }));
                 }}
-                onBlur={scheduleHide}
+                onBlur={() => { keyActivation.current = false; scheduleHide(); }}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") keyActivation.current = true; }}
                 onClick={(e) => {
                   e.stopPropagation();
                   cancelHide();
-                  // A click from the keyboard (Enter/Space, detail 0) only opens the card and moves focus into
-                  // it; a mouse click or tap also shows or hides the data, as before.
-                  if (e.detail === 0) {
+                  // Enter/Space only opens the card and moves focus into it; a mouse click or tap (and a screen
+                  // reader's click) also shows or hides the data, as before.
+                  const fromKeys = keyActivation.current;
+                  keyActivation.current = false;
+                  if (fromKeys) {
                     setCard({ site, pinned: true, focus: true });
                     return;
                   }
