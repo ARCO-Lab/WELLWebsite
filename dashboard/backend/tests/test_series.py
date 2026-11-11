@@ -235,6 +235,37 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertEqual(by["Water Temperature"]["avg"], [4.0])
         self.assertEqual(by["Water Temperature"]["agg"], "mean")
 
+    def test_answers_are_cached_by_rounded_range_and_marked_cacheable(self):
+        from unittest import mock
+        from utils import response_cache
+        bodies, ttls = {}, {}
+
+        def put(key, body, ttl):
+            bodies[key], ttls[key] = body, ttl
+
+        with mock.patch.object(response_cache, "get", side_effect=bodies.get), \
+                mock.patch.object(response_cache, "put", side_effect=put):
+            # A past range: cacheable for 5 minutes, and stored for as long.
+            r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=300")
+            (key, body), = bodies.items()
+            self.assertEqual(ttls[key], 300)
+            self.assertIn(":2026-11-01T00:00:00:2026-11-01T01:00:00:Weather", key)  # rounded to 10-minute marks
+            self.assertEqual(body, r.get_data())
+            self.assertEqual(r.get_json()["series"][0]["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
+
+            # A request a few minutes apart is the same rounded range, answered from the cache, not the database.
+            bodies[key] = b'{"cached": true}'
+            r = self.client.get("/api/series?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00&group_type=Weather")
+            self.assertEqual(r.get_json(), {"cached": True})
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=300")
+
+        # A range that runs to now: a minute only.
+        now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = self.client.get(f"/api/series?start=2026-11-01T00:00:00Z&end={now}&group_type=Weather")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["Cache-Control"], "public, max-age=60")
+
     def test_bad_requests(self):
         self.assertEqual(self.client.get("/api/series?start=2026-11-01&end=2026-11-02").status_code, 400)
         self.assertEqual(self.client.get("/api/series?start=x&end=y&group_type=Weather").status_code, 400)

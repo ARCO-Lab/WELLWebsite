@@ -86,6 +86,8 @@ class MaxRowsSettingTests(unittest.TestCase):
         for value in (None, "", "   "):
             with self.subTest(value=value):
                 self.assertEqual(data_route.parse_max_rows(value), data_route.DEFAULT_MAX_ROWS)
+        # About 17 MB of JSON: a month of every group, small enough not to tie up a worker for long
+        self.assertEqual(data_route.DEFAULT_MAX_ROWS, 100_000)
 
     def test_non_numeric_zero_or_negative_falls_back_with_a_warning(self):
         for value in ("300k", "abc", "1.5", "0", "-5"):

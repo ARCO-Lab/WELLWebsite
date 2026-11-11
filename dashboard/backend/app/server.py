@@ -9,19 +9,39 @@ from utils.sentry import init_sentry
 # whose scripts import this module).
 init_sentry("backend")
 
-from flask import Flask  # noqa: E402
+from flask import Flask, jsonify, request  # noqa: E402
 from flask_cors import CORS  # noqa: E402
+from sqlalchemy.exc import OperationalError  # noqa: E402
 from api.routes import register_routes  # noqa: E402
 from api.routes.health import register_health_routes  # noqa: E402
-from db.database import db  # noqa: E402
+from db.database import db, engine_options  # noqa: E402
+
+# PostgreSQL's error code for a statement it cancelled, here because it ran past DB_STATEMENT_TIMEOUT_MS.
+QUERY_CANCELED = "57014"
+
 
 def create_app():
     # Create and configure the Flask app
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options(
+        app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"])
     db.init_app(app)
     CORS(app)
     register_routes(app)
+
+    # A query cut off by the statement timeout, or a database that can't be reached, answers with a short JSON
+    # error the dashboard can show, instead of a 500 and a traceback. Not sent to Sentry: a slow range or a
+    # database restart isn't a bug, and the log line is enough to spot a pattern.
+    @app.errorhandler(OperationalError)
+    def database_error(exc):
+        if getattr(exc.orig, "pgcode", None) == QUERY_CANCELED:
+            app.logger.warning("%s %s: query cancelled by the statement timeout", request.method, request.path)
+            return jsonify({"error": "The database took too long to answer. Pick a shorter range or fewer sensor "
+                                     "groups, or try again in a minute."}), 504
+        app.logger.warning("%s %s: database unavailable: %s", request.method, request.path, type(exc.orig).__name__)
+        return jsonify({"error": "The data service can't reach its database right now. Please try again "
+                                 "shortly."}), 503
 
     @app.route('/health')
     def health():

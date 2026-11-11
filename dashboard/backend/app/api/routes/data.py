@@ -1,8 +1,8 @@
 # This file defines the /api/data route for retrieving raw sensor measurements for the dashboard's charts.
 # A range with more readings than the charts can handle is refused with a 413 instead of being loaded.
-# Gunicorn runs 3 sync workers and a worker can't notice that the browser left: once a request passes the
-# count, its worker stays busy until the query and jsonify finish (or until gunicorn's 30 s timeout kills it),
-# even if nobody is waiting for the answer. The row cap is what bounds that time.
+# A request can't notice that the browser left: once it passes the count, its gunicorn thread stays busy until
+# the query and jsonify finish, even if nobody is waiting for the answer. The row cap is what bounds that time
+# (with DB_STATEMENT_TIMEOUT_MS, which cancels any one query that still runs too long).
 
 import logging
 import os
@@ -15,13 +15,14 @@ from db.models import SensorMeasurement
 
 log = logging.getLogger(__name__)
 
-# More readings than this make a JSON payload of ~50 MB and take the browser too long to draw; about 90 days
-# of every sensor group. Larger ranges get a 413 that tells the user to narrow the range or use Download.
-DEFAULT_MAX_ROWS = 300_000
+# More readings than this make a JSON payload of over ~17 MB, which ties up a worker and takes the browser too
+# long to draw; about 30 days of every sensor group. Larger ranges get a 413 that tells the user to narrow the
+# range or use Download.
+DEFAULT_MAX_ROWS = 100_000
 
 
 def parse_max_rows(value):
-    """DATA_MAX_ROWS as a positive int; anything else (unset, empty, "300k", 0, -5) means the default."""
+    """DATA_MAX_ROWS as a positive int; anything else (unset, empty, "100k", 0, -5) means the default."""
     if value is None or value.strip() == "":
         return DEFAULT_MAX_ROWS
     try:
