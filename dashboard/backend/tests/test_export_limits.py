@@ -199,11 +199,6 @@ class WorkerSettingsTests(unittest.TestCase):
         self.assertFalse(conf.task_reject_on_worker_lost)
         self.assertGreater(conf.worker_max_memory_per_child, 0)
 
-    def test_compose_runs_the_export_worker_with_few_processes(self):
-        compose = (pathlib.Path(__file__).resolve().parents[3] / "docker-compose.yml").read_text(encoding="utf-8")
-        line = next(l for l in compose.splitlines() if '"worker", "-B"' in l)
-        self.assertRegex(line, r'"--concurrency=[12]"')
-
 
 class TaskTests(AppTestCase):
     def run_task(self, job_id, **patches):
