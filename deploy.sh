@@ -34,7 +34,7 @@ REPO=${GITHUB_REPO:-ARCO-Lab/WELLWebsite}
 API=${GITHUB_API:-https://api.github.com}
 DOCKER=${DOCKER:-docker}
 CURL=${CURL:-curl}
-REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Deploy script")  # job names in .github/workflows/ci.yml
+REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Dashboard image" "Deploy script")  # job names in .github/workflows/ci.yml
 
 # Best effort: an unwritable deploy.log must never stop a deploy halfway (tee still prints the line either way)
 log() {
@@ -156,23 +156,30 @@ add() { local s; for s in "$@"; do [[ " ${SERVICES[*]-} " == *" $s "* ]] || SERV
 if grep -q '^dashboard/frontend/' <<<"$CHANGED"; then add dashboard; fi
 if grep -q '^dashboard/backend/' <<<"$CHANGED"; then add backend worker export_worker; fi
 if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then add ALL; fi
+# Apache/PHP config files in wordpress/ are bind-mounted into the wordpress container one file at a time. Apache and
+# PHP read them only at start, and git replaces a changed file with a new one, so the running container keeps the old
+# copy until it's recreated. Compose sees no change in its own config, so a plain `up -d` wouldn't recreate it.
+RECREATE=()
+if grep -Eq '^wordpress/.*\.(conf|ini)$' <<<"$CHANGED"; then RECREATE=(wordpress); fi
 # Everything else needs no rebuild: WordPress is the stock wordpress image with home/ bind-mounted, so home/ is
 # live once merged; docs, tests and CI aren't deployed.
 
-summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}"
+summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}${RECREATE[*]:+; recreate: ${RECREATE[*]}}"
 if [ "$DRY" = 1 ]; then echo "Would deploy $summary"; exit 0; fi
 
 rebuild() {
-  [ ${#SERVICES[@]} -eq 0 ] && return 0
-  if [[ " ${SERVICES[*]} " == *" ALL "* ]]; then
-    "$DOCKER" compose up -d --build
-  else
-    "$DOCKER" compose up -d --build --no-deps "${SERVICES[@]}"
+  if [[ " ${SERVICES[*]-} " == *" ALL "* ]]; then
+    "$DOCKER" compose up -d --build || return 1
+  elif [ ${#SERVICES[@]} -gt 0 ]; then
+    "$DOCKER" compose up -d --build --no-deps "${SERVICES[@]}" || return 1
+  fi
+  if [ ${#RECREATE[@]} -gt 0 ]; then
+    "$DOCKER" compose up -d --force-recreate --no-deps "${RECREATE[@]}" || return 1
   fi
 }
 
 # The site's pages. Returns 0, or sets PROBLEM to what's wrong and returns 1. $1: how many times to try
-# /api/latest (5 s apart), the slowest to come back after a rebuild. The checks set PROBLEM rather than print it so
+# /api/latest and the WordPress home page (5 s apart), the slowest to come back after a rebuild or recreate. The checks set PROBLEM rather than print it so
 # they're called straight from `if`, where the ERR trap doesn't apply, not from a $(...) subshell.
 site_ok() {
   local code=000
@@ -184,7 +191,12 @@ site_ok() {
   if [ "$code" != 200 ]; then PROBLEM="dashboard /api/latest answered $code"; return 1; fi
   code=$("$CURL" -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:8081/ || true)
   if [ "$code" != 200 ]; then PROBLEM="dashboard home answered $code"; return 1; fi
-  code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
+  # Tried as often as /api/latest: a recreated wordpress container answers only once Apache has started
+  for _ in $(seq 1 "$1"); do
+    code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
+    [ "$code" = 200 ] && break
+    sleep "${DEPLOY_HEALTH_WAIT:-5}"
+  done
   if [ "$code" != 200 ]; then PROBLEM="WordPress home answered $code"; return 1; fi
 }
 

@@ -1,22 +1,26 @@
 <?php
 // This section renders the homepage hero carousel for the WELL WordPress theme.
 // It displays rotating banners with images and calls to action for WELL, Dashboard, and News.
+// The slide images are pre-sized WebP copies (see well_media_img() in functions.php).
+
+// How wide the slide image is drawn, following the .carousel-bg-left/-right rules in css/mcm-bw.css:
+// full width on phones and tablets, about 1170 px (500 px tall) up to 1300 px, then 90% down to 69%.
+$hero_sizes = '(max-width: 991.98px) 100vw, (max-width: 1299.98px) 1170px, (max-width: 1399.98px) 90vw, '
+    . '(max-width: 1499.98px) 85vw, (max-width: 1599.98px) 80vw, (max-width: 1669.98px) 75vw, 69vw';
 ?>
 <banner>
   <section class="carousel">
     <div class="hero-carousel" data-flickity='{ "cellAlign": "left", "contain": true, "adaptiveHeight": true, "pageDots": true, "autoPlay": 15000, "wrapAround": true }'>
       <!-- Carousel Text | Right Banner -->
       <div class="carousel-cell drop">
-        <img class="carousel-bg carousel-bg-left carousel-bg-bottom"
-             srcset="/wp-content/uploads/2025/09/TeachingPhoto.jpg 414w,
-                     /wp-content/uploads/2025/09/TeachingPhoto.jpg 720w,
-                     /wp-content/uploads/2025/09/TeachingPhoto.jpg 1080w,
-                     /wp-content/uploads/2025/09/TeachingPhoto.jpg 1600w"
-             sizes="(max-width: 480px) 414px, (max-width: 768px) 720px, (max-width: 1080px) 1080px, 2000px"
-             src="/wp-content/uploads/2025/09/TeachingPhoto.jpg"
-             data-flickity-lazyload-srcset="/wp-content/uploads/2025/09/TeachingPhoto.jpg 1600w"
-             data-flickity-lazyload-src="/wp-content/uploads/2025/09/TeachingPhoto.jpg"
-             alt="Teaching Photo" role="presentation">
+        <?php well_media_img('hero-teaching', array(414, 800), array(800, 343), array(
+             'class'         => 'carousel-bg carousel-bg-left carousel-bg-bottom',
+             'sizes'         => $hero_sizes,
+             'alt'           => 'Teaching Photo',
+             'role'          => 'presentation',
+             // First slide: the largest image above the fold, so fetch it first.
+             'fetchpriority' => 'high',
+        )); ?>
         <div class="cell-container circle-mask circle-mask-right"></div>
         <div class="container-fluid pt-4 pb-5 pt-lg-0 pb-lg-0">
           <div class="row">
@@ -34,16 +38,13 @@
       </div>
       <!-- Carousel Text | Right Banner -->
       <div class="carousel-cell drop">
-        <img class="carousel-bg carousel-bg-left"
-             srcset="/wp-content/uploads/2025/09/weatherpreview.png 414w,
-                     /wp-content/uploads/2025/09/weatherpreview.png 720w,
-                     /wp-content/uploads/2025/09/weatherpreview.png 1080w,
-                     /wp-content/uploads/2025/09/weatherpreview.png 1600w"
-             sizes="(max-width: 480px) 414px, (max-width: 768px) 720px, (max-width: 1080px) 1080px, 2000px"
-             src="/wp-content/uploads/2025/09/weatherpreview.png"
-             data-flickity-lazyload-srcset="/wp-content/uploads/2025/09/weatherpreview.png 1600w"
-             data-flickity-lazyload-src="/wp-content/uploads/2025/09/weatherpreview.png"
-             alt="Weather Preview" role="presentation">
+        <?php well_media_img('hero-weather', array(414, 720, 1080, 1600), array(1600, 685), array(
+             'class'         => 'carousel-bg carousel-bg-left',
+             'sizes'         => $hero_sizes,
+             'alt'           => 'Weather Preview',
+             'role'          => 'presentation',
+             'loading'       => 'lazy',
+        )); ?>
         <div class="cell-container circle-mask circle-mask-right"></div>
         <div class="container-fluid pt-4 pb-5 pt-lg-0 pb-lg-0">
           <div class="row">
@@ -62,16 +63,13 @@
       </div>
       <!-- Carousel Text | Left Banner -->
       <div class="carousel-cell drop">
-        <img class="carousel-bg carousel-bg-right"
-             srcset="/wp-content/uploads/2025/09/InstallationPhoto2.jpg 414w,
-                     /wp-content/uploads/2025/09/InstallationPhoto2.jpg 720w,
-                     /wp-content/uploads/2025/09/InstallationPhoto2.jpg 1080w,
-                     /wp-content/uploads/2025/09/InstallationPhoto2.jpg 1600w"
-             sizes="(max-width: 480px) 414px, (max-width: 768px) 720px, (max-width: 1080px) 1080px, 2000px"
-             src="/wp-content/uploads/2025/09/InstallationPhoto2.jpg"
-             data-flickity-lazyload-srcset="/wp-content/uploads/2025/09/InstallationPhoto2.jpg 1600w"
-             data-flickity-lazyload-src="/wp-content/uploads/2025/09/InstallationPhoto2.jpg"
-             alt="Installation Photo 2" role="presentation">        
+        <?php well_media_img('hero-installation', array(414, 720, 1080, 1600, 2000), array(2000, 857), array(
+             'class'         => 'carousel-bg carousel-bg-right',
+             'sizes'         => $hero_sizes,
+             'alt'           => 'Installation Photo 2',
+             'role'          => 'presentation',
+             'loading'       => 'lazy',
+        )); ?>
         <div class="cell-container circle-mask circle-mask-left"></div>
         <div class="container-fluid pt-4 pb-5 pt-lg-0 pb-lg-0">
           <div class="row">
