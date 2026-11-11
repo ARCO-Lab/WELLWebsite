@@ -130,7 +130,8 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         if parent is not None and parent.last_notified_at is not None:
             # A finer incident split off one already emailed: it has been reported, so it isn't new.
             # Its notification state too, so a pending "back again" (or a deferred recovery) still goes out.
-            for name in ("last_notified_at", "notifications", "recovery_notified_at", "reopened_at", "back_again_at"):
+            for name in ("last_notified_at", "notifications", "recovery_notified_at", "reopened_at", "back_again_at",
+                         "flaps"):
                 setattr(row, name, getattr(parent, name))
         else:
             new.append(row)
@@ -145,8 +146,6 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         incident.resolved_at, incident.close_reason = now, "cleared"
     for incident in actions.supersede:
         incident.resolved_at, incident.close_reason = now, "superseded"
-    for incident in actions.quiet_recovered:   # cleared again soon after "back again": recorded, never emailed
-        incident.close_reason = "cleared_quietly"
     open_count = len(current) + len(actions.reopen) + len(new_rows) - len(actions.resolve) - len(actions.supersede)
     email = build_email(new, actions.remind, actions.recovered, open_count, now, settings, actions.back_again)
     summary = {"open": open_count, "new": len(new), "back_again": len(actions.back_again),
@@ -176,6 +175,7 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
                 incident.last_notified_at = incident.back_again_at = now
                 incident.notifications = (incident.notifications or 0) + 1
                 incident.recovery_notified_at = incident.reopened_at = None
+                incident.flaps = (incident.flaps or 0) + 1   # it now has to stay clear longer (clear_window)
             for incident in actions.recovered:
                 incident.recovery_notified_at = now
             db.session.commit()

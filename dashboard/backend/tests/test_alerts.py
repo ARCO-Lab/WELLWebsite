@@ -426,47 +426,82 @@ class CheckAlertsTests(unittest.TestCase):
     def emails_at(self, *times):
         return [self.run_at(t)["email"] for t in times]
 
-    def flap_until_quiet_clear(self):
-        """08:00 down (emailed), 11:00 up (recovery emailed 11:30), 11:40 down again ("back again" at 12:10),
-        13:55 up (cleared quietly at 14:20: its recovery email waits)."""
+    def kinds(self):
+        """The kind of each email sent so far: new, recovered, back again or reminder."""
+        names = {"[WELL] Recovered:": "recovered", "[WELL] Back again:": "back again", "[WELL] Still ongoing:": "reminder"}
+        return [next((v for k, v in names.items() if subject.startswith(k)), "new") for _, subject, _ in self.sent]
+
+    def test_timeline_with_flap_damping(self):
+        """08:00 down, 11:00 up, 11:40 down, 14:00 up, 17:00 down, 17:35 up: every change the team should hear about
+        is emailed, and after a "back again" the clear takes longer (3 h, then 6 h)."""
         at, emails_at = self.at, self.emails_at
         self.down(at(8))
-        self.assertEqual(emails_at(at(8), at(11)), ["sent", None])
-        self.assertIn("WQData API not responding", self.sent[0][1])
+        self.assertEqual(emails_at(at(8), at(11)), ["sent", None])                     # new
         self.record("WQData", now=at(11, 5))
-        self.assertEqual(emails_at(at(11, 10), at(11, 20), at(11, 30)), [None, None, "sent"])
-        self.assertTrue(self.sent[1][1].startswith("[WELL] Recovered: WQData API"), self.sent[1][1])
+        self.assertEqual(emails_at(at(11, 10), at(11, 20), at(11, 30)), [None, None, "sent"])   # recovered
         self.down(at(11, 40))
-        self.assertEqual(emails_at(at(11, 40), at(12, 0), at(12, 10)), [None, None, "sent"])   # back 30 min
-        self.assertTrue(self.sent[2][1].startswith("[WELL] Back again: WQData API"), self.sent[2][1])
+        self.assertEqual(emails_at(at(11, 40), at(12, 0), at(12, 10)), [None, None, "sent"])    # back again
         self.assertIn("BACK AGAIN", self.sent[2][2])
         self.assertEqual(emails_at(at(13, 50)), [None])
         self.record("WQData", now=at(13, 55))
-        self.assertEqual(emails_at(at(14), at(14, 20), at(14, 30)), [None, None, None])   # flapping: deferred
-        self.assertEqual(self.open_keys(), [])
+        # Gone since 13:50: with one "back again" it must stay gone 3 h, so it clears at 16:50.
+        self.assertEqual(emails_at(at(14), at(15), at(16, 40)), [None, None, None])
+        self.assertEqual(self.open_keys(), ["vendor:WQData"])
+        self.assertEqual(emails_at(at(16, 50)), ["sent"])                              # recovered
+        self.down(at(17))
+        self.assertEqual(emails_at(at(17), at(17, 20), at(17, 30)), [None, None, "sent"])       # back again
+        self.record("WQData", now=at(17, 35))
+        # Two "back again"s: 6 h this time, from 17:30.
+        self.assertEqual(emails_at(at(18), at(23, 20)), [None, None])
+        self.assertEqual(emails_at(at(23, 30)), ["sent"])                              # recovered
+        self.assertEqual(self.kinds(), ["new", "recovered", "back again", "recovered", "back again", "recovered"])
+        self.assertEqual(len(self.incidents()), 1)
 
-    def test_back_again_then_a_quiet_clear_is_emailed_later(self):
-        self.flap_until_quiet_clear()
-        at = self.at
-        self.assertEqual(self.emails_at(at(18), at(12, 0, days=1)), [None, None])
-        self.assertEqual(self.emails_at(at(12, 10, days=1)), ["sent"])   # a day after "back again", still clear
-        self.assertTrue(self.sent[3][1].startswith("[WELL] Recovered: WQData API"), self.sent[3][1])
-        self.assertIn("recovered at 2026-11-11 14:20", self.sent[3][2])
-        self.assertEqual(self.emails_at(at(12, 20, days=1)), [None])
-        self.assertEqual(len(self.sent), 4)
+    def test_flapping_for_12_hours_on_an_off_grid_schedule(self):
+        """WQData down for an hour, up for an hour, over and over, with checks at :03, :13, ... as the worker's
+        10-minute schedule would land: three emails in 12 h, then one "recovered" once it has stayed up 3 h."""
+        start = self.at(8)
 
-    def test_back_again_then_back_once_more_gets_the_reminder(self):
-        self.flap_until_quiet_clear()
-        at = self.at
-        self.down(at(17))   # back within ALERT_REOPEN_HOURS: reopened; the last email already said it is on
-        self.assertEqual(self.emails_at(at(17), at(17, 30), at(18)), [None, None, None])
-        self.assertEqual((self.open_keys(), len(self.incidents()), len(self.sent)), (["vendor:WQData"], 1, 3))
-        self.assertEqual(self.emails_at(at(12, 10, days=1)), ["sent"])   # the reminder, a day after "back again"
-        self.assertTrue(self.sent[3][1].startswith("[WELL] Still ongoing:"), self.sent[3][1])
-        late = at(13, days=1)
-        self.record("WQData", now=late)
-        self.assertEqual(self.emails_at(late), ["sent"])
-        self.assertTrue(self.sent[4][1].startswith("[WELL] Recovered:"), self.sent[4][1])
+        def down_at(minutes):
+            return minutes % 120 < 60
+
+        for minutes in range(3, 12 * 60, 10):
+            when = start + dt.timedelta(minutes=minutes)
+            self.record("WQData", None if not down_at(minutes) else http_error(503), now=when)
+            self.run_at(when)
+        self.assertEqual(self.kinds(), ["new", "recovered", "back again"])
+        last_down = max(m for m in range(3, 12 * 60, 10) if down_at(m))
+        for minutes in range(12 * 60 + 3, 12 * 60 + 4 * 60, 10):   # now it stays up
+            when = start + dt.timedelta(minutes=minutes)
+            self.record("WQData", now=when)
+            self.run_at(when)
+            if self.kinds()[-1] == "recovered":
+                self.assertGreaterEqual(minutes - last_down, 180)
+                break
+        self.assertEqual(self.kinds(), ["new", "recovered", "back again", "recovered"])
+
+    def test_a_return_after_the_reopen_window_is_a_new_incident(self):
+        at, emails_at = self.at, self.emails_at
+        self.down(at(8))
+        self.assertEqual(emails_at(at(8)), ["sent"])
+        self.record("WQData", now=at(8, 5))
+        self.assertEqual(emails_at(at(8, 30)), ["sent"])                               # recovered
+        self.down(at(15))                                                              # more than 6 h later
+        self.assertEqual(emails_at(at(15)), ["sent"])
+        self.assertEqual(self.kinds(), ["new", "recovered", "new"])
+        self.assertEqual((len(self.incidents()), self.open_keys()), (2, ["vendor:WQData"]))
+
+    def test_flap_window_settings(self):
+        from utils.alerts import clear_window
+        settings = settings_from_env({"ALERT_FLAP_CLEAR_MINUTES": "120"})
+
+        class Incident:
+            def __init__(self, flaps):
+                self.flaps = flaps
+        self.assertEqual([clear_window(Incident(n), settings) for n in (0, 1, 2, 3, 4, 40)],
+                         [dt.timedelta(minutes=m) for m in (30, 120, 240, 480, 720, 720)])
+        with self.assertRaisesRegex(ValueError, "ALERT_FLAP_CLEAR_MINUTES must be a number of minutes"):
+            settings_from_env({"ALERT_FLAP_CLEAR_MINUTES": "3h"})
 
     def test_a_pending_back_again_survives_narrowing(self):
         for measurement in ("Rain", "Air Temperature"):

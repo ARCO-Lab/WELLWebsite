@@ -18,6 +18,8 @@ Settings (environment):
   ALERT_SUSPECT_HOURS         window of the SUSPECT_VALUES rules (default 6); ALERT_SUSPECT_VALUES=off turns them off
   ALERT_CLEAR_MINUTES         how long a condition must be gone before its incident clears (default 30)
   ALERT_REOPEN_HOURS          a condition back within this long of clearing reopens its incident (default 6)
+  ALERT_FLAP_CLEAR_MINUTES    how long it must be gone once it has come back after a recovery (default 180,
+                              doubling with each further return, up to 12 h)
   ALERT_EXCLUDED_SERIES       series to mute, like HEALTH_EXCLUDED_SERIES ("station:measurement" or "station:*")
   ALERT_DASHBOARD_URL         dashboard link in the emails (default https://welldash.mcmaster.ca/)
 The quiet hours and excluded series of /health/data (HEALTH_QUIET_HOURS_<GROUP>, HEALTH_EXCLUDED_SERIES) apply
@@ -55,7 +57,9 @@ DEFAULT_SUSPECT_HOURS = 6.0
 DEFAULT_CLEAR_MINUTES = 30.0
 DEFAULT_REOPEN_HOURS = 6.0
 DEFAULT_DASHBOARD_URL = "https://welldash.mcmaster.ca/"
-RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long after it was due is dropped
+DEFAULT_FLAP_CLEAR_MINUTES = 180.0
+FLAP_CLEAR_CAP = timedelta(hours=12)
+RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long is dropped
 
 
 @dataclass
@@ -67,6 +71,7 @@ class Settings:
     dashboard_url: str = DEFAULT_DASHBOARD_URL
     clear_after: timedelta = timedelta(minutes=DEFAULT_CLEAR_MINUTES)
     reopen_within: timedelta = timedelta(hours=DEFAULT_REOPEN_HOURS)
+    flap_clear_after: timedelta = timedelta(minutes=DEFAULT_FLAP_CLEAR_MINUTES)
     muted: frozenset = frozenset()   # (station_id, measurement_type or "*") from ALERT_EXCLUDED_SERIES
 
 
@@ -90,7 +95,6 @@ class Plan:
     notify_new: list = field(default_factory=list)    # open incidents never emailed (new rows: see open_new)
     remind: list = field(default_factory=list)        # emailed incidents due a reminder
     back_again: list = field(default_factory=list)    # back after an emailed recovery, and stayed back
-    quiet_recovered: list = field(default_factory=list)   # cleared again soon after "back again": not emailed
     recovered: list = field(default_factory=list)     # emailed incidents that cleared, recovery not yet emailed
 
 
@@ -121,6 +125,7 @@ def settings_from_env(env=None):
     except ValueError:
         raise ValueError(f"ALERT_EXCLUDED_SERIES entries must look like 4501:ODO or 2577533:*, got {muted_text!r}") from None
     clear = (env.get("ALERT_CLEAR_MINUTES") or "").strip()
+    flap_clear = (env.get("ALERT_FLAP_CLEAR_MINUTES") or "").strip()
     suspect = (env.get("ALERT_SUSPECT_VALUES") or "on").strip().lower()
     if suspect not in ("on", "off", "1", "0", "true", "false", "yes", "no"):
         raise ValueError(f"ALERT_SUSPECT_VALUES must be on or off, got {suspect!r}")
@@ -133,6 +138,8 @@ def settings_from_env(env=None):
         clear_after=timedelta(minutes=parse_positive(clear, "ALERT_CLEAR_MINUTES", "minutes") if clear
                               else DEFAULT_CLEAR_MINUTES),
         reopen_within=hours("ALERT_REOPEN_HOURS", DEFAULT_REOPEN_HOURS),
+        flap_clear_after=timedelta(minutes=parse_positive(flap_clear, "ALERT_FLAP_CLEAR_MINUTES", "minutes")
+                                   if flap_clear else DEFAULT_FLAP_CLEAR_MINUTES),
         muted=muted,
     )
 
@@ -389,12 +396,13 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
     within ALERT_REOPEN_HOURS, newest per key. pending_recoveries: cleared, emailed incidents whose recovery email
     hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES).
 
-    - An incident only clears after its condition has been gone for ALERT_CLEAR_MINUTES, and a condition that comes
-      back within ALERT_REOPEN_HOURS of closing reopens its incident instead of being emailed as new. If its
-      recovery had been emailed, it is emailed as "back again" once it has stayed back ALERT_CLEAR_MINUTES, so a
-      "recovered" email is never followed by a long silence while the problem is back. "Back again" goes out at
-      most once per ALERT_REMINDER_HOURS per incident; if it clears again within that time, its recovery email
-      waits until that time is up (and goes out then if it is still clear), so the emails can't flap either.
+    - An incident clears (and its recovery is emailed) once its condition has been gone for ALERT_CLEAR_MINUTES.
+      A condition that comes back within ALERT_REOPEN_HOURS of clearing reopens the same incident; if its recovery
+      had been emailed, "back again" is emailed once it has stayed back ALERT_CLEAR_MINUTES.
+    - Flap damping: once an incident has had a "back again", it has to be gone for longer before it clears again:
+      ALERT_FLAP_CLEAR_MINUTES, doubled for each further "back again", up to FLAP_CLEAR_CAP (clear_window). So a
+      flapping condition sends at most one "recovered" and one "back again" per window, and the last email about
+      a key is never wrong for longer than ALERT_CLEAR_MINUTES or the incident's current window.
     - Keys nest (site > station > sensor). When a coarser condition replaces finer open incidents, or finer
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
@@ -422,8 +430,7 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
         if incident.last_notified_at is None:
             result.notify_new.append(incident)
         elif (incident.reopened_at is not None and incident.recovery_notified_at is not None
-              and now - aware(incident.reopened_at) >= settings.clear_after
-              and not recently_back_again(incident, now, settings)):
+              and now - aware(incident.reopened_at) >= settings.clear_after):
             result.back_again.append(incident)
         elif now - aware(incident.last_notified_at) >= settings.reminder:
             result.remind.append(incident)
@@ -432,30 +439,23 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
             continue
         if muted(key) or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
             result.supersede.append(incident)
-        elif now - aware(incident.last_seen_at) >= settings.clear_after:
+        elif now - aware(incident.last_seen_at) >= clear_window(incident, settings):
             result.resolve.append(incident)
             if incident.last_notified_at is not None and incident.recovery_notified_at is None:
-                if recently_back_again(incident, now, settings):
-                    result.quiet_recovered.append(incident)
-                else:
-                    result.recovered.append(incident)
+                result.recovered.append(incident)
     result.recovered += [i for i in pending_recoveries
-                         if id(i) not in reopened and timedelta(0) <= now - recovery_due(i, settings) <= RECOVERY_WINDOW]
+                         if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
 
 
-def recovery_due(incident, settings):
-    """When an incident's recovery email is due: when it cleared, or for one that cleared quietly soon after a
-    "back again" email, ALERT_REMINDER_HOURS after that email (if it is still closed then), so "back again" is never
-    the last word on a problem that has gone away."""
-    resolved = aware(incident.resolved_at)
-    if incident.close_reason == "cleared_quietly" and incident.back_again_at is not None:
-        return max(resolved, aware(incident.back_again_at) + settings.reminder)
-    return resolved
-
-
-def recently_back_again(incident, now, settings):
-    return incident.back_again_at is not None and now - aware(incident.back_again_at) < settings.reminder
+def clear_window(incident, settings):
+    """How long an incident's condition must be gone before it clears: ALERT_CLEAR_MINUTES, or once it has come back
+    after a recovery ("back again" emailed `flaps` times), ALERT_FLAP_CLEAR_MINUTES doubled per further return,
+    at most FLAP_CLEAR_CAP."""
+    flaps = incident.flaps or 0
+    if not flaps:
+        return settings.clear_after
+    return min(settings.flap_clear_after * 2 ** min(flaps - 1, 10), max(FLAP_CLEAR_CAP, settings.flap_clear_after))
 
 
 def is_muted(key, muted):
@@ -497,9 +497,8 @@ def build_email(new, reminders, recovered, open_count, now, settings, back_again
 
     lines = [f"WELL dashboard alerts, checked {site_time(now)} (Toronto time).", ""]
     for heading, items in (("NEW", new),
-                           (f"BACK AGAIN (after the recovery emailed earlier; if it clears again, the recovery "
-                            f"email waits until {duration(settings.reminder)} after this one, so check the dashboard "
-                            f"meanwhile)", back_again),
+                           ("BACK AGAIN (after the recovery emailed earlier; it now has to stay clear longer, "
+                            "see below, before it is reported recovered again)", back_again),
                            (f"STILL ONGOING (reminder, at most every {duration(settings.reminder)})", reminders)):
         if not items:
             continue
@@ -516,8 +515,11 @@ def build_email(new, reminders, recovered, open_count, now, settings, back_again
         lines.append("")
     base = settings.dashboard_url.rstrip("/")
     lines += [f"Open alerts now: {open_count}. You get one email per new problem, a reminder at most every "
-              f"{duration(settings.reminder)} while it lasts, and one when it clears (if it comes back and clears "
-              f"again soon after, that one waits up to {duration(settings.reminder)}).",
+              f"{duration(settings.reminder)} while it lasts, and one when it has been clear for "
+              f"{duration(settings.clear_after)}. If it comes back within {duration(settings.reopen_within)}, you get "
+              f"a \"back again\" email, and from then on it has to stay clear for "
+              f"{duration(settings.flap_clear_after)} (doubling with each return, up to {duration(FLAP_CLEAR_CAP)}) "
+              f"before it is reported recovered.",
               f"Dashboard: {base}/",
               f"Data freshness and open alerts (JSON): {base}/api/health/data",
               "What each alert means and how to tune it: the README's Monitoring section."]
