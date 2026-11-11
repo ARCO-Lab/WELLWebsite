@@ -9,6 +9,7 @@
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import type { NextApiRequest, NextApiResponse } from "next";
+import { clientIp, logClientIpSample } from "./clientIp";
 
 // Headers worth forwarding; Content-Disposition and Content-Length matter for CSV downloads, and Cache-Control
 // lets browsers reuse /api/latest and /api/series answers for as long as the backend allows.
@@ -40,8 +41,15 @@ export async function proxyToBackend(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let first: ReadableStreamReadResult<Uint8Array> | undefined;
   try {
+    // The backend has no public port, so this header (one entry, replacing any the browser sent) is the only
+    // client address it sees. See lib/clientIp.ts for which address that is.
+    const headers = new Headers(init.headers);
+    const ip = clientIp(req);
+    logClientIpSample(req, ip);
+    if (ip) headers.set("X-Forwarded-For", ip);
     response = await fetch(`${process.env.FLASK_API_URL}${path}`, {
       ...init,
+      headers,
       signal: AbortSignal.any([upstream.signal, deadline.signal]),
     });
     // Read the first chunk before sending anything, so a backend that fails this early still gets a clean 502.
