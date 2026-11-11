@@ -33,6 +33,9 @@ ODO_NEAR_ZERO = 0.1          # mg/L; stream water is never this low on oxygen fo
 ODOSAT_NEAR_ZERO = 1.0       # %
 DEPTH_NEAR_ZERO = 0.02       # m of water above a logger's sensor
 FLATLINE_MIN_READINGS = 12   # Quality series that report the very same value this many times in a row
+# ... among these, which vary from reading to reading when the probe works. (Salinity and TDS are reported to
+# two decimals and can sit on one value all day, so they are left out.)
+FLATLINE_TYPES = {"Water Temperature", "Conductivity", "ODO", "ODOSat", "Turbidity", "TSS"}
 
 EMAIL_RE = re.compile(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+")
 
@@ -69,9 +72,13 @@ def smtp_settings(env=None):
 
 
 def find_gaps(timestamps, start, end, min_gap=GAP):
-    """[(from, to)] stretches longer than min_gap with no reading, within [start, end]. `timestamps` sorted."""
+    """[(from, to)] stretches longer than min_gap with no reading, from `start` to the newest of `timestamps`
+    (sorted), or [(start, end)] if there are none. The time after the newest reading isn't listed: LI-COR readings
+    arrive about an hour late, and the newest-reading ages already show it."""
+    if not timestamps:
+        return [(start, end)]
     gaps, previous = [], start
-    for ts in list(timestamps) + [end]:
+    for ts in timestamps:
         if ts - previous > min_gap:
             gaps.append((previous, ts))
         previous = max(previous, ts)
@@ -105,7 +112,8 @@ def anomalies(group, station_id, measurement_type, values):
         bounds = f"{low:g} to {high:g}" if high is not None else f"at least {low:g}"
         found.append(f"{label}: {len(outside)} of {len(values)} readings outside the plausible range "
                      f"({bounds}), e.g. {outside[0]:g}")
-    if group == "Quality" and len(values) >= FLATLINE_MIN_READINGS and len(set(values)) == 1:
+    if (group == "Quality" and measurement_type in FLATLINE_TYPES and len(values) >= FLATLINE_MIN_READINGS
+            and len(set(values)) == 1):
         found.append(f"{label}: all {len(values)} readings are exactly {values[0]:g}; the sensor may be stuck")
     return found
 

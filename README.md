@@ -127,6 +127,59 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 ---
 
+## Monitoring
+
+Three simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
+
+**Data freshness check.** `GET /health/data` on the backend, passed through by the dashboard at `https://welldash.mcmaster.ca/api/health/data`, lists for each group (Weather, Logger, Quality) and each series (station and measurement) the newest `recorded_at` and its age in minutes. It answers **200** when every live series is within its limit and **503** with a `stale` list otherwise (also 503 if the database can't be read or a setting below is invalid). It walks the same index as `/api/latest`, so polling it every few minutes costs nothing noticeable.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HEALTH_MAX_AGE_HOURS` | `3` | Limit for any group without its own. LI-COR data (Weather, Logger) arrives about an hour late, so 3 h means two missed uploads. |
+| `HEALTH_MAX_AGE_HOURS_WEATHER`, `_LOGGER`, `_QUALITY` | the above | Limit for one group. |
+| `HEALTH_QUIET_HOURS_QUALITY` | `18-12` | Site-time hours (`START-END`, may wrap midnight) when the group's device is known to go silent. During them a series counts as fresh if it was fresh when they began. The WQData sonde usually stops between 18:00 and 22:30 and resumes between 08:30 and 11:30. `off` disables it. `HEALTH_QUIET_HOURS_WEATHER` and `_LOGGER` work the same way and are off by default. |
+| `HEALTH_EXCLUDED_SERIES` | `2577535:*` | Series that are reported but never count as stale: `station:measurement` or `station:*`, comma-separated. The default is Logger 5, whose readings stopped in 2025. Set it to an empty value to check everything. |
+
+**Job heartbeats.** The worker pings a [Healthchecks.io](https://healthchecks.io) check after each job, and Healthchecks emails the account owner when a check reports a failure or stops being pinged, so no SMTP is needed for these. A ping times out after 5 s and never stops the job. Unset variables mean no ping.
+
+| Variable | Pinged |
+|---|---|
+| `HEALTHCHECK_URL_INGESTION` | After every 10-minute ingestion run; `/fail` when LI-COR or WQData raised an error. |
+| `HEALTHCHECK_URL_UPLOAD` | After the monthly Borealis upload (02:00 on the 1st, and daily retries); `/fail` if a month didn't go up. Days with nothing to upload don't ping. |
+| `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
+| `HEALTHCHECK_URL_BACKUP` | Reserved for the database backup job on the host, which is outside the containers: end it with `curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL_BACKUP"`. |
+
+To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough), create one check per job, and copy each check's ping URL into the matching variable:
+- **WELL ingestion**: Simple schedule, period 10 minutes, grace 30 minutes.
+- **WELL monthly upload**: Cron `0 2 1 * *`, time zone America/Toronto, grace 4 hours (an upload may take up to 2 h).
+- **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
+- **WELL backup**, if the backup job pings it: its own schedule, grace about an hour.
+
+**Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
+
+**Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); and every series' newest reading. It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ALERT_EMAILS` | none | Recipients, comma-separated. |
+| `SMTP_HOST`, `SMTP_PORT` | none | Mail relay. The digest is emailed only when both are set (and `ALERT_EMAILS` isn't empty). Port 465 uses TLS; other ports use STARTTLS when the server offers it. |
+| `SMTP_USER`, `SMTP_PASSWORD` | none | Login, used only when both are set. |
+| `SMTP_FROM` | `SMTP_USER` | Sender address; required if there's no `SMTP_USER`. |
+| `DIGEST_HOUR` | `7` | Hour (0-23, Toronto time) the worker builds the digest. |
+
+```bash
+# dashboard/backend/app/.env (example)
+HEALTHCHECK_URL_INGESTION=https://hc-ping.com/your-check-uuid
+HEALTHCHECK_URL_UPLOAD=https://hc-ping.com/your-check-uuid
+HEALTHCHECK_URL_DIGEST=https://hc-ping.com/your-check-uuid
+ALERT_EMAILS=someone@mcmaster.ca,someone-else@mcmaster.ca
+# SMTP_HOST=smtp.example.mcmaster.ca
+# SMTP_PORT=587
+# SMTP_FROM=welldash@mcmaster.ca
+```
+
+---
+
 ## Data Upload (Manual)
 
 ```bash

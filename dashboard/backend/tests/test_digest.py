@@ -59,10 +59,11 @@ class GapTests(unittest.TestCase):
         end = T0 + dt.timedelta(minutes=90)
         self.assertEqual(find_gaps(ts, T0, end), [(T0 + dt.timedelta(minutes=20), T0 + dt.timedelta(minutes=60))])
 
-    def test_edges_count(self):
+    def test_start_counts_but_the_time_after_the_newest_reading_doesnt(self):
+        # The stretch after the newest reading is LI-COR's usual delay; the newest-reading ages cover it.
         ts = [T0 + dt.timedelta(hours=1)]
         end = T0 + dt.timedelta(hours=3)
-        self.assertEqual(find_gaps(ts, T0, end), [(T0, ts[0]), (ts[0], end)])
+        self.assertEqual(find_gaps(ts, T0, end), [(T0, ts[0])])
         self.assertEqual(find_gaps([], T0, end), [(T0, end)])
 
     def test_exactly_30_minutes_is_not_a_gap(self):
@@ -101,6 +102,7 @@ class AnomalyTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("all 12 readings are exactly 0", found[0])
         self.assertEqual(anomalies("Quality", "4501", "TSS", [0.0] * 11), [])        # too few to tell
+        self.assertEqual(anomalies("Quality", "4501", "Salinity", [0.37] * 60), [])  # coarse; can sit still
         self.assertEqual(anomalies("Weather", "22051538", "Pressure", [101.0] * 20), [])
 
     def test_no_readings(self):

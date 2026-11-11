@@ -178,7 +178,7 @@ def assess_freshness(latest, now, env=None):
         if info["newest"] is None or series["newest"] > info["newest"]:
             info["newest"], info["age_minutes"] = series["newest"], series["age_minutes"]
     for info in groups.values():
-        info["oldest_fresh"] = info["oldest_fresh"].astimezone(EST_TZ).replace(tzinfo=None).isoformat()
+        info["oldest_fresh"] = info["oldest_fresh"].astimezone(EST_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
     checked = [s for info in groups.values() for s in info["series"] if s["status"] != "excluded"]
     return {
         "status": "stale" if stale or not checked else "ok",
