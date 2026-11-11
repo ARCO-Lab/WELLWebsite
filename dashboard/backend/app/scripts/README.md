@@ -41,8 +41,9 @@ the format page.
 
 ## Troubleshooting
 
-**My file wasn't imported.** The import log lists each problem with its row number: fix the rows and upload the file
-again. Running `scripts/check_sampling_csv.py` on the file shows the same list.
+**My file wasn't imported.** It was refused: the import log lists its problems with their row numbers (the first 50,
+then the total), once. A refused file isn't tried again, so fix the rows and upload the corrected file as a new file;
+it is imported on the next weekly run. Running `scripts/check_sampling_csv.py` on the file lists every problem.
 
 **I need a new site or parameter.** Contact the WELL dashboard team first: the dashboard needs to know where a site is
 and how to show a parameter, and until then rows with it are rejected.
