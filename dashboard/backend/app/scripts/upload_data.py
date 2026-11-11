@@ -1,7 +1,6 @@
 # This script exports WELL sensor data for a given month to CSV and uploads it to Borealis Dataverse.
 # It replicates frontend CSV formatting and supports both manual and automatic (last month) export.
 
-import os
 import sys
 import pathlib
 import json
@@ -322,7 +321,7 @@ def build_csv_frontend_style(data_list, file_obj):
     writer.writerow(headers)
     writer.writerows(rows)
     
-    print(f"DEBUG: CSV written to file-like object")
+    print("DEBUG: CSV written to file-like object")
     print(f"DEBUG: Written {len(rows)} data rows and {len(headers)} header columns")
 
 def upload_to_borealis(csv_content, csv_name):
@@ -390,7 +389,7 @@ def main():
             SensorMeasurement.recorded_at.between(start, end)
         )
         
-        print(f"DEBUG: Query built, executing...")
+        print("DEBUG: Query built, executing...")
         
         # Get data in EXACT same format as data.py
         raw_data = query.order_by(SensorMeasurement.recorded_at).all()

@@ -22,14 +22,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Starts while the image builds. The network is --internal: the test containers reach this database and
+      # nothing else, so no test can call a vendor API.
+      - name: Start a throwaway PostgreSQL 13 (the production version)
+        run: |
+          docker network create --internal ci-db
+          docker run -d --name ci-postgres --network ci-db -e POSTGRES_PASSWORD=ci postgres:13
+
       - name: Build the backend image (as on the VM)
         run: docker build -t well-backend:ci dashboard/backend
 
       - name: Installed packages are consistent
         run: docker run --rm well-backend:ci pip check
 
-      - name: Unit tests, inside the image
-        run: docker run --rm --network none -w /app well-backend:ci python -m unittest discover -s tests -v
+      - name: Wait for PostgreSQL, and create one empty database per use
+        run: |
+          for _ in $(seq 60); do docker exec ci-postgres pg_isready -q -h 127.0.0.1 && break; sleep 1; done
+          for db in tests migrate_tests schema; do docker exec ci-postgres psql -U postgres -qc "CREATE DATABASE $db"; done
+
+      # The PostgreSQL tests are skipped unless their variable is set, so fail if any of them was skipped here.
+      - name: Unit tests, inside the image, PostgreSQL tests included
+        run: |
+          set -o pipefail
+          docker run --rm --network ci-db -w /app -e TEST_POSTGRES_URL=postgresql://postgres:ci@ci-postgres/tests \
+            -e MIGRATE_TEST_DATABASE_URL=postgresql://postgres:ci@ci-postgres/migrate_tests \
+            well-backend:ci python -m unittest discover -s tests -t . -v 2>&1 | tee unittest.log
+          if grep -E "skipped 'set (TEST_POSTGRES_URL|MIGRATE_TEST_DATABASE_URL)" unittest.log; then
+            echo "::error::PostgreSQL tests were skipped"; exit 1
+          fi
+
+      # A new database as on a fresh VM: the tables the app creates, then every migration, then a second run that
+      # must find nothing left to apply.
+      - name: Migrations on a fresh database
+        run: |
+          set -o pipefail
+          run=(docker run --rm --network ci-db -w /app/app -e DATABASE_URL=postgresql://postgres:ci@ci-postgres/schema
+               well-backend:ci)
+          "${run[@]}" python db/init_db.py
+          "${run[@]}" python scripts/migrate.py
+          "${run[@]}" python scripts/migrate.py | tee migrate-again.log
+          grep -q "nothing to apply" migrate-again.log
+          "${run[@]}" python scripts/migrate.py --status
 
       - name: The app, worker, scheduler and export modules import, with psycopg2 as the database driver
         run: |
@@ -68,6 +101,41 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+  static:
+    name: Lint Python, shell and compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pyflakes rules only (F): undefined names, unused imports and variables, and the like. No style rules.
+      - name: ruff (pyflakes rules) on the backend
+        run: pipx run ruff==0.14.0 check --select F --target-version py311 --output-format github dashboard/backend
+
+      # The runner image ships shellcheck.
+      - name: shellcheck on deploy.sh and the CI scripts
+        run: shellcheck deploy.sh .github/scripts/*.sh
+
+      # The env files compose reads aren't in the repo; placeholders are enough to check the file parses.
+      - name: docker compose config
+        run: |
+          touch dashboard/backend/app/.env dashboard/frontend/.env.local
+          cat > .env <<'EOF'
+          MYSQL_ROOT_PASSWORD=ci
+          WORDPRESS_DB_PASSWORD=ci
+          WP_HOME=http://localhost:8080
+          WP_SITEURL=http://localhost:8080
+          DASHBOARD_URL=http://localhost:8081
+          DASHBOARD_PORT=8081
+          BACKEND_DATABASE_URL=postgresql://ci:ci@host.docker.internal:5432/ci
+          BACKEND_PORT=5000
+          BACKEND_INTERNAL_URL=http://backend:5000
+          NEXT_PUBLIC_FLASK_API_URL=http://localhost:5000
+          NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=placeholder
+          WORKER_LOG_TO_STDOUT=1
+          EOF
+          docker compose config -q
 
   deploy-script:
     name: Deploy script

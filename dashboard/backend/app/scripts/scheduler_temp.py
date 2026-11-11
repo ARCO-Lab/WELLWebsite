@@ -1,6 +1,8 @@
 # This script runs the worker's scheduled jobs: vendor API ingestion every 10 minutes, the weekly
 # Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
 # month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily).
+# It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
+# pings a Healthchecks.io check after each ingestion run, monthly upload and digest (utils/heartbeat.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
 
@@ -20,10 +22,12 @@ from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
 )
+from utils.heartbeat import ping_heartbeat  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
 upload_log_file_path = "logs/db_uploads.log"
+digest_log_file_path = "logs/daily_digest.log"
 # Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
 # on the host), so it survives restarts and rebuilds.
 uploaded_months_path = "logs/uploaded_months.json"
@@ -40,6 +44,12 @@ SITE_TZ = ZoneInfo("America/Toronto")
 DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
 UPLOAD_TIMEOUT_S = 2 * 60 * 60
 LIST_FILES_TIMEOUT_S = 5 * 60
+DIGEST_TIMEOUT_S = 10 * 60
+
+# The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
+# logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
+# happens twice (two digests) or 02:00 not at all (none).
+DIGEST_HOUR = os.getenv("DIGEST_HOUR", "7").strip()
 
 # Control whether to also mirror file logs to stdout (Docker logs)
 # Set WORKER_LOG_TO_STDOUT=1|true to enable
@@ -69,6 +79,15 @@ def timestamped_print_download(*args, **kwargs):
 def timestamped_print_upload(*args, **kwargs):
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
     with open(upload_log_file_path, "a") as f:
+        builtins._original_print(timestamp, *args, file=f, **kwargs)
+        f.flush()
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
+
+# Override print for the daily digest
+def timestamped_print_digest(*args, **kwargs):
+    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+    with open(digest_log_file_path, "a") as f:
         builtins._original_print(timestamp, *args, file=f, **kwargs)
         f.flush()
     if LOG_TO_STDOUT:
@@ -165,16 +184,60 @@ def monthly_upload_check():
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Not uploading: {type(e).__name__}: {e} "
                                  f"(check BOREALIS_UPLOAD_FIRST_MONTH and {uploaded_months_path})")
+        ping_heartbeat("upload", "fail")
         return
-    for year, month in months_due_for_upload(now, uploaded, first_month):
+    due = months_due_for_upload(now, uploaded, first_month)
+    failed = 0
+    for year, month in due:
         if upload_job(year, month):
             record_uploaded_month(uploaded_months_path, year, month)
             timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {uploaded_months_path}")
         else:
+            failed += 1
             timestamped_print_upload(f"{month_key(year, month)} was not uploaded; trying again tomorrow at 02:00")
+    if due:   # the upload check expects one ping a month, so days with nothing to upload don't ping
+        ping_heartbeat("upload", "fail" if failed else "success")
+
+def digest_hour():
+    """DIGEST_HOUR as an hour 0-23 other than 1 and 2 (the DST hours). ValueError otherwise."""
+    if not DIGEST_HOUR.isdigit() or int(DIGEST_HOUR) > 23 or int(DIGEST_HOUR) in (1, 2):
+        raise ValueError(f"DIGEST_HOUR must be an hour from 0 to 23 other than 1 and 2 (DST changes at 02:00), "
+                         f"got {DIGEST_HOUR!r}")
+    return int(DIGEST_HOUR)
+
+def daily_digest_check():
+    """Runs every hour and acts only at DIGEST_HOUR Toronto time: builds the daily digest, which emails or
+    prints itself (scripts/daily_digest.py), and logs its output."""
+    try:
+        hour = digest_hour()
+    except ValueError as e:
+        if datetime.now(SITE_TZ).hour == 0:   # once a day, not every hour
+            timestamped_print_digest(f"[ERROR] No daily digest: {e}")
+        return
+    if datetime.now(SITE_TZ).hour != hour:
+        return
+    cmd = [sys.executable, "scripts/daily_digest.py"]
+    timestamped_print_digest(f"Running command: {' '.join(cmd)}")
+    try:
+        result = run_bounded(cmd, DIGEST_TIMEOUT_S)
+        timestamped_print_digest(f"daily_digest.py stdout: {result.stdout}")
+        if result.stderr:
+            timestamped_print_digest(f"daily_digest.py stderr: {result.stderr}")
+        ok = True
+    except subprocess.TimeoutExpired as e:
+        timestamped_print_digest(f"[ERROR] daily_digest.py was stopped after {DIGEST_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_digest(f"daily_digest.py stdout so far: {e.stdout}")
+        ok = False
+    except subprocess.CalledProcessError as e:
+        timestamped_print_digest(f"[ERROR] daily_digest.py failed with exit code {e.returncode}")
+        timestamped_print_digest(f"daily_digest.py stdout: {e.stdout}")
+        timestamped_print_digest(f"daily_digest.py stderr: {e.stderr}")
+        ok = False
+    ping_heartbeat("digest", "success" if ok else "fail")
 
 def api_injection_job():
-    """Every 10 minutes: fetch new vendor API data and store it."""
+    """Every 10 minutes: fetch new vendor API data and store it, then ping the ingestion heartbeat:
+    success, or /fail when either vendor failed (inject_all_new_data raises then)."""
     try:
         print("========== API INJECTION STARTED ==========")
         print("Calling inject_all_new_data() function...")
@@ -182,11 +245,14 @@ def api_injection_job():
         print("inject_all_new_data() function completed")
         print("========== API INJECTION COMPLETED ==========")
     except Exception as e:
-        print(f"========== API INJECTION FAILED ==========")
+        print("========== API INJECTION FAILED ==========")
         print(f"[ERROR] inject_all_new_data failed: {e}")
         import traceback
         print(f"[ERROR] Full traceback: {traceback.format_exc()}")
         print("========== API INJECTION ERROR END ==========")
+        ping_heartbeat("ingestion", "fail")
+        return
+    ping_heartbeat("ingestion", "success")
 
 if __name__ == "__main__":
     # Main entry point: one scheduler loop for all jobs
@@ -210,14 +276,17 @@ if __name__ == "__main__":
     api_run = run_in_background(api_injection_job, log=print)
     download_run = run_in_background(download_job, log=timestamped_print_download)
     upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload)
+    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest)
 
     scheduler = schedule.Scheduler()
     scheduler.every(10).minutes.do(api_run)
     scheduler.every().sunday.at("00:00").do(download_run)
     scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
+    scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
 
     print("Schedule: API injection every 10 minutes; Borealis download Sundays 00:00; "
-          "Borealis upload at 02:00 Toronto time of each ended month not yet uploaded.")
+          "Borealis upload at 02:00 Toronto time of each ended month not yet uploaded; "
+          f"daily digest at {DIGEST_HOUR}:00 Toronto time.")
     timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
                                "run `python scripts/download_data.py` by hand to fetch now.")
     timestamped_print_upload("Upload scheduler ready: at 02:00 Toronto time, each month from "

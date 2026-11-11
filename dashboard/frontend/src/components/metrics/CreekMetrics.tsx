@@ -26,9 +26,10 @@ interface CreekMetricsProps {
   subFilters: string[];
   metrics?: any[];
   loading?: boolean;
+  inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }
 
-const CreekMetrics: React.FC<CreekMetricsProps> = ({ creekKey, subFilters, metrics: allData = [], loading = false }) => {
+const CreekMetrics: React.FC<CreekMetricsProps> = ({ creekKey, subFilters, metrics: allData = [], loading = false, inModal = false }) => {
   const creekConfig = SAMPLING_FILTER_CONFIG[creekKey];
   const metricsToDisplay = metricMap.filter((m) => subFilters.includes(m.label));
 
@@ -54,6 +55,7 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({ creekKey, subFilters, metri
       title={`${creekConfig.label} Metrics`}
       sections={sections}
       loading={loading}
+      layout={inModal ? "wrap" : "ticker"}
       staleAfterHours={null}
       timeLabel="sampled"
       dateOnly
