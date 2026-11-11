@@ -58,7 +58,8 @@ def ago(ts, now=None):
 
 
 def pct(value):
-    return "n/a" if value is None else f"{value:.2f} %" if value < 100 else "100 %"
+    # A no-break space, so a narrow table cell doesn't put the % on a line of its own
+    return "n/a" if value is None else f"{value:.2f}\u00a0%" if value < 100 else "100\u00a0%"
 
 
 def ms(value):

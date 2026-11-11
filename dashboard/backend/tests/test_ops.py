@@ -396,7 +396,7 @@ class PostgresPageTests(unittest.TestCase):
         self.assertIn("4 failed", overview)
         self.assertIn("abc1234", overview)            # the CI stub
         uptime = pages["/uptime"]
-        self.assertIn("95.00 %", uptime)               # 57 of 60 dashboard checks
+        self.assertIn("95.00\u00a0%", uptime)          # 57 of 60 dashboard checks
         self.assertIn("HTTP 502", uptime)
         self.assertIn("still down", uptime)            # WordPress
         self.assertIn("<svg", uptime)
