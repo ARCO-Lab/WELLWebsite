@@ -1,5 +1,8 @@
 // This file defines the MetricChart component: one West Campus sensor chart (a group, or one water logger),
 // drawn with Highcharts from the series /api/series returns (see hooks/useChartSeries). It has one Y-axis per unit.
+// Each measurement has a fixed colour and axis side (utils/chartStyle), the same on every logger and every load.
+// Averaged lines get a light min–max band behind them; rain (a total per bucket) is drawn as bars and wind
+// direction (an angle) as points on a 0–360° axis.
 //
 // Zoom is shared: every chart shows the page's one view window (ChartView.viewWindow). Dragging across a chart
 // (or pinching on a touch screen) asks for a new window instead of zooming this chart alone, and the window bar
@@ -11,10 +14,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
+// arearange, for the min–max band
+import 'highcharts/highcharts-more';
 // Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
 import 'highcharts/modules/accessibility';
 import { seriesKey, useChartView } from '@/hooks/useChartSeries';
-import { MIN_RANGE_MS, TIME_ZONE, composePoints, resolutionBadge, type Range } from '@/utils/chartWindow';
+import { MIN_RANGE_MS, TIME_ZONE, composeBand, composePoints, resolutionBadge, type Range } from '@/utils/chartWindow';
+import { COMPASS, compassLabel, hasBand, seriesColor, seriesType } from '@/utils/chartStyle';
 
 interface MetricChartProps {
   title: string;
@@ -27,9 +33,9 @@ interface MetricChartProps {
   // Small multiples (the logger charts) show one error message and one resolution badge for the group instead.
   showErrorBanner?: boolean;
   showBadge?: boolean;
+  showYAxis?: boolean; // default: only in the larger view (a card chart with two units has no room for both)
 }
 
-const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
 const FONT = 'Poppins, Arial, sans-serif';
 
 const MetricChart: React.FC<MetricChartProps> = ({
@@ -42,7 +48,9 @@ const MetricChart: React.FC<MetricChartProps> = ({
   showLegend = true,
   showErrorBanner = true,
   showBadge = true,
+  showYAxis,
 }) => {
+  const yAxisVisible = showYAxis ?? modalOpen;
   const view = useChartView();
   const chartRef = useRef<HighchartsReact.RefObject>(null);
   const [resolvedHeight, setResolvedHeight] = useState(height);
@@ -69,8 +77,8 @@ const MetricChart: React.FC<MetricChartProps> = ({
   zoomRef.current = view.zoomTo;
   // A pinch in progress: only this chart follows the fingers; the shared window is set once, when they lift.
   const pinchRef = useRef<Range | null>(null);
-  const layoutRef = useRef({ modalOpen, showLegend });
-  layoutRef.current = { modalOpen, showLegend };
+  const layoutRef = useRef({ yAxisVisible, showLegend });
+  layoutRef.current = { yAxisVisible, showLegend };
 
   // Created once; everything that changes later goes through chart.update / setExtremes below.
   const [initialOptions] = useState<Highcharts.Options>(() => {
@@ -91,17 +99,29 @@ const MetricChart: React.FC<MetricChartProps> = ({
           },
         },
       },
-      title: { text: title, style: { fontFamily: FONT, fontSize: '16px', color: '#333' } },
+      title: { text: title, style: { fontFamily: FONT, fontSize: height < 300 ? '14px' : '16px', color: '#333' } },
       subtitle: { text: undefined, style: { fontFamily: FONT, fontSize: '11px', color: '#4b5563' } },
       credits: { enabled: false },
-      legend: { enabled: false, itemStyle: { fontFamily: FONT } },
+      legend: { enabled: false, itemStyle: { fontFamily: FONT, fontSize: '11px' }, margin: 4, padding: 4 },
       tooltip: { shared: true, followPointer: true, valueDecimals: 2, style: { fontFamily: FONT } },
-      plotOptions: { series: { animation: !reducedMotion, connectNulls: false } },
+      plotOptions: {
+        series: { animation: !reducedMotion, connectNulls: false },
+        column: { pointPadding: 0, groupPadding: 0, borderWidth: 0, grouping: false },
+        scatter: { marker: { radius: 2, symbol: 'circle' } },
+        arearange: { lineWidth: 0, fillOpacity: 0.18, marker: { enabled: false } },
+      },
+      accessibility: {
+        // One landmark per chart (not one per series)
+        landmarkVerbosity: 'one',
+      },
       xAxis: {
         type: 'datetime',
         minRange: MIN_RANGE_MS,
         title: { text: null },
-        labels: { style: { fontFamily: FONT, fontSize: '10px' } },
+        // Short labels that never wrap or get cut to "12:00…"; Highcharts spaces the ticks to fit them
+        tickPixelInterval: 90,
+        dateTimeLabelFormats: { hour: '%H:%M', day: '%b %e', week: '%b %e', month: "%b '%y" },
+        labels: { style: { fontFamily: FONT, fontSize: '10px', textOverflow: 'none', whiteSpace: 'nowrap' } },
         events: {
           // A pinch sets this chart's extremes with a trigger ('touchmove', on every move: kept until the
           // fingers lift, so the other charts don't redraw each frame). Programmatic changes (the window, data
@@ -117,39 +137,72 @@ const MetricChart: React.FC<MetricChartProps> = ({
     };
   });
 
-  // Data: this chart's series, overview outside the detail range and detail inside it.
+  // Data: this chart's series, overview outside the detail range and detail inside it. Sorted by the order of
+  // `measurements` (the filter list), so colours, axes and the legend never depend on the order rows arrive in.
   const { series, yAxes, hasData, hasTotals } = useMemo(() => {
     const ov = view.overview;
     if (!ov) return { series: [], yAxes: [], hasData: false, hasTotals: false };
-    const unitIndex = new Map<string, number>();
-    const picked = ov.series.filter((s) => s.group_type === groupType
-      && (stationId === undefined || String(s.station_id) === stationId)
-      && measurements.includes(s.measurement_type));
+    const rank = (m: string) => measurements.indexOf(m);
+    const picked = ov.series
+      .filter((s) => s.group_type === groupType
+        && (stationId === undefined || String(s.station_id) === stationId)
+        && measurements.includes(s.measurement_type))
+      .sort((a, b) => rank(a.measurement_type) - rank(b.measurement_type) || a.unit.localeCompare(b.unit));
+    // One axis per unit, on the side its first measurement's place in the filter list gives it (so a logger whose
+    // water level sensor is dead still shows temperature on the right, like the others)
+    const units = new Map<string, { index: number; opposite: boolean; angle: boolean }>();
+    for (const s of picked) {
+      if (!units.has(s.unit)) {
+        units.set(s.unit, { index: units.size, opposite: rank(s.measurement_type) % 2 === 1, angle: s.agg === 'vector_mean' });
+      }
+    }
     const detail = view.detail;
-    const built = picked.map((s) => {
-      if (!unitIndex.has(s.unit)) unitIndex.set(s.unit, unitIndex.size);
+    const built: Highcharts.SeriesOptionsType[] = [];
+    let hasPoints = false;
+    for (const s of picked) {
       const key = seriesKey(s);
-      const points = composePoints(s, ov.bucketS, detail
-        ? { values: detail.byKey.get(key), bucketS: detail.bucketS, range: detail.range }
-        : undefined);
-      return {
-        id: key,
-        type: 'line' as const,
-        name: `${s.measurement_type} (${s.unit})`,
-        data: points,
-        color: graphColors[unitIndex.get(s.unit)! % graphColors.length],
-        yAxis: unitIndex.get(s.unit)!,
-      };
-    });
-    const axes = Array.from(unitIndex.keys()).map((unit, index) => ({
-      title: { text: undefined },
-      labels: { format: `{value} ${unit}`, style: { fontFamily: FONT, fontSize: '10px' } },
-      opposite: index % 2 === 1,
+      const d = detail ? { values: detail.byKey.get(key), bucketS: detail.bucketS, range: detail.range } : undefined;
+      const points = composePoints(s, ov.bucketS, d);
+      hasPoints ||= points.some(([, v]) => v !== null);
+      const color = seriesColor(s.measurement_type);
+      const yAxis = units.get(s.unit)!.index;
+      const type = seriesType(s.agg);
+      const label = `${s.measurement_type} (${s.unit})`;
+      if (hasBand(s.agg, ov.aggregated) && s.min && s.max) {
+        built.push({
+          id: `${key}|band`, linkedTo: key, type: 'arearange', name: `${s.measurement_type} min–max`,
+          data: composeBand(s, ov.bucketS, d), color, yAxis, zIndex: 0,
+          tooltip: { valueSuffix: ` ${s.unit}` },
+        });
+      }
+      if (type === 'scatter') {
+        built.push({
+          id: key, type, name: label, data: points.filter(([, v]) => v !== null), color, yAxis, zIndex: 1,
+          tooltip: {
+            pointFormatter() {
+              return `<span style="color:${this.color}">●</span> ${s.measurement_type}: <b>${compassLabel(this.y ?? 0)}</b><br/>`;
+            },
+          },
+        });
+      } else {
+        built.push({ id: key, type, name: label, data: points, color, yAxis, zIndex: 1, tooltip: { valueSuffix: ` ${s.unit}` } });
+      }
+    }
+    const axes: Highcharts.YAxisOptions[] = Array.from(units.entries()).map(([unit, a]) => ({
+      // The unit goes in the axis title, so the labels stay short ("38.9", not "38.889 m asl", which wrapped); a
+      // chart with one unit has it in its own title already
+      title: { text: a.angle || units.size === 1 ? undefined : unit, style: { fontFamily: FONT, fontSize: '10px', color: '#4b5563' } },
+      labels: {
+        style: { fontFamily: FONT, fontSize: '10px' },
+        ...(a.angle ? { formatter() { return COMPASS[Number(this.value)] ?? String(this.value); } } : {}),
+      },
+      opposite: a.opposite,
+      ...(a.angle ? { min: 0, max: 360, tickPositions: [0, 90, 180, 270, 360] } : {}),
     }));
     return {
       series: built,
       yAxes: axes,
-      hasData: built.some((s) => s.data.length > 0),
+      hasData: hasPoints,
       hasTotals: picked.some((s) => s.agg === 'sum'),
     };
   }, [view.overview, view.detail, groupType, stationId, measurements]);
@@ -157,11 +210,12 @@ const MetricChart: React.FC<MetricChartProps> = ({
   useEffect(() => {
     const chart = chartRef.current?.chart;
     if (!chart) return;
-    const { modalOpen: open, showLegend: legend } = layoutRef.current;
+    const { yAxisVisible: axesShown, showLegend: legend } = layoutRef.current;
+    const lines = series.filter((x) => x.type !== 'arearange').length;
     chart.update({
-      yAxis: yAxes.map((a) => ({ ...a, visible: open })),
+      yAxis: yAxes.map((a) => ({ ...a, visible: axesShown })),
       series,
-      legend: { enabled: legend && series.length > 1 },
+      legend: { enabled: legend && lines > 1 },
     }, true, true, false); // one-to-one: series and axes that went away are removed; no animation on updates
   }, [series, yAxes]);
 
@@ -172,11 +226,11 @@ const MetricChart: React.FC<MetricChartProps> = ({
     chart.update({
       chart: { height: resolvedHeight },
       title: { text: title },
-      legend: { enabled: showLegend && chart.series.length > 1 },
+      legend: { enabled: showLegend && chart.series.filter((x) => x.type !== 'arearange').length > 1 },
     }, false, false, false);
-    chart.yAxis.forEach((axis) => axis.update({ visible: modalOpen }, false));
+    chart.yAxis.forEach((axis) => axis.update({ visible: yAxisVisible }, false));
     chart.redraw(false);
-  }, [resolvedHeight, title, showLegend, modalOpen]);
+  }, [resolvedHeight, title, showLegend, yAxisVisible]);
 
   // The window: the shared view, or the whole picked range.
   const win: Range | null = view.viewWindow ?? view.range;

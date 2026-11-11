@@ -110,11 +110,16 @@ export function detailRange(w: Range, picked: Range, gridS: number): Range {
   };
 }
 
-// Arrays, or typed arrays (as cached: NaN stands for a missing value there).
+// Arrays, or typed arrays (as cached: NaN stands for a missing value there). min/max are the bucket's smallest and
+// largest reading, for the band behind an averaged line.
 export interface SeriesValues {
   t: ArrayLike<number>;
   avg: ArrayLike<number | null>;
+  min?: ArrayLike<number | null>;
+  max?: ArrayLike<number | null>;
 }
+
+export type Field = "avg" | "min" | "max";
 
 /** Points for one series: overview points outside the detail range and detail points inside it, so a pan or
  *  zoom never shows a gap while detail loads. A null is inserted wherever two neighbours are more than
@@ -124,13 +129,15 @@ export function composePoints(
   overview: SeriesValues | undefined,
   overviewBucketS: number,
   detail?: { values: SeriesValues | undefined; bucketS: number; range: Range },
+  field: Field = "avg",
 ): Point[] {
   const pts: { t: number; v: number | null; b: number }[] = [];
   const ob = overviewBucketS * 1000;
   const push = (s: SeriesValues | undefined, b: number, keep: (t: number) => boolean) => {
     if (!s) return;
+    const values = s[field];
     for (let i = 0; i < s.t.length; i++) if (keep(s.t[i])) {
-      const v = s.avg[i];
+      const v = values ? values[i] : null;
       pts.push({ t: s.t[i], v: v === null || Number.isNaN(v) ? null : v, b });
     }
   };
@@ -155,6 +162,21 @@ export function composePoints(
   return out;
 }
 
+/** The min–max band for one series, as [t, low, high] points, composed like composePoints (same times, same
+ *  breaks). A bucket without both is a break in the band. */
+export function composeBand(
+  overview: SeriesValues | undefined,
+  overviewBucketS: number,
+  detail?: { values: SeriesValues | undefined; bucketS: number; range: Range },
+): [number, number | null, number | null][] {
+  const lo = composePoints(overview, overviewBucketS, detail, "min");
+  const hi = composePoints(overview, overviewBucketS, detail, "max");
+  return lo.map(([t, l], i) => {
+    const h = hi[i][1];
+    return l === null || h === null ? [t, null, null] : [t, Math.min(l, h), Math.max(l, h)];
+  });
+}
+
 /** "10-minute readings", "1-hour averages", "daily averages"… for a bucket size. */
 export function bucketLabel(bucketS: number, aggregated: boolean): string {
   let size: string;
@@ -169,6 +191,106 @@ export function bucketLabel(bucketS: number, aggregated: boolean): string {
 export function resolutionBadge(bucketS: number | null, aggregated: boolean, hasTotals: boolean): string | null {
   if (!bucketS || !aggregated) return null;
   return `${bucketLabel(bucketS, true)}${hasTotals ? " (rain: totals)" : ""}`;
+}
+
+// ---- The picked days, the data's extent and shareable links ----
+
+// The first day with sensor data (as in components/filters/Calendar.tsx): "All" starts here.
+export const DATA_START_DAY = { year: 2025, month: 4, day: 8 }; // 2025-05-08, month counted from 0
+export const dataStart = (): number =>
+  wallToUtc(Date.UTC(DATA_START_DAY.year, DATA_START_DAY.month, DATA_START_DAY.day));
+
+/** The picked days, ending no later than the next whole hour after now: today's remaining hours have no data
+ *  yet, and showing them left the right half of a chart empty. Rounding to the hour keeps the range (and so the
+ *  cache key) the same for an hour. */
+export function clampToNow(r: Range, now: number): Range {
+  const end = Math.min(r.end, Math.max(r.start + MIN_RANGE_MS, snapUp(now, 3600)));
+  return { start: r.start, end };
+}
+
+/** The calendar days a range covers, in Toronto, as the date pickers hold them (Dates whose own calendar day is
+ *  the day). */
+export function daysCovering(w: Range): { startDay: Date; endDay: Date } {
+  const day = (ms: number) => {
+    const wall = new Date(ms + zoneOffsetMs(ms));
+    return new Date(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate());
+  };
+  return { startDay: day(w.start), endDay: day(Math.max(w.start, w.end - 1)) };
+}
+
+/** What to show for a window that may reach outside the picked days: the days that cover it, and the window
+ *  within them (null when it is all of them). */
+export function planWindow(w: Range, now: number): { startDay: Date; endDay: Date; viewWindow: Range | null } {
+  const { startDay, endDay } = daysCovering(w);
+  const range = clampToNow(pickedDaysRange(startDay, endDay), now);
+  return { startDay, endDay, viewWindow: normalizeWindow(w, range) };
+}
+
+/** The range buttons: the last `days` days up to the end of what is shown now (or All: every day with data). Ends
+ *  no later than the next whole hour, like the picked days (clampToNow). */
+export function presetWindow(days: number | "all", shown: Range, now: number): Range {
+  const first = dataStart();
+  const last = snapUp(now, 3600);
+  if (days === "all") return { start: first, end: last };
+  const end = Math.min(shown.end, last);
+  return { start: Math.max(first, end - days * 24 * 3600 * 1000), end };
+}
+
+/** An instant as ISO 8601 in Toronto time, to the minute: "2026-11-10T14:20-05:00". */
+export function torontoIso(ms: number): string {
+  const off = zoneOffsetMs(ms);
+  const wall = new Date(Math.floor((ms + off) / 60000) * 60000);
+  const sign = off < 0 ? "-" : "+";
+  const abs = Math.abs(off) / 60000;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${wall.toISOString().slice(0, 16)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
+// A date, optionally a time, optionally an offset; nothing else (Date.parse accepts far too much, and reads a
+// date-only string as UTC).
+const ISO = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/** One ?from= / ?to= value to an instant; a value without an offset is Toronto wall-clock time. NaN if invalid. */
+export function parseIsoParam(value: string): number {
+  // A "+" typed into a link arrives as a space ("…T14:20 05:30"); read it back as the "+" it was.
+  const m = ISO.exec(value.trim().replace(/ (\d{2}:?\d{2})$/, "+$1"));
+  if (!m) return NaN;
+  const [, y, mo, d, h = "0", mi = "0", s = "0", zone] = m;
+  const wall = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s);
+  const check = new Date(wall); // reject 2026-02-31 and 25:00, which Date.UTC would roll over
+  if (check.getUTCMonth() !== +mo - 1 || check.getUTCDate() !== +d || +h > 23 || +mi > 59 || +s > 59) return NaN;
+  if (!zone) return wallToUtc(wall);
+  if (zone === "Z") return wall;
+  const digits = zone.replace(":", "");
+  const offsetMin = (zone[0] === "-" ? -1 : 1) * (+digits.slice(1, 3) * 60 + +digits.slice(3, 5));
+  return wall - offsetMin * 60000;
+}
+
+/** The window a link asks for (?from=&to=), or null when it is missing or makes no sense: unparseable, end not
+ *  after start, or nothing left (at least an hour) after clamping it to the days with data. */
+export function windowFromSearch(search: string, now: number): Range | null {
+  const q = new URLSearchParams(search);
+  const from = q.get("from"), to = q.get("to");
+  if (!from || !to) return null;
+  let start = parseIsoParam(from), end = parseIsoParam(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  start = Math.max(start, dataStart());
+  end = Math.min(end, snapUp(now, 3600));
+  return end - start >= MIN_RANGE_MS ? { start, end } : null;
+}
+
+/** A link's query string with ?from=&to= set to the window (null: removed), other parameters kept. */
+export function searchWithWindow(search: string, w: Range | null): string {
+  const q = new URLSearchParams(search);
+  if (w) {
+    q.set("from", torontoIso(w.start));
+    q.set("to", torontoIso(w.end));
+  } else {
+    q.delete("from");
+    q.delete("to");
+  }
+  const s = q.toString();
+  return s ? `?${s}` : "";
 }
 
 /** A least-recently-used cache: get() refreshes an entry, set() drops the oldest beyond `max`. */

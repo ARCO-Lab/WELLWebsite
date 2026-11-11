@@ -5,8 +5,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   pickBucket, zoneOffsetMs, wallToUtc, pickedDaysRange, snapDown, snapUp, normalizeWindow, shiftWindow,
-  zoomOutWindow, zoomInWindow, detailRange, composePoints, bucketLabel, Lru, MIN_RANGE_MS,
+  zoomOutWindow, zoomInWindow, detailRange, composePoints, composeBand, bucketLabel, Lru, MIN_RANGE_MS,
+  clampToNow, daysCovering, planWindow, presetWindow, dataStart, torontoIso, parseIsoParam, windowFromSearch,
+  searchWithWindow,
 } from "../src/utils/chartWindow.ts";
+import { seriesColor, seriesType, hasBand, compassLabel, weatherPanels } from "../src/utils/chartStyle.ts";
 
 const H = 3600 * 1000;
 const D = 24 * H;
@@ -110,4 +113,104 @@ test("LRU keeps the most recently used", () => {
   assert.equal(c.get("b"), undefined);
   assert.equal(c.get("a"), 1);
   assert.equal(c.size, 2);
+});
+
+test("the min–max band follows the composed line: same times, same breaks", () => {
+  const s = { t: [0, H, 2 * H, 6 * H], avg: [1, 2, 3, 4], min: [0, 1, NaN, 3], max: [2, 3, 4, 5] };
+  const band = composeBand(s, 3600);
+  const line = composePoints(s, 3600);
+  assert.deepEqual(band.map(([t]) => t), line.map(([t]) => t));
+  assert.deepEqual(band[0], [0, 0, 2]);
+  assert.deepEqual(band[2], [2 * H, null, null]); // a missing min breaks the band there
+  assert.deepEqual(band[3], [3 * H, null, null]); // the outage break
+  assert.deepEqual(composeBand({ t: [0], avg: [1] }, 600), [[0, null, null]]); // no min/max: no band
+});
+
+test("picked days stop at the next whole hour after now", () => {
+  const picked = pickedDaysRange(new Date(2026, 10, 10), new Date(2026, 10, 11)); // Nov 10-11, Toronto
+  const now = Date.UTC(2026, 10, 11, 17, 12); // 12:12 EST on Nov 11
+  assert.deepEqual(clampToNow(picked, now), { start: picked.start, end: Date.UTC(2026, 10, 11, 18) });
+  assert.deepEqual(clampToNow(picked, Date.UTC(2026, 10, 20)), picked); // past days: unchanged
+  const today = pickedDaysRange(new Date(2026, 10, 11), new Date(2026, 10, 11));
+  assert.equal(clampToNow(today, today.start).end - today.start, MIN_RANGE_MS); // just after midnight: an hour
+});
+
+test("a window reaching outside the picked days: the days that cover it, and the window within them", () => {
+  const w = { start: Date.UTC(2026, 9, 3, 18), end: Date.UTC(2026, 9, 5, 2) }; // Oct 3 14:00 - Oct 4 22:00 EDT
+  const { startDay, endDay } = daysCovering(w);
+  assert.deepEqual([startDay.getFullYear(), startDay.getMonth(), startDay.getDate()], [2026, 9, 3]);
+  assert.deepEqual([endDay.getFullYear(), endDay.getMonth(), endDay.getDate()], [2026, 9, 4]);
+  const plan = planWindow(w, Date.UTC(2026, 10, 1));
+  assert.deepEqual(plan.viewWindow, w);
+  const whole = pickedDaysRange(new Date(2026, 9, 3), new Date(2026, 9, 4));
+  assert.equal(planWindow(whole, Date.UTC(2026, 10, 1)).viewWindow, null); // whole days: not zoomed
+  // ends at midnight: that day isn't picked
+  assert.equal(daysCovering({ start: whole.start, end: whole.end }).endDay.getDate(), 4);
+});
+
+test("range buttons: the last N days up to what is shown, All from the first day with data", () => {
+  const now = Date.UTC(2026, 10, 11, 17, 12);
+  const nextHour = Date.UTC(2026, 10, 11, 18);
+  assert.deepEqual(presetWindow(1, { start: 0, end: nextHour }, now), { start: nextHour - D, end: nextHour });
+  const shown = { start: Date.UTC(2026, 9, 1), end: Date.UTC(2026, 9, 10) };
+  assert.deepEqual(presetWindow(7, shown, now), { start: shown.end - 7 * D, end: shown.end });
+  assert.deepEqual(presetWindow("all", shown, now), { start: dataStart(), end: nextHour });
+  assert.equal(dataStart(), Date.UTC(2025, 4, 8, 4)); // 2025-05-08 00:00 EDT
+  assert.equal(presetWindow(30, { start: 0, end: dataStart() + D }, now).start, dataStart()); // never before data
+});
+
+test("links: Toronto ISO times out, and only sensible ones back in", () => {
+  assert.equal(torontoIso(Date.UTC(2026, 10, 10, 19, 20, 30)), "2026-11-10T14:20-05:00");
+  assert.equal(torontoIso(Date.UTC(2026, 6, 1, 16)), "2026-07-01T12:00-04:00");
+  for (const ms of [Date.UTC(2026, 10, 10, 19, 20), Date.UTC(2026, 2, 8, 7, 30), Date.UTC(2026, 10, 1, 5, 30)]) {
+    assert.equal(parseIsoParam(torontoIso(ms)), ms); // round trip, including both DST changes
+  }
+  assert.equal(parseIsoParam("2026-11-10T19:20Z"), Date.UTC(2026, 10, 10, 19, 20));
+  assert.equal(parseIsoParam("2026-11-10T14:20"), Date.UTC(2026, 10, 10, 19, 20)); // no offset: Toronto
+  assert.equal(parseIsoParam("2026-11-10"), Date.UTC(2026, 10, 10, 5)); // a day: its Toronto midnight
+  assert.equal(parseIsoParam("2026-11-10T20:50 05:30"), Date.UTC(2026, 10, 10, 15, 20)); // a typed plus, read as a space
+  for (const bad of ["", "yesterday", "2026-02-31", "2026-11-10T25:00", "1e12", "2026-11-10T14:20-05:00x", "Nov 10 2026"]) {
+    assert.ok(Number.isNaN(parseIsoParam(bad)), bad);
+  }
+  const now = Date.UTC(2026, 10, 11, 17, 12);
+  const q = "?from=2026-11-10T14:20-05:00&to=2026-11-10T18:00-05:00";
+  assert.deepEqual(windowFromSearch(q, now), { start: Date.UTC(2026, 10, 10, 19, 20), end: Date.UTC(2026, 10, 10, 23) });
+  assert.equal(windowFromSearch("?from=2026-11-10", now), null);
+  assert.equal(windowFromSearch("?from=garbage&to=2026-11-10", now), null);
+  assert.equal(windowFromSearch("?from=2026-11-10T18:00&to=2026-11-10T14:00", now), null); // backwards
+  assert.equal(windowFromSearch("?from=2030-01-01&to=2030-02-01", now), null); // all in the future
+  assert.equal(windowFromSearch("?from=2026-11-10T14:00&to=2026-11-10T14:20", now), null); // under an hour
+  assert.equal(windowFromSearch("?from=2020-01-01&to=2025-06-01", now).start, dataStart()); // clamped to the data
+  assert.equal(searchWithWindow("?tab=x", { start: Date.UTC(2026, 10, 10, 19, 20), end: Date.UTC(2026, 10, 10, 23) }),
+    "?tab=x&from=2026-11-10T14%3A20-05%3A00&to=2026-11-10T18%3A00-05%3A00");
+  assert.equal(searchWithWindow("?from=a&to=b", null), "");
+  const back = searchWithWindow("", { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
+  assert.deepEqual(windowFromSearch(back, now), { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
+});
+
+test("chart style: a fixed colour per measurement, and how each kind of series is drawn", () => {
+  assert.equal(seriesColor("Water Surface Elevation"), seriesColor("Water Surface Elevation"));
+  assert.notEqual(seriesColor("Water Surface Elevation"), seriesColor("Water Temperature"));
+  assert.equal(seriesColor("Something new"), seriesColor("Something new")); // unknown: stable too
+  assert.equal(seriesType("sum"), "column");
+  assert.equal(seriesType("vector_mean"), "scatter");
+  assert.equal(seriesType("mean"), "line");
+  assert.equal(hasBand("mean", true), true);
+  assert.equal(hasBand("mean", false), false); // raw readings: no band
+  assert.equal(hasBand("sum", true), false);
+  assert.equal(hasBand("vector_mean", true), false);
+  assert.equal(compassLabel(225), "225° (SW)");
+  assert.equal(compassLabel(-10), "350° (N)");
+});
+
+test("weather: one small chart per unit, in a fixed order", () => {
+  const panels = weatherPanels(["Wind Speed", "Rain", "Air Temperature", "Gust Speed", "Soil Temperature", "Mystery",
+    "All Weather"], new Set(["Mystery", "Rain"]));
+  assert.deepEqual(panels.map((p) => p.title), ["Temperature (°C)", "Rain (mm)", "Wind speed (m/s)", "Mystery"]);
+  assert.deepEqual(panels.map((p) => p.id), ["temperature", "rain", "wind-speed", "extra-mystery"]); // stable test ids
+  const extras = weatherPanels(["Humidity", "Wind-Gust", "Wind Gust"], new Set(["Humidity", "Wind-Gust", "Wind Gust"]));
+  assert.deepEqual(extras.map((p) => p.id), ["extra-humidity", "extra-wind-gust", "extra-wind-gust-2"]); // no collisions
+  assert.deepEqual(panels[0].measurements, ["Air Temperature", "Soil Temperature"]);
+  assert.deepEqual(panels[2].measurements, ["Wind Speed", "Gust Speed"]);
+  assert.deepEqual(weatherPanels([]), []);
 });
