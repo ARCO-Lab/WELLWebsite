@@ -1,7 +1,7 @@
 # This script fetches and injects all historical weather, logger, and water quality data into the database.
 # It clears existing SensorMeasurement records, retrieves data in chunks, parses, and inserts them in timestamp order.
 
-import os, sys, pathlib
+import sys, pathlib
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
 import math
@@ -254,15 +254,15 @@ def inject_all_history():
             print(f"\n[CHUNK {chunk_num}/{total_chunks}] Processing {start_str} to {end_str}")
             
             # Fetch data for this chunk
-            print(f"  - Fetching weather data...")
+            print("  - Fetching weather data...")
             weather_data, weather_skipped = fetch_weather_chunk(start_str, end_str)
             print(f"    Fetched {len(weather_data)} weather records (skipped {weather_skipped} battery)")
             
-            print(f"  - Fetching logger data...")
+            print("  - Fetching logger data...")
             logger_data, logger_skipped = fetch_logger_chunk(start_str, end_str)
             print(f"    Fetched {len(logger_data)} logger records (skipped {logger_skipped} battery)")
             
-            print(f"  - Fetching quality data...")
+            print("  - Fetching quality data...")
             quality_data = fetch_quality_chunk(start_str, end_str)
             print(f"    Fetched {len(quality_data)} quality records")
             

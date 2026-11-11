@@ -341,7 +341,7 @@ def main():
         # Save updated state
         save_state(processed_files)
         
-        print(f"\nDEBUG: === Processing Complete ===")
+        print("\nDEBUG: === Processing Complete ===")
         print(f"DEBUG: Successfully processed {processed_count} out of {len(files_to_process)} files")
         
         # Output for scheduler compatibility
