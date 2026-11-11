@@ -5,7 +5,7 @@
 //
 // Run from the repo root after changing a photo or adding one to the list below:
 //   npm install --no-save sharp && node wordpress/theme-images.mjs
-// then commit the files it writes. Running it again on the same originals gives the same files.
+// then commit the files it writes (sharp 0.34 made the current ones).
 
 import sharp from "sharp";
 import { mkdirSync } from "node:fs";
