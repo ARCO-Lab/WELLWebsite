@@ -33,6 +33,9 @@ _last_sent_lock = threading.Lock()
 # How much of a failed subprocess's stderr (usually its traceback) goes with the event.
 STDERR_TAIL_CHARS = 2000
 
+# Numbers and hex ids (timestamps, ports, row and job ids), collapsed in failure_signature.
+_NUMBERS = re.compile(r"\b0x[0-9a-f]+\b|\b[0-9a-f]*\d[0-9a-f]*\b|\d+", re.IGNORECASE)
+
 
 def init_sentry(component):
     """Start reporting errors for this process, tagged with SENTRY_COMPONENT if it is set, else `component`
@@ -64,12 +67,12 @@ def init_sentry(component):
 
 def capture_job_error(exc, source=None):
     """Report an error that was caught and logged (so it would otherwise never reach Sentry), unless it was
-    already reported, or the same failure (this thread's job, `source` and the error type) was sent in the last
-    REPEAT_AFTER_S. A failed subprocess's exit code and the end of its stderr go with it. No-op when reporting
-    is off."""
+    already reported, or the same failure (this thread's job, `source`, the error type and failure_signature)
+    was sent in the last REPEAT_AFTER_S. A failed subprocess's exit code and the end of its stderr go with it.
+    No-op when reporting is off."""
     if getattr(exc, "already_reported", False) or not sentry_sdk.is_initialized():
         return
-    key = (threading.current_thread().name, source, type(exc).__name__)
+    key = (threading.current_thread().name, source, type(exc).__name__, failure_signature(exc))
     now = time.monotonic()
     with _last_sent_lock:
         if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
@@ -79,15 +82,39 @@ def capture_job_error(exc, source=None):
         if source:
             scope.set_tag("source", source)
         if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
-            stderr = exc.stderr or ""
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode(errors="replace")
             scope.set_context("subprocess", {
                 "command": " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd),
                 "exit_code": getattr(exc, "returncode", None),
-                "stderr_tail": stderr[-STDERR_TAIL_CHARS:],
+                "stderr_tail": stderr_tail(exc),
             })
         sentry_sdk.capture_exception(exc)
+
+
+def _stderr(exc):
+    stderr = getattr(exc, "stderr", None) or ""
+    return stderr.decode(errors="replace") if isinstance(stderr, bytes) else str(stderr)
+
+
+def failure_signature(exc):
+    """What makes one failure the same as another, for the throttle: the first line of the message, or for a failed
+    subprocess its exit code and last stderr line (its message names the command, which differs per month), with
+    numbers and hex ids collapsed so timestamps, ports and ids don't make every repeat look new."""
+    if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        lines = [line for line in _stderr(exc).splitlines() if line.strip()]
+        code = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else exc.returncode
+        return f"exit {code}: " + _NUMBERS.sub("#", lines[-1].strip() if lines else "")[:300]
+    lines = str(exc).strip().splitlines()
+    return _NUMBERS.sub("#", lines[0] if lines else "")[:300]
+
+
+def stderr_tail(exc):
+    """The last STDERR_TAIL_CHARS of a failed subprocess's stderr, scrubbed first (so a cut can't fall inside a URL
+    and hide its query string from the filter), starting at a whole line."""
+    text = scrub_urls(_stderr(exc))
+    if len(text) <= STDERR_TAIL_CHARS:
+        return text
+    tail = text[-STDERR_TAIL_CHARS:]
+    return tail.split("\n", 1)[1] if "\n" in tail else tail
 
 
 def scrub_urls(value):

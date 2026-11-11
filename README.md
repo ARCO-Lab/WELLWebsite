@@ -172,9 +172,11 @@ How backend failures are reported:
   a single event for it. Most of those scripts catch their errors and exit non-zero, so a script reporting
   itself would miss them, and a crash would be sent twice (the script's traceback plus the scheduler's
   `CalledProcessError`).
-- A caught failure (a job, or one vendor's ingestion) is sent at most once an hour for the same job, vendor and
-  error type, so an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144. This
-  limit covers only these scheduler failures; Flask and Celery errors are sent each time.
+- A caught failure (a job, or one vendor's ingestion) is sent at most once an hour for the same job, vendor, error
+  type and message (its first line with numbers collapsed; for a failed subprocess, the exit code and the last line
+  of stderr). So an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144,
+  while a different error is still sent at once. This limit covers only these scheduler failures; Flask and Celery
+  errors are sent each time.
 - A script run by hand (`docker compose exec worker python scripts/...`) reports its own uncaught errors, tagged
   with the container's `SENTRY_COMPONENT`.
 

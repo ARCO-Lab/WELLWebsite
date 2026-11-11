@@ -4,16 +4,16 @@ import os
 import pathlib
 import subprocess
 import sys
-import unittest
-import unittest.mock as mock
+import unittest.mock
 import uuid
 
 import sentry_sdk
 from sentry_sdk.transport import Transport
 
-# Also when this module runs on its own, without tests/__init__.py: no test may see the real DSN.
+# Also when this module runs on its own, without tests/__init__.py: no test may see the real DSN. "" rather than
+# removed, so load_dotenv() can't refill it from app/.env (see tests/__init__.py).
 for _name in ("SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_COMPONENT"):
-    os.environ.pop(_name, None)
+    os.environ[_name] = ""
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from utils import sentry as well_sentry  # noqa: E402
@@ -48,7 +48,7 @@ class InitTests(unittest.TestCase):
             env = {k: v for k, v in os.environ.items() if k != "SENTRY_DSN"}
             if value is not None:
                 env["SENTRY_DSN"] = value
-            with mock.patch.dict(os.environ, env, clear=True), mock.patch("sentry_sdk.init") as init:
+            with unittest.mock.patch.dict(os.environ, env, clear=True), unittest.mock.patch("sentry_sdk.init") as init:
                 self.assertFalse(well_sentry.init_sentry("backend"))
                 init.assert_not_called()
         self.assertFalse(sentry_sdk.is_initialized())
@@ -56,7 +56,7 @@ class InitTests(unittest.TestCase):
 
     def test_settings_are_errors_only_and_without_personal_data(self):
         env = {"SENTRY_DSN": FAKE_DSN, "SENTRY_ENVIRONMENT": "staging", "GIT_SHA": "abc123"}
-        with mock.patch.dict(os.environ, env), mock.patch("sentry_sdk.init") as init:
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch("sentry_sdk.init") as init:
             self.assertTrue(well_sentry.init_sentry("worker"))
         options = init.call_args.kwargs
         self.assertEqual(options["dsn"], FAKE_DSN)
@@ -70,7 +70,7 @@ class InitTests(unittest.TestCase):
     def test_environment_defaults_to_production_and_release_to_none(self):
         env = {k: v for k, v in os.environ.items() if k not in ("SENTRY_ENVIRONMENT", "GIT_SHA")}
         env["SENTRY_DSN"] = FAKE_DSN
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch("sentry_sdk.init") as init:
+        with unittest.mock.patch.dict(os.environ, env, clear=True), unittest.mock.patch("sentry_sdk.init") as init:
             well_sentry.init_sentry("backend")
         self.assertEqual(init.call_args.kwargs["environment"], "production")
         self.assertIsNone(init.call_args.kwargs["release"])
@@ -78,7 +78,7 @@ class InitTests(unittest.TestCase):
     def test_sentry_component_overrides_the_default_tag(self):
         # docker-compose.yml sets it for worker and export_worker, whose scripts import server.py ("backend").
         env = {"SENTRY_DSN": FAKE_DSN, "SENTRY_COMPONENT": "worker"}
-        with mock.patch.dict(os.environ, env), mock.patch("sentry_sdk.init"):
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch("sentry_sdk.init"):
             well_sentry.init_sentry("backend")
         self.assertEqual(sentry_sdk.get_global_scope()._tags["component"], "worker")
 
@@ -136,7 +136,7 @@ class EndToEndTests(unittest.TestCase):
             self.options = options
             return real_init(transport=MemoryTransport, **options)
 
-        with mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}), mock.patch("sentry_sdk.init", side_effect=init):
+        with unittest.mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}), unittest.mock.patch("sentry_sdk.init", side_effect=init):
             self.assertTrue(well_sentry.init_sentry("backend"))
             # A second call (e.g. server.py imported by the worker) keeps the first component.
             self.assertTrue(well_sentry.init_sentry("worker"))
@@ -196,15 +196,37 @@ class EndToEndTests(unittest.TestCase):
 
     def test_the_same_failure_is_sent_at_most_once_an_hour(self):
         clock = [1000.0]
-        with mock.patch.object(well_sentry.time, "monotonic", lambda: clock[0]):
-            for _ in range(6):   # an hour of 10-minute runs failing the same way
-                well_sentry.capture_job_error(ConnectionError("LI-COR down"), source="LI-COR")
+        with unittest.mock.patch.object(well_sentry.time, "monotonic", lambda: clock[0]):
+            for minute in range(0, 60, 10):   # an hour of 10-minute runs failing the same way (times differ)
+                well_sentry.capture_job_error(ConnectionError(f"LI-COR down at 10:{minute:02d}"), source="LI-COR")
                 clock[0] += 600
-            well_sentry.capture_job_error(ConnectionError("WQData down"), source="WQData")   # another source
-            well_sentry.capture_job_error(ConnectionError("LI-COR down again"), source="LI-COR")  # an hour on
+            well_sentry.capture_job_error(ConnectionError("WQData down at 11:00"), source="WQData")   # another source
+            well_sentry.capture_job_error(ConnectionError("LI-COR down at 11:00"), source="LI-COR")   # an hour on
         events = self.flush()
         self.assertEqual([(e["tags"]["source"], e["exception"]["values"][-1]["value"]) for e in events],
-                         [("LI-COR", "LI-COR down"), ("WQData", "WQData down"), ("LI-COR", "LI-COR down again")])
+                         [("LI-COR", "LI-COR down at 10:00"), ("WQData", "WQData down at 11:00"),
+                          ("LI-COR", "LI-COR down at 11:00")])
+
+    def test_a_different_message_of_the_same_type_is_not_throttled(self):
+        for message in ("connection refused", "connection refused", 'column "x" does not exist'):
+            well_sentry.capture_job_error(RuntimeError(message))
+        events = self.flush()
+        self.assertEqual([e["exception"]["values"][-1]["value"] for e in events],
+                         ["connection refused", 'column "x" does not exist'])
+
+    def test_subprocess_failures_differ_by_exit_code_and_last_stderr_line_not_command(self):
+        def failed(month, code, stderr):
+            return subprocess.CalledProcessError(code, ["python", "scripts/upload_data.py", "--month", month],
+                                                 stderr=stderr)
+        well_sentry.capture_job_error(failed("9", 1, "Traceback ...\nValueError: Borealis said 503\n"))
+        well_sentry.capture_job_error(failed("10", 1, "Traceback ...\nValueError: Borealis said 502\n"))  # same
+        well_sentry.capture_job_error(failed("10", 1, "Traceback ...\nKeyError: 'files'\n"))   # another error
+        well_sentry.capture_job_error(failed("10", 2, ""))                                      # another exit code
+        well_sentry.capture_job_error(subprocess.TimeoutExpired(["python", "scripts/upload_data.py"], 7200))
+        commands = [(e["contexts"]["subprocess"]["exit_code"], e["contexts"]["subprocess"]["stderr_tail"].strip())
+                    for e in self.flush()]
+        self.assertEqual(commands, [(1, "Traceback ...\nValueError: Borealis said 503"),
+                                    (1, "Traceback ...\nKeyError: 'files'"), (2, ""), (None, "")])
 
     def test_a_failed_subprocess_is_sent_with_its_exit_code_and_stderr(self):
         error = subprocess.CalledProcessError(1, ["python", "scripts/upload_data.py", "--year", "2026"],
@@ -213,14 +235,26 @@ class EndToEndTests(unittest.TestCase):
         context = self.flush()[0]["contexts"]["subprocess"]
         self.assertEqual(context["command"], "python scripts/upload_data.py --year 2026")
         self.assertEqual(context["exit_code"], 1)
-        self.assertTrue(context["stderr_tail"].endswith("ValueError: bad month"))
-        self.assertEqual(len(context["stderr_tail"]), well_sentry.STDERR_TAIL_CHARS)
+        # The cut-off first line (5000 x's) is dropped, so the tail starts at a whole line.
+        self.assertEqual(context["stderr_tail"], "ValueError: bad month")
+
+    def test_the_stderr_tail_never_starts_inside_an_unscrubbed_url(self):
+        n, key = well_sentry.STDERR_TAIL_CHARS, uuid.uuid4().hex
+        after_key = "&from=2026-10-01 failed\n"
+        url_line = f"GET https://wqdata.example/v1/devices/1/data?apiKey={key}{after_key}"
+        last = "\nValueError: boom"
+        stderr = "start\n" + url_line + "y" * (n - len(after_key) - 10 - len(last)) + last
+        self.assertTrue(stderr[-n:].startswith(key[-10:]), "the raw cut falls inside the key")
+        tail = well_sentry.stderr_tail(subprocess.CalledProcessError(1, ["python", "x.py"], stderr=stderr))
+        self.assertNotIn(key[-10:], tail)
+        self.assertTrue(tail.endswith("ValueError: boom"))
+        self.assertLessEqual(len(tail), n)
 
     def test_scheduler_subprocesses_run_without_the_dsn(self):
         # So a crash in upload_data.py is reported once, by the scheduler, not also by the script itself.
         from utils.jobs import run_bounded
         code = "import os; print(repr(os.environ.get('SENTRY_DSN')))"
-        with mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}):
+        with unittest.mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}):
             result = run_bounded([sys.executable, "-c", code], timeout=30)
         self.assertEqual(result.stdout.strip(), "''")
 
