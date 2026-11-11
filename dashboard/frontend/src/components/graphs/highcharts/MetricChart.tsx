@@ -67,6 +67,8 @@ const MetricChart: React.FC<MetricChartProps> = ({
   // The chart's event handlers are bound once, so they reach the latest zoomTo through a ref.
   const zoomRef = useRef(view.zoomTo);
   zoomRef.current = view.zoomTo;
+  // A pinch in progress: only this chart follows the fingers; the shared window is set once, when they lift.
+  const pinchRef = useRef<Range | null>(null);
   const layoutRef = useRef({ modalOpen, showLegend });
   layoutRef.current = { modalOpen, showLegend };
 
@@ -101,10 +103,12 @@ const MetricChart: React.FC<MetricChartProps> = ({
         title: { text: null },
         labels: { style: { fontFamily: FONT, fontSize: '10px' } },
         events: {
-          // A pinch sets this chart's extremes with a trigger; programmatic changes (the window, data updates)
-          // have none and are ignored, so charts never feed back into each other.
+          // A pinch sets this chart's extremes with a trigger ('touchmove', on every move: kept until the
+          // fingers lift, so the other charts don't redraw each frame). Programmatic changes (the window, data
+          // updates) have no trigger and are ignored, so charts never feed back into each other.
           afterSetExtremes(e) {
-            if (e.trigger) zoomRef.current({ start: e.min, end: e.max });
+            if (e.trigger === 'touchmove') pinchRef.current = { start: e.min, end: e.max };
+            else if (e.trigger) zoomRef.current({ start: e.min, end: e.max });
           },
         },
       },
@@ -194,13 +198,20 @@ const MetricChart: React.FC<MetricChartProps> = ({
   // larger view. A plain click (or tap) still does.
   const pointerDown = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => { pointerDown.current = { x: e.clientX, y: e.clientY }; };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (pinchRef.current && e.touches.length < 2) {
+      zoomRef.current(pinchRef.current);
+      pinchRef.current = null;
+    }
+  };
   const onClickCapture = (e: React.MouseEvent) => {
     const d = pointerDown.current;
     if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) e.stopPropagation();
   };
 
   return (
-    <div className="relative" onPointerDown={onPointerDown} onClickCapture={onClickCapture}>
+    <div className="relative" onPointerDown={onPointerDown} onClickCapture={onClickCapture}
+      onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
       <HighchartsReact
         highcharts={Highcharts}
         options={initialOptions}
@@ -224,8 +235,9 @@ const MetricChart: React.FC<MetricChartProps> = ({
           <p className="rounded-md bg-white/90 px-3 py-1.5 text-sm text-muted">No readings in this period</p>
         </div>
       )}
+      {/* Announced once for all charts by the window bar's live region, so hidden from screen readers here */}
       {view.error && !view.loading && showErrorBanner && (
-        <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" role="alert">
+        <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" aria-hidden="true">
           {view.error.message}
         </div>
       )}

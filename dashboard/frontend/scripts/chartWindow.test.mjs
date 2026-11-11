@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   pickBucket, zoneOffsetMs, wallToUtc, pickedDaysRange, snapDown, snapUp, normalizeWindow, shiftWindow,
-  zoomOutWindow, detailRange, composePoints, bucketLabel, Lru, MIN_RANGE_MS,
+  zoomOutWindow, zoomInWindow, detailRange, composePoints, bucketLabel, Lru, MIN_RANGE_MS,
 } from "../src/utils/chartWindow.ts";
 
 const H = 3600 * 1000;
@@ -51,6 +51,8 @@ test("windows: at least an hour, inside the range, null when they cover it", () 
   assert.deepEqual(shiftWindow({ start: 0, end: 2 * D }, picked, -1), { start: 0, end: 2 * D }); // at the edge
   assert.deepEqual(zoomOutWindow({ start: 4 * D, end: 6 * D }, picked), { start: 3 * D, end: 7 * D });
   assert.equal(zoomOutWindow({ start: 2 * D, end: 8 * D }, picked), null); // back to the whole range
+  assert.deepEqual(zoomInWindow(picked, picked), { start: 2.5 * D, end: 7.5 * D }); // half, around the centre
+  assert.equal(zoomInWindow({ start: 0, end: H }, picked).end - zoomInWindow({ start: 0, end: H }, picked).start, MIN_RANGE_MS);
 });
 
 test("detail range: padded by half the width each side, clamped, snapped to the overview grid", () => {
@@ -86,6 +88,11 @@ test("a series missing from the detail range shows a break, not a line across it
   const overview = { t: [0, H, 2 * H, 3 * H], avg: [1, 1, 1, 1] };
   const pts = composePoints(overview, 3600, { values: undefined, bucketS: 600, range: { start: H, end: 3 * H } });
   assert.deepEqual(pts.map(([, v]) => v), [1, null, 1]);
+});
+
+test("typed arrays as cached: NaN is a missing value, drawn as a break", () => {
+  const s = { t: Float64Array.from([0, 600_000, 1_200_000]), avg: Float64Array.from([1, NaN, 3]) };
+  assert.deepEqual(composePoints(s, 600), [[0, 1], [600_000, null], [1_200_000, 3]]);
 });
 
 test("labels", () => {

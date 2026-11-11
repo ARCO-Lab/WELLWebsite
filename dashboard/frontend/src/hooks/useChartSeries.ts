@@ -31,25 +31,49 @@ export interface SeriesResponse {
   series: ApiSeries[];
 }
 
+// One series as kept in memory: only what the charts draw. Typed arrays (16 bytes a point; NaN for a missing
+// value) instead of the response's four arrays of boxed numbers.
+export interface ChartSeries {
+  group_type: string;
+  station_id: string | number;
+  measurement_type: string;
+  unit: string;
+  agg: "mean" | "sum" | "vector_mean";
+  t: Float64Array;
+  avg: Float64Array;
+}
+
 // One loaded response, with what it was loaded for and its series indexed by seriesKey.
 export interface LoadedSeries {
   groups: string;
   range: Range;
   bucketS: number;
   aggregated: boolean;
-  byKey: Map<string, ApiSeries>;
-  series: ApiSeries[];
+  byKey: Map<string, ChartSeries>;
+  series: ChartSeries[];
 }
+
+const slim = (s: ApiSeries): ChartSeries => ({
+  group_type: s.group_type, station_id: s.station_id, measurement_type: s.measurement_type, unit: s.unit,
+  agg: s.agg ?? "mean",
+  t: Float64Array.from(s.t),
+  avg: Float64Array.from(s.avg, (v) => (v === null ? NaN : v)),
+});
 
 export const seriesKey = (s: Pick<ApiSeries, "group_type" | "station_id" | "measurement_type" | "unit">) =>
   `${s.group_type}|${s.station_id}|${s.measurement_type}|${s.unit}`;
 
-const CACHE_ENTRIES = 20;
+// Responses kept. One with every group is ~29 series of up to ~2,000 points: about 1 MB as typed arrays, so
+// at most ~12 MB.
+const CACHE_ENTRIES = 12;
 const DEBOUNCE_MS = 300;
 const GROUP_KEYS = ["weather", "quality", "gauges"] as const;
 
 async function errorFrom(res: Response): Promise<Error> {
-  let message = `Couldn't load chart data (HTTP ${res.status}).`;
+  // A 404 here most likely means the data service is an older version, without /api/series
+  let message = res.status === 404
+    ? "Couldn't load chart data (HTTP 404): the data service may be out of date."
+    : `Couldn't load chart data (HTTP ${res.status}).`;
   try {
     const body = await res.json();
     if (body?.error) message = body.error;
@@ -128,9 +152,10 @@ export default function useChartSeries(
       const res = await fetch(`/api/series?${params.toString()}`, { signal: c.signal });
       if (!res.ok) throw await errorFrom(res);
       const json: SeriesResponse = await res.json();
+      const series = json.series.map(slim);
       const loaded: LoadedSeries = {
-        groups: g, range: r, bucketS: json.bucket_seconds, aggregated: json.aggregated, series: json.series,
-        byKey: new Map(json.series.map((s) => [seriesKey(s), s])),
+        groups: g, range: r, bucketS: json.bucket_seconds, aggregated: json.aggregated, series,
+        byKey: new Map(series.map((s) => [seriesKey(s), s])),
       };
       cache.current.set(key, loaded);
       return loaded;
@@ -237,11 +262,14 @@ export default function useChartSeries(
 
   const retryDetail = useCallback(() => setRetry((n) => n + 1), []);
 
-  const activeDetail = viewWindow && detail && detail.groups === groups ? detail : null;
+  // Detail counts only while zoomed and when it belongs to the groups and days picked now; while a new range
+  // loads, the resolution shown is unknown (null) rather than the previous range's.
+  const activeDetail = viewWindow && current && detail && detail.groups === groups
+    && detail.range.start >= current.range.start && detail.range.end <= current.range.end ? detail : null;
   const covers = activeDetail && viewWindow
     && activeDetail.range.start <= viewWindow.start && activeDetail.range.end >= viewWindow.end;
-  const shownBucketS = covers ? activeDetail.bucketS : overview?.bucketS ?? null;
-  const shownAggregated = covers ? activeDetail.aggregated : overview?.aggregated ?? false;
+  const shownBucketS = covers ? activeDetail.bucketS : current?.bucketS ?? null;
+  const shownAggregated = covers ? activeDetail.aggregated : current?.aggregated ?? false;
 
   return useMemo(() => ({
     range: overview?.range ?? range,

@@ -88,9 +88,10 @@ const LoggerGraph = ({
         {badge && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-normal text-gray-600">{badge}</span>}
       </h3>
 
-      {/* One message for all the logger charts: inside each narrow chart it ran far past the card */}
+      {/* One message for all the logger charts (inside each narrow chart it ran far past the card); screen readers
+          hear it once, from the window bar's live region */}
       {error && !loading && (
-        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700" role="alert">
+        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700" aria-hidden="true">
           {error.message}
         </div>
       )}

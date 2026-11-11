@@ -93,6 +93,13 @@ export function zoomOutWindow(w: Range, picked: Range): Range | null {
   return normalizeWindow({ start: center - half, end: center + half }, picked);
 }
 
+/** Zoom in (for keyboards and the button): halve the window around its centre. */
+export function zoomInWindow(w: Range, picked: Range): Range | null {
+  const quarter = (w.end - w.start) / 4;
+  const center = (w.start + w.end) / 2;
+  return normalizeWindow({ start: center - quarter, end: center + quarter }, picked);
+}
+
 /** The range to load detail for: the window plus padding on each side, inside the picked range, snapped outward to
  *  the grid of `gridS` (the overview's bucket, so detail and overview meet on bucket edges and cache keys repeat). */
 export function detailRange(w: Range, picked: Range, gridS: number): Range {
@@ -103,9 +110,10 @@ export function detailRange(w: Range, picked: Range, gridS: number): Range {
   };
 }
 
+// Arrays, or typed arrays (as cached: NaN stands for a missing value there).
 export interface SeriesValues {
-  t: number[];
-  avg: (number | null)[];
+  t: ArrayLike<number>;
+  avg: ArrayLike<number | null>;
 }
 
 /** Points for one series: overview points outside the detail range and detail points inside it, so a pan or
@@ -121,7 +129,10 @@ export function composePoints(
   const ob = overviewBucketS * 1000;
   const push = (s: SeriesValues | undefined, b: number, keep: (t: number) => boolean) => {
     if (!s) return;
-    for (let i = 0; i < s.t.length; i++) if (keep(s.t[i])) pts.push({ t: s.t[i], v: s.avg[i], b });
+    for (let i = 0; i < s.t.length; i++) if (keep(s.t[i])) {
+      const v = s.avg[i];
+      pts.push({ t: s.t[i], v: v === null || Number.isNaN(v) ? null : v, b });
+    }
   };
   if (!detail) {
     push(overview, ob, () => true);

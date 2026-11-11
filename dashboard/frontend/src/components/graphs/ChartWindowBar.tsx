@@ -1,11 +1,15 @@
-// The bar above the sensor charts while they are zoomed: which time window they show and at what resolution,
-// with buttons to move it (half its width at a time), widen it, or go back to the picked days. It also holds the
-// one screen-reader announcement for all charts' loading and detail states, and says how to zoom when not zoomed.
+// The bar above the sensor charts: which time window they show and at what resolution, with buttons to zoom in
+// (halve the window), move it (half its width at a time), widen it, or go back to the picked days. It stays mounted
+// with the charts, and buttons that can't act are marked aria-disabled instead of disabled, so keyboard focus is
+// never dropped (e.g. on Reset, or on ◀ at the start). It also holds the one screen-reader announcement for all
+// charts' loading and error states.
 
 import React from "react";
-import { ChevronLeft, ChevronRight, RotateCcw, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import { useChartView } from "@/hooks/useChartSeries";
-import { TIME_ZONE, bucketLabel, shiftWindow, zoomOutWindow, type Range } from "@/utils/chartWindow";
+import {
+  TIME_ZONE, bucketLabel, shiftWindow, zoomInWindow, zoomOutWindow, type Range,
+} from "@/utils/chartWindow";
 
 let labelFormatter: Intl.DateTimeFormat | null = null;
 
@@ -25,31 +29,33 @@ export function windowLabel(w: Range): string {
 
 const buttonClass =
   "inline-flex h-8 items-center gap-1 rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-800 hover:bg-gray-50 "
-  + "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-40";
+  + "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
+  + "aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-white";
+
+// A button that stays focusable when it can't act (aria-disabled), so focus isn't lost when it stops applying.
+const BarButton: React.FC<{
+  label: string; title?: string; off: boolean; onPress: () => void; className?: string; children: React.ReactNode;
+}> = ({ label, title, off, onPress, className = "", children }) => (
+  <button type="button" className={`${buttonClass} ${className}`} aria-label={label} title={title}
+    aria-disabled={off || undefined} onClick={() => { if (!off) onPress(); }}>
+    {children}
+  </button>
+);
 
 const ChartWindowBar: React.FC = () => {
   const view = useChartView();
-  const { viewWindow: w, range, zoomTo } = view;
+  const { viewWindow, range, zoomTo } = view;
 
   const status = view.loading ? "Loading chart data…"
+    : view.error ? view.error.message
     : view.detailLoading ? "Loading more detail…"
     : view.detailError ? "Couldn't load more detail; the charts show averages."
     : "";
   const live = <p className="sr-only" role="status" aria-live="polite">{status}</p>;
 
-  if (!w || !range) {
-    if (!view.overview) return live;
-    return (
-      <>
-        {live}
-        <p className="mb-3 text-xs text-muted">
-          <span className="pointer-coarse:hidden">Drag across a chart to zoom in.</span>
-          <span className="hidden pointer-coarse:inline">Pinch a chart to zoom in.</span>
-        </p>
-      </>
-    );
-  }
-
+  if (!range || !view.overview) return live;
+  const w = viewWindow ?? range;
+  const zoomed = viewWindow !== null;
   const resolution = view.shownBucketS ? ` · ${bucketLabel(view.shownBucketS, view.shownAggregated)}` : "";
 
   return (
@@ -64,32 +70,36 @@ const ChartWindowBar: React.FC = () => {
       >
         {/* ◀ label ▶ stay on one row; on phones the zoom buttons wrap below them */}
         <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
-          <button type="button" className={`${buttonClass} shrink-0`} aria-label="Show earlier" title="Earlier"
-            disabled={w.start <= range.start} onClick={() => zoomTo(shiftWindow(w, range, -1))}>
+          <BarButton label="Show earlier" title="Earlier" className="shrink-0" off={w.start <= range.start}
+            onPress={() => zoomTo(shiftWindow(w, range, -1))}>
             <ChevronLeft aria-hidden className="h-4 w-4" />
-          </button>
+          </BarButton>
           <p className="flex min-w-0 flex-1 items-center gap-2 text-xs text-gray-800 sm:flex-none sm:text-sm">
             <span>{windowLabel(w)}<span className="text-gray-600">{resolution}</span></span>
             {view.detailLoading && (
               <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
             )}
           </p>
-          <button type="button" className={`${buttonClass} shrink-0`} aria-label="Show later" title="Later"
-            disabled={w.end >= range.end} onClick={() => zoomTo(shiftWindow(w, range, 1))}>
+          <BarButton label="Show later" title="Later" className="shrink-0" off={w.end >= range.end}
+            onPress={() => zoomTo(shiftWindow(w, range, 1))}>
             <ChevronRight aria-hidden className="h-4 w-4" />
-          </button>
+          </BarButton>
         </div>
-        <div className="ml-auto flex gap-2">
-          <button type="button" className={buttonClass} aria-label="Zoom out: show twice as much time"
-            onClick={() => zoomTo(zoomOutWindow(w, range))}>
+        <div className="ml-auto flex flex-wrap gap-2">
+          <BarButton label="Zoom in: show half as much time" off={w.end - w.start <= 3600 * 1000}
+            onPress={() => zoomTo(zoomInWindow(w, range))}>
+            <ZoomIn aria-hidden className="h-4 w-4" />
+            Zoom in
+          </BarButton>
+          <BarButton label="Zoom out: show twice as much time" off={!zoomed}
+            onPress={() => zoomTo(zoomOutWindow(w, range))}>
             <ZoomOut aria-hidden className="h-4 w-4" />
             Zoom out
-          </button>
-          <button type="button" className={buttonClass} aria-label="Reset zoom: show all the picked days"
-            onClick={() => zoomTo(null)}>
+          </BarButton>
+          <BarButton label="Reset zoom: show all the picked days" off={!zoomed} onPress={() => zoomTo(null)}>
             <RotateCcw aria-hidden className="h-4 w-4" />
             Reset
-          </button>
+          </BarButton>
         </div>
         {view.detailError && (
           <p className="w-full text-sm text-red-700">
@@ -98,6 +108,12 @@ const ChartWindowBar: React.FC = () => {
               onClick={view.retryDetail}>
               Retry
             </button>
+          </p>
+        )}
+        {!zoomed && (
+          <p className="w-full text-xs text-muted">
+            <span className="pointer-coarse:hidden">Or drag across a chart to zoom in.</span>
+            <span className="hidden pointer-coarse:inline">Or pinch a chart to zoom in.</span>
           </p>
         )}
       </div>
