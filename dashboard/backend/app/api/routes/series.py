@@ -66,11 +66,18 @@ def pick_bucket(span_seconds, max_points=MAX_POINTS):
     return LADDER[-1]
 
 
-def to_local_naive(value):
-    """An ISO time as naive local wall-clock time, to compare with recorded_at: aware times are converted to
+def parse_iso(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def local_naive(parsed):
+    """A parsed time as naive local wall-clock time, to compare with recorded_at: aware times are converted to
     America/Toronto, naive ones are taken as local already."""
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed.astimezone(EST_TZ).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def to_local_naive(value):
+    return local_naive(parse_iso(value))
 
 
 def _num(x):
@@ -103,13 +110,24 @@ def register_series_route(app):
         if not start or not end or not groups:
             return jsonify({"error": "Missing required parameters: start, end and at least one group_type"}), 400
         try:
-            start_dt, end_dt = to_local_naive(start), to_local_naive(end)
+            start_in, end_in = parse_iso(start), parse_iso(end)
+            start_dt, end_dt = local_naive(start_in), local_naive(end_in)
         except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no local time
             return jsonify({"error": "Invalid date format"}), 400
-        if end_dt <= start_dt:
-            return jsonify({"error": "end must be after start"}), 400
+        if start_in.tzinfo and end_in.tzinfo:
+            # Two real instants: compare those. Their wall-clock times can run backwards inside the hour repeated
+            # when clocks fall back (05:30Z -> 01:30 EDT, 06:10Z -> 01:10 EST), so the naive bounds are put in
+            # order for the query. recorded_at keeps one naive 01:xx per reading, so that hour is approximate.
+            if end_in <= start_in:
+                return jsonify({"error": "end must be after start"}), 400
+            span = (end_in - start_in).total_seconds()
+            start_dt, end_dt = min(start_dt, end_dt), max(start_dt, end_dt)
+        else:
+            if end_dt <= start_dt:
+                return jsonify({"error": "end must be after start"}), 400
+            span = (end_dt - start_dt).total_seconds()
 
-        bucket = pick_bucket((end_dt - start_dt).total_seconds())
+        bucket = pick_bucket(span)
         db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
         rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups}).fetchall()
         return jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": columnar(rows)})

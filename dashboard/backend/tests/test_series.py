@@ -129,6 +129,20 @@ class SeriesSqlTests(unittest.TestCase):
         cls.db.engine.dispose()
         cls.ctx.pop()
 
+    def add_readings(self, measurement, unit, start, values, station="22051538"):
+        from db.models import SensorMeasurement
+        for i, value in enumerate(values):
+            self.db.session.add(SensorMeasurement(station_id=station, group_type="Weather", unit=unit, value=value,
+                                                  measurement_type=measurement,
+                                                  recorded_at=start + dt.timedelta(minutes=10 * i)))
+        self.db.session.commit()
+
+    def delete_readings(self, measurement, since):
+        from db.models import SensorMeasurement
+        SensorMeasurement.query.filter(SensorMeasurement.measurement_type == measurement,
+                                       SensorMeasurement.recorded_at >= since).delete()
+        self.db.session.commit()
+
     def series(self, start, end, *groups):
         q = "&".join([f"start={start}", f"end={end}"] + [f"group_type={g}" for g in groups])
         r = self.client.get(f"/api/series?{q.replace('+', '%2B')}")
@@ -187,6 +201,19 @@ class SeriesSqlTests(unittest.TestCase):
                            ("2026-11-01T04:20:00Z", "2026-11-01T01:00:00")):
             _, by = self.series(start, end, "Weather")
             self.assertEqual(by["Air Temperature"]["avg"], [12.0, 13.0, 14.0, 15.0], (start, end))
+
+    def test_aware_range_inside_the_fall_back_hour(self):
+        # 05:30Z is 01:30 EDT and 06:10Z is 01:10 EST: a 40-minute range whose wall-clock times run backwards.
+        # It's valid (compared as instants) and queries the naive 01:10-01:30 readings.
+        self.add_readings("Air Temperature", "°C", dt.datetime(2026, 11, 1, 1, 0), (20.0, 21.0, 22.0, 23.0))
+        try:
+            body, by = self.series("2026-11-01T05:30:00Z", "2026-11-01T06:10:00Z", "Weather")
+            self.assertEqual(body["bucket_seconds"], 600)
+            self.assertEqual(by["Air Temperature"]["avg"], [21.0, 22.0, 23.0])
+            r = self.client.get("/api/series?start=2026-11-01T06:10:00Z&end=2026-11-01T05:30:00Z&group_type=Weather")
+            self.assertEqual(r.status_code, 400)
+        finally:
+            self.delete_readings("Air Temperature", dt.datetime(2026, 11, 1, 1, 0))
 
     def test_rain_is_summed_and_wind_direction_is_a_vector_mean(self):
         # 30 days -> 30-minute buckets: 00:00 holds the first three readings, 00:30 the next three
