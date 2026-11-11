@@ -238,8 +238,9 @@ class ImportIdempotenceTests(unittest.TestCase):
             self.assertEqual(self.store(FIXTURES / "valid.csv"), 6)
             self.assertEqual(self.store(FIXTURES / "valid.csv"), 0)
             self.assertEqual(self.count(), 6)
-            # The template overlaps nothing; older and newer dates alike are kept
-            self.assertEqual(self.store(TEMPLATE), 3)
+            # The template's three readings are also in valid.csv, so a file overlapping stored data adds nothing
+            self.assertEqual(self.store(TEMPLATE), 0)
+            # The lab sheet (2025, older than the rows stored so far) is a backfill: all its rows are added
             self.assertEqual(self.store(LAB_SHEET), len(validate_wide_excel(LAB_SHEET).records))
             total = self.count()
             self.assertEqual(self.store(LAB_SHEET), 0)
