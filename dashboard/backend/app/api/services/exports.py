@@ -1,7 +1,7 @@
 import csv
 import os
 from contextlib import closing, contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
 
 from sqlalchemy import and_, func, or_, select
@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, or_, select
 from config import Config
 from db.database import db
 from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
-from utils.timezone import EST_TZ
+from utils.timezone import EST_TZ, est_now
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
 
@@ -66,15 +66,30 @@ def running_stale_after() -> timedelta:
     return timedelta(seconds=Config.EXPORT_HARD_TIME_LIMIT_SECONDS) + timedelta(minutes=5)
 
 
-def live_job_condition(now: datetime):
-    """SQL condition for export jobs that are queued or running and may still finish. `now` is est_now()."""
-    return or_(
-        and_(ExportJob.status == "queued", ExportJob.created_at >= now - QUEUED_STALE_AFTER),
-        and_(
-            ExportJob.status == "running",
-            func.coalesce(ExportJob.started_at, ExportJob.created_at) >= now - running_stale_after(),
-        ),
-    )
+def _wall_to_utc(wall_time: datetime) -> datetime:
+    """A naive local wall time (as est_now() stores them) as a UTC instant. An ambiguous time (the hour repeated
+    when clocks fall back) is read as the later instant, so a job never looks older than it is."""
+    return wall_time.replace(tzinfo=EST_TZ, fold=1).astimezone(timezone.utc)
+
+
+def job_is_stuck(job, now_utc: Optional[datetime] = None) -> bool:
+    """Whether a queued or running job will never finish (see QUEUED_STALE_AFTER). Ages are real elapsed time:
+    naive wall times would make a job look an hour older or younger across a DST change."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if job.status == "queued":
+        since, limit = job.created_at, QUEUED_STALE_AFTER
+    elif job.status == "running":
+        since, limit = job.started_at or job.created_at, running_stale_after()
+    else:
+        return False
+    return since is not None and now_utc - _wall_to_utc(since) > limit
+
+
+def live_jobs(now_utc: Optional[datetime] = None) -> List:
+    """The export jobs that are queued or running and may still finish. There are only ever a few queued or
+    running rows (the hourly cleanup settles the rest), so the age check is done here rather than in SQL."""
+    candidates = db.session.query(ExportJob).filter(ExportJob.status.in_(("queued", "running"))).all()
+    return [job for job in candidates if not job_is_stuck(job, now_utc)]
 
 
 # What a failed job reports to the page when the cause isn't a validation error.
@@ -83,21 +98,15 @@ EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again
 EXPORT_TOO_SLOW_MESSAGE = "This export took too long to build. Try a shorter date range."
 
 
-def settle_if_stuck(job, now: datetime) -> bool:
-    """Mark a queued or running job that will never finish (see QUEUED_STALE_AFTER) failed, without committing.
-    Returns whether it did. Used by the hourly cleanup, and by the job status route so the page learns at once."""
-    if job.status == "queued":
-        stuck = job.created_at is not None and job.created_at < now - QUEUED_STALE_AFTER
-    elif job.status == "running":
-        since = job.started_at or job.created_at
-        stuck = since is not None and since < now - running_stale_after()
-    else:
-        stuck = False
-    if stuck:
-        job.error_message = EXPORT_TOO_SLOW_MESSAGE if job.status == "running" else EXPORT_FAILED_MESSAGE
-        job.status = "failed"
-        job.completed_at = now
-    return stuck
+def settle_if_stuck(job, now_utc: Optional[datetime] = None) -> bool:
+    """Mark a queued or running job that will never finish (job_is_stuck) failed, without committing. Returns
+    whether it did. Used by the hourly cleanup, and by the job status route so the page learns at once."""
+    if not job_is_stuck(job, now_utc):
+        return False
+    job.error_message = EXPORT_TOO_SLOW_MESSAGE if job.status == "running" else EXPORT_FAILED_MESSAGE
+    job.status = "failed"
+    job.completed_at = est_now()
+    return True
 
 
 SENSOR_FILTER_CONFIG = {

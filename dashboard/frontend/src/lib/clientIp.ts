@@ -6,6 +6,12 @@
 // by the address of its connection. From a trusted proxy, the client is the rightmost X-Forwarded-For entry that
 // isn't itself a trusted proxy: each proxy appends the address it saw, so entries to the right of the client were
 // added by proxies in the chain, and entries to its left are whatever the browser sent.
+//
+// If the [client-ip] log lines below show connection=172.x or 10.x (a Docker gateway: Docker's userland proxy
+// hides the real peer), every visitor shares one address, so the per-visitor export limit acts site-wide. Don't
+// fix that by adding the gateway (`docker network inspect <network>` shows it) to TRUSTED_PROXY_IPS unless port
+// 8081 is firewalled to the front proxy, or faked headers on direct requests are believed again. A single sampled
+// line can be a local or direct :8081 request, so look at several before deciding.
 
 import type { IncomingMessage } from "http";
 

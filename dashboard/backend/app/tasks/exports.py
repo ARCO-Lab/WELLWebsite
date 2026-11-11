@@ -11,7 +11,6 @@ from api.services.exports import (
     EXPORT_FAILED_MESSAGE,
     EXPORT_TOO_SLOW_MESSAGE,
     default_export_filename,
-    live_job_condition,
     settle_if_stuck,
     write_export_csv,
 )
@@ -169,13 +168,8 @@ def cleanup_expired_artifacts():
 
 
 def _fail_stuck_jobs():
-    now = est_now()
-    candidates = (
-        db.session.query(ExportJob)
-        .filter(ExportJob.status.in_(("queued", "running")), ~live_job_condition(now))
-        .all()
-    )
-    stuck = [job for job in candidates if settle_if_stuck(job, now)]
+    candidates = db.session.query(ExportJob).filter(ExportJob.status.in_(("queued", "running"))).all()
+    stuck = [job for job in candidates if settle_if_stuck(job)]
     for job in stuck:
         logger.warning("Export job %s will never finish; marked it failed", job.id)
     if stuck:

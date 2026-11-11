@@ -4,12 +4,12 @@ import tempfile
 import uuid
 
 from flask import after_this_request, jsonify, request, send_file
-from sqlalchemy import func, text
+from sqlalchemy import text
 
 from api.services.exports import (
     default_export_filename,
     estimate_rows,
-    live_job_condition,
+    live_jobs,
     normalize_export_payload,
     settle_if_stuck,
     write_export_csv,
@@ -118,10 +118,9 @@ def register_export_routes(app):
         if db.engine.dialect.name == "postgresql":
             db.session.execute(text("SELECT pg_advisory_xact_lock(hashtext('export_jobs_limits'))"))
 
-        live = db.session.query(func.count(ExportJob.id)).filter(live_job_condition(est_now()))
-        if live.filter(ExportJob.requester_fingerprint == requester_fingerprint).scalar() >= (
-            Config.EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER
-        ):
+        live = live_jobs()
+        mine = sum(1 for live_job in live if live_job.requester_fingerprint == requester_fingerprint)
+        if mine >= Config.EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER:
             db.session.rollback()
             return (
                 jsonify(
@@ -134,7 +133,7 @@ def register_export_routes(app):
                 ),
                 429,
             )
-        if live.scalar() >= Config.EXPORT_MAX_ACTIVE_JOBS:
+        if len(live) >= Config.EXPORT_MAX_ACTIVE_JOBS:
             db.session.rollback()
             return (
                 jsonify({"error": "The server is busy preparing other exports. Please try again in a few minutes."}),
@@ -178,7 +177,7 @@ def register_export_routes(app):
 
         # A job whose worker died (killed for memory, say) would read "running" until the hourly cleanup; settle
         # it here so the page stops waiting. The cleanup still deletes whatever it left behind.
-        if settle_if_stuck(job, est_now()):
+        if settle_if_stuck(job):
             db.session.commit()
 
         response = job.to_dict()
@@ -208,8 +207,9 @@ def register_export_routes(app):
 
 def client_ip() -> str:
     """The visitor's IP address. Flask has no public port: requests come from the dashboard's Next.js API routes,
-    which send the address in X-Forwarded-For (lib/proxyBackend.ts, from the hop the site's reverse proxy added).
-    The last hop is used, since earlier ones are whatever the browser sent and anyone can set them."""
+    which send one address in X-Forwarded-For (lib/proxyBackend.ts). Which address that is, and when a reverse
+    proxy's X-Forwarded-For is believed (only from TRUSTED_PROXY_IPS), is decided in lib/clientIp.ts. The last
+    hop is taken here in case anything in between appends one."""
     hops = [hop.strip() for hop in request.headers.get("X-Forwarded-For", "").split(",") if hop.strip()]
     return hops[-1] if hops else (request.remote_addr or "")
 

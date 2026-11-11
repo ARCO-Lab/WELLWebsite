@@ -298,6 +298,97 @@ class StreamCleanupTests(AppTestCase):
         self.assertEqual(self.db.engine.pool.checkedout(), 0)
 
 
+# 2026-03-08: clocks jump from 02:00 EST to 03:00 EDT. 06:50 UTC is 01:50 EST; 07:01 UTC is 03:01 EDT, 11 real
+# minutes later though the wall clock moved 71.
+SPRING_START = dt.datetime(2026, 3, 8, 1, 50)  # naive wall time, as est_now() stores it
+
+
+def frozen_clock(instant_utc):
+    """Patch the clocks the export code reads (est_now() and the job age checks) to `instant_utc`."""
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant_utc.astimezone(tz)
+    patches = [unittest.mock.patch(target, Frozen)
+               for target in ("utils.timezone.datetime", "api.services.exports.datetime")]
+
+    class Both:
+        def __enter__(self):
+            for p in patches:
+                p.start()
+
+        def __exit__(self, *exc):
+            for p in reversed(patches):
+                p.stop()
+    return Both()
+
+
+class JobAgeAcrossDstTests(unittest.TestCase):
+    """Job ages are real elapsed time, not the difference of wall-clock readings."""
+
+    def job(self, status, created_at, started_at=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(status=status, created_at=created_at, started_at=started_at)
+
+    def utc(self, hour, minute):
+        return dt.datetime(2026, 3, 8, hour, minute, tzinfo=dt.timezone.utc)
+
+    def test_a_running_job_across_the_spring_forward_jump(self):
+        from api.services.exports import job_is_stuck
+        running = self.job("running", SPRING_START, SPRING_START)
+        self.assertFalse(job_is_stuck(running, self.utc(7, 1)))   # 11 real minutes (wall clock: 71)
+        self.assertFalse(job_is_stuck(running, self.utc(7, 14)))  # 24 minutes, under the 25-minute limit
+        self.assertTrue(job_is_stuck(running, self.utc(7, 16)))   # 26 minutes
+
+    def test_a_queued_job_across_the_spring_forward_jump(self):
+        from api.services.exports import job_is_stuck
+        queued = self.job("queued", dt.datetime(2026, 3, 8, 1, 30))
+        self.assertFalse(job_is_stuck(queued, self.utc(7, 20)))  # 50 real minutes (wall clock: 110)
+        self.assertTrue(job_is_stuck(queued, self.utc(7, 31)))
+
+    def test_the_repeated_fall_back_hour_never_makes_a_job_look_older(self):
+        from api.services.exports import job_is_stuck
+        # 01:50 on 2026-11-01 happens twice; read as the later one (01:50 EST = 06:50 UTC)
+        running = self.job("running", dt.datetime(2026, 11, 1, 1, 50), dt.datetime(2026, 11, 1, 1, 50))
+        self.assertFalse(job_is_stuck(running, dt.datetime(2026, 11, 1, 7, 10, tzinfo=dt.timezone.utc)))
+
+    def test_settled_jobs_are_never_stuck(self):
+        from api.services.exports import job_is_stuck
+        self.assertFalse(job_is_stuck(self.job("ready", dt.datetime(2020, 1, 1)), self.utc(7, 0)))
+
+
+class SpringForwardRouteAndCleanupTests(AppTestCase):
+    def add_spring_job(self):
+        job = self.ExportJob(id="spring", status="running", domain="sampling", payload=SAMPLING,
+                             created_at=SPRING_START, started_at=SPRING_START,
+                             requester_fingerprint="f")
+        self.db.session.add(job)
+        self.db.session.commit()
+        folder = os.path.join(self.exports, "spring")
+        os.makedirs(folder)
+        pathlib.Path(folder, "x.csv").write_text("being written")
+        return folder
+
+    def test_a_live_job_isnt_settled_or_cleaned_up_after_the_jump(self):
+        folder = self.add_spring_job()
+        with frozen_clock(dt.datetime(2026, 3, 8, 7, 1, tzinfo=dt.timezone.utc)):  # 03:01 EDT
+            body = self.app.test_client().get("/api/exports/jobs/spring").get_json()
+            from tasks.exports import cleanup_expired_artifacts
+            with unittest.mock.patch("tasks.exports.create_app", return_value=self.app):
+                cleanup_expired_artifacts()
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(self.get("spring").status, "running")
+        self.assertTrue(os.path.isdir(folder))
+
+    def test_it_still_counts_against_the_limits(self):
+        from api.services.exports import live_jobs
+        self.add_spring_job()
+        with frozen_clock(dt.datetime(2026, 3, 8, 7, 1, tzinfo=dt.timezone.utc)):
+            self.assertEqual([job.id for job in live_jobs()], ["spring"])
+        with frozen_clock(dt.datetime(2026, 3, 8, 7, 16, tzinfo=dt.timezone.utc)):
+            self.assertEqual(live_jobs(), [])
+
+
 class CleanupTests(AppTestCase):
     def run_cleanup(self):
         from tasks.exports import cleanup_expired_artifacts
