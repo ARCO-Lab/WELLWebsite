@@ -1,0 +1,13 @@
+date,time,site,creek,parameter,value,unit,below_detection,qc_flag,sampler,method,notes
+2026-10-31,09:40,Falkirk Forest,Tiffany Creek,E. coli,48,CFU/100 mL,,ok,AB,membrane filtration,
+2026-10-31,09:40,Falkirk Forest,Tiffany Creek,Ammonia nitrogen,<0.01,mg/L,true,ok,AB,,below the 0.01 mg/L detection limit
+2026-10-31,09:40,#1 Falkirk Forest,,pH,8.06,pH,,,AB,field meter,
+2026-10-31,10:15,Maple Lane Pk,Ancaster Creek,Turbidity,3.5,NTU,,,AB,,
+2026-10-31,10:15,2,,Conductivity,1295,uS/cm,,,AB,,
+2026-10-31,10:15,Maple Lane Pk,,Chloride,NA,,,,AB,,not measured
+2026-11-01,01:30,Sherman Falls,Ancaster Creek,E.coli,2420,CFU/100 mL,,suspect,CD,,the hour clocks fall back
+2026-11-01,,Jerseyville Rd,Sulphur Creek,TP,15.5,µg/L,,,CD,,no time recorded
+2026-11-01,,Sulphur Springs,,Total nitrogen,0.75,mg/L,,rejected,CD,,bottle broken
+2026-11-02,14:05,Cootes Dr,Spencer's Creek,Nitrate-N,1.5e-3,mg/L,,,CD,,
+2026-11-02,14:05,Osler Dr,Coldwater Creek,Specific conductance,980.25,µS/cm,,,CD,,"windy, light rain"
+2026-11-02,14:05,Osler Dr,Coldwater Creek,Total coliform,0,CFU/100 mL,,,CD,,

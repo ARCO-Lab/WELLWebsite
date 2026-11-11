@@ -1,0 +1,74 @@
+[
+ {
+  "creek_id": "+19431905",
+  "measurement_type": "@pH",
+  "recorded_at": "2026-11-02T15:00:00",
+  "site_id": "=HYPERLINK(\"http://example.invalid\")",
+  "unit": "-",
+  "value": -3.5
+ },
+ {
+  "creek_id": "20962187",
+  "measurement_type": "Ammonia nitrogen",
+  "recorded_at": "2026-10-31T09:40:00",
+  "site_id": "1",
+  "unit": "mg/L",
+  "value": 0.01
+ },
+ {
+  "creek_id": "336415129",
+  "measurement_type": "Conductivity",
+  "recorded_at": "2026-11-02T14:05:00",
+  "site_id": "8",
+  "unit": "µS/cm",
+  "value": 980.25
+ },
+ {
+  "creek_id": "19431905",
+  "measurement_type": "E. coli",
+  "recorded_at": "2026-11-01T01:30:00",
+  "site_id": "5",
+  "unit": "CFU/100 mL",
+  "value": 2420.0
+ },
+ {
+  "creek_id": "19755185",
+  "measurement_type": "Nitrate nitrogen",
+  "recorded_at": "2026-11-02T14:05:00",
+  "site_id": "10",
+  "unit": "mg/L",
+  "value": 0.0015
+ },
+ {
+  "creek_id": "336415129",
+  "measurement_type": "Total coliform",
+  "recorded_at": "2026-11-02T14:05:00",
+  "site_id": "8",
+  "unit": "CFU/100 mL",
+  "value": 0.0
+ },
+ {
+  "creek_id": "3212839",
+  "measurement_type": "Total phosphorus",
+  "recorded_at": "2026-11-01T00:00:00",
+  "site_id": "3",
+  "unit": "µg/L",
+  "value": 15.5
+ },
+ {
+  "creek_id": "19431905",
+  "measurement_type": "Turbidity",
+  "recorded_at": "2026-10-31T10:15:00",
+  "site_id": "2",
+  "unit": "NTU",
+  "value": 3.5
+ },
+ {
+  "creek_id": "20962187",
+  "measurement_type": "pH",
+  "recorded_at": "2026-10-31T09:40:00",
+  "site_id": "1",
+  "unit": "pH units",
+  "value": 8.06
+ }
+]
