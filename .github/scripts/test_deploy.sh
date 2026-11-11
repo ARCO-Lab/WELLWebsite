@@ -148,6 +148,19 @@ check "by hand, docker-compose.yml change: rebuilds everything, checks both work
 sync_vm; change README.md; deploy
 check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! ran "compose"'
 
+sync_vm; change wordpress/zz-performance.conf; ci success success; deploy --auto
+check "--auto, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change wordpress/php-hardening.ini
+BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "WordPress config change that breaks the site: rolls back and recreates wordpress with the old config" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && [ "$(grep -c "force-recreate --no-deps wordpress" "$STUB_LOG")" = 2 ] && said "healthy again"'
+
+sync_vm; change wordpress/theme-images.mjs; deploy
+check "other files in wordpress/ (not .conf/.ini): nothing restarted" 'rc 0 && head_is_remote && ! ran "compose"'
+
+sync_vm; (cd "$T/work" && echo 1 >> docker-compose.yml && mkdir -p wordpress && echo 1 >> wordpress/zz-performance.conf && git add -A && git commit -qm both && git push -q origin HEAD:main); deploy
+check "by hand, docker-compose.yml and a WordPress config change: rebuilds everything and recreates wordpress" 'rc 0 && ran "compose up -d --build" && ran "compose up -d --force-recreate --no-deps wordpress"'
+
 sync_vm; (cd "$T/work" && git mv dashboard/frontend/page.tsx dashboard/backend/app/page.tsx && git commit -qm move && git push -q origin HEAD:main); deploy
 check "a file moved between services: both sides rebuild" 'rc 0 && ran "--no-deps dashboard backend worker export_worker"'
 

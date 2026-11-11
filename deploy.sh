@@ -156,18 +156,25 @@ add() { local s; for s in "$@"; do [[ " ${SERVICES[*]-} " == *" $s "* ]] || SERV
 if grep -q '^dashboard/frontend/' <<<"$CHANGED"; then add dashboard; fi
 if grep -q '^dashboard/backend/' <<<"$CHANGED"; then add backend worker export_worker; fi
 if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then add ALL; fi
+# Apache/PHP config files in wordpress/ are bind-mounted into the wordpress container one file at a time. Apache and
+# PHP read them only at start, and git replaces a changed file with a new one, so the running container keeps the old
+# copy until it's recreated. Compose sees no change in its own config, so a plain `up -d` wouldn't recreate it.
+RECREATE=()
+if grep -Eq '^wordpress/.*\.(conf|ini)$' <<<"$CHANGED"; then RECREATE=(wordpress); fi
 # Everything else needs no rebuild: WordPress is the stock wordpress image with home/ bind-mounted, so home/ is
 # live once merged; docs, tests and CI aren't deployed.
 
-summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}"
+summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}${RECREATE[*]:+; recreate: ${RECREATE[*]}}"
 if [ "$DRY" = 1 ]; then echo "Would deploy $summary"; exit 0; fi
 
 rebuild() {
-  [ ${#SERVICES[@]} -eq 0 ] && return 0
-  if [[ " ${SERVICES[*]} " == *" ALL "* ]]; then
-    "$DOCKER" compose up -d --build
-  else
-    "$DOCKER" compose up -d --build --no-deps "${SERVICES[@]}"
+  if [[ " ${SERVICES[*]-} " == *" ALL "* ]]; then
+    "$DOCKER" compose up -d --build || return 1
+  elif [ ${#SERVICES[@]} -gt 0 ]; then
+    "$DOCKER" compose up -d --build --no-deps "${SERVICES[@]}" || return 1
+  fi
+  if [ ${#RECREATE[@]} -gt 0 ]; then
+    "$DOCKER" compose up -d --force-recreate --no-deps "${RECREATE[@]}" || return 1
   fi
 }
 
