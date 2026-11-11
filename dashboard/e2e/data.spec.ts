@@ -19,7 +19,7 @@ const LOGGER_NAMES: Record<string, string> = { "2577531": "Logger 1" };
 
 // The picked days (Oct 31 and Nov 1, the default) as the charts must ask for them: from Toronto midnight, to no
 // later than the last millisecond before the next Toronto midnight (Nov 1 is 25 hours long). The charts may stop
-// earlier, at "now", but never before it.
+// earlier, at "now": the API's end is inclusive, so that range ends 1 ms before now, and never earlier.
 const RANGE_START = "2026-10-31T04:00:00.000Z";
 const RANGE_END_LATEST = "2026-11-02T04:59:59.999Z";
 
