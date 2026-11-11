@@ -158,8 +158,11 @@ const median = (v: number[]): number | null => {
 /** How many readings a series usually has per bucket, learned from its own counts rather than assumed from a
  *  10-minute cadence: the water quality sonde, for one, is silent every night, so a full day holds about 55
  *  readings, not 144, and the 18:00–24:00 bucket only one or two. The median count of the buckets that start at
- *  the same time of day (UTC, so the two daylight-saving halves of the year are separate times, each with plenty
- *  of buckets), falling back to the median of all buckets, and null when there are too few to say. */
+ *  the same time of day (UTC, so the two daylight-saving halves of the year are separate times). A time of day
+ *  with too few buckets gets null (no judgement): around a clock change, the few days on one side have their own
+ *  UTC times, and the series-wide median would call the sonde's normal mornings and evenings partial. Only a short
+ *  series, where every time of day is sparse, falls back to the median of all its buckets; null when there are too
+ *  few even for that. */
 export function typicalCounts(s: SeriesValues | undefined): (t: number) => number | null {
   const byPhase = new Map<number, number[]>();
   const all: number[] = [];
@@ -174,8 +177,10 @@ export function typicalCounts(s: SeriesValues | undefined): (t: number) => numbe
   }
   const overall = all.length >= MIN_SERIES_SAMPLE ? median(all) : null;
   const phases = new Map<number, number | null>();
-  for (const [phase, list] of byPhase) phases.set(phase, list.length >= MIN_PHASE_SAMPLE ? median(list) : overall);
-  return (t) => phases.get(((t % DAY_MS) + DAY_MS) % DAY_MS) ?? overall;
+  const anyDense = [...byPhase.values()].some((list) => list.length >= MIN_PHASE_SAMPLE);
+  const sparse = anyDense ? null : overall;
+  for (const [phase, list] of byPhase) phases.set(phase, list.length >= MIN_PHASE_SAMPLE ? median(list) : sparse);
+  return (t) => phases.get(((t % DAY_MS) + DAY_MS) % DAY_MS) ?? sparse;
 }
 
 /** Whether a bucket holding `n` readings has fewer than half of what is `typical` for it (an outage starts or ends

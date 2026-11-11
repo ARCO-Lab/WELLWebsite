@@ -144,6 +144,27 @@ test("a day-only cadence is normal, not partial, at every bucket size", () => {
   assert.equal(evening.custom.typical, 2);
 });
 
+test("across a clock change, the few days on one side aren't judged by the other side's counts", () => {
+  // Oct 28 - Dec 5 2026 at 30-minute buckets: 4 EDT days, then EST from Nov 1. The EDT days' buckets start at
+  // other UTC times, too few to have a usual count of their own; their 08:00 bucket (08:20 only, 1 reading) and
+  // 18:00 bucket (18:00-18:10, 2) must not be called partial against the 3 a mid-day bucket holds.
+  const counts = new Map();
+  for (let d = 0; d < 39; d++) {
+    for (let m = 8 * 60 + 20; m <= 18 * 60 + 10; m += 10) {
+      const b = snapDown(wallToUtc(Date.UTC(2026, 9, 28 + d) + m * 60_000), 1800);
+      counts.set(b, (counts.get(b) ?? 0) + 1);
+    }
+  }
+  const sorted = [...counts].sort((x, y) => x[0] - y[0]);
+  const s = { t: sorted.map(([b]) => b), avg: sorted.map(() => 1), n: sorted.map(([, c]) => c) };
+  const pts = composePoints(s, 1800).filter((p) => p.y !== null);
+  assert.equal(pts.filter((p) => p.custom.partial).length, 0);
+  const edtMorning = pts.find((p) => p.custom.start === wallToUtc(Date.UTC(2026, 9, 28, 8)));
+  assert.deepEqual([edtMorning.custom.n, edtMorning.custom.typical], [1, null]); // too few to judge, so no flag
+  const estMorning = pts.find((p) => p.custom.start === wallToUtc(Date.UTC(2026, 10, 10, 8)));
+  assert.deepEqual([estMorning.custom.n, estMorning.custom.typical], [1, 1]);
+});
+
 test("a real outage is partial against the series' own usual count", () => {
   const daily = composePoints(dayOnly(30, 86400, 10), 86400).filter((p) => p.y !== null);
   const after = daily.filter((p) => p.custom.partial);
