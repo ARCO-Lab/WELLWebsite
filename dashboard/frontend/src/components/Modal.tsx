@@ -15,8 +15,8 @@ interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   children: React.ReactNode;
-  // 1. Add 'sampling' to the allowed types
-  type: "weather" | "logger" | "quality" | "sampling";
+  // "gauges" and "logger" both mean the water logger graphs (titled "Logger")
+  type: "weather" | "logger" | "gauges" | "quality" | "sampling";
   subtypes?: string[];
   analysisType: "recent" | "alltime";
   data: any;
@@ -42,7 +42,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
         <DialogHeader className="shrink-0 pr-10">
           <DialogTitle className="text-2xl font-poppins font-bold text-primary flex items-center justify-between">
             {/* Show group type and context in modal title */}
-            {`${type === "gauges" /* Error Necessary */ ? "Logger" : type.charAt(0).toUpperCase() + type.slice(1)} ${analysisType === "recent" ? "Metrics" : "Graph"}`}
+            {`${type === "gauges" ? "Logger" : type.charAt(0).toUpperCase() + type.slice(1)} ${analysisType === "recent" ? "Metrics" : "Graph"}`}
           </DialogTitle>
         </DialogHeader>
         

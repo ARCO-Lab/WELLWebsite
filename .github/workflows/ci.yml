@@ -97,6 +97,10 @@ jobs:
 
       - run: npm ci
 
+      # Type errors fail the PR. next build checks types and lint too, but this reports every error at once.
+      - name: Type check
+        run: npx tsc --noEmit
+
       - run: npm run build
 
       - name: Lint
