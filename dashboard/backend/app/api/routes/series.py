@@ -19,12 +19,20 @@
 #                 smallest and largest single reading, not totals.
 #   "vector_mean" (Wind Direction) the mean of the directions as unit vectors, so 350° and 10° give 0°, not 180°;
 #                 min/max are null, because a linear min/max of angles (10° and 350° for a northerly) means nothing.
+#
+# Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
+# same readings as the request (no bucket is added at either edge), while visitors who open the same view a few
+# minutes apart share one cache key. The answer is kept in Redis (utils/response_cache.py) for 5 minutes for a
+# range that ended over an hour ago, 1 minute otherwise, and browsers may reuse it for what is left of that time.
 
-from flask import jsonify, request
+from datetime import datetime, timedelta, timezone
+
+from flask import current_app, jsonify, request
 from sqlalchemy import bindparam, text
 
 from db.database import db
 from db.models import Instant
+from utils import response_cache
 from utils.timezone import EST_TZ, parse_instant
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
@@ -33,6 +41,9 @@ MAX_POINTS = 2000
 GROUPS = {"Weather", "Quality", "Logger"}
 AGG = {"Rain": "sum", "Wind Direction": "vector_mean"}  # every other measurement: "mean"
 LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the site's zone
+SNAP = timedelta(minutes=10)
+RECENT = timedelta(hours=1)  # a range ending less long ago than this is still filling in, so reuse it briefly
+MAX_AGE_RECENT, MAX_AGE_PAST = 60, 300  # seconds a response may be reused, by the cache and by browsers
 
 SQL = text(f"""
 WITH b AS (
@@ -70,6 +81,34 @@ def pick_bucket(span_seconds, max_points=MAX_POINTS):
         if span_seconds / bucket <= max_points:
             return bucket
     return LADDER[-1]
+
+
+def floor_mark(t):
+    """`t` rounded down to a 10-minute mark (the same marks in UTC and in Toronto: its offsets are whole hours)."""
+    return t - timedelta(minutes=t.minute % 10, seconds=t.second, microseconds=t.microsecond)
+
+
+def snap_range(start, end):
+    """The range narrowed to 10-minute marks: start rounded up, end rounded down (unchanged if already on one).
+    A range with no mark inside comes out with start after end, which matches nothing, as the request would."""
+    start_up = floor_mark(start)
+    if start_up != start:
+        try:
+            start_up += SNAP
+        except OverflowError:  # within 10 minutes of datetime.max
+            start_up = start
+    return start_up, floor_mark(end)
+
+
+def max_age(end, now):
+    """How long an answer for a range ending at `end` may be reused; both are instants (aware UTC)."""
+    return MAX_AGE_PAST if end < now - RECENT else MAX_AGE_RECENT
+
+
+def cache_key(bucket, start, end, groups):
+    """Everything the answer depends on: the query's parameters, after snap_range. The bounds are instants, so the
+    two copies of the hour repeated when clocks fall back have different keys."""
+    return f"series:v2:{bucket}:{start.isoformat()}:{end.isoformat()}:{','.join(sorted(set(groups)))}"
 
 
 def _num(x):
@@ -111,6 +150,18 @@ def register_series_route(app):
             return jsonify({"error": "end must be after start"}), 400
 
         bucket = pick_bucket((end_dt - start_dt).total_seconds())
-        db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
-        rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups}).fetchall()
-        return jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": columnar(rows)})
+        age = max_age(end_dt, datetime.now(timezone.utc))
+        start_dt, end_dt = snap_range(start_dt, end_dt)
+        key = cache_key(bucket, start_dt, end_dt, groups)
+        hit = response_cache.get(key)
+        if hit is not None:
+            body, seconds_left = hit
+            response = current_app.response_class(body, mimetype="application/json")
+            age = min(age, seconds_left)  # so browsers don't keep it past the moment it expires here
+        else:
+            db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
+            rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups}).fetchall()
+            response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": columnar(rows)})
+            response_cache.put(key, response.get_data(), age)
+        response.headers["Cache-Control"] = f"public, max-age={age}"
+        return response

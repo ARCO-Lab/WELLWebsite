@@ -256,7 +256,16 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 > `HOBOLINK_LOGGERS` should be the serial number of each logger, comma-separated.
 
-> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number logs a warning and uses the default. The cap matters because gunicorn's 3 sync workers can't tell when a browser gives up: the Next.js proxy stops waiting, but the worker stays busy until the query and JSON encoding finish, or until gunicorn's 30 s timeout kills it.
+> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group, ~50 MB of JSON) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number logs a warning and uses the default. The cap matters because the backend can't tell when a browser gives up: the Next.js proxy stops waiting, but the backend thread stays busy until the query and JSON encoding finish.
+
+**How the API stays responsive under load.** Gunicorn runs 3 worker processes with 4 threads each (`dashboard/backend/Dockerfile`), so a few slow chart requests don't hold up `/api/latest` or the health checks. Two settings in the backend's `environment:` in `docker-compose.yml` (override them in the root `.env`, not in `app/.env`, which they take precedence over):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers for a short time (1 minute for a range that ends within the last hour, 5 minutes otherwise), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+
+`/api/latest` and `/api/series` also tell browsers how long they may reuse an answer (`Cache-Control: public, max-age=60`, or 300 for `/api/series` ranges that ended over an hour ago; an answer from the Redis cache gets only the time it has left there, so a browser never holds an answer longer than the server would); the Next.js proxy passes that header through. Nothing on the server caches `/api/latest`, so the Latest Data panel is never more than a minute behind the database. If the backend hasn't started answering after 65 s, the proxy answers 504.
 
 ---
 
