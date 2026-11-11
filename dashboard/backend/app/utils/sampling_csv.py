@@ -12,6 +12,10 @@ them the same way, so both layouts end up as identical rows.
 
 The site and parameter lists below are the only place they are defined for imports; the dashboard's own lists are in
 dashboard/frontend/src/components/config/filters.tsx and must name the same sites and parameters.
+
+Provisional, to confirm with the lab (each is marked "TO CONFIRM WITH THE LAB" where it is decided below, and listed in
+the format page's "To confirm with the lab" section): the site list, the parameter list and units, the below-detection
+convention, and the replicate and QC-flag rules.
 """
 import csv
 import difflib
@@ -42,7 +46,8 @@ class Site:
     creek: str       # key of CREEKS
 
 
-# The sampling sites, numbered as in the lab's field sheets (there is no site 7).
+# The sampling sites, numbered and named as in the lab's 2025 field sheet (there is no site 7).
+# TO CONFIRM WITH THE LAB: the official names, and whether sites will be added.
 SITES = (
     Site("1", "Falkirk Forest", "tiffany"),
     Site("2", "Maple Lane Pk", "ancaster"),
@@ -66,6 +71,8 @@ class Parameter:
     maximum: float = math.inf
 
 
+# The parameters the dashboard shows. TO CONFIRM WITH THE LAB: whether TSS (mg/L) and water temperature (°C), which
+# the field sheet records, should be added; whether the units are final; whether E. coli is ever in MPN/100 mL.
 PARAMETERS = (
     Parameter("E. coli", "CFU/100 mL", aliases=("E.coli", "E coli", "Escherichia coli")),
     Parameter("Total coliform", "CFU/100 mL", aliases=("Total coliforms",)),
@@ -84,10 +91,17 @@ REQUIRED_COLUMNS = ("date", "site", "parameter", "value", "unit")
 OPTIONAL_COLUMNS = ("time", "creek", "below_detection", "qc_flag", "sampler", "method", "notes")
 
 BLANK_VALUES = {"", "na", "n/a"}                  # "not measured": the row is skipped, not an error
-QC_FLAGS = {"", "ok", "suspect", "rejected"}      # "rejected" rows are checked but not imported
+# TO CONFIRM WITH THE LAB: the QC flags. "rejected" rows are checked but not imported; flags aren't stored.
+QC_FLAGS = {"", "ok", "suspect", "rejected"}
 TRUE_WORDS, FALSE_WORDS = {"true", "yes", "y", "1"}, {"false", "no", "n", "0", ""}
+# A plain decimal number in ASCII digits: no thousands separators, no "1_000", no other scripts' digits
+_NUMBER = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 
 KEY = ("site_id", "measurement_type", "recorded_at")   # the sampling_measurements unique key
+
+# scripts/inject_sampling.py exits with this code when a file is invalid (and stores nothing), so that
+# scripts/download_data.py can tell a file to fix from a failure worth retrying.
+INVALID_FILE_EXIT = 3
 
 
 def _fold(text):
@@ -172,7 +186,9 @@ def parse_date(text):
 
 
 def parse_time(text, day):
-    """A local wall-clock HH:MM (24-hour) on `day`; empty means the visit's time wasn't recorded (midnight)."""
+    """A local wall-clock HH:MM (24-hour) on `day`; empty means the visit's time wasn't recorded (midnight).
+    A time in the hour repeated when clocks fall back (e.g. 01:30 on the first Sunday of November) is stored as
+    written; which of the two it was isn't recorded."""
     text = str(text).strip()
     if not text:
         return time(0, 0)
@@ -212,7 +228,11 @@ def parse_flag(text):
 
 
 def parse_value(text):
-    """(number, below_detection) for a value cell, or None for a blank one. '<0.01' is below a 0.01 limit."""
+    """(number, below_detection) for a value cell, or None for a blank one. '<0.01' is below a 0.01 limit.
+
+    TO CONFIRM WITH THE LAB: a below-detection value is stored as the detection limit itself (the flag isn't
+    stored), and values above an upper limit ('>2420') are rejected.
+    """
     raw = str(text).strip()
     if _fold(raw) in BLANK_VALUES:
         return None
@@ -220,14 +240,17 @@ def parse_value(text):
     number = raw[1:].strip() if below else raw
     if number.startswith(">"):
         raise ValueError(f"'{raw}': values above a limit (>) aren't supported; write the number, and the limit in notes")
-    try:
-        value = float(number)
-    except ValueError:
+    if not _NUMBER.fullmatch(number):
         hint = " (no thousands separators)" if "," in number else ""
         raise ValueError(f"'{raw}' is not a number{hint}")
-    if not math.isfinite(value):
+    value = float(number)
+    if not math.isfinite(value):   # e.g. 1e999
         raise ValueError(f"'{raw}' is not a number")
     return value, below
+
+
+def _is_blank(text):
+    return _fold(str(text).strip()) in BLANK_VALUES
 
 
 def _check_record(fields, row, result):
@@ -250,7 +273,7 @@ def _check_record(fields, row, result):
             errors.append(Issue(row, "creek", f"site {site.id} {site.name} is on {CREEKS[site.creek][0]}, "
                                               f"not '{creek}'"))
     param = attempt("parameter", parse_parameter, fields.get("parameter", ""))
-    if param:
+    if param and not _is_blank(fields.get("value", "")):   # a blank row stores nothing, so its unit doesn't matter
         attempt("unit", check_unit, param, fields.get("unit", ""))
     parsed = attempt("value", parse_value, fields.get("value", ""))
     flagged = attempt("below_detection", parse_flag, fields.get("below_detection", ""))
@@ -293,7 +316,12 @@ def _check_record(fields, row, result):
 
 
 def validate_records(records, result=None):
-    """Check (row number, fields) pairs, dropping nothing silently. Returns a Result."""
+    """Check (row number, fields) pairs, dropping nothing silently. Returns a Result.
+
+    A file with nothing to store is an error too: importing it would do nothing, and a --full-reload would empty
+    the table. TO CONFIRM WITH THE LAB: one value per site, parameter, date and time (replicates are averaged
+    before upload), so a repeated reading is an error.
+    """
     result = result or Result()
     seen = {}
     for row, fields in records:
@@ -308,7 +336,20 @@ def validate_records(records, result=None):
             continue
         seen[key] = row
         result.records.append(record)
+    if not result.records and not result.errors:
+        result.errors.append(Issue(0, "", f"no readings to import ({result.blank} blank values, {result.rejected} "
+                                          f"rows flagged rejected)"))
     return result
+
+
+def _column_label(index):
+    """A spreadsheet column letter (0 -> A, 26 -> AA), for columns that have no header."""
+    label = ""
+    index += 1
+    while index:
+        index, rest = divmod(index - 1, 26)
+        label = chr(ord("A") + rest) + label
+    return f"column {label}"
 
 
 def validate_csv(source):
@@ -326,37 +367,53 @@ def validate_csv(source):
                                           f"'CSV UTF-8 (Comma delimited)'"))
         return result
 
-    reader = csv.reader(io.StringIO(text, newline=""))
-    header = next(reader, None)
-    if header is None or not any(h.strip() for h in header):
+    # strict: a malformed quote is an error rather than a guess (a runaway quote would swallow the rest of the file)
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    try:
+        table = list(reader)
+    except csv.Error as e:
+        result.errors.append(Issue(0, "", f"can't be read as CSV near line {reader.line_num}: {e}. A double quote "
+                                          f"(\") that isn't closed, or text right after a closing quote, is the "
+                                          f"usual cause"))
+        return result
+    if not table or not any(h.strip() for h in table[0]):
         result.errors.append(Issue(0, "", "the file is empty; the first row must be the header"))
         return result
+    header, body = table[0], table[1:]
     if len(header) == 1 and (";" in header[0] or "\t" in header[0]):
         result.errors.append(Issue(1, "", "columns must be separated by commas, not semicolons or tabs"))
         return result
-    columns = [_fold(h) for h in header]
+
+    # Excel can leave columns with neither a header nor values (e.g. "date,...,notes,,"): those are ignored. A
+    # column with values but no header is an error, as are cells to the right of the last column.
+    used = [i for i, h in enumerate(header) if h.strip()]
+    for i, h in enumerate(header):
+        if not h.strip() and any(i < len(cells) and cells[i].strip() for cells in body):
+            result.errors.append(Issue(1, _column_label(i), "has values but no header"))
+    columns = {i: _fold(header[i]) for i in used}
+    names = list(columns.values())
     known = set(REQUIRED_COLUMNS) | set(OPTIONAL_COLUMNS)
-    for name, original in zip(columns, header):
+    for i, name in columns.items():
         if name not in known:
-            result.errors.append(Issue(1, original, f"unknown column.{_suggest(name, sorted(known))} "
-                                                    f"Allowed: {', '.join(REQUIRED_COLUMNS + OPTIONAL_COLUMNS)}"))
-    for name in sorted({c for c in columns if columns.count(c) > 1}):
+            result.errors.append(Issue(1, header[i], f"unknown column.{_suggest(name, sorted(known))} "
+                                                     f"Allowed: {', '.join(REQUIRED_COLUMNS + OPTIONAL_COLUMNS)}"))
+    for name in sorted({c for c in names if names.count(c) > 1}):
         result.errors.append(Issue(1, name, "column appears more than once"))
     for name in REQUIRED_COLUMNS:
-        if name not in columns:
+        if name not in names:
             result.errors.append(Issue(1, name, "required column is missing"))
     if result.errors:
         return result
 
     def rows():
-        for number, cells in enumerate(reader, start=2):
+        for number, cells in enumerate(body, start=2):
             if not any(c.strip() for c in cells):
                 continue   # blank line
-            if len(cells) > len(columns):
-                result.errors.append(Issue(number, "", f"has {len(cells)} cells but the header has {len(columns)} "
-                                                       f"columns (a comma inside a value needs quotes)"))
+            if any(c.strip() for c in cells[len(header):]):
+                result.errors.append(Issue(number, "", f"has values beyond the header's {len(header)} columns (a "
+                                                       f"comma inside a value needs double quotes)"))
                 continue
-            yield number, {name: cell for name, cell in zip(columns, cells)}
+            yield number, {name: (cells[i] if i < len(cells) else "") for i, name in columns.items()}
 
     return validate_records(rows(), result)
 
@@ -416,18 +473,35 @@ def validate_wide_excel(path):
     import pandas as pd   # local: the CSV path doesn't need pandas
     result = Result()
     try:
-        frame = pd.read_excel(path, engine="openpyxl", dtype=object)
+        sheets = pd.read_excel(path, engine="openpyxl", dtype=object, sheet_name=None)
     except Exception as e:
         result.errors.append(Issue(0, "", f"could not read the Excel file: {e}"))
         return result
+    # Only one sheet is read, so a workbook with data on several is refused rather than half-imported. Sheets
+    # with nothing on them (Excel's default "Sheet2") don't count.
+    filled = {name: f for name, f in sheets.items() if len(f.columns) or len(f)}
+    if len(filled) != 1:
+        result.errors.append(Issue(0, "", f"the workbook has data on {len(filled)} sheets "
+                                          f"({', '.join(map(str, filled)) or 'none'}); put the readings on one sheet"))
+        return result
+    frame = next(iter(filled.values()))
 
-    header = {_header_fold(c): c for c in frame.columns}
-    roles = {}
-    for folded, original in header.items():
-        if folded in ("date", "site", "stream", "creek"):
-            roles[folded] = original
-        elif folded not in WIDE_PARAMETER_COLUMNS and folded not in WIDE_IGNORED_COLUMNS \
-                and not str(original).startswith("Unnamed"):
+    header, roles = {}, {}
+    for position, original in enumerate(frame.columns):
+        if str(original).startswith("Unnamed:"):   # pandas' name for a column without a header
+            if frame[original].notna().any():
+                result.errors.append(Issue(1, _column_label(position), "has values but no header"))
+            continue
+        folded = _header_fold(original)
+        role = "creek" if folded == "stream" else folded
+        if folded in header or (role in ("date", "site", "creek") and role in roles):
+            other = header.get(folded) or roles[role]
+            result.errors.append(Issue(1, str(original), f"means the same as column '{other}'; keep one of them"))
+            continue
+        header[folded] = original
+        if role in ("date", "site", "creek"):
+            roles[role] = original
+        elif folded not in WIDE_PARAMETER_COLUMNS and folded not in WIDE_IGNORED_COLUMNS:
             result.errors.append(Issue(1, str(original), "unknown column; add it to WIDE_PARAMETER_COLUMNS in "
                                                          "utils/sampling_csv.py, or use the standard CSV format"))
     for needed in ("date", "site"):
@@ -448,8 +522,7 @@ def validate_wide_excel(path):
             number = index + 2
             base = {"date": _cell_text(row[roles["date"]]), "time": _cell_time(row[roles["date"]]),
                     "site": _cell_text(row[roles["site"]]),
-                    "creek": _cell_text(row[roles.get("stream") or roles.get("creek")]) if
-                    ("stream" in roles or "creek" in roles) else ""}
+                    "creek": _cell_text(row[roles["creek"]]) if "creek" in roles else ""}
             values = [(column, name, _cell_text(row[column])) for column, name in param_columns]
             if not any(v.strip() for _, _, v in values):
                 continue   # a row without any reading

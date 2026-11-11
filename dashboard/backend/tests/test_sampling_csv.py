@@ -1,6 +1,6 @@
 """Tests for utils/sampling_csv.py (the standard sampling file format), scripts/check_sampling_csv.py, the template
 download, and the import's idempotence on PostgreSQL. Run from dashboard/backend:
-python -m unittest discover -s tests -t .  (the import tests need TEST_POSTGRES_URL, as in CI)"""
+python -m unittest discover -s tests -t .  (the import and --full-reload tests need TEST_POSTGRES_URL, as in CI)"""
 import contextlib
 import datetime as dt
 import io
@@ -9,6 +9,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -158,6 +159,87 @@ class WideExcelTests(unittest.TestCase):
         pd.DataFrame({"Date": ["05/07/2025"], "Site": ["#7 Somewhere"], "pH": [7.9]}).to_excel(path, index=False)
         self.assertEqual(errors(validate_file(path))[0], [(2, "date"), (2, "site")])
 
+    def write_workbook(self, sheets):
+        import pandas as pd
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = pathlib.Path(folder.name) / "sheet.xlsx"
+        with pd.ExcelWriter(path) as writer:
+            for name, frame in sheets.items():
+                frame.to_excel(writer, sheet_name=name, index=False)
+        return path
+
+    def test_two_headers_for_one_column_are_an_error(self):
+        import pandas as pd
+        path = self.write_workbook({"Data": pd.DataFrame({
+            "Date": [dt.datetime(2025, 5, 7)], "Site": ["Falkirk Forest"],
+            "E. coli (CFU/100 mL)": [2], "E.coli  (CFU/100 mL)": [3], "Stream": ["Tiffany Creek"],
+            "Creek": ["Tiffany Creek"]})})
+        where, text = errors(validate_wide_excel(path))
+        self.assertEqual(where, [(1, "E.coli  (CFU/100 mL)"), (1, "Creek")], text)
+        self.assertIn("means the same as column 'E. coli (CFU/100 mL)'", text)
+
+    def test_one_sheet_with_data(self):
+        import pandas as pd
+        frame = pd.DataFrame({"Date": [dt.datetime(2025, 5, 7)], "Site": ["Falkirk Forest"], "pH": [7.9]})
+        two = self.write_workbook({"Trip 1": frame, "Trip 2": frame})
+        self.assertIn("data on 2 sheets (Trip 1, Trip 2)", errors(validate_wide_excel(two))[1])
+        with_empty_sheet = self.write_workbook({"Data": frame, "Sheet2": pd.DataFrame()})
+        result = validate_wide_excel(with_empty_sheet)
+        self.assertTrue(result.ok, errors(result)[1])
+        self.assertEqual(len(result.records), 1)
+
+    def test_a_column_without_header_must_be_empty(self):
+        import pandas as pd
+        frame = pd.DataFrame([[dt.datetime(2025, 5, 7), "Falkirk Forest", 7.9, None]], columns=["Date", "Site", "pH", ""])
+        self.assertTrue(validate_wide_excel(self.write_workbook({"Data": frame})).ok)
+        frame.iloc[0, 3] = "oops"
+        self.assertEqual(errors(validate_wide_excel(self.write_workbook({"Data": frame})))[0], [(1, "column D")])
+
+
+class EdgeCaseTests(unittest.TestCase):
+    HEADER = b"date,site,parameter,value,unit\n"
+
+    def test_no_readings_is_an_error(self):
+        result = validate_csv(self.HEADER + b"2026-05-06,Falkirk Forest,pH,NA,pH\n")
+        self.assertEqual(errors(result)[0], [(0, "")])
+        self.assertIn("no readings to import (1 blank values, 0 rows flagged rejected)", errors(result)[1])
+        self.assertIn("no readings", errors(validate_csv(self.HEADER))[1])
+
+    def test_a_blank_value_needs_no_unit(self):
+        result = validate_csv(self.HEADER + b"2026-05-06,Falkirk Forest,Turbidity,,\n"
+                                            b"2026-05-06,Falkirk Forest,pH,7.9,pH\n")
+        self.assertTrue(result.ok, errors(result)[1])
+        self.assertEqual((len(result.records), result.blank), (1, 1))
+
+    def test_numbers_are_plain_ascii(self):
+        rows = ["1_000", "٧", "７", "0x10", "1.5e-3", "+8.1", ".5", "7."]
+        data = self.HEADER + "".join(f"2026-05-0{i + 1},Falkirk Forest,Chloride,{v},mg/L\n"
+                                     for i, v in enumerate(rows)).encode("utf-8")
+        result = validate_csv(data)
+        self.assertEqual(errors(result)[0], [(2, "value"), (3, "value"), (4, "value"), (5, "value")])
+        self.assertEqual([r["value"] for r in result.records], [0.0015, 8.1, 0.5, 7.0])
+
+    def test_malformed_quotes_are_a_file_problem(self):
+        for body in (b'2026-05-06,"Falkirk Forest,pH,7.9,pH\n2026-05-07,Falkirk Forest,pH,7.9,pH\n',
+                     b'2026-05-06,"Falkirk" Forest,pH,7.9,pH\n'):
+            where, text = errors(validate_csv(self.HEADER + body))
+            self.assertEqual(where, [(0, "")])
+            self.assertIn("can't be read as CSV near line", text)
+
+    def test_empty_trailing_columns_and_cells_are_ignored(self):
+        result = validate_csv(b"date,site,parameter,value,unit,,\n2026-05-06,Falkirk Forest,pH,7.9,pH,,\n"
+                              b"2026-05-07,Falkirk Forest,pH,8.0,pH\n2026-05-08,Falkirk Forest,pH,8.1,pH,,,,\n")
+        self.assertTrue(result.ok, errors(result)[1])
+        self.assertEqual(len(result.records), 3)
+
+    def test_values_without_header_or_beyond_it_are_errors(self):
+        where, _ = errors(validate_csv(b"date,site,parameter,value,unit,\n2026-05-06,Falkirk Forest,pH,7.9,pH,x\n"))
+        self.assertEqual(where, [(1, "column F")])
+        where, text = errors(validate_csv(self.HEADER + b"2026-05-06,Falkirk Forest,pH,7,9,pH\n"))
+        self.assertEqual(where, [(2, "")])
+        self.assertIn("beyond the header's 5 columns", text)
+
 
 class CheckScriptTests(unittest.TestCase):
     def run_check(self, *paths):
@@ -180,6 +262,31 @@ class CheckScriptTests(unittest.TestCase):
         self.assertIn("row 4, site: unknown site 'Unknown'", out)
         self.assertIn("cannot read the file", out)
         self.assertIn("an import would store nothing", out)
+
+    def test_malformed_file_is_reported_not_a_crash(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = pathlib.Path(folder.name) / "quote.csv"
+        path.write_bytes(b'date,site,parameter,value,unit\n2026-05-06,"Falkirk Forest,pH,7.9,pH\n')
+        code, out = self.run_check(path)
+        self.assertEqual(code, 1)
+        self.assertIn("can't be read as CSV", out)
+
+
+class ImportLogTests(unittest.TestCase):
+    def test_only_the_first_problems_are_printed(self):
+        sys.path.insert(0, str(APP / "scripts"))
+        import inject_sampling
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = pathlib.Path(folder.name) / "many.csv"
+        path.write_text("date,site,parameter,value,unit\n" + "2026-05-06,Nowhere,pH,7.9,pH\n" * 60, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(inject_sampling.InvalidFile) as raised:
+            inject_sampling.load_valid_rows(path)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(sum("unknown site 'Nowhere'" in line for line in lines), inject_sampling.MAX_LISTED)
+        self.assertIn("[ERROR] ... and 10 more problems not listed", out.getvalue())
+        self.assertTrue(str(raised.exception).startswith("60 problems in "))   # download_data.py reads this count
 
 
 class TemplateRouteTests(unittest.TestCase):
@@ -251,6 +358,57 @@ class ImportIdempotenceTests(unittest.TestCase):
             self.store(FIXTURES / "duplicate_rows.csv")
         self.assertIn("[ERROR] row 3: repeats row 2", out.getvalue())
         self.assertEqual(self.count(), 0)
+
+    # --full-reload (replace_all): it replaces the table in one transaction, or refuses and deletes nothing.
+
+    def reload(self, path, allow_shrink=False):
+        with mock.patch.dict(os.environ, {"ALLOW_WIPE": "1"}), contextlib.redirect_stdout(io.StringIO()), \
+                self.Session(self.engine) as session:
+            return self.inject.replace_all(session, path, allow_shrink=allow_shrink)
+
+    def test_full_reload_replaces_the_data(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.store(FIXTURES / "valid.csv")
+        lab_rows = len(validate_wide_excel(LAB_SHEET).records)
+        self.assertEqual(self.reload(LAB_SHEET), lab_rows)
+        self.assertEqual(self.count(), lab_rows)
+        with self.Session(self.engine) as session:   # the 2026 fixture rows are gone
+            self.assertEqual(session.query(self.model).filter(self.model.recorded_at >= dt.datetime(2026, 1, 1)).count(), 0)
+
+    def test_full_reload_of_an_invalid_file_deletes_nothing(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.store(FIXTURES / "valid.csv")
+        with self.assertRaises(self.inject.InvalidFile):
+            self.reload(FIXTURES / "unknown_site.csv")
+        self.assertEqual(self.count(), 6)
+
+    def test_full_reload_needs_allow_wipe(self):
+        with mock.patch.dict(os.environ, {"ALLOW_WIPE": ""}), self.Session(self.engine) as session, \
+                self.assertRaises(SystemExit):
+            self.inject.replace_all(session, TEMPLATE)
+
+    def test_full_reload_refuses_to_shrink_the_table_unless_allowed(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.store(LAB_SHEET)
+        stored = self.count()
+        with self.assertRaises(self.inject.RefusedReload) as refused:
+            self.reload(TEMPLATE)   # 3 readings instead of 294
+        self.assertIn(f"the file has 3 readings but {stored} are stored", str(refused.exception))
+        self.assertEqual(self.count(), stored)
+        self.assertEqual(self.reload(TEMPLATE, allow_shrink=True), 3)
+        self.assertEqual(self.count(), 3)
+
+    def test_a_failed_insert_rolls_back_the_delete(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.store(FIXTURES / "valid.csv")
+
+        def broken_insert(session, rows):
+            raise RuntimeError("connection lost mid-insert")
+
+        with mock.patch.object(self.inject, "store_rows", side_effect=broken_insert), \
+                self.assertRaises(RuntimeError):
+            self.reload(TEMPLATE, allow_shrink=True)
+        self.assertEqual(self.count(), 6)
 
 
 if __name__ == "__main__":

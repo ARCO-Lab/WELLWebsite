@@ -2,37 +2,50 @@
 # sheet in the older one-row-per-visit layout.
 #   python scripts/inject_sampling.py <file>                 add every reading that isn't stored yet
 #   python scripts/inject_sampling.py <file> --full-reload   replace all sampling data (needs ALLOW_WIPE=1)
+#       add --allow-shrink if the file has fewer than half as many readings as are stored now
 # The file is checked first (utils/sampling_csv.py) and nothing is stored unless all of it is valid; the problems
-# are listed with their row numbers and the exit code is 1. To only check a file: scripts/check_sampling_csv.py.
+# are listed with their row numbers (the first MAX_LISTED, then the total) and the exit code is
+# INVALID_FILE_EXIT (3). Any other failure exits 1. To only check a file: scripts/check_sampling_csv.py.
 
 import sys
 import pathlib
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 from server import create_app
 from db.database import db
 from db.models import SamplingMeasurement
-from utils.sampling_csv import validate_file
+from utils.sampling_csv import INVALID_FILE_EXIT, validate_file
 from utils.sampling_rows import KEY, check_skipped, import_warnings
 
 app = create_app()
+
+MAX_LISTED = 50          # problems printed per file; a file with a systematic mistake can have thousands
+SHRINK_LIMIT = 0.5       # --full-reload refuses a file with fewer readings than this share of the stored ones
 
 
 class InvalidFile(Exception):
     """The file has problems; nothing was stored."""
 
 
+class RefusedReload(Exception):
+    """--full-reload was refused before anything was deleted."""
+
+
 def load_valid_rows(file_path):
-    """The file's rows, or InvalidFile after printing every problem."""
+    """The file's rows, or InvalidFile after printing its problems."""
     print(f"[INFO] Loading file: {file_path}")
     result = validate_file(file_path)
     for note in result.notes:
         print(f"[INFO] {note}")
     if not result.ok:
-        for issue in result.errors:
+        for issue in result.errors[:MAX_LISTED]:
             print(f"[ERROR] {issue}")
+        if len(result.errors) > MAX_LISTED:
+            print(f"[ERROR] ... and {len(result.errors) - MAX_LISTED} more problems not listed "
+                  f"(scripts/check_sampling_csv.py lists them all)")
+        # download_data.py reads the count from this line
         raise InvalidFile(f"{len(result.errors)} problems in {file_path}; nothing was imported. Fix them and "
                           f"upload the file again.")
     print(f"[INFO] Valid file: {result.summary()}")
@@ -96,25 +109,35 @@ def inject_new_sampling_data(file_path, return_only=False):
     return rows
 
 
-def inject_all_sampling_history(file_path):
-    """Replace every stored sampling row with the file's, in one transaction (for a full refresh only)."""
+def replace_all(session, file_path, allow_shrink=False):
+    """Replace every stored sampling row with the file's, in one transaction. Returns the number stored.
+
+    Refuses (RefusedReload, nothing deleted) when the file is invalid (InvalidFile) or has fewer than SHRINK_LIMIT
+    of the readings stored now, unless allow_shrink: a truncated or wrong file mustn't empty the table.
+    """
     from utils.guards import require_wipe_permission  # local: keeps this change apart from the import block
     require_wipe_permission("all sampling data (--full-reload)")
     rows = load_valid_rows(file_path)  # checked before anything is deleted
+    stored = session.execute(select(func.count()).select_from(SamplingMeasurement)).scalar_one()
+    if not allow_shrink and len(rows) < SHRINK_LIMIT * stored:
+        raise RefusedReload(f"the file has {len(rows)} readings but {stored} are stored; replacing them would remove "
+                            f"{stored - len(rows)}. Nothing was deleted. If that is intended, run again with "
+                            f"--allow-shrink.")
     try:
-        print("[INFO] Clearing existing SamplingMeasurement records ...")
-        SamplingMeasurement.query.delete()
-        inserted = store_rows(db.session, rows)
-        db.session.commit()
+        print(f"[INFO] Clearing the {stored} stored SamplingMeasurement records ...")
+        session.query(SamplingMeasurement).delete()
+        inserted = store_rows(session, rows)
+        session.commit()
     except Exception:
-        db.session.rollback()
+        session.rollback()   # the DELETE is undone too
         raise
     print(f"[DONE] Inserted {len(inserted)} total sampling records.")
+    return len(inserted)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("[ERROR] Usage: python inject_sampling.py <file_path> [--full-reload]")
+        print("[ERROR] Usage: python inject_sampling.py <file_path> [--full-reload [--allow-shrink]]")
         print("  --full-reload: Replace all existing data (default: incremental)")
         sys.exit(1)
 
@@ -125,11 +148,14 @@ if __name__ == "__main__":
         try:
             if full_reload:
                 print("[INFO] Full reload mode - replacing all existing data...")
-                inject_all_sampling_history(file_path)
+                replace_all(db.session, file_path, allow_shrink="--allow-shrink" in sys.argv)
             else:
                 print("[INFO] Incremental mode - adding only new records...")
                 inject_new_sampling_data(file_path)
         except InvalidFile as e:
+            print(f"[ERROR] {e}")
+            sys.exit(INVALID_FILE_EXIT)
+        except RefusedReload as e:
             print(f"[ERROR] {e}")
             sys.exit(1)
 
