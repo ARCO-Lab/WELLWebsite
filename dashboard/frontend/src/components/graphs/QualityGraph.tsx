@@ -1,5 +1,5 @@
 // This file defines the QualityGraph component for rendering water quality time series data using MetricChart.
-// It maps frontend metric labels to backend keys and filters data for the "Quality" group.
+// It maps frontend metric labels to backend keys; the series come from the page (useChartView).
 
 import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
@@ -25,15 +25,10 @@ interface Props {
     weather: string[];
     quality: string[];
   };
-  startDate: Date | null;
-  endDate: Date | null;
   modalOpen?: boolean;
-  data: any;
-  loading?: boolean;
-  error?: any;
 }
 
-const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen, data, loading = false, error = null, }: Props) => {
+const QualityGraph = ({ subFilters, modalOpen }: Props) => {
   // Map frontend metric labels to backend keys if needed. Memoized so the chart doesn't rebuild its series
   // on every page re-render.
   const mappedSubFilters = useMemo(
@@ -41,23 +36,13 @@ const QualityGraph = ({ activeGroups, subFilters, startDate, endDate, modalOpen,
     [subFilters.quality]
   );
 
-  // Filter data for the "Quality" group
-  const qualityData = useMemo(() => {
-    if (!data || !Array.isArray(data)) return [];
-    return data.filter(item => item.group_type === 'Quality');
-  }, [data]);
-
   return (
     <div className="p-4 bg-white rounded shadow">
       <MetricChart
-        activeGroup="quality"
-        subFilters={mappedSubFilters}
+        title="Quality Data"
+        groupType="Quality"
+        measurements={mappedSubFilters}
         height={500}
-        startDate={startDate}
-        endDate={endDate}
-        data={qualityData}
-        loading={loading}
-        error={error}
         modalOpen={modalOpen}
       />
     </div>

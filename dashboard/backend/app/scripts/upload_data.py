@@ -1,31 +1,30 @@
-# This script exports WELL sensor data for a given month to CSV and uploads it to Borealis Dataverse.
-# It replicates frontend CSV formatting and supports both manual and automatic (last month) export.
+# This script exports one month of WELL sensor data to CSV and uploads it to Borealis Dataverse, as the off-VM
+# copy that anyone can cite. The CSV has the dashboard's export layout (one row per timestamp: Weather, Quality and
+# one block per logger). The scheduler runs it for each month that has ended (scripts/scheduler_temp.py);
+# scripts/sharepoint_upload.py sends the same file to SharePoint.
+#   python scripts/upload_data.py --year 2026 --month 10             that month
+#   python scripts/upload_data.py                                    last month
+#   python scripts/upload_data.py --year 2026 --month 10 --dry-run   build the CSV and print its size only
+# Every month goes into the one dataset BOREALIS_UPLOAD_PERSISTENT_ID as WELLWestCampus_<Mon><YYYY>.csv, in a folder
+# per year, and the dataset is then published as a new major version (utils/borealis.py has the details). Running it
+# again for a month is safe: an identical file isn't sent twice, and a changed one replaces the old copy.
+# It prints "Successfully uploaded <file> to Borealis" only once the file is in the dataset and published (or left
+# as a draft on purpose, BOREALIS_PUBLISH=0); the scheduler records the month as done only then.
 
 import sys
 import pathlib
-import json
 import io
 import argparse
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 import pandas as pd
 import csv
-import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from db.database import db
-from db.models import SensorMeasurement
-from server import create_app
+from utils.borealis import Dataverse, DataverseError, base_url, is_demo, upload_file
 
 load_dotenv()
-#temporarily demo
-BOREALIS_URL = Config.DEMO_BOREALIS_URL
-BOREALIS_API_TOKEN = Config.BOREALIS_API_TOKEN
-BOREALIS_WC_PERSISTENT_ID = Config.DEMO_BOREALIS_WC_PERSISTENT_ID
-SHAREPOINT_URL = Config.SHAREPOINT_URL
-SHAREPOINT_USER = Config.SHAREPOINT_USER
-SHAREPOINT_PASS = Config.SHAREPOINT_PASS
 
 
 # Frontend config replica
@@ -33,7 +32,7 @@ SENSOR_FILTER_CONFIG = {
     "gauges": {
         "sites": {
             "2577531": "Logger 1",
-            "2577532": "Logger 2", 
+            "2577532": "Logger 2",
             "2577533": "Logger 3",
             "2577534": "Logger 4",
             "2577535": "Logger 5",
@@ -88,368 +87,213 @@ def get_last_month_range():
         last_month_start = first_of_this_month.replace(month=first_of_this_month.month - 1)
     return last_month_start, last_month_end
 
-#for demo
-def get_first_10_hours_of_last_month():
-    now = datetime.now()
-    first_of_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    # Go to the first day of last month
-    if first_of_this_month.month == 1:
-        first_of_last_month = first_of_this_month.replace(year=first_of_this_month.year - 1, month=12)
-    else:
-        first_of_last_month = first_of_this_month.replace(month=first_of_this_month.month - 1)
-    start = first_of_last_month
-    end = start + timedelta(hours=10)
-    return start, end
-
 
 def build_csv_frontend_style(data_list, file_obj):
-    """
-    Replicate EXACT frontend CSV building logic with coordinates for all groups
-    """
-    print(f"DEBUG: Starting CSV build with {len(data_list)} measurements")
-    
-    if not data_list:
-        print("DEBUG: No data to export")
-        return
-    
-    # Convert to DataFrame like frontend
-    df = pd.DataFrame(data_list)
-    print(f"DEBUG: DataFrame created with shape: {df.shape}")
-    print("DEBUG: DataFrame columns:", df.columns.tolist())
-    print("DEBUG: Group types in data:", df["group_type"].value_counts().to_dict())
-    print("DEBUG: Station IDs in data:", sorted(df["station_id"].astype(str).unique()))
-    
-    # Simulate frontend activeGroups = {weather: true, quality: true, gauges: true}
-    # and subFilters with all available metrics
-    
-    # 1. Filter data (simulate frontend filter logic)
-    filtered = []
-    for _, row in df.iterrows():
-        include_row = False
-        if row["group_type"] == "Weather":
-            include_row = True
-        elif row["group_type"] == "Quality":
-            include_row = True
-        elif row["group_type"] == "Logger":
-            include_row = True
-        
-        if include_row:
-            filtered.append(row.to_dict())
-    
-    print(f"DEBUG: After filtering: {len(filtered)} measurements")
-    filtered_df = pd.DataFrame(filtered)
-    
-    # 2. Get unique timestamps (like frontend)
-    timestamps = sorted(filtered_df["recorded_at"].unique())
-    print(f"DEBUG: Found {len(timestamps)} unique timestamps")
-    
-    # 3. Identify metrics by group (like frontend)
-    weather_keys = sorted(filtered_df[filtered_df["group_type"] == "Weather"]["measurement_type"].unique()) if not filtered_df[filtered_df["group_type"] == "Weather"].empty else []
-    quality_keys = sorted(filtered_df[filtered_df["group_type"] == "Quality"]["measurement_type"].unique()) if not filtered_df[filtered_df["group_type"] == "Quality"].empty else []
-    logger_keys = sorted(filtered_df[filtered_df["group_type"] == "Logger"]["measurement_type"].unique()) if not filtered_df[filtered_df["group_type"] == "Logger"].empty else []
-    
-    print(f"DEBUG: Weather metrics: {weather_keys}")
-    print(f"DEBUG: Quality metrics: {quality_keys}")
-    print(f"DEBUG: Logger metrics: {logger_keys}")
-    
-    # Get selected logger IDs (all available loggers)
-    selected_logger_ids = sorted(filtered_df[filtered_df["group_type"] == "Logger"]["station_id"].astype(str).unique()) if not filtered_df[filtered_df["group_type"] == "Logger"].empty else []
-    print(f"DEBUG: Selected logger IDs: {selected_logger_ids}")
-    
-    # 4. Build metric labels with units
-    metric_label_map = {}
-    for _, row in filtered_df.iterrows():
-        key = row["measurement_type"]
-        unit = row.get("unit", "")
-        metric_label_map[key] = f"{key}: {unit}" if unit else key
-    
-    print("DEBUG: Metric labels:", metric_label_map)
-    
-    # 5. Build section keys (like frontend)
-    section_keys = []
-    if weather_keys:
-        section_keys.append({"active": True, "label": "Weather", "keys": weather_keys})
-    if quality_keys:
-        section_keys.append({"active": True, "label": "Quality", "keys": quality_keys})
-    if logger_keys:
-        section_keys.append({"active": True, "label": "Logger", "keys": logger_keys})
-    
-    print(f"DEBUG: Section keys: {[s['label'] for s in section_keys]}")
-    
-    # 6. Build headers with coordinates for ALL groups
-    headers = ["ID", "Timestamp"]
-    
-    active_sections = section_keys
-    
-    for section_idx, section in enumerate(active_sections):
-        if section_idx != 0:
-            headers.append("")  # Blank separator between sections
-        
-        headers.append("Group")  # Group header
-        
-        if section["label"] == "Weather":
-            headers.append("Latitude") 
-            headers.append("Longitude")
-            for metric in section["keys"]:
-                headers.append(metric_label_map.get(metric, metric))
-                
-        elif section["label"] == "Quality":
-            headers.append("Latitude")
-            headers.append("Longitude")
-            for metric in section["keys"]:
-                headers.append(metric_label_map.get(metric, metric))
-                
-        elif section["label"] == "Logger":
-            headers.append("Sensor")
-            headers.append("Latitude")
-            headers.append("Longitude")
+    """Write the dashboard's CSV layout for `data_list` (dicts with station_id, group_type, measurement_type, value,
+    unit and recorded_at as an ISO string) to `file_obj`.
 
-            for site_idx, site_id in enumerate(selected_logger_ids):
-                for metric in section["keys"]:
-                    headers.append(metric_label_map.get(metric, metric))
-                if site_idx < len(selected_logger_ids) - 1:
-                    headers.append("Sensor")
-                    headers.append("Latitude")
-                    headers.append("Longitude")
-    
-    print(f"DEBUG: Headers built: {len(headers)} columns")
-    print("DEBUG: First 10 headers:", headers[:10])
-    print("DEBUG: Last 10 headers:", headers[-10:])
-    
-    # 7. Build rows with coordinates for ALL groups
+    The layout: ID, Timestamp, then a Weather block (Group, Latitude, Longitude, one column per metric), a Quality
+    block like it, and a Logger block (Group, then for each logger Sensor, Latitude, Longitude and its metrics),
+    with an empty column between blocks. A cell is the first reading for its timestamp, group (and logger) and
+    metric, or empty. Values are looked up in one dictionary, so a month (about 4,500 timestamps) takes seconds;
+    it used to filter the whole month once per cell, and print every cell, which took most of an hour.
+    """
+    if not data_list:
+        print("No data to export")
+        return
+
+    df = pd.DataFrame(data_list)
+    df = df[df["group_type"].isin(["Weather", "Quality", "Logger"])]
+    print(f"Building the CSV from {len(df)} readings: {df['group_type'].value_counts().to_dict()}")
+
+    timestamps = sorted(df["recorded_at"].unique())
+
+    def metrics(group):
+        return sorted(df[df["group_type"] == group]["measurement_type"].unique())
+
+    weather_keys, quality_keys, logger_keys = metrics("Weather"), metrics("Quality"), metrics("Logger")
+    selected_logger_ids = sorted(df[df["group_type"] == "Logger"]["station_id"].astype(str).unique())
+
+    # Column label per metric, with the unit of its last reading
+    metric_label_map = {}
+    for key, unit in zip(df["measurement_type"], df["unit"]):
+        metric_label_map[key] = f"{key}: {unit}" if unit else key
+
+    # The first value for each (timestamp, group, metric) and, for loggers, each (timestamp, group, logger, metric)
+    first_value = {}
+    for ts, group, station, metric, value in zip(df["recorded_at"], df["group_type"], df["station_id"].astype(str),
+                                                 df["measurement_type"], df["value"].tolist()):
+        if group == "Logger":
+            first_value.setdefault((ts, group, station, metric), value)
+        else:
+            first_value.setdefault((ts, group, metric), value)
+
+    sections = [(label, keys) for label, keys in
+                (("Weather", weather_keys), ("Quality", quality_keys), ("Logger", logger_keys)) if keys]
+
+    headers = ["ID", "Timestamp"]
+    for section_idx, (label, keys) in enumerate(sections):
+        if section_idx != 0:
+            headers.append("")  # blank separator between sections
+        headers.append("Group")
+        if label in ("Weather", "Quality"):
+            headers += ["Latitude", "Longitude"]
+            headers += [metric_label_map.get(m, m) for m in keys]
+        else:
+            for _ in selected_logger_ids:
+                headers += ["Sensor", "Latitude", "Longitude"]
+                headers += [metric_label_map.get(m, m) for m in keys]
+
+    station_coords = {"Weather": get_weather_station_coords(), "Quality": get_quality_station_coords()}
     rows = []
     for idx, timestamp in enumerate(timestamps, 1):
-        print(f"DEBUG: Processing row {idx} for timestamp {timestamp}")
-        
-        # Create row data structure like frontend
-        row_data = {"id": idx, "timestamp": timestamp}
-        
-        # Build row data for each section
-        for section in active_sections:
-            if section["label"] == "Logger":
-                # For each selected logger, add its metrics
-                for site_id in selected_logger_ids:
-                    site_label = get_logger_label(site_id)
-                    for metric in section["keys"]:
-                        # Find matching data (like frontend match logic)
-                        match = filtered_df[
-                            (filtered_df["recorded_at"] == timestamp) &
-                            (filtered_df["group_type"] == "Logger") &
-                            (filtered_df["station_id"].astype(str) == str(site_id)) &
-                            (filtered_df["measurement_type"] == metric)
-                        ]
-                        value = match["value"].iloc[0] if not match.empty else ""
-                        key = f"{section['label']}_{site_label}_{metric}"
-                        row_data[key] = value
-                        if value != "":
-                            print(f"DEBUG:   {key}: {value}")
-            else:
-                # Weather/Quality - single site (like frontend)
-                site_label = "West Campus"
-                for metric in section["keys"]:
-                    match = filtered_df[
-                        (filtered_df["recorded_at"] == timestamp) &
-                        (filtered_df["group_type"] == section["label"]) &
-                        (filtered_df["measurement_type"] == metric)
-                    ]
-                    value = match["value"].iloc[0] if not match.empty else ""
-                    key = f"{section['label']}_{site_label}_{metric}"
-                    row_data[key] = value
-                    if value != "":
-                        print(f"DEBUG:   {key}: {value}")
-        
-        # 8. Build CSV row with coordinates for ALL groups
-        csv_row = [row_data["id"], row_data["timestamp"]]
-        
-        for section_idx, section in enumerate(active_sections):
+        csv_row = [idx, timestamp]
+        for section_idx, (label, keys) in enumerate(sections):
             if section_idx != 0:
-                csv_row.append("")  # Blank separator between sections
-            
-            csv_row.append(section["label"])  # Group name (Weather/Quality/Logger)
-            
-            if section["label"] == "Weather":
-                # Add weather station coordinates (no sensor name)
-                weather_lat, weather_lng = get_weather_station_coords()
-                csv_row.append(weather_lat)
-                csv_row.append(weather_lng)
-                # Add metric values
-                for metric in section["keys"]:
-                    key = f"{section['label']}_West Campus_{metric}"
-                    csv_row.append(row_data.get(key, ""))
-                    
-            elif section["label"] == "Quality":
-                # Add quality station coordinates (no sensor name)
-                quality_lat, quality_lng = get_quality_station_coords()
-                csv_row.append(quality_lat)
-                csv_row.append(quality_lng)
-                # Add metric values
-                for metric in section["keys"]:
-                    key = f"{section['label']}_West Campus_{metric}"
-                    csv_row.append(row_data.get(key, ""))
-                    
-            elif section["label"] == "Logger":
-                # Add first logger name and coordinates
-                if selected_logger_ids:
-                    first_site_label = get_logger_label(selected_logger_ids[0])
-                    csv_row.append(first_site_label)
-                    lat, lng = get_station_coords(selected_logger_ids[0])
-                    csv_row.append(lat)
-                    csv_row.append(lng)
-
-                for site_idx, site_id in enumerate(selected_logger_ids):
-                    site_label = get_logger_label(site_id)
-                    # Add metric values for this logger
-                    for metric in section["keys"]:
-                        key = f"{section['label']}_{site_label}_{metric}"
-                        csv_row.append(row_data.get(key, ""))
-                    # Add next logger name and coords (if there is one)
-                    if site_idx < len(selected_logger_ids) - 1:
-                        next_site_label = get_logger_label(selected_logger_ids[site_idx + 1])
-                        csv_row.append(next_site_label)
-                        lat, lng = get_station_coords(selected_logger_ids[site_idx + 1])
-                        csv_row.append(lat)
-                        csv_row.append(lng)
-        
+                csv_row.append("")
+            csv_row.append(label)
+            if label in ("Weather", "Quality"):
+                csv_row += list(station_coords[label])
+                csv_row += [first_value.get((timestamp, label, m), "") for m in keys]
+            else:
+                for site_id in selected_logger_ids:
+                    lat, lng = get_station_coords(site_id)
+                    csv_row += [get_logger_label(site_id), lat, lng]
+                    csv_row += [first_value.get((timestamp, label, site_id, m), "") for m in keys]
         rows.append(csv_row)
-        print(f"DEBUG:   Row {idx} complete with {len(csv_row)} columns (expected {len(headers)})")
-        
-        if len(csv_row) != len(headers):
-            print(f"DEBUG:   WARNING: Row length mismatch! Row: {len(csv_row)}, Headers: {len(headers)}")
-    
-    # Write to file-like object (in-memory or file)
+
     writer = csv.writer(file_obj)
     writer.writerow(headers)
     writer.writerows(rows)
-    
-    print("DEBUG: CSV written to file-like object")
-    print(f"DEBUG: Written {len(rows)} data rows and {len(headers)} header columns")
+    print(f"Built the CSV: {len(rows)} rows, {len(headers)} columns")
 
-def upload_to_borealis(csv_content, csv_name):
-    """Upload CSV to Borealis Dataverse"""
+
+def borealis_settings():
+    """(server URL, token, dataset id) for the upload. Exits 1 saying what is missing or wrong."""
+    url, token, pid = Config.BOREALIS_URL, Config.BOREALIS_API_TOKEN, Config.BOREALIS_UPLOAD_PERSISTENT_ID
+    missing = [name for name, value in (("BOREALIS_URL", url), ("BOREALIS_API_TOKEN", token),
+                                        ("BOREALIS_UPLOAD_PERSISTENT_ID", pid)) if not value]
+    if missing:
+        print(f"ERROR: Not uploading to Borealis: {', '.join(missing)} not set (see utils/borealis.py)")
+        sys.exit(1)
     try:
-        headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
-        files = {'file': (csv_name, csv_content)}
-        params = dict(description='Automated upload', categories=['Data'])
-        payload = dict(jsonData=json.dumps(params))
-        # The token goes in the X-Dataverse-key header only. In the URL it would be printed by any
-        # error message that includes the URL (requests' HTTPError does), and so end up in the logs.
-        resp = requests.post(
-            f"{BOREALIS_URL}/api/datasets/:persistentId/add",
-            params={"persistentId": BOREALIS_WC_PERSISTENT_ID},
-            headers=headers,
-            data=payload,
-            files=files,
-            timeout=(10, 600),
-        )
-        resp.raise_for_status()
-        print(f"Successfully uploaded {csv_name} to Borealis")
-    except Exception as e:
-        print(f"Error uploading to Borealis: {e}")
-        raise  # exit non-zero, so the scheduler logs the failed upload instead of a success
+        server = base_url(url)
+    except ValueError as e:
+        print(f"ERROR: Not uploading to Borealis: {e}")
+        sys.exit(1)
+    if is_demo(server) != is_demo(persistent_id=pid):
+        print(f"ERROR: Not uploading to Borealis: BOREALIS_URL is {server} but the dataset {pid} is on the "
+              f"{'production' if is_demo(server) else 'demo'} server. Set BOREALIS_UPLOAD_PERSISTENT_ID to the "
+              f"dataset's id on {server}.")
+        sys.exit(1)
+    if is_demo(server):
+        print(f"WARNING: uploading to the demo server {server}: it is for testing and is reset from time to time, "
+              f"so this is not a backup")
+    return server, token, pid
 
-def upload_to_sharepoint(csv_content, csv_name):
-    """Upload CSV to SharePoint"""
-    print(f"Would upload {csv_name} to SharePoint")
-    # Implement actual upload logic as needed
+
+def upload_to_borealis(csv_content, csv_name, year, client=None):
+    """Upload the CSV to the Borealis dataset and publish it (utils/borealis.upload_file). Exits 1 on failure."""
+    server, token, pid = borealis_settings()
+    client = client or Dataverse(server, token)
+    month = csv_name[len("WELLWestCampus_"):-len(".csv")]
+    try:
+        outcome, version = upload_file(client, pid, csv_name, csv_content,
+                                       description=f"WELL West Campus sensor data, {month} (automated monthly export)",
+                                       directory=str(year), publish=Config.BOREALIS_PUBLISH)
+    except DataverseError as e:
+        print(f"ERROR: Uploading {csv_name} to Borealis: {e}")
+        sys.exit(1)
+    state = f"published as version {version}" if version else "no new version published by this run"
+    print(f"Successfully uploaded {csv_name} to Borealis ({outcome}, {state})")
+
+
+def export_month_csv(start, end):
+    """(file name, CSV text) for the readings from `start` up to, not including, `end`, or None if there are none.
+    Needs the app context (the database)."""
+    from db.database import db
+    from db.models import SensorMeasurement
+
+    query = db.session.query(SensorMeasurement).filter(
+        SensorMeasurement.group_type.in_(["Weather", "Quality", "Logger"]),
+        # Half-open, so the reading at midnight on the 1st goes in the new month's file only
+        SensorMeasurement.recorded_at >= start,
+        SensorMeasurement.recorded_at < end,
+    ).order_by(SensorMeasurement.recorded_at)
+    data = [
+        {
+            "station_id": r.station_id,
+            "group_type": r.group_type,
+            "measurement_type": r.measurement_type,
+            "value": r.value,
+            "unit": r.unit,
+            "recorded_at": r.recorded_at.isoformat(),
+        }
+        for r in query
+    ]
+    print(f"Found {len(data)} readings from {start} up to {end}")
+    if not data:
+        return None
+    csv_buffer = io.StringIO()
+    build_csv_frontend_style(data, csv_buffer)
+    return month_file_name(start), csv_buffer.getvalue()
+
+
+def month_file_name(start):
+    """WELLWestCampus_Oct2026.csv for October 2026 (English month names, whatever the locale)."""
+    months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+    return f"WELLWestCampus_{months[start.month - 1]}{start.year}.csv"
+
 
 def get_month_range(year: int, month: int):
-    """Return the start and end datetime for a given month."""
+    """The start of the month and the start of the next one (readings from start up to, not including, end)."""
     start = datetime(year, month, 1)
     if month == 12:
         end = datetime(year + 1, 1, 1)
     else:
         end = datetime(year, month + 1, 1)
     return start, end
-#python upload_data.py --year 2023 --month 7
+
+
+def parse_args(argv=None, description="Export one month of WELL sensor data and upload it to Borealis."):
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--year", type=int, help="Year (e.g. 2026)")
+    parser.add_argument("--month", type=int, help="Month (1-12)")
+    parser.add_argument("--dry-run", action="store_true", help="Build the CSV and print its size; upload nothing")
+    args = parser.parse_args(argv)
+    if bool(args.year) != bool(args.month):
+        parser.error("give both --year and --month, or neither (last month)")
+    return args
+
+
+def exported_month(args):
+    """(file name, CSV text, year) for the month the arguments name. Exits 2 when it has no data. Needs the app."""
+    if args.year and args.month:
+        start, end = get_month_range(args.year, args.month)
+    else:
+        start, end = get_last_month_range()
+    print(f"Exporting sensor data from {start} up to {end}")
+    exported = export_month_csv(start, end)
+    if exported is None:
+        # Exit non-zero: nothing was sent, so the scheduler must not record this month as uploaded
+        # (it tries again the next day, e.g. once a backfill has filled the month in).
+        print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
+        sys.exit(2)
+    csv_name, csv_content = exported
+    print(f"{csv_name}: {len(csv_content.encode('utf-8')):,} bytes")
+    return csv_name, csv_content, start.year
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Export WELL data for a specific month.")
-    parser.add_argument("--year", type=int, help="Year (e.g. 2024)")
-    parser.add_argument("--month", type=int, help="Month (1-12)")
-    args = parser.parse_args()
+    args = parse_args()
+    from server import create_app
+    with create_app().app_context():
+        csv_name, csv_content, year = exported_month(args)
+    if args.dry_run:
+        print("Dry run: not uploading")
+        return
+    upload_to_borealis(csv_content, csv_name, year)
 
-    app = create_app()
-    with app.app_context():
-        # Use manual month/year if provided, else default to last month
-        if args.year and args.month:
-            start, end = get_month_range(args.year, args.month)
-            print(f"DEBUG: Exporting data from {start} to {end} (manual selection)")
-        else:
-            start, end = get_last_month_range()
-            print(f"DEBUG: Exporting data from {start} to {end} (last month by default)")
-        
-        # Use EXACT same query pattern as data.py that works
-        group_types = ["Weather", "Quality", "Logger"]  # All groups active
-        
-        print(f"DEBUG: Querying for group_types: {group_types}")
-        
-        # EXACT same query as working data.py
-        query = db.session.query(SensorMeasurement).filter(
-            SensorMeasurement.group_type.in_(group_types),
-            SensorMeasurement.recorded_at.between(start, end)
-        )
-        
-        print("DEBUG: Query built, executing...")
-        
-        # Get data in EXACT same format as data.py
-        raw_data = query.order_by(SensorMeasurement.recorded_at).all()
-        print(f"DEBUG: Found {len(raw_data)} raw measurements from database")
-        
-        # Convert to EXACT same format as data.py
-        data = [
-            {
-                "station_id": r.station_id,
-                "group_type": r.group_type,
-                "measurement_type": r.measurement_type,
-                "value": r.value,
-                "unit": r.unit,
-                "recorded_at": r.recorded_at.isoformat()
-            }            
-            for r in raw_data
-        ]
-        
-        print(f"DEBUG: Converted to data list with {len(data)} entries")
-        
-        # Debug: Show what we found
-        if data:
-            df_debug = pd.DataFrame(data)
-            print("DEBUG: Station IDs found:", sorted(df_debug["station_id"].astype(str).unique()))
-            print("DEBUG: Group types found:", sorted(df_debug["group_type"].unique()))
-            print("DEBUG: Measurement types found:", sorted(df_debug["measurement_type"].unique()))
-            
-            # Show counts by group
-            for group_type in df_debug["group_type"].unique():
-                group_data = df_debug[df_debug["group_type"] == group_type]
-                print(f"DEBUG: {group_type} - {len(group_data)} measurements")
-                if group_type == "Logger":
-                    station_counts = group_data["station_id"].value_counts()
-                    print(f"DEBUG:   Logger stations: {dict(station_counts)}")
-        
-        if not data:
-            # Exit non-zero: nothing was sent, so the scheduler must not record this month as uploaded
-            # (it tries again the next day, e.g. once a backfill has filled the month in).
-            print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
-            sys.exit(2)
-        
-        # Build CSV in memory - CHANGED to use io.StringIO instead of file path
-        csv_name = f"WELLWestCampus_{start.strftime('%b%Y')}.csv"
-        csv_buffer = io.StringIO()
-        
-        print(f"DEBUG: Building CSV in memory: {csv_name}")
-        
-        # Use frontend-style CSV building with in-memory buffer
-        build_csv_frontend_style(data, csv_buffer)
-        
-        # Get CSV content from buffer
-        csv_buffer.seek(0)
-        csv_content = csv_buffer.getvalue()
-        
-        # Upload to external services - CHANGED to use csv_content instead of csv_path
-        print("DEBUG: Starting uploads...")
-        # upload_to_sharepoint(csv_content, csv_name)
-        upload_to_borealis(csv_content, csv_name)
-
-        print("DEBUG: Export process completed!")
 
 if __name__ == "__main__":
     main()

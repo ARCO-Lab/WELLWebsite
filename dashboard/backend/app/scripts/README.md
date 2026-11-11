@@ -34,10 +34,12 @@ the format page.
 - Files without the prefix (e.g. `lancaster_data.csv`) and `WELLAncasterWatershed_SAMPLE.*` are ignored.
 
 ## Upload
-1. Log into the Dataverse repository and open the WELL dataset.
+1. Log into Borealis (borealisdata.ca) and open the WELL sampling dataset (in the WELL collection).
 2. Upload the file (Dataverse may show a CSV as `.tab` after upload; that's expected, the original is what's
    imported).
 3. Check that the filename follows the naming convention.
+4. **Publish the dataset** (Publish Dataset, or ask a curator to). The weekly import reads only the published
+   version, so a file still in the draft isn't imported; the import log says when a draft is waiting.
 
 ## Troubleshooting
 

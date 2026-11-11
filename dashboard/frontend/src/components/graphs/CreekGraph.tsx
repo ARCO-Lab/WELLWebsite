@@ -1,11 +1,11 @@
 // This file defines the CreekGraph component for rendering time series charts for creek sampling sites.
-// It groups data by site and displays a MetricChart for each selected site and metric.
+// It groups data by site and displays a SampleChart for each selected site and metric.
 
 import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
 import { SAMPLING_METRICS, SAMPLING_FILTER_CONFIG } from '@/components/config/filters';
 
-const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), {
+const SampleChart = dynamic(() => import("@/components/graphs/highcharts/SampleChart"), {
   ssr: false,
 });
 
@@ -71,6 +71,8 @@ const CreekGraph = ({
   return (
     <div className="p-4 bg-white rounded shadow">
       <h3 className="font-bold text-lg mb-2">{SAMPLING_FILTER_CONFIG[creekKey].label}</h3>
+      {/* One announcement for the card; each chart's spinner is hidden from screen readers */}
+      <p className="sr-only" role="status" aria-live="polite">{loading ? "Loading data…" : ""}</p>
       
       {/* 3. Map over the selected sites and render a chart for each one */}
       {sites.map((siteId, index) => {
@@ -81,7 +83,7 @@ const CreekGraph = ({
 
         return (
           <div key={siteId} className={index > 0 ? "mt-6 border-t pt-4" : ""}>
-            <MetricChart
+            <SampleChart
               activeGroup={siteName} // Use site name for the chart's context
               subFilters={metrics}
               height={300} // Reduced height for vertical stacking

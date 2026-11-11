@@ -97,12 +97,12 @@ class SchedulerHeartbeatTests(unittest.TestCase):
     def test_upload_pings_only_when_a_month_was_due(self):
         with self.at(2), mock.patch.object(scheduler_temp, "load_uploaded_months", lambda p: set()), \
                 mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"), \
-                mock.patch.object(scheduler_temp, "upload_job", lambda y, m: True), \
+                mock.patch.object(scheduler_temp, "upload_job", lambda *a: True), \
                 mock.patch.object(scheduler_temp, "record_uploaded_month", lambda *a: None):
             scheduler_temp.monthly_upload_check()
         with self.at(2), mock.patch.object(scheduler_temp, "load_uploaded_months", lambda p: set()), \
                 mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"), \
-                mock.patch.object(scheduler_temp, "upload_job", lambda y, m: False):
+                mock.patch.object(scheduler_temp, "upload_job", lambda *a: False):
             scheduler_temp.monthly_upload_check()
         with self.at(2), mock.patch.object(scheduler_temp, "load_uploaded_months", lambda p: {"2026-10"}), \
                 mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"):
