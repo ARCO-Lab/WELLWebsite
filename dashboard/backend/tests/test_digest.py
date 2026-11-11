@@ -18,8 +18,16 @@ from utils.digest import (  # noqa: E402
 )
 from utils.monitoring import assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
+from config import Config  # noqa: E402
+
+# Config reads DATABASE_URL once, when first imported; another test module may have imported it first.
+Config.SQLALCHEMY_DATABASE_URI = "sqlite://"
 
 T0 = dt.datetime(2026, 11, 10, 7, 0)
+
+
+def utc(naive_site_time):
+    return naive_site_time.replace(tzinfo=EST_TZ).astimezone(dt.timezone.utc)
 
 
 class AlertEmailTests(unittest.TestCase):
@@ -98,10 +106,17 @@ class AnomalyTests(unittest.TestCase):
         self.assertEqual(anomalies("Weather", "22051538", "Rain", [0.0] * 50), [])   # no rule for rain
 
     def test_stuck_quality_sensor(self):
-        found = anomalies("Quality", "4501", "TSS", [0.0] * 12)
+        found = anomalies("Quality", "4501", "TSS", [3.2] * 12)
         self.assertEqual(len(found), 1)
-        self.assertIn("all 12 readings are exactly 0", found[0])
-        self.assertEqual(anomalies("Quality", "4501", "TSS", [0.0] * 11), [])        # too few to tell
+        self.assertIn("all 12 readings are exactly 3.2", found[0])
+        self.assertEqual(anomalies("Quality", "4501", "TSS", [3.2] * 11), [])        # too few to tell
+        self.assertIn("exactly 0", anomalies("Quality", "4501", "ODO", [0.0] * 12)[-1])   # only TSS, turbidity exempt
+        # Clear water reads exactly 0 on TSS and turbidity all day; that isn't a stuck sensor
+        self.assertEqual(anomalies("Quality", "4501", "TSS", [0.0] * 50), [])
+        self.assertEqual(anomalies("Quality", "4501", "Turbidity", [0.0] * 50), [])
+        # ... and they may read a little below 0
+        self.assertEqual(anomalies("Quality", "4501", "Turbidity", [-0.4, 0.1, -0.9]), [])
+        self.assertIn("outside the plausible range", anomalies("Quality", "4501", "TSS", [-2.0, 1.0])[0])
         self.assertEqual(anomalies("Quality", "4501", "Salinity", [0.37] * 60), [])  # coarse; can sit still
         self.assertEqual(anomalies("Weather", "22051538", "Pressure", [101.0] * 20), [])
 
@@ -151,7 +166,7 @@ class ReadGroupsTests(unittest.TestCase):
         with app.app_context():
             db.create_all()
             try:
-                since, until = T0 - dt.timedelta(hours=24), T0
+                since = T0 - dt.timedelta(hours=24)
                 rows = [SensorMeasurement(station_id="4501", group_type="Quality", measurement_type="ODO", value=0.0,
                                           unit="mg/L", recorded_at=T0 - dt.timedelta(minutes=10 * i)) for i in range(12)]
                 rows.append(SensorMeasurement(station_id="4501", group_type="Quality", measurement_type="ODO", value=9.0,
@@ -165,13 +180,38 @@ class ReadGroupsTests(unittest.TestCase):
                     "Logger": {"series": [{"station_id": "2577535", "measurement_type": "Water Temperature",
                                            "status": "excluded"}]},
                 }}
-                groups, findings = daily_digest.read_groups(db, freshness, since, until)
+                groups, findings = daily_digest.read_groups(db, freshness, T0.replace(tzinfo=EST_TZ))
             finally:
                 db.drop_all()
         self.assertEqual(set(groups), {"Quality"})   # an all-excluded group isn't counted
         self.assertEqual((groups["Quality"]["rows"], groups["Quality"]["series"]), (12, 1))
-        self.assertEqual(groups["Quality"]["gaps"], [(since, T0 - dt.timedelta(minutes=110))])
+        self.assertEqual(groups["Quality"]["gaps"], [(utc(since), utc(T0 - dt.timedelta(minutes=110)))])
         self.assertEqual(len(findings), 2)   # about 0 mg/L, and stuck at exactly 0
+
+    def test_dst_change_makes_no_gap_or_shortfall(self):
+        # Clocks sprang forward at 02:00 on 2026-03-08: stored (naive) times go 01:50, 03:00, which is 10 minutes.
+        import daily_digest
+        from server import create_app
+        from db.database import db
+        from db.models import SensorMeasurement
+        now = dt.datetime(2026, 3, 8, 4, 0, tzinfo=EST_TZ)
+        wall = [dt.datetime(2026, 3, 8, h, m) for h in (0, 1, 3) for m in range(0, 60, 10)]
+        app = create_app()
+        with app.app_context():
+            db.create_all()
+            try:
+                db.session.add_all([SensorMeasurement(station_id="22051538", group_type="Weather", measurement_type="Rain",
+                                                      value=0.0, unit="mm", recorded_at=t) for t in wall])
+                db.session.commit()
+                freshness = {"groups": {"Weather": {"series": [
+                    {"station_id": "22051538", "measurement_type": "Rain", "status": "ok"}]}}}
+                groups, _ = daily_digest.read_groups(db, freshness, now)
+            finally:
+                db.drop_all()
+        gaps = groups["Weather"]["gaps"]
+        self.assertEqual(len(gaps), 1)   # only the stretch before the first reading, none at 02:00
+        self.assertEqual(gaps[0][1], utc(wall[0]))
+        self.assertEqual(len(groups["Weather"]["timestamps"]), 18)
 
 
 class WqdataTests(unittest.TestCase):
@@ -198,6 +238,92 @@ class WqdataTests(unittest.TestCase):
         with mock.patch.object(daily_digest.requests, "get") as get:
             self.assertIn("error", daily_digest.read_wqdata(config, dt.datetime.now(dt.timezone.utc)))
         get.assert_not_called()
+
+
+class FakeSMTP:
+    """Stands in for smtplib.SMTP and records what the digest does with it."""
+    instances = []
+
+    def __init__(self, host, port, timeout):
+        self.starttls_offered, self.calls = FakeSMTP.offer_starttls, []
+        FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def ehlo(self):
+        self.calls.append("ehlo")
+
+    def has_extn(self, name):
+        return name == "starttls" and self.starttls_offered
+
+    def starttls(self, context):
+        self.calls.append("starttls")
+
+    def login(self, user, password):
+        self.calls.append("login")
+
+    def send_message(self, message):
+        self.calls.append("send")
+
+
+class SendEmailTests(unittest.TestCase):
+    def send(self, offer_starttls, user="u@x.ca", password="pw"):
+        import daily_digest
+        FakeSMTP.offer_starttls, FakeSMTP.instances = offer_starttls, []
+        settings = {"host": "relay", "port": 587, "user": user, "password": password, "from": "well@x.ca"}
+        with mock.patch.object(daily_digest.smtplib, "SMTP", FakeSMTP):
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body")
+        return FakeSMTP.instances[0].calls
+
+    def test_logs_in_only_after_starttls(self):
+        self.assertEqual(self.send(True), ["ehlo", "starttls", "ehlo", "login", "send"])
+
+    def test_refuses_to_log_in_without_encryption(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.send(False)
+        self.assertIn("STARTTLS", str(e.exception))
+        self.assertNotIn("login", FakeSMTP.instances[0].calls)
+        self.assertNotIn("send", FakeSMTP.instances[0].calls)
+
+    def test_a_relay_without_login_may_be_plain(self):
+        self.assertEqual(self.send(False, user="", password=""), ["ehlo", "send"])
+
+
+class DeliverTests(unittest.TestCase):
+    SMTP = {"SMTP_HOST": "relay", "SMTP_PORT": "587", "SMTP_FROM": "well@x.ca"}
+
+    def deliver(self, env, dry_run=False, send=None):
+        import daily_digest
+        sent = []
+        with mock.patch("builtins.print"):
+            code = daily_digest.deliver("subject", "body", dry_run, env=env,
+                                        send=send or (lambda *a: sent.append(a)))
+        return code, sent
+
+    def test_prints_when_smtp_isnt_set_up(self):
+        self.assertEqual(self.deliver({"ALERT_EMAILS": "a@x.ca"}), (0, []))
+
+    def test_dry_run_never_sends(self):
+        self.assertEqual(self.deliver({**self.SMTP, "ALERT_EMAILS": "a@x.ca"}, dry_run=True), (0, []))
+
+    def test_sends_to_the_recipients(self):
+        code, sent = self.deliver({**self.SMTP, "ALERT_EMAILS": "a@x.ca, b@x.ca"})
+        self.assertEqual(code, 0)
+        self.assertEqual(sent[0][1], ["a@x.ca", "b@x.ca"])
+
+    def test_smtp_without_valid_recipients_fails(self):
+        for emails in ("", "not-an-address"):
+            self.assertEqual(self.deliver({**self.SMTP, "ALERT_EMAILS": emails}), (1, []), emails)
+
+    def test_send_failure_and_bad_settings_fail(self):
+        def refuse(*a):
+            raise RuntimeError("relay doesn't offer STARTTLS")
+        self.assertEqual(self.deliver({**self.SMTP, "ALERT_EMAILS": "a@x.ca"}, send=refuse)[0], 1)
+        self.assertEqual(self.deliver({"SMTP_HOST": "relay", "SMTP_PORT": "x", "ALERT_EMAILS": "a@x.ca"})[0], 1)
 
 
 if __name__ == "__main__":

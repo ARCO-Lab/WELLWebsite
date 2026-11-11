@@ -7,6 +7,7 @@ import statistics
 from datetime import timedelta
 
 from utils.parsers import LOGGER_CONFIG
+from utils.timezone import EST_TZ
 
 INTERVAL = timedelta(minutes=10)   # every sensor reports every 10 minutes
 GAP = timedelta(minutes=30)        # a stretch longer than this without readings is listed as a gap
@@ -26,8 +27,9 @@ PLAUSIBLE_RANGES = {
     "Conductivity": (0.0, None),
     "Salinity": (0.0, None),
     "TDS": (0.0, None),
-    "TSS": (0.0, None),
-    "Turbidity": (0.0, None),
+    # Optical sensors read slightly below 0 in clear water (calibration offset), so a little is allowed.
+    "TSS": (-1.0, None),
+    "Turbidity": (-1.0, None),
 }
 ODO_NEAR_ZERO = 0.1          # mg/L; stream water is never this low on oxygen for a whole day
 ODOSAT_NEAR_ZERO = 1.0       # %
@@ -36,6 +38,8 @@ FLATLINE_MIN_READINGS = 12   # Quality series that report the very same value th
 # ... among these, which vary from reading to reading when the probe works. (Salinity and TDS are reported to
 # two decimals and can sit on one value all day, so they are left out.)
 FLATLINE_TYPES = {"Water Temperature", "Conductivity", "ODO", "ODOSat", "Turbidity", "TSS"}
+# Clear water reads exactly 0 on these all day, so a flat run at 0 isn't a stuck sensor.
+FLATLINE_ZERO_OK = {"TSS", "Turbidity"}
 
 EMAIL_RE = re.compile(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+")
 
@@ -73,8 +77,9 @@ def smtp_settings(env=None):
 
 def find_gaps(timestamps, start, end, min_gap=GAP):
     """[(from, to)] stretches longer than min_gap with no reading, from `start` to the newest of `timestamps`
-    (sorted), or [(start, end)] if there are none. The time after the newest reading isn't listed: LI-COR readings
-    arrive about an hour late, and the newest-reading ages already show it."""
+    (sorted), or [(start, end)] if there are none. Pass aware UTC times (scripts/daily_digest.py does), so a DST
+    change doesn't make or hide a gap. The time after the newest reading isn't listed: LI-COR readings arrive
+    about an hour late, and the newest-reading ages already show it."""
     if not timestamps:
         return [(start, end)]
     gaps, previous = [], start
@@ -113,9 +118,15 @@ def anomalies(group, station_id, measurement_type, values):
         found.append(f"{label}: {len(outside)} of {len(values)} readings outside the plausible range "
                      f"({bounds}), e.g. {outside[0]:g}")
     if (group == "Quality" and measurement_type in FLATLINE_TYPES and len(values) >= FLATLINE_MIN_READINGS
-            and len(set(values)) == 1):
+            and len(set(values)) == 1
+            and not (measurement_type in FLATLINE_ZERO_OK and values[0] == 0)):
         found.append(f"{label}: all {len(values)} readings are exactly {values[0]:g}; the sensor may be stuck")
     return found
+
+
+def site(ts):
+    """An aware time as site (Toronto) time, for display; naive times are already site time."""
+    return ts.astimezone(EST_TZ) if ts.tzinfo else ts
 
 
 def fmt_age(minutes):
@@ -160,7 +171,8 @@ def build_digest(day, freshness, groups, findings, wqdata):
         lines.append(f"  {group}: {info['rows']} rows of {expected} expected ({info['series']} series), "
                      f"{len(info['timestamps'])} of {expected_per_series} time slots{note}")
         for start, end in info["gaps"]:
-            lines.append(f"    gap {start:%m-%d %H:%M} to {end:%m-%d %H:%M} ({fmt_age(int((end - start).total_seconds() // 60))})")
+            minutes = int((end - start).total_seconds() // 60)
+            lines.append(f"    gap {site(start):%m-%d %H:%M} to {site(end):%m-%d %H:%M} ({fmt_age(minutes)})")
     lines.append("")
 
     lines.append("WQData device:")

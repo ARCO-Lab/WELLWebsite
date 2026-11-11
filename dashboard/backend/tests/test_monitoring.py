@@ -13,6 +13,10 @@ from utils.monitoring import (  # noqa: E402
     assess_freshness, group_limit, parse_excluded_series, parse_hours, parse_quiet_hours,
 )
 from utils.timezone import EST_TZ  # noqa: E402
+from config import Config  # noqa: E402
+
+# Config reads DATABASE_URL once, when first imported; another test module may have imported it first.
+Config.SQLALCHEMY_DATABASE_URI = "sqlite://"
 
 
 def at(y, mo, d, h, mi=0):
@@ -110,9 +114,19 @@ class FreshnessTests(unittest.TestCase):
             (at(2026, 11, 10, 12, 0), "stale"),  # quiet hours over, nothing since last night
         ]:
             self.assertEqual(assess_freshness([stopped_at_8pm], now, env={})["status"], expected, now)
-        # One that stopped in the afternoon is stale even during the quiet hours
-        stopped_at_2pm = row("Quality", "4501", "ODO", at(2026, 11, 9, 14, 0))
-        self.assertEqual(assess_freshness([stopped_at_2pm], at(2026, 11, 9, 23), env={})["status"], "stale")
+        # During quiet hours a reading from up to 1 h (the margin) before they began is enough; one that stopped
+        # earlier in the afternoon is stale, even though it is within the 3 h limit when the quiet hours begin.
+        for stopped, expected in [((17, 0), "ok"), ((16, 59), "stale"), ((15, 30), "stale")]:
+            r = row("Quality", "4501", "ODO", at(2026, 11, 9, *stopped))
+            for now in (at(2026, 11, 9, 18, 0), at(2026, 11, 9, 23), at(2026, 11, 10, 9)):
+                self.assertEqual(assess_freshness([r], now, env={})["status"], expected, (stopped, now))
+        # The margin is configurable
+        r = row("Quality", "4501", "ODO", at(2026, 11, 9, 15, 30))
+        env = {"HEALTH_QUIET_MARGIN_HOURS_QUALITY": "3"}
+        self.assertEqual(assess_freshness([r], at(2026, 11, 9, 23), env=env)["status"], "ok")
+        self.assertEqual(assess_freshness([r], at(2026, 11, 9, 23), env=env)["groups"]["Quality"]["quiet_margin_hours"], 3)
+        with self.assertRaises(ValueError):
+            assess_freshness([r], at(2026, 11, 9, 23), env={"HEALTH_QUIET_MARGIN_HOURS_QUALITY": "soon"})
         # Quiet hours don't apply to the other groups
         weather = row("Weather", "22051538", "Rain", at(2026, 11, 9, 20, 0))
         self.assertEqual(assess_freshness([weather], at(2026, 11, 9, 23, 30), env={})["status"], "stale")

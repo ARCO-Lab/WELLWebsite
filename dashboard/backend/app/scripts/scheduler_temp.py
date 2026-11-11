@@ -47,7 +47,8 @@ LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
 
 # The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
-# logged there instead of stopping the scheduler.
+# logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
+# happens twice (two digests) or 02:00 not at all (none).
 DIGEST_HOUR = os.getenv("DIGEST_HOUR", "7").strip()
 
 # Control whether to also mirror file logs to stdout (Docker logs)
@@ -198,9 +199,10 @@ def monthly_upload_check():
         ping_heartbeat("upload", "fail" if failed else "success")
 
 def digest_hour():
-    """DIGEST_HOUR as an hour 0-23. ValueError if it isn't one."""
-    if not DIGEST_HOUR.isdigit() or int(DIGEST_HOUR) > 23:
-        raise ValueError(f"DIGEST_HOUR must be an hour from 0 to 23, got {DIGEST_HOUR!r}")
+    """DIGEST_HOUR as an hour 0-23 other than 1 and 2 (the DST hours). ValueError otherwise."""
+    if not DIGEST_HOUR.isdigit() or int(DIGEST_HOUR) > 23 or int(DIGEST_HOUR) in (1, 2):
+        raise ValueError(f"DIGEST_HOUR must be an hour from 0 to 23 other than 1 and 2 (DST changes at 02:00), "
+                         f"got {DIGEST_HOUR!r}")
     return int(DIGEST_HOUR)
 
 def daily_digest_check():

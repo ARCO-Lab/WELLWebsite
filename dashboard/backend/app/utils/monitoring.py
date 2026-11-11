@@ -7,11 +7,13 @@ group's limit. All limits come from the environment, so they can be tuned withou
   HEALTH_MAX_AGE_HOURS_<GROUP>    limit for one group, e.g. HEALTH_MAX_AGE_HOURS_QUALITY=3
   HEALTH_QUIET_HOURS_<GROUP>      local hours "START-END" when the group's device is known to go silent
                                   (default 18-12 for Quality, none for the others; "off" disables it)
+  HEALTH_QUIET_MARGIN_HOURS_<GROUP>  see below (default 1)
   HEALTH_EXCLUDED_SERIES          series never reported stale: "station:measurement" or "station:*",
                                   comma-separated (default 2577535:*, Logger 5, which stopped in 2025)
 
-During a group's quiet hours a series counts as fresh if it was fresh when the quiet hours began, so a device
-that stops for the night isn't reported, but one that stopped in the afternoon still is.
+During a group's quiet hours a series counts as fresh if it has a reading from no more than the margin
+(HEALTH_QUIET_MARGIN_HOURS_<GROUP>, default 1 h) before the quiet hours began. So a device that stops for the
+night isn't reported, but one that stopped in the afternoon (with Quality's 18-12, before 17:00) still is.
 """
 import os
 import re
@@ -26,6 +28,7 @@ DEFAULT_MAX_AGE_HOURS = 3.0
 # two missed uploads. WQData reports every 10 min during the day but is usually silent from the evening to
 # mid-morning (Oct-Nov 2026: last reading between 18:10 and 22:30, first between 08:20 and 11:30).
 DEFAULT_QUIET_HOURS = {"Quality": "18-12"}
+DEFAULT_QUIET_MARGIN_HOURS = 1.0
 DEFAULT_EXCLUDED_SERIES = "2577535:*"
 
 
@@ -33,6 +36,7 @@ DEFAULT_EXCLUDED_SERIES = "2577535:*"
 class GroupLimit:
     max_age: timedelta
     quiet_hours: Optional[tuple]   # (start_hour, end_hour) in site time, or None
+    quiet_margin: timedelta = timedelta(hours=1)
 
 
 def env_key(group):
@@ -75,7 +79,10 @@ def group_limit(group, env=None):
     hours = parse_hours(env[hours_name], hours_name) if env.get(hours_name, "").strip() else default
     quiet_name = f"HEALTH_QUIET_HOURS_{key}"
     quiet = parse_quiet_hours(env.get(quiet_name, DEFAULT_QUIET_HOURS.get(group, "")), quiet_name)
-    return GroupLimit(timedelta(hours=hours), quiet)
+    margin_name = f"HEALTH_QUIET_MARGIN_HOURS_{key}"
+    margin = (parse_hours(env[margin_name], margin_name) if env.get(margin_name, "").strip()
+              else DEFAULT_QUIET_MARGIN_HOURS)
+    return GroupLimit(timedelta(hours=hours), quiet, timedelta(hours=margin))
 
 
 def parse_excluded_series(text):
@@ -112,13 +119,13 @@ def in_quiet_hours(hour, quiet):
 def oldest_fresh(now_local, limit):
     """The oldest newest-reading time (aware, UTC) that still counts as fresh at `now_local` (aware, site time).
     The limit is subtracted in UTC, so it is real elapsed time even across a DST change."""
-    since = now_local
     if in_quiet_hours(now_local.hour, limit.quiet_hours):
         # Start of the current quiet hours: today, or yesterday if they began before midnight.
-        since = now_local.replace(hour=limit.quiet_hours[0], minute=0, second=0, microsecond=0)
-        if since > now_local:
-            since -= timedelta(days=1)
-    return since.astimezone(timezone.utc) - limit.max_age
+        began = now_local.replace(hour=limit.quiet_hours[0], minute=0, second=0, microsecond=0)
+        if began > now_local:
+            began -= timedelta(days=1)
+        return began.astimezone(timezone.utc) - limit.quiet_margin
+    return now_local.astimezone(timezone.utc) - limit.max_age
 
 
 def as_site_time(recorded_at):
@@ -153,6 +160,7 @@ def assess_freshness(latest, now, env=None):
                 "newest": None, "age_minutes": None,
                 "max_age_hours": limit.max_age.total_seconds() / 3600,
                 "quiet_hours": "{}-{}".format(*limit.quiet_hours) if limit.quiet_hours else None,
+                "quiet_margin_hours": limit.quiet_margin.total_seconds() / 3600 if limit.quiet_hours else None,
                 "in_quiet_hours": in_quiet_hours(now_local.hour, limit.quiet_hours),
                 "oldest_fresh": oldest_fresh(now_local, limit),
                 "series": [],

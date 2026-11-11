@@ -125,6 +125,10 @@ class SchedulerHeartbeatTests(unittest.TestCase):
             scheduler_temp.daily_digest_check()
         with mock.patch.object(scheduler_temp, "DIGEST_HOUR", "seven"), mock.patch.object(scheduler_temp, "run_bounded", ok), self.at(7):
             scheduler_temp.daily_digest_check()   # a bad DIGEST_HOUR never runs, never raises
+        for dst_hour in ("1", "2"):   # clocks change at 02:00, so these hours are refused
+            with mock.patch.object(scheduler_temp, "DIGEST_HOUR", dst_hour), \
+                    mock.patch.object(scheduler_temp, "run_bounded", ok), self.at(int(dst_hour)):
+                scheduler_temp.daily_digest_check()
         self.assertEqual(len(ran), 1)
         self.assertTrue(ran[0][-1].endswith("daily_digest.py"))
         self.assertEqual(self.pings, [("digest", "success"), ("digest", "fail")])

@@ -24,7 +24,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 import requests  # noqa: E402
 
 from utils.digest import anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings  # noqa: E402
-from utils.monitoring import age_minutes, assess_freshness  # noqa: E402
+from utils.monitoring import age_minutes, as_site_time, assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
 
 WINDOW = timedelta(hours=24)
@@ -38,8 +38,12 @@ ORDER BY recorded_at
 """   # one range scan of the (station_id, measurement_type, recorded_at) index per series
 
 
-def read_groups(db, freshness, since, until):
-    """Rows, time slots, gaps and anomaly findings of the last 24 h for every checked (not excluded) series."""
+def read_groups(db, freshness, now):
+    """Rows, time slots, gaps and anomaly findings of the 24 h before `now` (aware) for every checked (not
+    excluded) series. Slots and gaps are worked out in UTC: recorded_at is naive Toronto time, so on DST days
+    its wall clock skips or repeats an hour, which would look like a gap or a shortfall."""
+    since_utc = now.astimezone(timezone.utc) - WINDOW
+    since = since_utc.astimezone(EST_TZ).replace(tzinfo=None)   # for the query: recorded_at is naive site time
     query = db.text(SERIES_SQL).columns(recorded_at=db.DateTime)
     groups, findings = {}, []
     for group, info in freshness["groups"].items():
@@ -51,13 +55,13 @@ def read_groups(db, freshness, since, until):
             readings = db.session.execute(query, {"station": s["station_id"], "measurement": s["measurement_type"],
                                                   "since": since}).all()
             rows += len(readings)
-            slots.update(r.recorded_at for r in readings)
+            slots.update(as_site_time(r.recorded_at).astimezone(timezone.utc) for r in readings)
             findings += anomalies(group, s["station_id"], s["measurement_type"],
                                   [r.value for r in readings if r.value is not None])
         if count:
             timestamps = sorted(slots)
             groups[group] = {"rows": rows, "series": count, "timestamps": timestamps,
-                             "gaps": find_gaps(timestamps, since, until)}
+                             "gaps": find_gaps(timestamps, since_utc, now.astimezone(timezone.utc))}
     return groups, findings
 
 
@@ -109,6 +113,10 @@ def send_email(settings, recipients, subject, body):
             if server.has_extn("starttls"):
                 server.starttls(context=context)
                 server.ehlo()
+            elif settings["user"] and settings["password"]:
+                # Never send the password unencrypted: a relay that offers no STARTTLS gets no login.
+                raise RuntimeError(f"{settings['host']}:{settings['port']} doesn't offer STARTTLS; not logging in "
+                                   "without encryption (use port 465, or a relay that supports STARTTLS)")
         if settings["user"] and settings["password"]:
             server.login(settings["user"], settings["password"])
         server.send_message(message)
@@ -126,31 +134,39 @@ def main(argv=None):
     from api.routes.latest import query_latest_per_series
 
     now = datetime.now(timezone.utc)
-    until = now.astimezone(EST_TZ).replace(tzinfo=None)   # recorded_at is naive site time
-    since = (now - WINDOW).astimezone(EST_TZ).replace(tzinfo=None)
     with create_app().app_context():
         freshness = assess_freshness(query_latest_per_series(), now)
-        groups, findings = read_groups(db, freshness, since, until)
+        groups, findings = read_groups(db, freshness, now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata)
+    return deliver(subject, body, args.dry_run)
 
-    recipients, invalid = parse_alert_emails(os.environ.get("ALERT_EMAILS"))
+
+def deliver(subject, body, dry_run, env=None, send=send_email):
+    """Email the digest, or print it when --dry-run or SMTP isn't set up. The exit code: 1 when it should have
+    been emailed and wasn't (bad settings, no recipients, sending failed), so the digest heartbeat reports /fail."""
+    env = os.environ if env is None else env
+    recipients, invalid = parse_alert_emails(env.get("ALERT_EMAILS"))
     if invalid:
         print(f"[WARN] ALERT_EMAILS: ignoring {len(invalid)} entries that aren't email addresses")
     try:
-        settings = smtp_settings()
+        settings = smtp_settings(env)
     except ValueError as e:
         print(f"[ERROR] {e}; printing the digest instead")
         print(f"Subject: {subject}\n\n{body}")
         return 1
-    if args.dry_run or not settings or not recipients:
-        reason = ("--dry-run" if args.dry_run else "SMTP_HOST/SMTP_PORT not set" if not settings
-                  else "ALERT_EMAILS is empty")
+    if dry_run or not settings:
+        reason = "--dry-run" if dry_run else "SMTP_HOST/SMTP_PORT not set"
         print(f"[INFO] Not emailing ({reason}); the digest is:\n")
         print(f"Subject: {subject}\n\n{body}")
         return 0
+    if not recipients:
+        # SMTP is set up, so the digest is meant to be emailed: fail, so the digest heartbeat reports it.
+        print("[ERROR] SMTP is configured but ALERT_EMAILS has no valid address; the digest was:\n")
+        print(f"Subject: {subject}\n\n{body}")
+        return 1
     try:
-        send_email(settings, recipients, subject, body)
+        send(settings, recipients, subject, body)
     except Exception as e:   # the type and message only; smtplib errors don't include the password
         print(f"[ERROR] Emailing the digest failed: {type(e).__name__}: {e}; the digest was:\n")
         print(f"Subject: {subject}\n\n{body}")
