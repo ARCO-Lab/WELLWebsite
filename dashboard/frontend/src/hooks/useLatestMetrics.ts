@@ -1,7 +1,7 @@
 // This file defines the useLatestMetrics React hook for fetching the latest sensor metrics from the API.
 // It auto-refreshes every 10 minutes and manages loading state.
 
-import { useEffect, useState }  from "react";
+import { useCallback, useEffect, useState }  from "react";
 
 export interface Metric {
     station_id: string;
@@ -15,9 +15,11 @@ export interface Metric {
 export default function useLatestMetrics() {
     const [metrics, setMetrics] = useState<Metric[]>([]);
     const [loading, setLoading] = useState(true);
+    // Set when the last fetch failed, so the panel can say so (and offer a retry) instead of showing "No data".
+    const [error, setError] = useState(false);
 
     // Fetches the latest metrics from the backend API
-    const fetchLatest = async () => {
+    const fetchLatest = useCallback(async () => {
         try {
             const res = await fetch("/api/latest");
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -25,12 +27,20 @@ export default function useLatestMetrics() {
             // Keep the last good values unless the reply is the expected list.
             if (!Array.isArray(data)) throw new Error("Unexpected response");
             setMetrics(data);
+            setError(false);
         } catch (err) {
             console.error("[ERROR] Failed to fetch latest metrics:", err);
+            setError(true);
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
+
+    // Try again now, showing the loading placeholder while it does.
+    const retry = useCallback(() => {
+        setLoading(true);
+        fetchLatest();
+    }, [fetchLatest]);
 
     useEffect(() => {
         fetchLatest();
@@ -41,7 +51,7 @@ export default function useLatestMetrics() {
         }, 10 * 60 * 1000); // Refresh every 10 minutes
 
         return () => clearInterval(interval);
-    }, []);
+    }, [fetchLatest]);
 
-    return { metrics, loading };
+    return { metrics, loading, error, retry };
 }
