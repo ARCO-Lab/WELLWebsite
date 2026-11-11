@@ -1,6 +1,6 @@
-# Builds the daily plain-text digest of the sensor data: stale series, implausible values, readings and gaps
-# per group over the last 24 h, the newest reading of every series, and the WQData device's primary power and
-# last contact. scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
+# Builds the daily plain-text digest of the sensor data: the open email alerts (scripts/check_alerts.py), stale
+# series, implausible values, readings and gaps per group over the last 24 h, the newest reading of every series,
+# and the WQData device's primary power and last contact. scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
 #
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
 # SMTP_FROM are optional), and otherwise prints it. It reads the database only, and makes at most one WQData
@@ -137,8 +137,15 @@ def main(argv=None):
     with create_app().app_context():
         freshness = assess_freshness(query_latest_per_series(), now)
         groups, findings = read_groups(db, freshness, now)
+        try:
+            from utils.alert_state import alerts_report
+            incidents = alerts_report()["open"]
+        except Exception as e:   # e.g. the alert tables' migration hasn't run yet
+            db.session.rollback()
+            incidents = {"error": type(e).__name__}
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
-    subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata)
+    subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
+                                 incidents)
     return deliver(subject, body, args.dry_run)
 
 

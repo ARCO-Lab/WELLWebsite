@@ -75,20 +75,12 @@ get_header();
           <div class="col-md-4 pl-md-4 my-3 align-self-center">
             <div class="text-center">
               <figure class="mw-100">
-                <img 
-                  alt="SharePoint Logo"
-                  srcset="
-                      /wp-content/uploads/2025/09/sharepointlogo.png 414w,
-                      /wp-content/uploads/2025/09/sharepointlogo.png 720w,
-                      /wp-content/uploads/2025/09/sharepointlogo.png 1080w,
-                      /wp-content/uploads/2025/09/sharepointlogo.png 1600w
-                  "
-                  sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px"
-                  src="/wp-content/uploads/2025/09/sharepointlogo.png"
-                  class="img-fluid d-block mx-auto"
-                  loading="lazy"
-                  decoding="async"
-                />            
+                <?php well_media_img('logo-sharepoint', array(280, 560, 840), array(840, 560), array(
+                  'alt'     => 'SharePoint Logo',
+                  'sizes'   => '(max-width: 480px) 140px, (max-width: 800px) 220px, 280px',
+                  'class'   => 'img-fluid d-block mx-auto',
+                  'loading' => 'lazy',
+                )); ?>
               </figure>
             </div>
           </div>

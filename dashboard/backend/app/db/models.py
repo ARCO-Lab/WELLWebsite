@@ -71,3 +71,50 @@ class ExportJob(db.Model):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
         }
+
+
+# The two tables below hold the state of the worker's email alerts (scripts/check_alerts.py). Existing databases
+# get them from db/migrations/0003_monitoring_alerts.sql; keep the two in step.
+
+class VendorStatus(db.Model):
+    """The outcome of the latest vendor API call of each ingestion source ("LI-COR", "WQData"), written by
+    scripts/inject_from_api.py every run. Times are aware (UTC in the database)."""
+    __tablename__ = "vendor_status"
+    source = db.Column(db.String(32), primary_key=True)
+    last_attempt_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    last_success_at = db.Column(db.DateTime(timezone=True))
+    last_failure_at = db.Column(db.DateTime(timezone=True))
+    failing_since = db.Column(db.DateTime(timezone=True))       # first failure of the current run of failures
+    consecutive_failures = db.Column(db.Integer, nullable=False, default=0)
+    last_error_kind = db.Column(db.String(32))                  # auth, quota, server, timeout, network, ...
+    last_http_status = db.Column(db.Integer)
+    last_error = db.Column(db.Text)                             # type and HTTP status only, never a URL or key
+
+
+class AlertIncident(db.Model):
+    """One alert condition from when it is first seen until it clears. At most one open (resolved_at IS NULL)
+    incident per incident_key, so each condition is emailed once, then reminded about at most once a day."""
+    __tablename__ = "alert_incidents"
+    id = db.Column(db.Integer, primary_key=True)
+    incident_key = db.Column(db.String(255), nullable=False)    # e.g. "stale:4501", "vendor:LI-COR"
+    kind = db.Column(db.String(32), nullable=False)             # STALE_SENSOR, VENDOR_DOWN, SUSPECT_VALUES
+    title = db.Column(db.Text, nullable=False)                  # the email subject line, without "[WELL] "
+    detail = db.Column(db.Text, nullable=False)                 # what is wrong and what to check
+    started_at = db.Column(db.DateTime(timezone=True), nullable=False)   # when the condition began
+    opened_at = db.Column(db.DateTime(timezone=True), nullable=False)    # when the alert check first saw it
+    last_seen_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    last_notified_at = db.Column(db.DateTime(timezone=True))    # NULL until it is emailed
+    notifications = db.Column(db.Integer, nullable=False, default=0)
+    resolved_at = db.Column(db.DateTime(timezone=True))
+    close_reason = db.Column(db.String(16))   # "cleared", or "superseded" (replaced or muted; no recovery email)
+    reopened_at = db.Column(db.DateTime(timezone=True))     # came back after its recovery was emailed
+    back_again_at = db.Column(db.DateTime(timezone=True))   # when "back again" was last emailed
+    flaps = db.Column(db.Integer, nullable=False, default=0)    # "back again" emails so far; lengthens the clear time
+    present_since = db.Column(db.DateTime(timezone=True))   # start of the current unbroken presence; NULL while gone
+    recovery_notified_at = db.Column(db.DateTime(timezone=True))
+
+    __table_args__ = (
+        db.Index("ux_alert_incidents_open_key", "incident_key", unique=True,
+                 postgresql_where=db.text("resolved_at IS NULL"), sqlite_where=db.text("resolved_at IS NULL")),
+        db.Index("ix_alert_incidents_resolved_at", "resolved_at"),
+    )

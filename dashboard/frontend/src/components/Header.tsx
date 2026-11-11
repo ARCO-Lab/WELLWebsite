@@ -1,7 +1,7 @@
 // This file defines the Header component for the WELL dashboard, including branding, navigation, and project titles.
 // It displays McMaster and WELL logos, project titles, and a navigation bar.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
 // Base site URL for WordPress, provided via .env.local as NEXT_PUBLIC_WP_HOME
@@ -10,6 +10,20 @@ const WP_HOME = (process.env.NEXT_PUBLIC_WP_HOME || "https://well.mcmaster.ca").
 
 const Header = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+
+  // Escape closes the phone menu, and focus goes back to its button if it was inside the menu
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const inMenu = !!document.getElementById("mobile-main-menu")?.contains(document.activeElement);
+      setMobileMenuOpen(false);
+      if (inMenu) menuButton.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -97,7 +111,7 @@ const Header = () => {
             <div className="w-full px-4 pt-1 text-center sm:px-6 lg:px-40 lg:pt-0">
               {/* School and project titles with links */}
               <p
-                className="text-primary"
+                className="text-balance text-primary"
                 style={{
                   fontWeight: 600,
                   fontSize: "clamp(0.95rem, 0.6rem + 1.6vw, 1.36rem)",
@@ -113,9 +127,11 @@ const Header = () => {
                   School of Earth, Environment & Society
                 </a>
               </p>
-              <h1
-                className="text-black"
+              {/* The page's one h1 is "Dashboard"; the site name is the banner's title, not a heading */}
+              <p
+                className="text-balance text-black"
                 style={{
+                  fontFamily: "var(--font-family-poppins)", // the h1 typography it had
                   fontWeight: 600,
                   fontSize: "clamp(1.45rem, 0.9rem + 2.9vw, 2.35rem)",
                   lineHeight: 1.2631578947,
@@ -126,7 +142,7 @@ const Header = () => {
                 <a href={WP_HOME}>
                   Watershed and Ecosystems Living Lab
                 </a>
-              </h1>
+              </p>
             </div>
           </div>
         </div>
@@ -166,6 +182,7 @@ const Header = () => {
           {/* Mobile navigation */}
           <div className="md:hidden w-full">
             <button
+              ref={menuButton}
               type="button"
               onClick={() => setMobileMenuOpen((open) => !open)}
               className="w-full h-[4rem] px-4 text-lg text-center text-white cursor-pointer transition-colors duration-200 hover:bg-muted hover:text-white"
@@ -177,8 +194,8 @@ const Header = () => {
 
             <div
               id="mobile-main-menu"
-              className={`grid w-full overflow-hidden transition-all duration-300 ease-in-out ${
-                mobileMenuOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+              className={`grid w-full overflow-hidden transition-all duration-300 ease-in-out motion-reduce:transition-none ${
+                mobileMenuOpen ? "visible grid-rows-[1fr] opacity-100" : "invisible grid-rows-[0fr] opacity-0"
               }`}
             >
               <div className="min-h-0">

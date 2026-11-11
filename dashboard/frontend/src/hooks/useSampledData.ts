@@ -1,7 +1,8 @@
 // This file defines the useSampledData React hook for fetching and caching filtered creek sampling data from the API.
 // It manages loading, error, and caching state, and only fetches data when dates and at least one creek are selected.
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { siteDayBounds } from "@/utils/siteTime";
 
 export interface SampledData {
   site_id: string;
@@ -31,6 +32,16 @@ const useSampledData = (
 
   const cache = useRef<Map<string, SampledData[]>>(new Map());
 
+  // What is wanted now ("" for nothing), and the last request that finished. Until they match the data is not
+  // this selection's yet, so the hook reports loading: right after a creek is ticked, before the request has even
+  // started, an empty list must not read as "no samples in this range".
+  const wantedKey = useMemo(() => {
+    if (!startDate || !endDate || !Object.values(activeCreeks).some(v => v)) return "";
+    const { start, end } = siteDayBounds(startDate, endDate);
+    return `${start}|${end}|${JSON.stringify(activeCreeks)}`;
+  }, [activeCreeks, startDate, endDate]);
+  const [doneKey, setDoneKey] = useState("");
+
   useEffect(() => {
     const fetchData = async () => {
       // Guard against null dates AND no active creeks. Only fetch if both are set.
@@ -43,15 +54,12 @@ const useSampledData = (
       setLoading(true);
       setError(null);
 
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
+      // The picked days in Toronto time, wherever the viewer is
+      const { start, end } = siteDayBounds(startDate, endDate);
 
       const params = new URLSearchParams();
-      params.append("start", start.toISOString());
-      params.append("end", end.toISOString());
+      params.append("start", start);
+      params.append("end", end);
 
       Object.entries(activeCreeks).forEach(([creek, isSelected]) => {
         if (isSelected) {
@@ -59,10 +67,11 @@ const useSampledData = (
         }
       });
 
-      const key = `${start.toISOString()}|${end.toISOString()}|${JSON.stringify(activeCreeks)}`;
+      const key = `${start}|${end}|${JSON.stringify(activeCreeks)}`;
       if (cache.current.has(key)) {
         setData(cache.current.get(key)!);
         setLoading(false);
+        setDoneKey(key);
         return;
       }
 
@@ -87,13 +96,14 @@ const useSampledData = (
         setError(err);
       } finally {
         setLoading(false);
+        setDoneKey(key);
       }
     };
 
     fetchData();
   }, [activeCreeks, startDate, endDate]);
 
-  return { data, loading, error };
+  return { data, loading: loading || (wantedKey !== "" && doneKey !== wantedKey), error };
 };
 
 export default useSampledData;

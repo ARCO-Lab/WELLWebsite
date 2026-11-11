@@ -6,7 +6,7 @@
 // value is always whole. In the modal the tiles ("icon · name   value unit") wrap so every one is visible at once.
 // Old readings say when they were taken, so a value from last night or from last year doesn't look current.
 
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Clock } from "lucide-react";
 
 export interface Reading {
@@ -245,6 +245,17 @@ function WrapTile({ row, caption, stale }: { row: MetricRow; caption?: string; s
 }
 
 const SPEED_PX_PER_S = 30;
+
+// Whether the system asks for reduced motion, kept up to date (false while rendering on the server).
+const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+function subscribeReducedMotion(onChange: () => void) {
+  const query = window.matchMedia(REDUCED_MOTION);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(subscribeReducedMotion, () => window.matchMedia(REDUCED_MOTION).matches, () => false);
+}
 // Keys that scroll a focused strip: pressing one pauses it, even when the focus came from a click or a closing modal.
 const SCROLL_KEYS = new Set(["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
 
@@ -281,12 +292,13 @@ function Ticker({ title, children }: { title: string; children: React.ReactNode 
   const wake = useRef<(() => void) | null>(null); // restarts the animation after a pause
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [overflowing, setOverflowing] = useState(false);
-  const [moving, setMoving] = useState(false); // overflowing, and motion allowed
   const [rows, setRows] = useState(1);
   const [tileHeight, setTileHeight] = useState<number | null>(null); // a rendered tile's height, in px
   const [stripWidth, setStripWidth] = useState(0);
   const [atStart, setAtStart] = useState(true);
   const tileCount = React.Children.count(children);
+  const reduceMotion = usePrefersReducedMotion();
+  const moving = overflowing && !reduceMotion;
 
   // Rows from the slot's height (set by the card, not by the tiles) and a rendered tile's height (every tile has
   // the tallest one's height, so this follows the text size), and scroll (with the second copy) only when the tiles
@@ -315,9 +327,7 @@ function Ticker({ title, children }: { title: string; children: React.ReactNode 
   useEffect(() => {
     const el = scroller.current;
     const copy = firstCopy.current;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    setMoving(overflowing && !reduceMotion);
-    if (!el || !copy || !overflowing || reduceMotion) return;
+    if (!el || !copy || !moving) return;
     let frame = 0;
     let last = 0;
     let position = el.scrollLeft;
@@ -352,7 +362,7 @@ function Ticker({ title, children }: { title: string; children: React.ReactNode 
       io.disconnect();
       wake.current = null;
     };
-  }, [overflowing]);
+  }, [moving]);
 
   useEffect(() => () => { if (resumeTimer.current) clearTimeout(resumeTimer.current); }, []);
 
