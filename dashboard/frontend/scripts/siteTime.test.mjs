@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { siteMidnight, siteDay, siteDayBounds, dayStamp } from "../src/utils/siteTime.ts";
+import { siteDay, siteDayBounds, dayStamp } from "../src/utils/siteTime.ts";
 
 const ZONES = ["America/Toronto", "America/Vancouver", "Asia/Kolkata", "UTC", "Pacific/Auckland"];
 
@@ -20,12 +20,9 @@ function inZone(tz, fn) {
   }
 }
 
-test("siteMidnight is Toronto midnight, in winter and summer", () => {
-  assert.equal(new Date(siteMidnight(2026, 10, 10)).toISOString(), "2026-11-10T05:00:00.000Z"); // EST
-  assert.equal(new Date(siteMidnight(2026, 6, 1)).toISOString(), "2026-07-01T04:00:00.000Z"); // EDT
-  // Days that change the clocks: midnight is still before the change
-  assert.equal(new Date(siteMidnight(2026, 2, 8)).toISOString(), "2026-03-08T05:00:00.000Z");
-  assert.equal(new Date(siteMidnight(2026, 10, 1)).toISOString(), "2026-11-01T04:00:00.000Z");
+test("a day starts at Toronto midnight, in winter and summer", () => {
+  assert.equal(siteDayBounds(new Date(2026, 10, 10), new Date(2026, 10, 10)).start, "2026-11-10T05:00:00.000Z"); // EST
+  assert.equal(siteDayBounds(new Date(2026, 6, 1), new Date(2026, 6, 1)).start, "2026-07-01T04:00:00.000Z"); // EDT
 });
 
 for (const tz of ZONES) {
@@ -41,6 +38,10 @@ for (const tz of ZONES) {
       const fall = siteDayBounds(new Date(2026, 10, 1), new Date(2026, 10, 1));
       assert.equal(fall.start, "2026-11-01T04:00:00.000Z");
       assert.equal(fall.end, "2026-11-02T04:59:59.999Z");
+      // Across the spring-forward change (Mar 8, 2026): 23 hours that day
+      const spring = siteDayBounds(new Date(2026, 2, 8), new Date(2026, 2, 8));
+      assert.equal(spring.start, "2026-03-08T05:00:00.000Z");
+      assert.equal(spring.end, "2026-03-09T03:59:59.999Z");
       assert.equal(dayStamp(new Date(2026, 10, 9)), "20261109");
     });
   });
@@ -56,6 +57,9 @@ for (const tz of ZONES) {
       assert.deepEqual([yesterday.getMonth(), yesterday.getDate()], [10, 9]);
       const twoMonthsAgo = siteDay(0, -2, now);
       assert.deepEqual([twoMonthsAgo.getMonth(), twoMonthsAgo.getDate()], [8, 10]);
+      // Two months back is clamped at month ends instead of rolling over (Apr 30 -> Feb 28, not Mar 2)
+      const fromApr30 = siteDay(0, -2, Date.UTC(2026, 3, 30, 16));
+      assert.deepEqual([fromApr30.getMonth(), fromApr30.getDate()], [1, 28]);
       // 05:30 UTC is just past midnight in Toronto: Nov 11
       assert.equal(siteDay(0, 0, Date.UTC(2026, 10, 11, 5, 30)).getDate(), 11);
     });

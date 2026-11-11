@@ -36,7 +36,7 @@ import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
 import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
 import { siteDay } from "@/utils/siteTime";
-import { format } from "date-fns";
+import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 type ActiveFilters = { [key: string]: string[] };
@@ -51,7 +51,7 @@ const NO_GROUPS = { gauges: false, weather: false, quality: false };
 const Map = dynamic(() => import("@/components/map/Map"), {
   ssr: false,
   loading: () => (
-    <div aria-busy="true" className="relative h-full min-h-[14rem] w-full rounded-lg border border-input-border bg-[#eef2f3]">
+    <div className="relative h-full min-h-[14rem] w-full rounded-lg border border-input-border bg-[#eef2f3]">
       <LoadingOverlay label="Loading map…" />
     </div>
   ),
@@ -719,8 +719,7 @@ export default function Dashboard() {
                       if (samplingRangeEmpty) {
                         const day = (d: Date) => format(d, "MMM d, yyyy");
                         const before = latestSampleDay && samplingStartDate && latestSampleDay < samplingStartDate;
-                        const suggestedStart = latestSampleDay
-                          ? new Date(latestSampleDay.getFullYear(), latestSampleDay.getMonth() - 2, latestSampleDay.getDate()) : null;
+                        const suggestedStart = latestSampleDay ? subMonths(latestSampleDay, 2) : null;
                         return (
                           <div className="rounded-lg border border-input-border bg-gray-50 p-4 text-sm text-foreground">
                             <p className="font-medium">
