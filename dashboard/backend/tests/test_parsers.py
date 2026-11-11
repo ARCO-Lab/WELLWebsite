@@ -152,16 +152,31 @@ class Units(unittest.TestCase):
             self.assertIsNone(parsers.unit_mismatch(entry), entry["sensor_sn"])
 
     def test_other_spellings_of_the_expected_unit_pass(self):
-        # The water-level loggers' depth channels report 'meters' (seen Nov 2026); case and spaces don't matter.
-        for unit in ("meters", "Meters", " metre ", "M"):
+        # The water-level loggers' depth channels report 'meters' (seen Nov 2026); an alias is a word, so its case
+        # doesn't matter. Surrounding spaces never do.
+        for unit in ("meters", "Meters", " metre ", "METRES", " m "):
             depth = licor("22168653-1", 0.4, kind="Sensor Depth", unit=unit)
             self.assertIsNone(parsers.unit_mismatch(depth), unit)
             self.assertEqual(parsers.parse_logger_entry(depth).measurement_type, "Water Surface Elevation")
-        for entry, args, parse in ((licor("21948438-1", 5.0, unit=" °c"), (STATION,), parsers.parse_weather_entry),
-                                   (licor("22168654-3", 4.4, kind="Water Temperature", unit="°c"), (), parsers.parse_logger_entry)):
+        for unit in ("mbar", " mbar "):
+            self.assertIsNone(parsers.unit_mismatch(licor("21999998-1", 1013.0, kind="Pressure", unit=unit)), unit)
+        for entry, args, parse in ((licor("21948438-1", 5.0, unit=" °C"), (STATION,), parsers.parse_weather_entry),
+                                   (licor("22168654-3", 4.4, kind="Water Temperature", unit="°C "), (), parsers.parse_logger_entry)):
             self.assertEqual(parse(entry, *args).unit, "°C")   # stored as the expected unit, like the rows before it
         self.assertIsNotNone(parsers.unit_mismatch(licor("21948438-1", 5.0, unit="meters")))  # an alias of m only
         self.assertIsNotNone(parsers.unit_mismatch(licor("22168653-1", 0.4, kind="Sensor Depth", unit="feet")))
+
+    def test_unit_symbols_are_case_sensitive(self):
+        # Case matters in SI symbols (Mbar is megabar, MM megametres), so only the word aliases ignore it. '°c' isn't
+        # a spelling LI-COR has sent (it sends '°C'), so it's a mismatch too.
+        for entry in (licor("21999998-1", 1013.0, kind="Pressure", unit="Mbar"),
+                      licor("21999997-1", 0.2, kind="Rain", unit="MM"),
+                      licor("22168653-1", 0.4, kind="Sensor Depth", unit="M"),
+                      licor("21948438-1", 5.0, unit="°c"),
+                      licor("22168654-3", 4.4, kind="Water Temperature", unit="°c")):
+            self.assertIsNotNone(parsers.unit_mismatch(entry), entry["unit"])
+        self.assertIsNone(parsers.parse_logger_entry(licor("22168653-1", 0.4, kind="Sensor Depth", unit="M")))
+        self.assertIsNone(parsers.parse_weather_entry(licor("21999998-1", 1013.0, kind="Pressure", unit="Mbar"), STATION))
 
     def test_licor_rows_keeps_depth_reported_in_meters(self):
         import contextlib
