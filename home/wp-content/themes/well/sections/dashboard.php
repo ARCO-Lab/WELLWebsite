@@ -12,7 +12,9 @@
             <div class="card border-0 no-shadow card-hover flex-lg-row">
               <div class="card-img-mask card-img-mask-full card-img-mh min-w-50 order-sm-1">
                 <?php well_media_img('dashboard-preview', array(414, 720, 1080, 1600), array(1600, 838), array(
-                  'sizes'   => '(max-width: 576px) 100vw, (max-width: 991.98px) 90vw, 50vw',
+                  // From 992 px the card scales the image to 105% of its height (css/mcm-bw.css .card-img-mask-full),
+                  // which draws it about 1160 px wide even though the visible half is narrower.
+                  'sizes'   => '(max-width: 576px) 100vw, (max-width: 991.98px) 90vw, 1200px',
                   'loading' => 'lazy',
                   'class'   => 'img-fluid',
                   'alt'     => 'Dashboard preview',
