@@ -1,8 +1,29 @@
 # This file defines the SQLAlchemy ORM models for sensor and sampling measurements.
 # Sensor readings, lab sampling results and export jobs each get one table.
 
+from sqlalchemy.types import DateTime, TypeDecorator
+
 from db.database import db
-from utils.timezone import est_now
+from utils.timezone import UTC, as_utc, est_now
+
+
+class Instant(TypeDecorator):
+    """A timestamptz column that always gives back aware UTC datetimes.
+
+    PostgreSQL stores the instant. SQLite (the tests) stores the UTC wall time, which comes back naive and is
+    marked UTC here, so both databases return the same values. A naive value written or compared is taken as site
+    (Toronto) wall time, the meaning naive times had before; see utils.timezone.as_utc."""
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return None if value is None else as_utc(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
 
 class SensorMeasurement(db.Model):
     __tablename__ = "sensor_measurements"
@@ -12,7 +33,9 @@ class SensorMeasurement(db.Model):
     measurement_type = db.Column(db.String)
     value = db.Column(db.Float)
     unit = db.Column(db.String)
-    recorded_at = db.Column(db.DateTime, nullable=False)
+    # The reading's instant (timestamptz since db/migrations/0002_*.sql), so both copies of the hour repeated when
+    # clocks fall back are kept. The API and the CSV files still show site wall-clock time (utils.timezone).
+    recorded_at = db.Column(Instant, nullable=False)
 
     __table_args__ = (
         db.UniqueConstraint("station_id", "measurement_type", "recorded_at"),

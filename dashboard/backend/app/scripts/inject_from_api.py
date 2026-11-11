@@ -18,9 +18,8 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
-from zoneinfo import ZoneInfo
 
 from server import create_app
 from db.database import db
@@ -60,27 +59,27 @@ def store(rows):
     return new
 
 
-def run_start(group, tz, now):
+def run_start(group, now):
     """Where this run starts for a group: its newest stored reading minus the overlap, at most RUN_LOOKBACK ago."""
-    return max(start_from_newest(newest_stored(group), tz, FIRST_START[group]), now - RUN_LOOKBACK)
+    return max(start_from_newest(newest_stored(group), FIRST_START[group]), now - RUN_LOOKBACK)
 
 
-def inject_licor(tz, now):
+def inject_licor(now):
     # One read of LI-COR covers both the weather station and the water-level loggers.
-    start = max(min(run_start("Weather", tz, now), run_start("Logger", tz, now)), now - timedelta(days=MAX_DAYS))
+    start = max(min(run_start("Weather", now), run_start("Logger", now)), now - timedelta(days=MAX_DAYS))
     records = fetch_range(weather_service.get_page, start, now)
-    rows = licor_rows(records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz)
+    rows = licor_rows(records, {"Weather", "Logger"}, weather_service.get_logger_id())
     new = store(list(rows.values()))
     print(f"[INFO] LI-COR: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(records)} records, "
           f"{len(rows)} readings, {new} new")
 
 
-def inject_quality(tz, now):
+def inject_quality(now):
     # QualityService follows WQData's paging (until a response holds all the values it reports), so one call
     # covers the range.
-    start = run_start("Quality", tz, now)
+    start = run_start("Quality", now)
     entries = quality_service.get_quality_data(start.strftime(FMT), now.strftime(FMT))
-    rows = quality_rows(entries, Config.WQ_DEVICE_ID, tz)
+    rows = quality_rows(entries, Config.WQ_DEVICE_ID)
     new = store(list(rows.values()))
     print(f"[INFO] WQData: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(entries)} points, "
           f"{len(rows)} readings, {new} new")
@@ -90,12 +89,11 @@ def inject_all_new_data():
     # Fetch and store new readings from both vendors. A failure in one doesn't stop the other,
     # but the run still ends with an error so the scheduler logs it as failed.
     with app.app_context():
-        tz = ZoneInfo(db.session.execute(text("show timezone")).scalar())   # recorded_at is stored in this zone
         now = datetime.now(timezone.utc)
         failed = []
         for name, job in (("LI-COR", inject_licor), ("WQData", inject_quality)):
             try:
-                job(tz, now)
+                job(now)
             except Exception as e:
                 db.session.rollback()
                 failed.append(name)

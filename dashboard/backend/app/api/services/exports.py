@@ -7,7 +7,7 @@ from sqlalchemy import and_, or_
 
 from db.database import db
 from db.models import SamplingMeasurement, SensorMeasurement
-from utils.timezone import EST_TZ
+from utils.timezone import EST_TZ, parse_instant, site_wall_time
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
 
@@ -193,7 +193,7 @@ def iter_export_rows(filters: Dict) -> Iterable[Dict]:
         for r in query.order_by(SensorMeasurement.recorded_at).yield_per(5000):
             yield {
                 "domain": "sensor",
-                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else "",
+                "recorded_at": site_wall_time(r.recorded_at).isoformat() if r.recorded_at else "",
                 "group_type": r.group_type or "",
                 "station_id": r.station_id or "",
                 "creek_id": "",
@@ -219,8 +219,9 @@ def iter_export_rows(filters: Dict) -> Iterable[Dict]:
 
 
 def _sensor_query(filters: Dict):
-    start_dt = datetime.fromisoformat(filters["start"])
-    end_dt = datetime.fromisoformat(filters["end"])
+    # Real instants (the dashboard sends ...Z); a time without an offset is site wall time, as before
+    start_dt = parse_instant(filters["start"])
+    end_dt = parse_instant(filters["end"])
 
     query = db.session.query(SensorMeasurement).filter(
         SensorMeasurement.recorded_at.between(start_dt, end_dt),
@@ -325,9 +326,10 @@ def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
     all_logger_stations = set()
     units_by_metric = {}
 
-    # First pass: collect all data and organize by group
+    # First pass: collect all data and organize by group. Rows are keyed by the instant, so the two copies of the
+    # hour repeated when clocks fall back stay two rows; the Timestamp column shows site wall time (below).
     for record in records:
-        timestamp = record.recorded_at.isoformat() if record.recorded_at else ""
+        timestamp = record.recorded_at
         metric = record.measurement_type or ""
         value = record.value
         unit = record.unit or ""
@@ -421,7 +423,7 @@ def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
         # Write data rows
         sorted_timestamps = sorted(all_timestamps)
         for row_num, timestamp in enumerate(sorted_timestamps, 1):
-            csv_row = [row_num, timestamp]
+            csv_row = [row_num, site_wall_time(timestamp).isoformat()]
 
             # Weather section data
             if include_weather:

@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from db.database import db
 from db.models import SensorMeasurement
 from server import create_app
+from utils.timezone import site_to_utc, site_wall_time
 
 load_dotenv()
 #temporarily demo
@@ -76,7 +77,7 @@ def get_logger_label(station_id):
     return SENSOR_FILTER_CONFIG["gauges"]["sites"].get(str(station_id), f"Logger {station_id}")
 
 def get_last_month_range():
-    # recorded_at is naive Toronto wall-clock time, so "last month" is measured there too, not on the
+    # Months are site (Toronto) calendar months, so "last month" is measured on that clock, not on the
     # container's UTC clock, which turns to the next month at 19:00 or 20:00 Toronto time on the last day.
     now = datetime.now(ZoneInfo("America/Toronto")).replace(tzinfo=None)
     first_of_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -259,7 +260,9 @@ def build_csv_frontend_style(data_list, file_obj):
                         print(f"DEBUG:   {key}: {value}")
         
         # 8. Build CSV row with coordinates for ALL groups
-        csv_row = [row_data["id"], row_data["timestamp"]]
+        # Rows are keyed by the instant (UTC ISO), so both copies of the repeated fall-back hour stay; the file shows
+        # site wall time, as it always has.
+        csv_row = [row_data["id"], site_wall_time(datetime.fromisoformat(row_data["timestamp"])).isoformat()]
         
         for section_idx, section in enumerate(active_sections):
             if section_idx != 0:
@@ -386,7 +389,7 @@ def main():
         # EXACT same query as working data.py
         query = db.session.query(SensorMeasurement).filter(
             SensorMeasurement.group_type.in_(group_types),
-            SensorMeasurement.recorded_at.between(start, end)
+            SensorMeasurement.recorded_at.between(site_to_utc(start), site_to_utc(end))   # the local month as instants
         )
         
         print("DEBUG: Query built, executing...")
@@ -403,7 +406,7 @@ def main():
                 "measurement_type": r.measurement_type,
                 "value": r.value,
                 "unit": r.unit,
-                "recorded_at": r.recorded_at.isoformat()
+                "recorded_at": r.recorded_at.isoformat()   # the UTC instant; shown as site time in the file
             }            
             for r in raw_data
         ]

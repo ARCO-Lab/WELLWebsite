@@ -35,7 +35,7 @@ uploaded_months_path = "logs/uploaded_months.json"
 # uploads were recorded). Override with BOREALIS_UPLOAD_FIRST_MONTH=YYYY-MM.
 UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
 
-# Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
+# Site time. Monthly uploads cover Toronto calendar months (the CSV shows Toronto time), so months start and end there, not in UTC
 # (the container's clock).
 SITE_TZ = ZoneInfo("America/Toronto")
 

@@ -7,6 +7,8 @@
 import datetime as dt
 from typing import Callable, Iterator
 
+from utils.timezone import as_utc
+
 MAX_DAYS = 364                       # LI-COR rejects start dates more than a year back
 WINDOW = dt.timedelta(days=7)
 MIN_WINDOW = dt.timedelta(hours=1)   # a capped 1-hour window means something else is wrong
@@ -52,15 +54,10 @@ def fetch_range(get_page: Callable[[dt.datetime, dt.datetime], Page], start: dt.
     return records
 
 
-def to_local(ts: dt.datetime, tz) -> dt.datetime:
-    """recorded_at is stored as naive wall-clock time in the database session's time zone."""
-    return ts.astimezone(tz).replace(tzinfo=None) if ts.tzinfo else ts
-
-
-def start_from_newest(newest_local: dt.datetime | None, tz, first_start: dt.datetime,
+def start_from_newest(newest: dt.datetime | None, first_start: dt.datetime,
                       overlap: dt.timedelta = OVERLAP) -> dt.datetime:
-    """UTC time to fetch from: the newest stored reading (naive local time) minus `overlap`,
-    or `first_start` when nothing is stored yet."""
-    if newest_local is None:
+    """UTC time to fetch from: the newest stored reading (an instant) minus `overlap`, or `first_start` when
+    nothing is stored yet."""
+    if newest is None:
         return first_start
-    return newest_local.replace(tzinfo=tz).astimezone(UTC) - overlap
+    return as_utc(newest) - overlap

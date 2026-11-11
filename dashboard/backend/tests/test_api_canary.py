@@ -85,7 +85,7 @@ class LicorShape(unittest.TestCase):
         p = parsers()
         for r in LICOR["data"]:
             with self.subTest(sensor_sn=r["sensor_sn"]):
-                rows = p.licor_rows([r], {"Weather", "Logger"}, "21893775", dt.timezone.utc)
+                rows = p.licor_rows([r], {"Weather", "Logger"}, "21893775")
                 self.assertEqual(canary.licor_record_used(r["sensor_sn"]), bool(rows))
 
 
