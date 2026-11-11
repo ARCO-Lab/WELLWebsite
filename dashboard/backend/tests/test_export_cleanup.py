@@ -96,7 +96,8 @@ class CleanupTests(unittest.TestCase):
 
     def run_cleanup(self):
         from tasks.exports import cleanup_expired_artifacts
-        cleanup_expired_artifacts()
+        with mock.patch("tasks.exports.worker_app", return_value=self.app):
+            cleanup_expired_artifacts()
         self.db.session.expire_all()
 
     def get(self, job_id):
@@ -166,7 +167,7 @@ class CleanupTests(unittest.TestCase):
                                            estimated_rows=1))
         self.db.session.commit()
         fail = mock.patch.object(export_tasks, "write_export_csv", side_effect=exc)
-        with fail, mock.patch.object(export_tasks, "create_app", return_value=self.app):
+        with fail, mock.patch.object(export_tasks, "worker_app", return_value=self.app):
             with self.assertRaises(type(exc)):
                 export_tasks.generate_export_job(job_id)
         self.db.session.expire_all()
@@ -205,7 +206,7 @@ class CleanupTests(unittest.TestCase):
             raise RuntimeError("database went away")
 
         fail = mock.patch.object(export_tasks, "write_export_csv", side_effect=write_then_fail)
-        with fail, mock.patch.object(export_tasks, "create_app", return_value=self.app):
+        with fail, mock.patch.object(export_tasks, "worker_app", return_value=self.app):
             with self.assertRaises(RuntimeError):
                 export_tasks.generate_export_job("broken")
         self.db.session.expire_all()

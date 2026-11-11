@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failed %}
+{% block title %}Visitors{% endblock %}
+{% block content %}
+<section class="card wide">
+  <h2>GoatCounter</h2>
+  {% if not goatcounter.configured %}
+  <p class="muted">Not configured. Visitor counts (pages viewed, without cookies) need a GoatCounter site: set
+  OPS_GOATCOUNTER_CODE to its code, and OPS_GOATCOUNTER_TOKEN to a read-only API token to show the numbers here.</p>
+  {% elif goatcounter.error %}{{ failed(goatcounter, "GoatCounter") }}
+  {% elif not goatcounter.numbers %}
+  <p>See the statistics at <a href="{{ goatcounter.site }}" rel="noreferrer">{{ goatcounter.site }}</a>.
+  <span class="muted">Set OPS_GOATCOUNTER_TOKEN (read-only) to show them here.</span></p>
+  {% else %}
+  <div class="tiles">
+    <div class="tile"><span class="n">{{ goatcounter.week }}</span><span>visitors, last 7 days</span></div>
+    <div class="tile"><span class="n">{{ goatcounter.month }}</span><span>visitors, last 30 days</span></div>
+  </div>
+  <h3>Most visited pages, last 30 days</h3>
+  <table>
+    <thead><tr><th>Page</th><th class="num">Visitors</th></tr></thead>
+    <tbody>
+    {% for p in goatcounter.pages %}<tr><td><code>{{ p.path }}</code> <span class="muted">{{ p.title }}</span></td><td class="num">{{ p.count }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="more"><a href="{{ goatcounter.site }}" rel="noreferrer">More at GoatCounter</a></p>
+  {% endif %}
+</section>
+{% endblock %}

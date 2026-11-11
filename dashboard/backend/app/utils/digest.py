@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from utils.parsers import LOGGER_CONFIG
 from utils.timezone import EST_TZ
+from utils.traffic import traffic_lines
 
 INTERVAL = timedelta(minutes=10)   # every sensor reports every 10 minutes
 GAP = timedelta(minutes=30)        # a stretch longer than this without readings is listed as a gap
@@ -139,13 +140,14 @@ def fmt_age(minutes):
     return f"{minutes / 1440:.1f} days"
 
 
-def build_digest(day, freshness, groups, findings, wqdata, incidents=None):
+def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None):
     """(subject, body) of the digest.
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
     last 24 h of the live series. findings: anomaly strings. wqdata: {"error"} or {"power_min", "power_max", "power_readings",
     "last_point", "last_point_age_minutes", optional "note"} or None when skipped. incidents: the open email alerts
     (utils/alert_state.alerts_report()["open"]), {"error": ...} if they couldn't be read, or None to leave them out.
+    traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
     """
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
@@ -203,6 +205,9 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None):
         if wqdata.get("note"):
             lines.append(f"  note: {wqdata['note']}")
     lines.append("")
+
+    if traffic is not None:
+        lines += traffic_lines(traffic, EST_TZ) + [""]
 
     lines.append("Newest reading per series:")
     for group, info in sorted(freshness["groups"].items()):

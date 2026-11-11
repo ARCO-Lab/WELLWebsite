@@ -4,6 +4,7 @@ import time
 from datetime import timedelta
 
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.signals import worker_process_shutdown
 from celery.utils.log import get_task_logger
 from sqlalchemy import or_
 
@@ -28,6 +29,38 @@ logger = get_task_logger(__name__)
 # of memory). It isn't run again, since it would likely die the same way.
 EXPORT_INTERRUPTED_MESSAGE = "This export was interrupted. Try a shorter date range."
 
+# The Flask app the tasks of this worker process run in, made on its first task and kept. Each app has its own
+# SQLAlchemy engine and connection pool, so making one per task left every finished task's pooled connections open
+# until garbage collection got to them: under load the export worker held dozens of PostgreSQL connections, which
+# could use up max_connections and take the API down with them.
+_worker_app = None
+_worker_app_pid = None
+
+
+def worker_app():
+    """This process's Flask app, made on first use. Made in the process that runs the task: one inherited through
+    fork would share its parent's pooled connections, so a child process drops those (without closing them,
+    they're the parent's) and opens its own."""
+    global _worker_app, _worker_app_pid
+    if _worker_app is None:
+        _worker_app = create_app()
+    elif _worker_app_pid != os.getpid():
+        with _worker_app.app_context():
+            for engine in db.engines.values():
+                engine.dispose(close=False)
+    _worker_app_pid = os.getpid()
+    return _worker_app
+
+
+@worker_process_shutdown.connect
+def close_worker_connections(**kwargs):
+    """Close this process's pooled connections when it exits (shut down, or replaced after using too much
+    memory), so PostgreSQL sees them closed instead of dropped."""
+    if _worker_app is not None and _worker_app_pid == os.getpid():
+        with _worker_app.app_context():
+            for engine in db.engines.values():
+                engine.dispose()
+
 
 def user_facing_error(exc: Exception) -> str:
     """The error_message to store for a failed job. The job status API returns it to the browser, so only a plain
@@ -43,8 +76,7 @@ def user_facing_error(exc: Exception) -> str:
 
 @celery_app.task(bind=True, name="exports.generate_export_job")
 def generate_export_job(self, job_id: str):
-    app = create_app()
-    with app.app_context():
+    with worker_app().app_context():
         job = db.session.get(ExportJob, job_id)
         if not job:
             logger.error("Export job not found: %s", job_id)
@@ -159,8 +191,7 @@ def cleanup_expired_artifacts():
     4. Delete files in EXPORTS_DIR that no job points at once they are older than orphan_file_age(): sync
        exports a crashed request didn't remove, and files of jobs that died mid-export.
     """
-    app = create_app()
-    with app.app_context():
+    with worker_app().app_context():
         _fail_stuck_jobs()
         _expire_artifacts()
         _prune_old_jobs()

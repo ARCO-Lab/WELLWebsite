@@ -1,0 +1,15 @@
+{% macro failed(result, what) -%}
+<p class="notice bad">Couldn't read {{ what }} ({{ result.error }}).</p>
+{%- endmacro %}
+
+{% macro ranges_nav(ranges, current, endpoint) -%}
+<nav class="ranges" aria-label="Period">
+  {% for name in ranges %}
+  <a href="{{ url_for(endpoint, range=name) }}"{% if name == current %} class="active" aria-current="true"{% endif %}>{{ name }}</a>
+  {% endfor %}
+</nav>
+{%- endmacro %}
+
+{% macro badge(ok, yes='OK', no='Down') -%}
+<span class="badge {{ 'ok' if ok else 'bad' }}">{{ yes if ok else no }}</span>
+{%- endmacro %}
