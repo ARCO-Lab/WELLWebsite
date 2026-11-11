@@ -69,11 +69,11 @@ def apply(engine, path, log=print):
     record = text("INSERT INTO schema_migrations (version) VALUES (:version)")
     if not needs_autocommit(sql):
         with engine.begin() as conn:
-            conn.exec_driver_sql(sql)
+            conn.exec_driver_sql(sql, execution_options={"no_parameters": True})   # "%" reaches the driver as is
             conn.execute(record, {"version": path.stem})
         return
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-        conn.exec_driver_sql(sql)
+        conn.exec_driver_sql(sql, execution_options={"no_parameters": True})   # "%" reaches the driver as is
         # A CREATE INDEX CONCURRENTLY that failed earlier leaves an INVALID index, which IF NOT EXISTS then
         # skips with only a notice. Don't record the migration as done while an index it names is invalid;
         # other invalid indexes aren't this migration's doing, so they only get a warning.

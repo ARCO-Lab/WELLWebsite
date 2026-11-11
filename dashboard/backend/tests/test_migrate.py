@@ -136,9 +136,9 @@ class PostgresRunner(Runner):
         super().tearDown()
 
     def sql(self, statement):
-        """Run one statement outside a transaction; returns the rows of a SELECT. Write % as %% (psycopg2)."""
+        """Run one statement outside a transaction; returns the rows of a SELECT."""
         with self.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-            result = conn.exec_driver_sql(statement)
+            result = conn.exec_driver_sql(statement, execution_options={"no_parameters": True})
             return result.fetchall() if result.returns_rows else None
 
     # The SQLite tests above run here too (as subclass methods), except the ones that rely on SQLite's rowid.
@@ -170,6 +170,17 @@ class PostgresRunner(Runner):
         self.run_migrate()
         self.assertEqual([ix["name"] for ix in inspect(self.engine).get_indexes("t")], ["ix_t"])
         self.assertEqual(self.recorded(), ["0001_table", "0002_index"])
+
+    def test_a_percent_sign_reaches_postgresql_unchanged(self):
+        # psycopg2 would otherwise read "%" as a parameter marker and fail, in both kinds of file.
+        self.sql("CREATE TABLE t (name text)")
+        self.sql("INSERT INTO t VALUES ('a%b'), ('ab')")
+        self.write("0001_tx.sql", "DELETE FROM t WHERE name NOT LIKE '%\\%%'")
+        self.write("0002_autocommit.sql", "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY ix_t_a ON t (name) "
+                                          "WHERE name LIKE '%'")
+        self.assertEqual(self.run_migrate(), ["0001_tx", "0002_autocommit"])
+        self.assertEqual(self.sql("SELECT name FROM t"), [("a%b",)])
+        self.assertEqual([ix["name"] for ix in inspect(self.engine).get_indexes("t")], ["ix_t_a"])
 
     def test_a_failing_second_statement_rolls_back_the_first(self):
         self.write("0001_two.sql", "CREATE TABLE t2 (a int);\nINSERT INTO missing_table VALUES (1);")
@@ -231,7 +242,7 @@ class PostgresRunner(Runner):
         try:
             for _ in range(100):   # until the first run is inside the build
                 if self.sql("SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid() "
-                            "AND query LIKE '%%CREATE INDEX CONCURRENTLY ix_t_a%%' AND wait_event IS NOT NULL"):
+                            "AND query LIKE '%CREATE INDEX CONCURRENTLY ix_t_a%' AND wait_event IS NOT NULL"):
                     break
                 time.sleep(0.1)
             else:
