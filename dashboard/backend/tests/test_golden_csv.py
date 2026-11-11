@@ -298,7 +298,7 @@ class SensorExport:
         self.assertEqual((status["status"], status["download_ready"]), ("queued", False))
         self.assertEqual(client.get(f"/api/exports/jobs/{job_id}/download").status_code, 409)
 
-        with unittest.mock.patch.object(export_tasks, "create_app", return_value=self.app):
+        with unittest.mock.patch.object(export_tasks, "worker_app", return_value=self.app):
             export_tasks.generate_export_job(job_id)
         self.db.session.expire_all()
         status = client.get(f"/api/exports/jobs/{job_id}").get_json()
