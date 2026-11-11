@@ -1,5 +1,6 @@
 // This file defines the useFilteredData React hook for fetching and caching filtered sensor data from the API.
-// It manages loading, error, and caching state for efficient data retrieval.
+// It manages loading, error, and caching state for efficient data retrieval. The charts use /api/series
+// (useChartSeries); these raw readings are only fetched for the wind rose, while it is shown.
 
 import { useEffect, useState, useRef } from "react";
 
@@ -19,8 +20,9 @@ export interface GroupSelection {
     quality: boolean
 }
 
-// Ranges kept in memory, most recent last. Raw payloads can be tens of MB, so keep only a few.
-const CACHE_SIZE = 5;
+// Ranges kept in memory, most recent last, up to this many readings in total: raw payloads can be tens of MB
+// (300,000 readings is roughly one large range), and phones run out of memory long before desktops do.
+const CACHE_MAX_ROWS = 300_000;
 
 const useFilteredData = (
     activeGroups: GroupSelection,
@@ -95,9 +97,15 @@ const useFilteredData = (
                 const json: SensorData[] = await res.json();
                 if (stale) return;
 
-                cache.current.set(key, json);
-                while (cache.current.size > CACHE_SIZE) {
-                    cache.current.delete(cache.current.keys().next().value as string);
+                if (json.length <= CACHE_MAX_ROWS) {
+                    cache.current.set(key, json);
+                    let rows = 0;
+                    cache.current.forEach((rowsOf) => { rows += rowsOf.length; });
+                    while (rows > CACHE_MAX_ROWS) {
+                        const oldest = cache.current.keys().next().value as string;
+                        rows -= cache.current.get(oldest)!.length;
+                        cache.current.delete(oldest);
+                    }
                 }
                 setData(json);
             } catch (err: any) {

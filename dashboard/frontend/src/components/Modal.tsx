@@ -15,6 +15,7 @@ interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   children: React.ReactNode;
+  header?: React.ReactNode; // shown above the content, e.g. the charts' window bar
   // 1. Add 'sampling' to the allowed types
   type: "weather" | "logger" | "quality" | "sampling";
   subtypes?: string[];
@@ -24,7 +25,7 @@ interface ModalProps {
   setWeatherTab?: (tab: "graph" | "windrose") => void;
 }
 
-const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes, analysisType, weatherTab, setWeatherTab }) => {
+const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, header, type, subtypes, analysisType, weatherTab, setWeatherTab }) => {
   useEffect(() => {
     // Close modal on Escape key press
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -47,6 +48,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
         </DialogHeader>
         
         <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1">
+          {header}
           {/* Main content: inject modal props if children is a valid React element */}
           {React.isValidElement(children)
             ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })

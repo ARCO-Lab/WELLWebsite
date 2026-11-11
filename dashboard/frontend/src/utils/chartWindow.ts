@@ -1,0 +1,190 @@
+// Pure helpers for the zoomable sensor charts: the bucket sizes /api/series uses, time-zone-aware snapping to its
+// bucket grid, the window maths behind the zoom buttons, joining coarse "overview" data with finer "detail" data,
+// breaking lines across outages, and a small LRU cache. No React or browser APIs here, so
+// scripts/chartWindow.test.mjs can test it with plain Node.
+
+// Times are epoch milliseconds (UTC); ranges are [start, end), end exclusive.
+export type Range = { start: number; end: number };
+export type Point = [number, number | null];
+
+export const TIME_ZONE = "America/Toronto";
+
+// The bucket sizes /api/series picks from (seconds), smallest first, and the points per series it aims for.
+// Keep in step with LADDER and MAX_POINTS in dashboard/backend/app/api/routes/series.py.
+export const LADDER = [600, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600];
+export const MAX_POINTS = 2000;
+
+export const MIN_RANGE_MS = 3600 * 1000; // the narrowest zoom: one hour
+export const GAP_FACTOR = 2.5; // points further apart than this many buckets are drawn as a break in the line
+export const PAD_FRACTION = 0.5; // detail is loaded for the window plus half its width on each side
+
+/** The bucket /api/series will use for a span: the smallest that keeps it near MAX_POINTS points. */
+export function pickBucket(spanMs: number): number {
+  for (const bucket of LADDER) {
+    if (spanMs / 1000 / bucket <= MAX_POINTS) return bucket;
+  }
+  return LADDER[LADDER.length - 1];
+}
+
+// One formatter, reused: creating Intl formatters is slow.
+let partsFormatter: Intl.DateTimeFormat | null = null;
+
+/** How far Toronto's wall clock is ahead of UTC at an instant, in ms (negative: -4 or -5 hours). */
+export function zoneOffsetMs(utcMs: number): number {
+  partsFormatter ??= new Intl.DateTimeFormat("en-US", {
+    timeZone: TIME_ZONE, hourCycle: "h23",
+    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
+  });
+  const p: Record<string, number> = {};
+  for (const { type, value } of partsFormatter.formatToParts(new Date(utcMs))) p[type] = Number(value);
+  const wallAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return wallAsUtc - Math.floor(utcMs / 1000) * 1000;
+}
+
+/** A Toronto wall-clock time, written as if it were UTC (e.g. Date.UTC(y, m, d)), to the real instant. */
+export function wallToUtc(wallMs: number): number {
+  const guess = wallMs - zoneOffsetMs(wallMs);
+  return wallMs - zoneOffsetMs(guess);
+}
+
+/** The picked days as a range: Toronto midnight of the first day to Toronto midnight after the last.
+ *  The date pickers hand over Dates whose own calendar day is the day picked. */
+export function pickedDaysRange(startDay: Date, endDay: Date): Range {
+  return {
+    start: wallToUtc(Date.UTC(startDay.getFullYear(), startDay.getMonth(), startDay.getDate())),
+    end: wallToUtc(Date.UTC(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() + 1)),
+  };
+}
+
+// /api/series buckets follow Toronto wall-clock time (daily buckets are local days), so snap in wall-clock time.
+export function snapDown(ms: number, bucketS: number): number {
+  const b = bucketS * 1000;
+  return wallToUtc(Math.floor((ms + zoneOffsetMs(ms)) / b) * b);
+}
+
+export function snapUp(ms: number, bucketS: number): number {
+  const b = bucketS * 1000;
+  return wallToUtc(Math.ceil((ms + zoneOffsetMs(ms)) / b) * b);
+}
+
+/** A window the charts can show: at least MIN_RANGE_MS wide and inside the picked range; null when it covers
+ *  the whole picked range (the unzoomed view). */
+export function normalizeWindow(w: Range, picked: Range): Range | null {
+  const total = picked.end - picked.start;
+  let width = Math.max(w.end - w.start, MIN_RANGE_MS);
+  if (width >= total) return null;
+  const center = (w.start + w.end) / 2;
+  let start = Math.round(center - width / 2);
+  start = Math.min(Math.max(start, picked.start), picked.end - width);
+  width = Math.round(width);
+  return { start, end: start + width };
+}
+
+/** ◀ / ▶: move the window by half its width (direction -1 or 1), stopping at the picked range's edges. */
+export function shiftWindow(w: Range, picked: Range, direction: -1 | 1): Range | null {
+  const step = ((w.end - w.start) / 2) * direction;
+  return normalizeWindow({ start: w.start + step, end: w.end + step }, picked);
+}
+
+/** Zoom out: double the window around its centre. */
+export function zoomOutWindow(w: Range, picked: Range): Range | null {
+  const half = w.end - w.start;
+  const center = (w.start + w.end) / 2;
+  return normalizeWindow({ start: center - half, end: center + half }, picked);
+}
+
+/** The range to load detail for: the window plus padding on each side, inside the picked range, snapped outward to
+ *  the grid of `gridS` (the overview's bucket, so detail and overview meet on bucket edges and cache keys repeat). */
+export function detailRange(w: Range, picked: Range, gridS: number): Range {
+  const pad = (w.end - w.start) * PAD_FRACTION;
+  return {
+    start: Math.max(picked.start, snapDown(w.start - pad, gridS)),
+    end: Math.min(picked.end, snapUp(w.end + pad, gridS)),
+  };
+}
+
+export interface SeriesValues {
+  t: number[];
+  avg: (number | null)[];
+}
+
+/** Points for one series: overview points outside the detail range and detail points inside it, so a pan or
+ *  zoom never shows a gap while detail loads. A null is inserted wherever two neighbours are more than
+ *  GAP_FACTOR buckets apart (using the coarser of their two buckets), so lines break across outages instead
+ *  of drawing straight through them. */
+export function composePoints(
+  overview: SeriesValues | undefined,
+  overviewBucketS: number,
+  detail?: { values: SeriesValues | undefined; bucketS: number; range: Range },
+): Point[] {
+  const pts: { t: number; v: number | null; b: number }[] = [];
+  const ob = overviewBucketS * 1000;
+  const push = (s: SeriesValues | undefined, b: number, keep: (t: number) => boolean) => {
+    if (!s) return;
+    for (let i = 0; i < s.t.length; i++) if (keep(s.t[i])) pts.push({ t: s.t[i], v: s.avg[i], b });
+  };
+  if (!detail) {
+    push(overview, ob, () => true);
+  } else {
+    const { start, end } = detail.range;
+    push(overview, ob, (t) => t + ob <= start);
+    push(detail.values, detail.bucketS * 1000, (t) => t >= start && t < end);
+    push(overview, ob, (t) => t >= end);
+  }
+
+  const out: Point[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (i > 0) {
+      const prev = pts[i - 1];
+      const b = Math.max(prev.b, pts[i].b);
+      if (pts[i].t - prev.t > GAP_FACTOR * b) out.push([prev.t + prev.b, null]);
+    }
+    out.push([pts[i].t, pts[i].v]);
+  }
+  return out;
+}
+
+/** "10-minute readings", "1-hour averages", "daily averages"… for a bucket size. */
+export function bucketLabel(bucketS: number, aggregated: boolean): string {
+  let size: string;
+  if (bucketS >= 86400 && bucketS % 86400 === 0) size = bucketS === 86400 ? "daily" : `${bucketS / 86400}-day`;
+  else if (bucketS >= 3600) size = `${bucketS / 3600}-hour`;
+  else size = `${Math.round(bucketS / 60)}-minute`;
+  return `${size} ${aggregated ? "averages" : "readings"}`;
+}
+
+/** The badge on a chart showing averaged data, e.g. "12-hour averages" (plus a note when rain is shown: it is a
+ *  total per bucket); null at full resolution. */
+export function resolutionBadge(bucketS: number | null, aggregated: boolean, hasTotals: boolean): string | null {
+  if (!bucketS || !aggregated) return null;
+  return `${bucketLabel(bucketS, true)}${hasTotals ? " (rain: totals)" : ""}`;
+}
+
+/** A least-recently-used cache: get() refreshes an entry, set() drops the oldest beyond `max`. */
+export class Lru<V> {
+  max: number;
+  map = new Map<string, V>();
+
+  constructor(max: number) {
+    this.max = max;
+  }
+
+  get(key: string): V | undefined {
+    const value = this.map.get(key);
+    if (value !== undefined) {
+      this.map.delete(key);
+      this.map.set(key, value);
+    }
+    return value;
+  }
+
+  set(key: string, value: V): void {
+    this.map.delete(key);
+    this.map.set(key, value);
+    while (this.map.size > this.max) this.map.delete(this.map.keys().next().value as string);
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}

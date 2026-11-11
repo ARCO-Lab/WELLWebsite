@@ -97,6 +97,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Unit tests (chart zoom helpers)
+        run: npm test
+
       - run: npm run build
 
       - name: Lint
