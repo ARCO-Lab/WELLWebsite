@@ -21,6 +21,9 @@ const eslintConfig = defineConfig([
       // until those components are reworked on their own.
       "react-hooks/set-state-in-effect": "warn",
       "react-hooks/refs": "warn",
+      // Also new in 7: Date.now() during render. The chart range and the range buttons read the clock on purpose
+      // (the range ends at the next whole hour); fine to warn about until they take "now" from state.
+      "react-hooks/purity": "warn",
     },
   },
 ]);
