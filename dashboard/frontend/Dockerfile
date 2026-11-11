@@ -9,16 +9,20 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Set build-time arguments
+# Set build-time arguments. NEXT_PUBLIC_* values are inlined into the bundle
+# during the build, and env files are kept out of the build (.dockerignore), so
+# they must be passed here as build args.
 ARG FLASK_API_URL
 ARG NEXT_PUBLIC_FLASK_API_URL
 ARG NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-ARG OPENAI_API_KEY
+# WordPress site the header links to (read in src/components/Header.tsx)
+ARG NEXT_PUBLIC_WP_HOME=https://well.mcmaster.ca
 
 # Set environment variables for the build process
 ENV FLASK_API_URL=${FLASK_API_URL}
 ENV NEXT_PUBLIC_FLASK_API_URL=${NEXT_PUBLIC_FLASK_API_URL}
 ENV NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
+ENV NEXT_PUBLIC_WP_HOME=${NEXT_PUBLIC_WP_HOME}
 
 RUN npm run build
 

@@ -1,9 +1,11 @@
 // This file defines the Next.js API route for proxying sensor data requests to the Flask backend.
 // It translates frontend group toggles to backend group_type filters and forwards date range parameters.
-// The backend's status and body are passed through as-is: parsing and re-serializing a large JSON payload here
-// blocked the single Node process that serves every visitor, and turned errors like 413 into a generic 500.
+// The backend's status and body are passed through as-is (see lib/proxyBackend): parsing and re-serializing a large
+// JSON payload here blocked the single Node process that serves every visitor, and turned errors like 413 into a
+// generic 500.
 
 import type { NextApiRequest, NextApiResponse } from "next";
+import { proxyToBackend } from "@/lib/proxyBackend";
 
 export const config = {
   api: {
@@ -33,22 +35,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     params.append("group_type", group);
   }
 
-  // Stop waiting for the backend if the browser goes away (e.g. the user picked another range).
-  const upstream = new AbortController();
-  res.on("close", () => {
-    if (!res.writableEnded) upstream.abort();
-  });
-
-  try {
-    const flaskUrl = `${process.env.FLASK_API_URL}/api/data?${params.toString()}`;
-    const response = await fetch(flaskUrl, { signal: upstream.signal });
-    const body = Buffer.from(await response.arrayBuffer());
-    res.status(response.status);
-    res.setHeader("Content-Type", response.headers.get("content-type") ?? "application/json");
-    return res.send(body);
-  } catch (error: any) {
-    if (upstream.signal.aborted) return; // the client left; nothing to answer
-    console.error("[ERROR] Failed to fetch data from Flask backend:", error);
-    return res.status(502).json({ error: "The data service didn't respond. Please try again." });
-  }
+  return proxyToBackend(req, res, `/api/data?${params.toString()}`, {}, "sensor data");
 }

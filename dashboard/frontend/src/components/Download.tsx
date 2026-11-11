@@ -11,6 +11,18 @@ import {
   SAMPLING_METRICS,
 } from "@/components/config/filters";
 
+// The message for a failed API reply: the JSON body's `error` if there is one, otherwise the fallback and status.
+// The proxies pass the backend's reply through, so an unexpected failure can be an HTML page instead of JSON.
+async function readError(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    if (typeof body?.error === "string" && body.error) return body.error;
+  } catch {
+    // Not JSON; use the fallback.
+  }
+  return `${fallback} (HTTP ${res.status})`;
+}
+
 interface DownloadProps {
   activeGroups: {
     gauges: boolean;
@@ -214,14 +226,7 @@ const Download: React.FC<DownloadProps> = ({
 
   const triggerDownload = async (response: Response, fallbackFileName: string) => {
     if (!response.ok) {
-      let err = "Failed to download export";
-      try {
-        const payload = await response.json();
-        err = payload.error || err;
-      } catch {
-        // Keep fallback error.
-      }
-      throw new Error(err);
+      throw new Error(await readError(response, "Failed to download export"));
     }
 
     const blob = await response.blob();
@@ -282,8 +287,7 @@ const Download: React.FC<DownloadProps> = ({
       console.log("[Download] Estimate response status:", estimateRes.status);
 
       if (!estimateRes.ok) {
-        const estimateError = await estimateRes.json();
-        throw new Error(estimateError.error || "Failed to estimate export size");
+        throw new Error(await readError(estimateRes, "Failed to estimate export size"));
       }
 
       const estimate = await estimateRes.json();
@@ -314,8 +318,7 @@ const Download: React.FC<DownloadProps> = ({
       console.log("[Download] Create job response status:", createJobRes.status);
 
       if (!createJobRes.ok) {
-        const createErr = await createJobRes.json();
-        throw new Error(createErr.error || "Failed to queue export job");
+        throw new Error(await readError(createJobRes, "Failed to queue export job"));
       }
 
       const created = await createJobRes.json();
