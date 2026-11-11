@@ -20,7 +20,10 @@ export default function useLatestMetrics() {
     const fetchLatest = async () => {
         try {
             const res = await fetch("/api/latest");
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
+            // Keep the last good values unless the reply is the expected list.
+            if (!Array.isArray(data)) throw new Error("Unexpected response");
             setMetrics(data);
         } catch (err) {
             console.error("[ERROR] Failed to fetch latest metrics:", err);

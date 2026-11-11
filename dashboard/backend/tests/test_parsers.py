@@ -1,5 +1,5 @@
 """Tests for utils/parsers.py and utils/sensor_names.py, using records shaped like the real API responses.
-Run from dashboard/backend: python -m unittest discover -s tests"""
+Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import math
 import pathlib

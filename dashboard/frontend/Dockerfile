@@ -9,16 +9,26 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Set build-time arguments
+# Set build-time arguments. NEXT_PUBLIC_* values are inlined into the bundle
+# during the build, and env files are kept out of the build (.dockerignore), so
+# they must be passed here as build args.
 ARG FLASK_API_URL
 ARG NEXT_PUBLIC_FLASK_API_URL
-ARG NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-ARG OPENAI_API_KEY
+# WordPress site the header links to (read in src/components/Header.tsx)
+ARG NEXT_PUBLIC_WP_HOME=https://well.mcmaster.ca
+# Sentry project the dashboard reports errors to (src/lib/sentry.ts). A browser DSN is public by design (it
+# can only send events); build with --build-arg NEXT_PUBLIC_SENTRY_DSN= to turn reporting off.
+ARG NEXT_PUBLIC_SENTRY_DSN=https://dee04106f585f2535a092c4693fddb4a@o4512410353991680.ingest.us.sentry.io/4512410368409600
+# Environment the dashboard's Sentry events are filed under; build with --build-arg
+# NEXT_PUBLIC_SENTRY_ENVIRONMENT=development (for example) for a local image, so its errors aren't filed as production.
+ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
 
 # Set environment variables for the build process
 ENV FLASK_API_URL=${FLASK_API_URL}
 ENV NEXT_PUBLIC_FLASK_API_URL=${NEXT_PUBLIC_FLASK_API_URL}
-ENV NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
+ENV NEXT_PUBLIC_WP_HOME=${NEXT_PUBLIC_WP_HOME}
+ENV NEXT_PUBLIC_SENTRY_DSN=${NEXT_PUBLIC_SENTRY_DSN}
+ENV NEXT_PUBLIC_SENTRY_ENVIRONMENT=${NEXT_PUBLIC_SENTRY_ENVIRONMENT}
 
 RUN npm run build
 

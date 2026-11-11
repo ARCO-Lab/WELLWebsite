@@ -1,5 +1,11 @@
 # This script downloads and processes new sampling data files from the Borealis Dataverse API.
 # It tracks processed files, downloads unprocessed ones, and invokes inject_sampling.py to import data.
+# A file that fails validation is recorded as refused (logs/processed.json, by Dataverse file id), its problems are
+# logged once, and it isn't retried: a corrected upload gets a new id. A run that refused or failed to import a file
+# reports OUTPUT: REJECTED_<n>_FILES or FAILED_<n>_FILES and exits 1, so the scheduler reports it as a failure.
+#   python scripts/download_data.py                          import every new file
+#   python scripts/download_data.py --force --file 57195     import that file again, even if processed or refused
+#   python scripts/download_data.py --list-files             list the dataset's files only
 
 import os
 import sys
@@ -17,6 +23,7 @@ import subprocess
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
+from utils.sampling_csv import INVALID_FILE_EXIT
 
 load_dotenv()
 
@@ -31,31 +38,35 @@ STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "logs", "processed.js
 STATE_FILE = os.path.abspath(STATE_FILE)
 
 def load_state():
-    """Load all processed files from state file."""
+    """The state file: {"processed_files": [...], "refused_files": [...]}, each entry a dataset file (id, filename,
+    create_date). A refused file failed validation; its entry also has "errors" (the problem count) and
+    "refused_at". Both lists are keyed by the Dataverse file id, which a corrected re-upload doesn't share."""
     print("DEBUG: Loading processed files state from", STATE_FILE)
+    state = {"processed_files": [], "refused_files": []}
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-                processed_files = data.get("processed_files", [])
-                print(f"DEBUG: Loaded {len(processed_files)} processed files")
-                for pf in processed_files:
-                    print(f"DEBUG: Processed file: {pf.get('filename')} (ID: {pf.get('id')}, Created: {pf.get('create_date')})")
-                return processed_files
+            state["processed_files"] = data.get("processed_files", [])
+            state["refused_files"] = data.get("refused_files", [])
         except Exception as e:
             print(f"ERROR: Failed to load {STATE_FILE}: {e}")
-            print("DEBUG: Using empty processed files list")
-            return []
-    print("DEBUG: No state file found, returning empty processed files list")
-    return []
+            print("DEBUG: Using an empty state")
+            return {"processed_files": [], "refused_files": []}
+    else:
+        print("DEBUG: No state file found, starting from an empty state")
+    print(f"DEBUG: Loaded {len(state['processed_files'])} processed and {len(state['refused_files'])} refused files")
+    for pf in state["processed_files"]:
+        print(f"DEBUG: Processed file: {pf.get('filename')} (ID: {pf.get('id')}, Created: {pf.get('create_date')})")
+    return state
 
-def save_state(processed_files):
-    """Save all processed files to state file."""
-    print(f"DEBUG: Saving {len(processed_files)} processed files to state")
+def save_state(state):
+    """Save the state file (see load_state)."""
+    print(f"DEBUG: Saving {len(state['processed_files'])} processed and {len(state['refused_files'])} refused files")
     try:
-        data = {"processed_files": processed_files}
         with open(STATE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump({"processed_files": state["processed_files"], "refused_files": state["refused_files"]}, f,
+                      indent=2)
         print(f"DEBUG: Saved state to {STATE_FILE}")
     except Exception as e:
         print(f"ERROR: Failed to save {STATE_FILE}: {e}")
@@ -63,7 +74,7 @@ def save_state(processed_files):
 def parse_filename_date(filename):
     """Parse date from filename suffix after WELLAncasterWatershed_, if possible."""
     print(f"DEBUG: Parsing filename: {filename}")
-    match = re.search(r'WELLAncasterWatershed_(.+?)\.(xlsx|tab)', filename, re.IGNORECASE)
+    match = re.search(r'WELLAncasterWatershed_(.+?)\.(xlsx|tab|csv)', filename, re.IGNORECASE)
     if not match:
         print(f"ERROR: Invalid filename format: {filename}")
         raise ValueError(f"Invalid filename format: {filename}")
@@ -106,7 +117,7 @@ def get_files_from_dataset(list_files=False):
         headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
         params = {"persistentId": BOREALIS_AW_PERSISTENT_ID}
         print(f"DEBUG: Sending request to {BOREALIS_URL}/api/datasets/:persistentId")
-        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers)
+        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers, timeout=(10, 120))
         print(f"DEBUG: Response status: {response.status_code}")
         print(f"DEBUG: Response URL: {response.url}")
         response.raise_for_status()
@@ -123,7 +134,7 @@ def get_files_from_dataset(list_files=False):
             print("DEBUG: No files in the dataset.")
             return []
         
-        # Filter for files with .xlsx or .tab extension, excluding SAMPLE
+        # Filter for .xlsx, .tab (how Dataverse lists an ingested table) or .csv files, excluding SAMPLE
         target_files = []
         for f in files:
             datafile = f["dataFile"]
@@ -135,8 +146,8 @@ def get_files_from_dataset(list_files=False):
             # Check if file matches criteria
             if (filename.lower().startswith("wellancasterwatershed_") and
                 not restricted and
-                not re.match(r'WELLAncasterWatershed_SAMPLE\.(xlsx|tab)', filename, re.IGNORECASE) and
-                filename.lower().endswith((".xlsx", ".tab"))):
+                not re.match(r'WELLAncasterWatershed_SAMPLE\.(xlsx|tab|csv)', filename, re.IGNORECASE) and
+                filename.lower().endswith((".xlsx", ".tab", ".csv"))):
                 
                 # Parse create_date
                 if create_date:
@@ -175,7 +186,7 @@ def download_file_to_memory(file_id, filename):
     try:
         headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
         params = {"format": "original"}
-        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params)
+        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params, timeout=(10, 600))
         response.raise_for_status()
         
         file_buffer = io.BytesIO(response.content)
@@ -199,7 +210,7 @@ def process_single_file(file_info):
     
     file_buffer = download_file_to_memory(file_id, filename)
     
-    # Save buffer to temporary file with .xlsx extension
+    # Save buffer to a temporary file (named .xlsx whatever it holds: the import tells Excel from CSV by content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_file:
         tmp_file.write(file_buffer.getvalue())
         tmp_file_path = tmp_file.name
@@ -207,12 +218,95 @@ def process_single_file(file_info):
     print(f"DEBUG: Saved file to temporary path: {tmp_file_path}")
     return tmp_file_path
 
+def is_named(file_info, names):
+    """True if the file's id or filename is among `names` (as given with --file)."""
+    return str(file_info["id"]) in names or file_info["filename"] in names
+
+
+def choose_files(all_files, state, names=(), force=False):
+    """The files to import this run, oldest first.
+
+    New files: neither processed nor refused. With --force, the files named with --file are imported again even if
+    they were processed or refused (e.g. after a site was added to the site list). --force alone re-imports nothing,
+    so a refused file isn't retried until a corrected file is uploaded (which gets a new id).
+    """
+    done = {pf["id"] for pf in state["processed_files"]} | {rf["id"] for rf in state["refused_files"]}
+    chosen = [f for f in all_files if f["id"] not in done or (force and is_named(f, names))]
+    return sorted(chosen, key=lambda f: f["create_date"])
+
+
+def record(state, file_info, outcome, errors=0):
+    """Record a file as "processed" or "refused", replacing any earlier entry for its id."""
+    entry = {"filename": file_info["filename"], "id": file_info["id"],
+             "create_date": file_info["create_date"].isoformat()}
+    for key in ("processed_files", "refused_files"):
+        state[key] = [f for f in state[key] if f["id"] != file_info["id"]]
+    if outcome == "refused":
+        entry.update(errors=errors, refused_at=datetime.now().isoformat(timespec="seconds"))
+        state["refused_files"].append(entry)
+    else:
+        state["processed_files"].append(entry)
+
+
+def import_outcome(returncode, stdout):
+    """("processed", rows inserted), ("refused", problem count) or ("failed", None) for one inject_sampling.py run.
+    It exits with INVALID_FILE_EXIT when the file itself is invalid (nothing stored); any other non-zero code is a
+    failure worth retrying, e.g. the database was down."""
+    if returncode == 0:
+        match = re.search(r"^\[INFO\] Inserted (\d+) new sampling records\.", stdout or "", flags=re.MULTILINE)
+        return "processed", int(match.group(1)) if match else 0
+    if returncode == INVALID_FILE_EXIT:
+        match = re.search(r"^\[ERROR\] (\d+) problems in ", stdout or "", flags=re.MULTILINE)
+        return "refused", int(match.group(1)) if match else 0
+    return "failed", None
+
+
+def run_status(processed, refused, failed):
+    """The OUTPUT status for the scheduler. A refused or failed file also makes the run exit 1."""
+    if refused:
+        return f"REJECTED_{refused}_FILES"
+    if failed:
+        return f"FAILED_{failed}_FILES"
+    return f"PROCESSED_{processed}_FILES" if processed else "NO_FILES_PROCESSED"
+
+
+def import_file(file_info, inject_script):
+    """Download one file and run inject_sampling.py on it. Returns import_outcome()'s pair."""
+    tmp_file_path = None
+    try:
+        tmp_file_path = process_single_file(file_info)
+        print(f"DEBUG: Running inject_sampling.py for {file_info['filename']}")
+        result = subprocess.run([sys.executable, inject_script, tmp_file_path], capture_output=True, text=True)
+        if result.stdout:
+            print("inject_sampling.py stdout:", result.stdout)
+        if result.stderr:
+            print("inject_sampling.py stderr:", result.stderr)
+        if result.returncode not in (0, INVALID_FILE_EXIT):
+            print(f"ERROR: inject_sampling.py failed with return code {result.returncode}")
+        return import_outcome(result.returncode, result.stdout)
+    except Exception as e:
+        print(f"ERROR: Failed to process {file_info['filename']}: {e}")
+        return "failed", None
+    finally:
+        if tmp_file_path:
+            try:
+                os.unlink(tmp_file_path)
+                print(f"DEBUG: Cleaned up temporary file: {tmp_file_path}")
+            except Exception as e:
+                print(f"WARNING: Failed to clean up temporary file {tmp_file_path}: {e}")
+
+
 def main():
     # Main entry point for downloading and processing files
     parser = argparse.ArgumentParser(description="Download all unprocessed files and process them sequentially.")
-    parser.add_argument("--force", action="store_true", help="Force processing even if file is not new")
-    parser.add_argument("--list-files", action="store_true", help="List all files in the dataset for debugging")
+    parser.add_argument("--force", action="store_true",
+                        help="Import the files named with --file again, even if they were processed or refused")
+    parser.add_argument("--file", action="append", default=[], metavar="ID_OR_NAME",
+                        help="With --force: a dataset file id or filename to import again (repeatable)")
+    parser.add_argument("--list-files", action="store_true", help="List the dataset's files and exit, without downloading or importing anything")
     args = parser.parse_args()
+    if args.file and not args.force:
+        parser.error("--file only applies with --force")
 
     print("DEBUG: Starting process...")
     print(f"DEBUG: BOREALIS_URL: {BOREALIS_URL}")
@@ -220,131 +314,74 @@ def main():
     print(f"DEBUG: BOREALIS_AW_PERSISTENT_ID: {BOREALIS_AW_PERSISTENT_ID}")
 
     try:
-        # Load processed files state
-        processed_files = load_state()
-        processed_ids = {pf["id"] for pf in processed_files}
-        
+        state = load_state()
+
         # Get all files from dataset
         all_files = get_files_from_dataset(list_files=args.list_files)
+        # A --file that names no file of the dataset is a typo; importing nothing would hide it
+        unmatched = [name for name in args.file if not any(is_named(f, [name]) for f in all_files)]
+        if unmatched:
+            print(f"ERROR: --file {', '.join(unmatched)} matches no file of the dataset (give a file id or its exact "
+                  f"filename; --list-files lists them)")
+            sys.exit(2)
         if not all_files:
             print("No files to process. Use --list-files to debug available files.")
-            sys.exit(1 if args.list_files else 0)
-        
-        # Find unprocessed files
-        unprocessed_files = [f for f in all_files if f["id"] not in processed_ids]
-        
-        # Sort unprocessed files by creation date (oldest first)
-        unprocessed_files.sort(key=lambda x: x["create_date"])
-        
-        print(f"DEBUG: Processed files: {len(processed_files)}")
-        print(f"DEBUG: Unprocessed files: {[f['filename'] for f in unprocessed_files]}")
-        
-        if not unprocessed_files and not args.force:
+            if args.list_files:
+                sys.exit(1)
+            print("OUTPUT: NO_NEW_FILES")   # the scheduler reads this line (utils/jobs.download_status)
+            sys.exit(0)
+
+        files_to_process = choose_files(all_files, state, args.file, args.force)
+        print(f"DEBUG: Processed files: {len(state['processed_files'])}")
+        print(f"DEBUG: Files to import: {[f['filename'] for f in files_to_process]}")
+        # A refused file's problems were listed when it was refused; later runs give a one-line reminder, for the
+        # refused files still in the dataset (one deleted from it needs no correction)
+        chosen_ids = {f["id"] for f in files_to_process}
+        dataset_ids = {f["id"] for f in all_files}
+        for rf in state["refused_files"]:
+            if rf["id"] in dataset_ids and rf["id"] not in chosen_ids:
+                print(f"WARNING: {rf['filename']} (ID: {rf['id']}) was refused on {rf.get('refused_at', '?')} with "
+                      f"{rf.get('errors', '?')} problems; upload a corrected file to import it")
+
+        # --list-files only lists; it never downloads or imports. The scheduler runs it under a short
+        # time limit to debug a failed download, and an import stopped part-way could lose rows.
+        if args.list_files:
+            sys.exit(0)
+
+        if not files_to_process:
             print("DEBUG: All files have been processed.")
-            # Still output something for scheduler compatibility
             print("OUTPUT: NO_NEW_FILES")
             sys.exit(0)
-        
-        # Determine which files to process
-        files_to_process = []
-        if args.force:
-            if unprocessed_files:
-                files_to_process = unprocessed_files
-                print(f"DEBUG: Force mode - processing {len(files_to_process)} unprocessed files")
-            else:
-                # If forcing and no unprocessed files, process all files
-                files_to_process = sorted(all_files, key=lambda x: x["create_date"])
-                print(f"DEBUG: Force mode - reprocessing all {len(files_to_process)} files")
-        else:
-            files_to_process = unprocessed_files
-        
-        if not files_to_process:
-            print("DEBUG: No files to process.")
-            print("OUTPUT: NO_FILES")
-            sys.exit(0)
-        
-        print(f"DEBUG: Will process {len(files_to_process)} files in chronological order")
-        
-        # Process each file sequentially
-        processed_count = 0
-        for i, file_to_process in enumerate(files_to_process, 1):
-            print(f"\nDEBUG: === Processing file {i}/{len(files_to_process)} ===")
-            
-            try:
-                # Process the file
-                tmp_file_path = process_single_file(file_to_process)
-                
-                # Import the data using inject_sampling.py
-                script_dir = os.path.dirname(__file__)
-                inject_script = os.path.join(script_dir, "inject_sampling.py")
-                python_exe = sys.executable
-                
-                print(f"DEBUG: Running inject_sampling.py for {file_to_process['filename']}")
-                result = subprocess.run([python_exe, inject_script, tmp_file_path], 
-                                      capture_output=True, text=True)
-                
-                # Print the output from inject_sampling.py
-                if result.stdout:
-                    print("inject_sampling.py stdout:", result.stdout)
-                if result.stderr:
-                    print("inject_sampling.py stderr:", result.stderr)
-                
-                if result.returncode != 0:
-                    print(f"ERROR: inject_sampling.py failed with return code {result.returncode}")
-                    # Clean up temp file
-                    try:
-                        os.unlink(tmp_file_path)
-                        print(f"DEBUG: Cleaned up temporary file: {tmp_file_path}")
-                    except:
-                        pass
-                    continue
-                
-                # Clean up temporary file
-                try:
-                    os.unlink(tmp_file_path)
-                    print(f"DEBUG: Cleaned up temporary file: {tmp_file_path}")
-                except Exception as e:
-                    print(f"WARNING: Failed to clean up temporary file {tmp_file_path}: {e}")
-                
-                # Check if any records were inserted
-                inserted = 0
-                for line in result.stdout.splitlines():
-                    match = re.search(r"\[INFO\] Inserted (\d+) new sampling records\.", line)
-                    if match:
-                        inserted = int(match.group(1))
-                        break
 
-                if inserted > 0:
-                    # Update processed files state
-                    file_record = {
-                        "filename": file_to_process["filename"],
-                        "id": file_to_process["id"],
-                        "create_date": file_to_process["create_date"].isoformat()
-                    }
-                    # Remove existing record with same ID (in case of force mode)
-                    processed_files = [pf for pf in processed_files if pf["id"] != file_to_process["id"]]
-                    processed_files.append(file_record)
-                    processed_count += 1
-                    print(f"DEBUG: Successfully processed {file_to_process['filename']} (Inserted {inserted} records)")
-                else:
-                    print(f"DEBUG: Skipping {file_to_process['filename']} (Inserted 0 records, not marking as processed)")
-                
-            except Exception as e:
-                print(f"ERROR: Failed to process {file_to_process['filename']}: {e}")
-                continue
-        
-        # Save updated state
-        save_state(processed_files)
-        
-        print(f"\nDEBUG: === Processing Complete ===")
-        print(f"DEBUG: Successfully processed {processed_count} out of {len(files_to_process)} files")
-        
-        # Output for scheduler compatibility
-        if processed_count > 0:
-            print(f"OUTPUT: PROCESSED_{processed_count}_FILES")
-        else:
-            print("OUTPUT: NO_FILES_PROCESSED")
-        
+        print(f"DEBUG: Will process {len(files_to_process)} files in chronological order")
+        inject_script = os.path.join(os.path.dirname(__file__), "inject_sampling.py")
+        counts = {"processed": 0, "refused": 0, "failed": 0}
+        for i, file_info in enumerate(files_to_process, 1):
+            print(f"\nDEBUG: === Processing file {i}/{len(files_to_process)} ===")
+            outcome, number = import_file(file_info, inject_script)
+            counts[outcome] += 1
+            if outcome == "processed":
+                # Recorded even when every row was already stored: importing it again would add nothing
+                record(state, file_info, "processed")
+                print(f"DEBUG: Successfully processed {file_info['filename']} (Inserted {number} records)")
+            elif outcome == "refused":
+                record(state, file_info, "refused", number)
+                print(f"ERROR: {file_info['filename']} (ID: {file_info['id']}) was refused: {number} problems, listed "
+                      f"above. Nothing from it was imported, and it won't be retried; upload a corrected file.")
+            else:
+                print(f"ERROR: Importing {file_info['filename']} failed; it will be retried next run")
+
+        save_state(state)
+        print("\nDEBUG: === Processing Complete ===")
+        print(f"DEBUG: {counts['processed']} processed, {counts['refused']} refused, {counts['failed']} failed, "
+              f"out of {len(files_to_process)} files")
+        # The scheduler reads this line (utils/jobs.download_status)
+        print(f"OUTPUT: {run_status(counts['processed'], counts['refused'], counts['failed'])}")
+        if counts["refused"] or counts["failed"]:
+            sys.exit(1)
+
+    except SystemExit:
+        raise
     except Exception as e:
         print(f"ERROR: Process failed: {e}")
         sys.exit(1)

@@ -1,5 +1,5 @@
 """Export file names must use the days the user picked (site time), not UTC.
-Run from dashboard/backend: python -m unittest discover -s tests"""
+Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import pathlib
 import sys
 import unittest

@@ -9,7 +9,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 
 from server import create_app
 from db.database import db
-from db.models import SensorMeasurement, SamplingMeasurement, ExportJob
+from db.models import SensorMeasurement, SamplingMeasurement, ExportJob  # noqa: F401 (registers the tables for create_all)
 
 app = create_app()
 

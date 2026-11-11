@@ -1,4 +1,4 @@
-"""Tests for utils/fetching.py. Run from dashboard/backend: python -m unittest discover -s tests"""
+"""Tests for utils/fetching.py. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import collections
 import datetime as dt
 import pathlib

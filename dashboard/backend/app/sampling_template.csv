@@ -1,0 +1,4 @@
+date,time,site,parameter,value,unit,below_detection,qc_flag,sampler,method,notes
+2026-05-06,09:40,Falkirk Forest,E. coli,48,CFU/100 mL,,ok,AB,membrane filtration,
+2026-05-06,09:40,Falkirk Forest,Ammonia nitrogen,<0.01,mg/L,true,ok,AB,,below the 0.01 mg/L detection limit
+2026-05-06,10:15,Maple Lane Pk,pH,8.06,pH units,,,AB,field meter,

@@ -1,7 +1,6 @@
 # This script exports WELL sensor data for a given month to CSV and uploads it to Borealis Dataverse.
 # It replicates frontend CSV formatting and supports both manual and automatic (last month) export.
 
-import os
 import sys
 import pathlib
 import json
@@ -13,6 +12,7 @@ import pandas as pd
 import csv
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from db.database import db
 from db.models import SensorMeasurement
@@ -76,7 +76,9 @@ def get_logger_label(station_id):
     return SENSOR_FILTER_CONFIG["gauges"]["sites"].get(str(station_id), f"Logger {station_id}")
 
 def get_last_month_range():
-    now = datetime.now()
+    # recorded_at is naive Toronto wall-clock time, so "last month" is measured there too, not on the
+    # container's UTC clock, which turns to the next month at 19:00 or 20:00 Toronto time on the last day.
+    now = datetime.now(ZoneInfo("America/Toronto")).replace(tzinfo=None)
     first_of_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     last_month_end = first_of_this_month
     # Go to the first day of last month
@@ -319,7 +321,7 @@ def build_csv_frontend_style(data_list, file_obj):
     writer.writerow(headers)
     writer.writerows(rows)
     
-    print(f"DEBUG: CSV written to file-like object")
+    print("DEBUG: CSV written to file-like object")
     print(f"DEBUG: Written {len(rows)} data rows and {len(headers)} header columns")
 
 def upload_to_borealis(csv_content, csv_name):
@@ -329,15 +331,21 @@ def upload_to_borealis(csv_content, csv_name):
         files = {'file': (csv_name, csv_content)}
         params = dict(description='Automated upload', categories=['Data'])
         payload = dict(jsonData=json.dumps(params))
+        # The token goes in the X-Dataverse-key header only. In the URL it would be printed by any
+        # error message that includes the URL (requests' HTTPError does), and so end up in the logs.
         resp = requests.post(
-            f"{BOREALIS_URL}/api/datasets/:persistentId/add?persistentId={BOREALIS_WC_PERSISTENT_ID}&key={BOREALIS_API_TOKEN}",
+            f"{BOREALIS_URL}/api/datasets/:persistentId/add",
+            params={"persistentId": BOREALIS_WC_PERSISTENT_ID},
+            headers=headers,
             data=payload,
-            files=files
+            files=files,
+            timeout=(10, 600),
         )
         resp.raise_for_status()
         print(f"Successfully uploaded {csv_name} to Borealis")
     except Exception as e:
         print(f"Error uploading to Borealis: {e}")
+        raise  # exit non-zero, so the scheduler logs the failed upload instead of a success
 
 def upload_to_sharepoint(csv_content, csv_name):
     """Upload CSV to SharePoint"""
@@ -381,7 +389,7 @@ def main():
             SensorMeasurement.recorded_at.between(start, end)
         )
         
-        print(f"DEBUG: Query built, executing...")
+        print("DEBUG: Query built, executing...")
         
         # Get data in EXACT same format as data.py
         raw_data = query.order_by(SensorMeasurement.recorded_at).all()
@@ -418,8 +426,10 @@ def main():
                     print(f"DEBUG:   Logger stations: {dict(station_counts)}")
         
         if not data:
-            print("DEBUG: No sensor data found for last month.")
-            return
+            # Exit non-zero: nothing was sent, so the scheduler must not record this month as uploaded
+            # (it tries again the next day, e.g. once a backfill has filled the month in).
+            print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
+            sys.exit(2)
         
         # Build CSV in memory - CHANGED to use io.StringIO instead of file path
         csv_name = f"WELLWestCampus_{start.strftime('%b%Y')}.csv"

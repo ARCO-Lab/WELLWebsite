@@ -1,5 +1,5 @@
 # This file defines the SQLAlchemy ORM models for sensor and sampling measurements.
-# It provides table schemas and utility methods for database operations.
+# Sensor readings, lab sampling results and export jobs each get one table.
 
 from db.database import db
 from utils.timezone import est_now
@@ -16,19 +16,11 @@ class SensorMeasurement(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint("station_id", "measurement_type", "recorded_at"),
+        # For queries by group and time range; existing databases get it from db/migrations/0001_*.sql.
+        db.Index("ix_sensor_measurements_group_type_recorded_at", "group_type", "recorded_at"),
     )
 
-    def to_dict(self):
-        # Convert model instance to dictionary for serialization
-        return {
-            "station_id", self.station_id,
-            "group_type", self.group_type,
-            "measurement_type", self.measurement_type,
-            "value", self.value,
-            "unit", self.unit,
-            "timestamp", self.recorded_at.isoformat()
-        }
-    
+
 class SamplingMeasurement(db.Model):
     __tablename__ = "sampling_measurements"
     id = db.Column(db.Integer, primary_key=True)
@@ -42,18 +34,6 @@ class SamplingMeasurement(db.Model):
     __table_args__ = (
         db.UniqueConstraint("site_id", "measurement_type", "recorded_at"),
     )
-
-    def to_dict(self):
-        # Convert model instance to dictionary for serialization
-        return {
-            "id", self.id,
-            "creek_id", self.creek_id,
-            "site_id", self.site_id,
-            "measurement_type", self.measurement_type,
-            "value", self.value,
-            "unit", self.unit,
-            "timestamp", self.recorded_at.isoformat()
-        }
 
 
 class ExportJob(db.Model):

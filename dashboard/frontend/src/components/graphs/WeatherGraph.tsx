@@ -2,6 +2,7 @@
 // It supports tab switching between graph and wind rose views, and handles wind data pairing for visualization.
 
 import dynamic from 'next/dynamic';
+import { useMemo } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
@@ -58,8 +59,9 @@ const WeatherGraph = ({
   setWeatherTab,
   inModal = false,
 }: Props) => {
-  // Map frontend "Rainfall" to backend "Rain"
-  const mappedWeather = subFilters.weather.map(m => m === "Rainfall" ? "Rain" : m);
+  // Map frontend "Rainfall" to backend "Rain". Memoized: a new array on every render made the chart
+  // rebuild all its series whenever anything on the page re-rendered.
+  const mappedWeather = useMemo(() => subFilters.weather.map(m => m === "Rainfall" ? "Rain" : m), [subFilters.weather]);
 
   // Determine if windrose can be shown
   const hasWindSpeed = mappedWeather.includes("Wind Speed");
@@ -69,8 +71,10 @@ const WeatherGraph = ({
 
   // Only show tab switcher in modal
   const showTabSwitcher = inModal && canShowWindrose;
-  const windSpeedRoseData = getWindRoseData(data, "Wind Speed");
-  const gustSpeedRoseData = getWindRoseData(data, "Gust Speed");
+  // Only build the wind rose (two passes over every row) when it's actually shown
+  const showWindrose = weatherTab === "windrose" && canShowWindrose;
+  const windSpeedRoseData = useMemo(() => (showWindrose && hasWindSpeed ? getWindRoseData(data, "Wind Speed") : []), [showWindrose, hasWindSpeed, data]);
+  const gustSpeedRoseData = useMemo(() => (showWindrose && hasGustSpeed ? getWindRoseData(data, "Gust Speed") : []), [showWindrose, hasGustSpeed, data]);
 
   return (
     <div className="p-4 bg-white rounded shadow">

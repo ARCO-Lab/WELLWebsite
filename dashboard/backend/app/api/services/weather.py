@@ -61,7 +61,7 @@ class WeatherService:
         }
 
         try:
-            response = requests.get(self.api_url, headers=self.get_headers(), params=params)
+            response = requests.get(self.api_url, headers=self.get_headers(), params=params, timeout=120)
             response.raise_for_status()
             all_data = response.json().get("data", [])
             # Filter out logger data (keep only weather data)

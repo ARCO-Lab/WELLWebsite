@@ -4,7 +4,8 @@
 # How a run works:
 #  - Each group (Weather, Logger, Quality) continues from its newest stored reading minus an hour, so
 #    readings that arrive late are still picked up and a short outage catches up by itself. A run
-#    never looks back more than 14 days; older gaps are filled by scripts/licor_backfill.py.
+#    never looks back more than 14 days; older gaps are filled by scripts/licor_backfill.py (LI-COR)
+#    and scripts/wqdata_backfill.py (WQData).
 #  - LI-COR (the weather station and the water-level loggers) is read once for both groups, in windows
 #    of at most 7 days, splitting any window LI-COR truncates (it caps responses at 100,000 records;
 #    see utils/fetching.py). Longer requests used to lose whole sensors silently.
@@ -28,6 +29,7 @@ from api.services.weather import WeatherService
 from api.services.quality import QualityService
 from config import Config
 from utils.fetching import FMT, MAX_DAYS, RUN_LOOKBACK, fetch_range, start_from_newest
+from utils.sentry import capture_job_error
 from utils.parsers import (LOGGER_CONFIG, QUALITY_PARAM_ID_MAP, licor_rows,  # noqa: F401 (re-exported for other scripts)
                            parse_logger_entry, parse_quality_entry, parse_weather_entry, quality_rows)
 
@@ -75,7 +77,8 @@ def inject_licor(tz, now):
 
 
 def inject_quality(tz, now):
-    # WQData pages its responses properly (QualityService follows them), so one call covers the range.
+    # QualityService follows WQData's paging (until a response holds all the values it reports), so one call
+    # covers the range.
     start = run_start("Quality", tz, now)
     entries = quality_service.get_quality_data(start.strftime(FMT), now.strftime(FMT))
     rows = quality_rows(entries, Config.WQ_DEVICE_ID, tz)
@@ -98,8 +101,11 @@ def inject_all_new_data():
                 db.session.rollback()
                 failed.append(name)
                 print(f"[ERROR] {name} ingestion failed: {e!r}")
+                capture_job_error(e, source=name)   # a no-op unless the scheduler turned Sentry on
         if failed:
-            raise RuntimeError(f"ingestion failed for: {', '.join(failed)}")
+            error = RuntimeError(f"ingestion failed for: {', '.join(failed)}")
+            error.already_reported = True   # each failure above went to Sentry with its own traceback
+            raise error
 
 
 if __name__ == "__main__":
