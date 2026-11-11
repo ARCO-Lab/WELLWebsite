@@ -11,14 +11,13 @@
 // Times are epoch milliseconds (UTC) unless named "wall": a Toronto wall-clock time written as if it were UTC
 // (Date.UTC(y, m, d, h)), which is how bucket and tile edges are counted.
 
-import { LADDER, zoneOffsetMs, type PointInfo, type Range } from "../utils/chartWindow.ts";
+import { LADDER, isPartial, typicalCounts, zoneOffsetMs, type PointInfo, type Range } from "../utils/chartWindow.ts";
 
 export { LADDER };
 export const RAW_S = LADDER[0]; // every sensor reports every 10 minutes
 export const TILE_BUCKETS = 360;
 export const POINTS_PER_PX = 1.5; // about this many buckets per pixel of plot width: detail without waste
 export const GAP_FACTOR = 2.5; // neighbours further apart than this many buckets are drawn with a break between
-export const PARTIAL_SHARE = 0.5; // a bucket with under half the readings its series usually has is "partial"
 
 // Toronto's offset changes only on the hour, so it is cached per hour (formatting a date is slow, and charts convert
 // thousands of times while they compose).
@@ -173,33 +172,32 @@ export function segmentsFor(levels: { bucketS: number; tiles: number[] }[]): Seg
 
 export interface ComposedPoint { x: number; y: number | null; custom?: PointInfo }
 
-/** The median of the counts of a series' buckets at one size (over every loaded tile of it, not tile by tile, so
- *  the partial markers don't change as tiles arrive); NaN when there are no counts. */
-export function medianCount(tiles: Iterable<TileSeries>): number {
-  const all: number[] = [];
-  for (const tile of tiles) for (const v of tile.n) if (!Number.isNaN(v)) all.push(v);
-  if (!all.length) return NaN;
-  all.sort((a, b) => a - b);
-  const m = all.length >> 1;
-  return all.length % 2 ? all[m] : (all[m - 1] + all[m]) / 2;
-}
+export type Typical = (t: number) => number | null;
 
-/** Whether a bucket of `bucketS` holding `n` readings is partial: under PARTIAL_SHARE of the series' usual count
- *  at that size (its median). Per series, because sensors differ: the water-quality sonde is silent every night,
- *  so its normal hourly buckets hold fewer readings than a full hour's six. Raw readings never are. */
-export function isPartialBucket(n: number, bucketS: number, median: number): boolean {
-  return bucketS > RAW_S && !Number.isNaN(n) && !Number.isNaN(median) && n < PARTIAL_SHARE * median;
+/** How many readings a series usually has per bucket of one size, at each time of day (utils/chartWindow
+ *  typicalCounts: per series, since the water quality sonde, for one, is silent every night). Learned from every
+ *  loaded tile of the series at that size together, not tile by tile, so partial markers don't change as tiles
+ *  arrive. */
+export function typicalFor(tiles: Iterable<TileSeries>): Typical {
+  const t: number[] = [], n: number[] = [];
+  for (const tile of tiles) {
+    for (let j = 0; j < tile.t.length; j++) {
+      t.push(tile.t[j]);
+      n.push(tile.n[j]);
+    }
+  }
+  return typicalCounts({ t, avg: n, n });
 }
 
 /** One series' points from the segments: in each segment, the buckets of its size that lie wholly inside it (a coarse
  *  bucket cut by a finer tile is left to the finer one). `tile(bucketS, index)` gives a loaded tile of this series
  *  (undefined: not loaded, so no points there). Averaged buckets are drawn at their middle, raw readings at their
  *  time; a null is inserted wherever neighbours are more than GAP_FACTOR buckets apart, so lines break across
- *  outages. `medians` gives the series' median count per size, for the partial markers. */
+ *  outages. `typical` gives the series' usual counts per size, for the partial markers. */
 export function composeSeries(
   segments: Segment[],
   tile: (bucketS: number, index: number) => TileSeries | undefined,
-  medians: (bucketS: number) => number,
+  typical: (bucketS: number) => Typical,
 ): ComposedPoint[] {
   const pts: { t: number; v: number; lo: number; hi: number; n: number; b: number }[] = [];
   for (const seg of segments) {
@@ -216,7 +214,7 @@ export function composeSeries(
   }
   const out: ComposedPoint[] = [];
   const v = (x: number) => (Number.isNaN(x) ? null : x);
-  const medianBy = new Map<number, number>();
+  const typicalBy = new Map<number, Typical>();
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     const bm = p.b * 1000;
@@ -224,13 +222,14 @@ export function composeSeries(
       const prev = pts[i - 1];
       if (p.t - prev.t > GAP_FACTOR * Math.max(prev.b * 1000, bm)) out.push({ x: prev.t + prev.b * 1000, y: null });
     }
-    if (!medianBy.has(p.b)) medianBy.set(p.b, medians(p.b));
+    if (!typicalBy.has(p.b)) typicalBy.set(p.b, typical(p.b));
+    const usual = typicalBy.get(p.b)!(p.t);
     out.push({
       x: p.b > RAW_S ? p.t + bm / 2 : p.t,
       y: v(p.v),
       custom: {
-        start: p.t, bucketS: p.b, lo: v(p.lo), hi: v(p.hi), n: v(p.n),
-        partial: isPartialBucket(p.n, p.b, medianBy.get(p.b)!), isolated: false,
+        start: p.t, bucketS: p.b, lo: v(p.lo), hi: v(p.hi), n: v(p.n), typical: usual,
+        partial: isPartial(v(p.n), p.b, usual), isolated: false,
       },
     });
   }

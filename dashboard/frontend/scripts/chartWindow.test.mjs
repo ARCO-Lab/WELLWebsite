@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import {
   pickBucket, zoneOffsetMs, wallToUtc, pickedDaysRange, snapDown, snapUp, normalizeWindow, shiftWindow,
   zoomOutWindow, zoomInWindow, detailRange, composePoints, bucketLabel, bucketSpanLabel, shortBucket, valueDecimals,
-  Lru, MIN_RANGE_MS, clampToNow, daysCovering, dataStart, torontoIso, parseIsoParam, windowFromSearch,
+  isPartial, Lru, MIN_RANGE_MS, clampToNow, daysCovering, dataStart, torontoIso, parseIsoParam, windowFromSearch,
   searchWithWindow, hourStart,
 } from "../src/utils/chartWindow.ts";
 import {
@@ -103,15 +103,80 @@ test("typed arrays as cached: NaN is a missing value, drawn as a break", () => {
   assert.deepEqual(xy(composePoints(s, 600)), [[0, 1], [600_000, null], [1_200_000, 3]]);
 });
 
-test("points carry their bucket, min/max and count; under half full is partial", () => {
+test("points carry their bucket, min/max and count", () => {
   const s = { t: [0, 6 * H], avg: [5, 6], min: [4, NaN], max: [7, null], n: [36, 17] };
   const [full, part] = composePoints(s, 21600);
-  assert.deepEqual(full.custom, { start: 0, bucketS: 21600, lo: 4, hi: 7, n: 36, partial: false, isolated: false });
+  assert.deepEqual(full.custom,
+    { start: 0, bucketS: 21600, lo: 4, hi: 7, n: 36, typical: null, partial: false, isolated: false });
   assert.equal(part.x, 9 * H);
-  assert.deepEqual([part.custom.lo, part.custom.hi, part.custom.partial], [null, null, true]); // 17 < 36 / 2
-  assert.equal(composePoints({ t: [0], avg: [1], n: [18] }, 21600)[0].custom.partial, false); // exactly half
+  assert.deepEqual([part.custom.lo, part.custom.hi], [null, null]);
+  // two buckets are too few to know what is usual, so neither is called partial
+  assert.equal(part.custom.partial, false);
   assert.equal(composePoints({ t: [0], avg: [1] }, 21600)[0].custom.partial, false); // count unknown
-  assert.equal(composePoints({ t: [0], avg: [1], n: [1] }, 600)[0].custom.partial, false); // a raw reading
+  assert.equal(isPartial(1, 600, 6), false); // a raw reading
+  assert.equal(isPartial(3, 3600, 6), false); // exactly half
+  assert.equal(isPartial(2, 3600, 6), true);
+});
+
+// A sonde that reports 08:20-18:10 Toronto time and is silent every night, as the water quality one is.
+function dayOnly(days, bucketS, outageDay = -1) {
+  const t = [], avg = [], n = [];
+  const start = wallToUtc(Date.UTC(2026, 5, 1));
+  const counts = new Map();
+  for (let d = 0; d < days; d++) {
+    if (d === outageDay) continue;
+    for (let m = 8 * 60 + 20; m <= 18 * 60 + 10; m += 10) {
+      if (outageDay >= 0 && d === outageDay + 1 && m < 16 * 60) continue; // the day after an outage starts at 16:00
+      const reading = start + d * D + m * 60_000;
+      const b = snapDown(reading, bucketS);
+      counts.set(b, (counts.get(b) ?? 0) + 1);
+    }
+  }
+  for (const [b, c] of [...counts].sort((x, y) => x[0] - y[0])) { t.push(b); avg.push(1); n.push(c); }
+  return { t, avg, n };
+}
+
+test("a day-only cadence is normal, not partial, at every bucket size", () => {
+  for (const bucketS of [3600, 21600, 43200, 86400]) {
+    const pts = composePoints(dayOnly(30, bucketS), bucketS).filter((p) => p.y !== null);
+    assert.equal(pts.filter((p) => p.custom.partial).length, 0, `${bucketS}-s buckets`);
+  }
+  // e.g. a full day holds 60 readings, not 144, and the evening bucket's one reading is what that bucket usually holds
+  const daily = composePoints(dayOnly(30, 86400), 86400).filter((p) => p.y !== null);
+  assert.equal(daily[5].custom.typical, 60);
+  const evening = composePoints(dayOnly(30, 21600), 21600).find((p) => p.custom?.n === 2);
+  assert.equal(evening.custom.typical, 2);
+});
+
+test("across a clock change, the few days on one side aren't judged by the other side's counts", () => {
+  // Oct 28 - Dec 5 2026 at 30-minute buckets: 4 EDT days, then EST from Nov 1. The EDT days' buckets start at
+  // other UTC times, too few to have a usual count of their own; their 08:00 bucket (08:20 only, 1 reading) and
+  // 18:00 bucket (18:00-18:10, 2) must not be called partial against the 3 a mid-day bucket holds.
+  const counts = new Map();
+  for (let d = 0; d < 39; d++) {
+    for (let m = 8 * 60 + 20; m <= 18 * 60 + 10; m += 10) {
+      const b = snapDown(wallToUtc(Date.UTC(2026, 9, 28 + d) + m * 60_000), 1800);
+      counts.set(b, (counts.get(b) ?? 0) + 1);
+    }
+  }
+  const sorted = [...counts].sort((x, y) => x[0] - y[0]);
+  const s = { t: sorted.map(([b]) => b), avg: sorted.map(() => 1), n: sorted.map(([, c]) => c) };
+  const pts = composePoints(s, 1800).filter((p) => p.y !== null);
+  assert.equal(pts.filter((p) => p.custom.partial).length, 0);
+  const edtMorning = pts.find((p) => p.custom.start === wallToUtc(Date.UTC(2026, 9, 28, 8)));
+  assert.deepEqual([edtMorning.custom.n, edtMorning.custom.typical], [1, null]); // too few to judge, so no flag
+  const estMorning = pts.find((p) => p.custom.start === wallToUtc(Date.UTC(2026, 10, 10, 8)));
+  assert.deepEqual([estMorning.custom.n, estMorning.custom.typical], [1, 1]);
+});
+
+test("a real outage is partial against the series' own usual count", () => {
+  const daily = composePoints(dayOnly(30, 86400, 10), 86400).filter((p) => p.y !== null);
+  const after = daily.filter((p) => p.custom.partial);
+  assert.equal(after.length, 1); // only the day it came back at 16:00 (14 readings of the usual 60)
+  assert.equal(after[0].custom.n, 14);
+  const sixHour = composePoints(dayOnly(30, 21600, 10), 21600).filter((p) => p.custom?.partial);
+  assert.equal(sixHour.length, 1); // that day's 12:00-18:00 bucket, from 16:00: 12 readings of the usual 36
+  assert.equal(sixHour[0].custom.n, 12);
 });
 
 test("a point with no neighbour on either side is isolated, so it can get a marker", () => {

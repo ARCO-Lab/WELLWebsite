@@ -4,8 +4,8 @@
 // link or input) do their own job and don't open the modal, and neither does a drag (e.g. drag-to-zoom on a chart).
 // The button sits in a row of its own above the content ("band", the default), so it never covers a chart, its
 // legend or Highcharts' own buttons; "corner" floats it in the top-right corner, for cards that keep that corner
-// free themselves (the Latest Data strips reserve it with right padding). With openOnClick={false} (the chart cards,
-// where a click or tap belongs to the charts: tooltips, focus, dragging), only the button opens it.
+// free themselves (the Latest Data groups keep it clear with a float on their title line). With openOnClick={false}
+// (the chart cards, where a click or tap belongs to the charts: tooltips, focus, dragging), only the button opens it.
 
 import React, { useRef } from "react";
 import { Maximize2 } from "lucide-react";

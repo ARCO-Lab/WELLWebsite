@@ -7,7 +7,7 @@
 // from the smallest to the largest reading in each bucket; rain as bars of totals as wide as their bucket; wind
 // direction as points on an N/E/S/W axis. Averaged buckets sit at their middle; the tooltip names the span they
 // cover. Points the line alone wouldn't show get a marker: filled for a reading between two gaps, hollow for a bucket
-// with under half its series' usual readings.
+// with under half the readings its series usually has at that time of day (typicalCounts in utils/chartWindow).
 //
 // Input (handled here, not by Highcharts' zooming, so each gesture means one thing):
 // - mouse wheel: scrolls the page, and shows a hint. Ctrl/⌘ + wheel or a trackpad pinch zooms around the pointer.
@@ -76,7 +76,13 @@ function tooltipText(this: Highcharts.Point): string {
     if (aggregated && info.agg === 'mean' && c.lo !== null && c.hi !== null && c.lo !== c.hi) {
       line += ` ${muted(`(${fmt(c.lo, info.unit)}–${fmt(c.hi, info.unit)})`)}`;
     }
-    if (c.partial && c.n !== null) line += ` ${muted(`· only ${c.n} readings`)}`;
+    if (c.partial && c.n !== null && c.typical !== null) {
+      line += ` ${muted(`· fewer readings than usual: ${c.n} (usually ${c.typical})`)}`;
+    }
+    // Where finer detail meets coarser data, a point can stand for another span than the header's: say which.
+    if (c.start !== first.start || c.bucketS !== first.bucketS) {
+      line += ` ${muted(`· ${bucketSpanLabel(c.start, c.bucketS)}, ${shortBucket(c.bucketS)}`)}`;
+    }
     if (info.note) line += ` ${muted(`· ${info.note}`)}`;
     return line;
   }).filter(Boolean);

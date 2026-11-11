@@ -13,7 +13,7 @@ import stat
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 
@@ -83,7 +83,7 @@ class CleanSentinelsTests(unittest.TestCase):
         self.assertEqual(len(os.listdir(self.logs.name)), 1)
 
     def test_nothing_is_deleted_when_the_backup_fails(self):
-        with mock.patch.object(self.cs, "write_backup", side_effect=OSError("disk full")):
+        with unittest.mock.patch.object(self.cs, "write_backup", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.run_main("--apply")
         self.assertEqual(len(self.values()), 5)

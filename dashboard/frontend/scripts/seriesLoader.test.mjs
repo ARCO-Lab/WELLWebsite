@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TILE_BUCKETS, bucketFor, tileAt, tileRange, tilesFor, tileQuery, toWall, fromWall, cutIntoTiles, segmentsFor,
-  composeSeries, medianCount, isPartialBucket, coarsestIn, tileSpanMs,
+  composeSeries, typicalFor, coarsestIn, tileSpanMs,
 } from "../src/lib/seriesTiles.ts";
 import { SeriesLoader, MAX_BATCH } from "../src/lib/seriesLoader.ts";
 import { ChartController, clampWindow, OVERVIEW_BUCKET } from "../src/lib/chartController.ts";
@@ -122,7 +122,7 @@ test("composeSeries: coarse outside, fine inside, bucket middles, breaks across 
   const fine = cutIntoTiles(fineSeries, iH, iH, hour);
   const segs = segmentsFor([{ bucketS: day, tiles: [iD] }, { bucketS: hour, tiles: [iH] }]);
   const tile = (b, i) => (b === day ? coarse.get(i) : fine.get(i));
-  const pts = composeSeries(segs, tile, (b) => b / 600);
+  const pts = composeSeries(segs, tile, () => () => null);
   const real = pts.filter((p) => p.y !== null);
   // Hourly points only inside the hourly tile, daily ones only outside it, and none overlapping
   const { wallStart, wallEnd } = tileRange(iH, hour);
@@ -139,14 +139,25 @@ test("composeSeries: coarse outside, fine inside, bucket middles, breaks across 
   assert.equal(coarsestIn(segs, { start: tileRange(iD, day).start, end: tileRange(iD, day).start + D }), day);
 });
 
-test("partial buckets are judged against the series' own median count", () => {
-  assert.equal(medianCount([{ n: Float64Array.from([6, 6, 2, 3, 3]) }, { n: Float64Array.from([3, NaN]) }]), 3);
-  assert.ok(Number.isNaN(medianCount([{ n: Float64Array.from([NaN]) }])));
-  // The sonde reports ~3 times an hour overnight: 3 isn't partial for it, 1 is
-  assert.equal(isPartialBucket(3, 3600, 3), false);
-  assert.equal(isPartialBucket(1, 3600, 3), true);
-  assert.equal(isPartialBucket(1, 600, 1), false); // raw readings never
-  assert.equal(isPartialBucket(NaN, 3600, 6), false); // unknown count
+test("partial buckets: judged by the series' usual count at that time of day, over all its loaded tiles", () => {
+  const b = 3600;
+  const i = tileAt(Date.parse("2026-07-01T12:00:00Z"), b);
+  // A sonde-like series: 6 readings an hour by day, 2 at night (01-05 UTC), and one daytime hour with only 1
+  const bad = tileRange(i, b).start + 3 * D + 14 * H;
+  const n = (x) => (x === bad ? 1 : new Date(x).getUTCHours() >= 1 && new Date(x).getUTCHours() < 5 ? 2 : 6);
+  const s = fakeSeries(tileRange(i, b).start, tileRange(i + 1, b).end, b, { n });
+  const tiles = cutIntoTiles(s, i, i + 1, b);
+  const typical = typicalFor(tiles.values());
+  const night = Date.UTC(2026, 6, 2, 3), day = Date.UTC(2026, 6, 2, 15);
+  assert.equal(typical(night), 2);
+  assert.equal(typical(day), 6);
+  const segs = segmentsFor([{ bucketS: b, tiles: [i, i + 1] }]);
+  const pts = composeSeries(segs, (bb, k) => tiles.get(k), () => typical).filter((p) => p.y !== null);
+  const partial = pts.filter((p) => p.custom.partial);
+  assert.deepEqual(partial.map((p) => p.custom.start), [bad]); // night buckets with 2 readings are normal for it
+  assert.equal(partial[0].custom.typical, 6);
+  // From one tile alone the same bucket is judged the same way (both tiles are long enough to learn from)
+  assert.equal(typicalFor([tiles.get(i)])(bad), 6);
 });
 
 // ---- the loader ----

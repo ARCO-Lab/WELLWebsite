@@ -11,8 +11,8 @@
 import { MIN_RANGE_MS, type Range } from "../utils/chartWindow.ts";
 import type { SeriesLoader, SeriesMeta } from "./seriesLoader.ts";
 import {
-  LADDER, bucketFor, coarsestIn, composeSeries, medianCount, segmentsFor, tilesFor, type ComposedPoint, type Segment,
-  type TileSeries,
+  LADDER, bucketFor, coarsestIn, composeSeries, segmentsFor, typicalFor, tilesFor, type ComposedPoint, type Segment,
+  type TileSeries, type Typical,
 } from "./seriesTiles.ts";
 
 export const DEBOUNCE_MS = 250;
@@ -81,7 +81,7 @@ export class ChartController {
   private frameListeners = new Set<(w: Range) => void>();
   private dataListeners = new Set<(d: ComposedData) => void>();
   private windowListeners = new Set<(w: Range, reason: WindowReason) => void>();
-  private medians = new Map<string, { size: number; value: number }>();
+  private typicals = new Map<string, { size: number; value: Typical }>();
   private disposed = true; // until activate()
   lastData: ComposedData = { series: new Map(), shownBucket: null };
 
@@ -235,7 +235,7 @@ export class ChartController {
   /** One series at the overview bucket only (the whole history, daily), for the slider's line. */
   overview(key: string): ComposedPoint[] {
     const tiles = [...this.loader.loadedTiles(key, OVERVIEW_BUCKET)];
-    return composeSeries(segmentsFor([{ bucketS: OVERVIEW_BUCKET, tiles }]), (b, i) => this.loader.tile(key, b, i), () => NaN);
+    return composeSeries(segmentsFor([{ bucketS: OVERVIEW_BUCKET, tiles }]), (b, i) => this.loader.tile(key, b, i), () => () => null);
   }
 
   // ---- loading and composing ----
@@ -278,18 +278,19 @@ export class ChartController {
     return common ?? [];
   }
 
-  private median(key: string, bucketS: number): number {
+  // The series' usual counts at a bucket size, from all its loaded tiles; worked out again when tiles arrive
+  private typical(key: string, bucketS: number): Typical {
     const tiles = this.loader.loadedTiles(key, bucketS);
     const id = `${key}#${bucketS}`;
-    const had = this.medians.get(id);
+    const had = this.typicals.get(id);
     if (had && had.size === tiles.size) return had.value;
     const list: TileSeries[] = [];
     for (const i of tiles) {
       const t = this.loader.tile(key, bucketS, i);
       if (t) list.push(t);
     }
-    const value = medianCount(list);
-    this.medians.set(id, { size: tiles.size, value });
+    const value = typicalFor(list);
+    this.typicals.set(id, { size: tiles.size, value });
     return value;
   }
 
@@ -320,7 +321,7 @@ export class ChartController {
     this.composedSig = sig;
     const series = new Map<string, ComposedPoint[]>();
     for (const k of this.keys) {
-      series.set(k, composeSeries(segs, (b, i) => this.loader.tile(k, b, i), (b) => this.median(k, b)));
+      series.set(k, composeSeries(segs, (b, i) => this.loader.tile(k, b, i), (b) => this.typical(k, b)));
     }
     this.lastData = { series, shownBucket: coarsestIn(segs, this.win) };
     for (const cb of this.dataListeners) cb(this.lastData);

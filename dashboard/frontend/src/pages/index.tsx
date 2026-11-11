@@ -18,6 +18,7 @@ import WeatherMetrics from "@/components/metrics/WeatherMetrics";
 import QualityMetrics from "@/components/metrics/QualityMetrics";
 import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 import CreekMetrics from "@/components/metrics/CreekMetrics";
+import { LATEST_CARD_CLASS, LATEST_PANEL_CLASS, LatestDataError, latestGroupsClass } from "@/components/metrics/MetricList";
 import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
@@ -208,7 +209,7 @@ export default function Dashboard() {
       window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
     }
   }, [urlRead, linkWindow, startDate, endDate, defaultStart, defaultEnd]);
-  const { metrics: latestMetrics, loading: latestLoading } = useLatestMetrics();
+  const { metrics: latestMetrics, loading: latestLoading, error: latestError, retrying: retryingLatest, retry: retryLatest } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
     activeCreeks,
@@ -216,7 +217,7 @@ export default function Dashboard() {
     samplingEndDate
   );
   
-  const { samples: recentSamples, loading: recentSamplesLoading } = useRecentSamples();
+  const { samples: recentSamples, loading: recentSamplesLoading, error: recentSamplesError, retrying: retryingRecentSamples, retry: retryRecentSamples } = useRecentSamples();
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
 
@@ -448,24 +449,27 @@ export default function Dashboard() {
                   {/* Top Row: Latest Data + Map */}
                   <div className="flex flex-wrap gap-6">
                     
-                    {/* Latest Data: one scrolling strip per group */}
+                    {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds). Beside the map it is as tall as the map (the row stretches it); stacked, as tall as its groups. */}
                     <div className="min-w-0 grow basis-[14rem]">
-                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
-                        <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
+                      <div className={`mcmaster-card flex h-full flex-col p-6 ${LATEST_PANEL_CLASS}`}>
+                        <h2 tabIndex={-1} className="flex flex-wrap items-center justify-between gap-x-2 mb-4 text-xl font-poppins font-bold text-primary focus:outline-none">
                           Latest Data
                           <Information id={3} />
                         </h2>
+                        {latestError && metricComponents.length > 0 && (
+                          <LatestDataError hasValues={latestMetrics.length > 0} retrying={retryingLatest} onRetry={retryLatest} />
+                        )}
                         {metricComponents.length === 0 ? (
                           <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its latest readings.</EmptyState>
                         ) : (
-                          <div className="min-w-0 space-y-3">
+                          <div className={latestGroupsClass(metricComponents.length)}>
                             {metricComponents.map((comp, index) => (
                               <ExpandableCard
                                 key={comp.key as string}
                                 label={`the latest ${groupNames[comp.key as string] ?? ""} readings`}
                                 onOpen={() => openModal(comp.key as string, "recent", comp.key as "weather" | "quality" | "gauges")}
-                                placement="corner" // the strip keeps the corner free (pr-9)
-                                className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
+                                placement="corner" // the group's title line keeps the corner free (a float)
+                                className={`${LATEST_CARD_CLASS} ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
                                 {comp}
@@ -476,9 +480,9 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Map (taller on phones, where it's full width) */}
+                    {/* Map (taller on phones, where it's full width; beside Latest Data, as tall as it) */}
                     <div className="min-w-0 grow-[2] basis-[24rem]">
-                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-[24rem] lg:h-[30rem]">
+                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-full sm:min-h-[24rem] lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Map
                           <Information id={2} />
@@ -625,24 +629,27 @@ export default function Dashboard() {
                   {/* Top Row: Latest Data + Map */}
                   <div className="flex flex-wrap gap-6">
                     
-                    {/* Latest Data: one scrolling strip per group */}
+                    {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds). Beside the map it is as tall as the map (the row stretches it); stacked, as tall as its groups. */}
                     <div className="min-w-0 grow basis-[14rem]">
-                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
-                        <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
+                      <div className={`mcmaster-card flex h-full flex-col p-6 ${LATEST_PANEL_CLASS}`}>
+                        <h2 tabIndex={-1} className="flex flex-wrap items-center justify-between gap-x-2 mb-4 text-xl font-poppins font-bold text-primary focus:outline-none">
                           Latest Data
                           <Information id={8} />
                         </h2>
+                        {recentSamplesError && samplingMetricComponents.length > 0 && (
+                          <LatestDataError hasValues={recentSamples.length > 0} retrying={retryingRecentSamples} onRetry={retryRecentSamples} />
+                        )}
                         {samplingMetricComponents.length === 0 ? (
                           <EmptyState>Tick a creek under Filters, or click a site on the map, to see its latest samples.</EmptyState>
                         ) : (
-                          <div className="min-w-0 space-y-3">
+                          <div className={latestGroupsClass(samplingMetricComponents.length)}>
                             {samplingMetricComponents.map((comp, index) => (
                               <ExpandableCard
                                 key={comp.key as string}
                                 label="the latest samples"
                                 onOpen={() => openModal(comp.key as string, "recent", "sampling")}
-                                placement="corner" // the strip keeps the corner free (pr-9)
-                                className={`rounded-lg p-3 pr-9 ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
+                                placement="corner" // the group's title line keeps the corner free (a float)
+                                className={`${LATEST_CARD_CLASS} ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
                                 {comp}
@@ -653,9 +660,9 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Map (taller on phones, where it's full width) */}
+                    {/* Map (taller on phones, where it's full width; beside Latest Data, as tall as it) */}
                     <div className="min-w-0 grow-[2] basis-[24rem]">
-                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-[24rem] lg:h-[30rem]">
+                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-full sm:min-h-[24rem] lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Map
                           <Information id={7} />
