@@ -83,16 +83,18 @@ class SeriesSqlTests(unittest.TestCase):
     def setUpClass(cls):
         from sqlalchemy import event
         from config import Config
-        from server import create_app
-        from db.database import db
-        from db.models import SensorMeasurement
 
+        # Set before importing server, which builds an app on import. create_app copies the URI, so it's restored
+        # straight after and later test modules keep theirs.
         saved_uri = Config.SQLALCHEMY_DATABASE_URI
         Config.SQLALCHEMY_DATABASE_URI = os.environ["TEST_POSTGRES_URL"]
         try:
+            from server import create_app
             cls.app = create_app()
         finally:
-            Config.SQLALCHEMY_DATABASE_URI = saved_uri  # create_app copied it; later test modules keep theirs
+            Config.SQLALCHEMY_DATABASE_URI = saved_uri
+        from db.database import db
+        from db.models import SensorMeasurement
         cls.db = db
         cls.ctx = cls.app.app_context()
         cls.ctx.push()
@@ -164,13 +166,17 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertEqual(by["Air Temperature"]["avg"], [12.0, 13.0, 14.0, 15.0])
 
     def test_same_answer_whatever_the_session_zone(self):
-        expected = self.series("2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z", "Weather")[0]
+        ranges = (("2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z"),  # an aware range
+                  ("2026-11-01T00:00:00", "2026-11-02T00:00:00"))  # the same local day, naive
+        expected = [self.series(start, end, "Weather")[0] for start, end in ranges]
+        self.assertEqual(expected[0], expected[1])
+        self.assertEqual(len(expected[0]["series"]), 3)  # Air Temperature, Rain, Wind Direction
         type(self).zone = "Asia/Tokyo"
         self.db.session.remove()
         self.db.engine.dispose()  # new connections, in the new zone
         try:
             self.assertEqual(self.session_zone(), "Asia/Tokyo")
-            self.assertEqual(self.series("2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z", "Weather")[0], expected)
+            self.assertEqual([self.series(start, end, "Weather")[0] for start, end in ranges], expected)
         finally:
             type(self).zone = "UTC"
             self.db.session.remove()
