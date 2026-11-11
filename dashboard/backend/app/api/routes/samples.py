@@ -1,10 +1,15 @@
-# This file defines the /api/samples route for retrieving and filtering creek/point sampling data.
+# This file defines the /api/samples route for retrieving and filtering creek/point sampling data, and
+# /api/samples/template.csv, the template for sampling files.
 # (AI ANALYSIS DISABLED: it used to start a background summary of the result for the AI routes; see below.)
 
-from flask import request, jsonify
+import pathlib
+
+from flask import request, jsonify, send_file
 from db.database import db
 from db.models import SamplingMeasurement
 from datetime import datetime
+
+SAMPLING_TEMPLATE = pathlib.Path(__file__).resolve().parents[2] / "sampling_template.csv"
 
 CREEK_ID_MAP = {
     "ancaster": "19431905",
@@ -61,3 +66,9 @@ def register_samples_route(app, latest_sampling_summaries):
         # (scripts/downsample.summarize_sampling_data) into latest_sampling_summaries for the AI routes.
         # Nothing reads it while those routes are off; restore the thread with them.
         return jsonify(data)
+
+    @app.route("/api/samples/template.csv", methods=["GET"])
+    def sampling_csv_template():
+        # The blank-with-examples template researchers fill in (format: docs/sampling-csv-format.md)
+        return send_file(SAMPLING_TEMPLATE, mimetype="text/csv", as_attachment=True,
+                         download_name="well_sampling_template.csv", max_age=3600)

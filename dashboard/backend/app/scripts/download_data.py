@@ -63,7 +63,7 @@ def save_state(processed_files):
 def parse_filename_date(filename):
     """Parse date from filename suffix after WELLAncasterWatershed_, if possible."""
     print(f"DEBUG: Parsing filename: {filename}")
-    match = re.search(r'WELLAncasterWatershed_(.+?)\.(xlsx|tab)', filename, re.IGNORECASE)
+    match = re.search(r'WELLAncasterWatershed_(.+?)\.(xlsx|tab|csv)', filename, re.IGNORECASE)
     if not match:
         print(f"ERROR: Invalid filename format: {filename}")
         raise ValueError(f"Invalid filename format: {filename}")
@@ -123,7 +123,7 @@ def get_files_from_dataset(list_files=False):
             print("DEBUG: No files in the dataset.")
             return []
         
-        # Filter for files with .xlsx or .tab extension, excluding SAMPLE
+        # Filter for .xlsx, .tab (how Dataverse lists an ingested table) or .csv files, excluding SAMPLE
         target_files = []
         for f in files:
             datafile = f["dataFile"]
@@ -135,8 +135,8 @@ def get_files_from_dataset(list_files=False):
             # Check if file matches criteria
             if (filename.lower().startswith("wellancasterwatershed_") and
                 not restricted and
-                not re.match(r'WELLAncasterWatershed_SAMPLE\.(xlsx|tab)', filename, re.IGNORECASE) and
-                filename.lower().endswith((".xlsx", ".tab"))):
+                not re.match(r'WELLAncasterWatershed_SAMPLE\.(xlsx|tab|csv)', filename, re.IGNORECASE) and
+                filename.lower().endswith((".xlsx", ".tab", ".csv"))):
                 
                 # Parse create_date
                 if create_date:
@@ -199,7 +199,7 @@ def process_single_file(file_info):
     
     file_buffer = download_file_to_memory(file_id, filename)
     
-    # Save buffer to temporary file with .xlsx extension
+    # Save buffer to a temporary file (named .xlsx whatever it holds: the import tells Excel from CSV by content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_file:
         tmp_file.write(file_buffer.getvalue())
         tmp_file_path = tmp_file.name

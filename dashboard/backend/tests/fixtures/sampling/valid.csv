@@ -1,0 +1,11 @@
+date,time,site,parameter,value,unit,below_detection,qc_flag,notes
+2026-05-06,09:40,Falkirk Forest,E. coli,48,CFU/100 mL,,ok,
+2026-05-06,09:40,#1 Falkirk Forest,Total coliform,530,CFU/100 mL,,,
+2026-05-06,09:40,1,Ammonia nitrogen,<0.01,mg/L,true,,below the 0.01 mg/L limit
+2026-05-06,,Maple Lane Pk,Conductivity,833,uS/cm,,,
+2026-05-06,10:15,maple lane pk,pH,8.06,pH units,,,
+2026-05-06,10:15,Maple Lane Pk,Chloride,,mg/L,,,not measured
+2026-05-06,10:15,Maple Lane Pk,Turbidity,NA,NTU,,,
+
+2026-05-06,11:00,Cootes Dr,Total phosphorus,21.74,µg/L,,rejected,bottle broke
+2026-04-02,11:00,Cootes Dr,Total phosphorus,"18.1",µg/L,,suspect,"backfill, sampled late"
