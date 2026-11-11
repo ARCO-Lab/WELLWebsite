@@ -1,0 +1,161 @@
+# Load test: how the dashboard holds up with 30-50 visitors at once (a class opening it together, say). It runs on
+# the GitHub runner against a throwaway copy of the stack (PostgreSQL 13 seeded with synthetic readings, Redis, the
+# backend image with its real gunicorn command, the export worker, and the dashboard under `next start`), never
+# against production. Results: the job summary, and the k6 report in the run's artifacts. docs/load-testing.md
+# explains how to run it and read the results.
+#
+# Run it from the Actions tab (Load test > Run workflow), or: gh workflow run load-test.yml --ref <branch>
+# The weekly run is off unless the repository variable LOAD_TEST_WEEKLY is "true".
+name: Load test
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: Years of synthetic history (29 series x 10-min readings; ~1.5M rows a year)
+        default: "4"
+      class_vus:
+        description: Visitors in the steady "class" phase
+        default: "30"
+      peak_vus:
+        description: Visitors in the peak phase
+        default: "50"
+      backend_cpus:
+        description: CPU limit for the backend container (e.g. "2", to mimic a smaller VM); empty for none
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC, only when vars.LOAD_TEST_WEEKLY == 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: load-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  load-test:
+    name: Load test (k6, synthetic data)
+    if: github.event_name != 'schedule' || vars.LOAD_TEST_WEEKLY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql://postgres:lt@127.0.0.1:5432/well
+      YEARS: ${{ inputs.years || '4' }}
+      CLASS_VUS: ${{ inputs.class_vus || '30' }}
+      PEAK_VUS: ${{ inputs.peak_vus || '50' }}
+      BACKEND_CPUS: ${{ inputs.backend_cpus || '' }}
+      # Phase lengths in seconds; page-load.js derives the same schedule from them (keep the two in step).
+      BURST_S: "120"
+      RAMP_S: "60"
+      CLASS_HOLD_S: "180"
+      PEAK_HOLD_S: "120"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the inputs
+        run: |
+          for v in "$YEARS" "$CLASS_VUS" "$PEAK_VUS"; do [[ "$v" =~ ^[1-9][0-9]?$ ]] || { echo "::error::not a number from 1 to 99: $v"; exit 1; }; done
+          [[ -z "$BACKEND_CPUS" || "$BACKEND_CPUS" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::backend_cpus: $BACKEND_CPUS"; exit 1; }
+          echo "OUT=$RUNNER_TEMP/load-test" >> "$GITHUB_ENV"   # results; uploaded at the end
+          mkdir -p "$RUNNER_TEMP/load-test" && chmod 777 "$RUNNER_TEMP/load-test"   # the k6 image writes as a non-root user
+          echo "Runner: $(nproc) CPUs, $(free -g | awk '/^Mem:/ {print $2}') GB memory"
+
+      # PostgreSQL's defaults otherwise; /dev/shm is raised because Docker's 64 MB can fail parallel queries.
+      - name: Start PostgreSQL 13 and Redis
+        run: |
+          docker run -d --name lt-postgres --shm-size=1g -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=lt \
+            -e POSTGRES_DB=well -v "$PWD/dashboard/loadtest:/loadtest:ro" postgres:13
+          docker run -d --name lt-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+
+      - name: Build the backend image (as on the VM)
+        run: docker build -t well-backend:lt dashboard/backend
+
+      # The seed takes a few minutes, so it runs in the background while the dashboard builds.
+      - name: Create the tables, then start seeding synthetic readings
+        run: |
+          for _ in $(seq 60); do docker exec lt-postgres pg_isready -q -h 127.0.0.1 && break; sleep 1; done
+          run=(docker run --rm --network host -w /app/app -e DATABASE_URL="$DATABASE_URL" well-backend:lt)
+          "${run[@]}" python db/init_db.py
+          "${run[@]}" python scripts/migrate.py
+          docker exec -d lt-postgres sh -c \
+            "psql -U postgres -d well -v years=$YEARS -f /loadtest/seed.sql > /tmp/seed.log 2>&1; echo \$? > /tmp/seed.done"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      - name: Build the dashboard
+        working-directory: dashboard/frontend
+        run: npm ci && npm run build
+
+      - name: Wait for the seed
+        run: |
+          for _ in $(seq 600); do docker exec lt-postgres test -f /tmp/seed.done && break; sleep 2; done
+          docker exec lt-postgres cat /tmp/seed.log
+          test "$(docker exec lt-postgres cat /tmp/seed.done)" = 0
+
+      # The backend and export worker as docker-compose.yml runs them (the image's gunicorn command; the worker's
+      # celery command), with the same statement timeout and caches. TRUSTED_PROXY_IPS lets k6 give each virtual
+      # user its own address (X-Forwarded-For), so per-visitor limits see separate visitors; production trusts
+      # only its front proxy.
+      - name: Start the backend, the export worker and the dashboard
+        run: |
+          docker volume create lt-exports
+          common=(--network host -v lt-exports:/exports -e DATABASE_URL="$DATABASE_URL" -e EXPORTS_DIR=/exports
+                  -e CELERY_BROKER_URL=redis://127.0.0.1:6379/0 -e CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1)
+          limit=()
+          if [ -n "$BACKEND_CPUS" ]; then limit=(--cpus "$BACKEND_CPUS"); fi
+          docker run -d --name lt-backend "${common[@]}" "${limit[@]}" -e DB_STATEMENT_TIMEOUT_MS=25000 \
+            -e API_CACHE_REDIS_URL=redis://127.0.0.1:6379/2 well-backend:lt
+          docker run -d --name lt-export-worker "${common[@]}" well-backend:lt \
+            celery -A tasks.celery_app.celery_app worker -B --concurrency=2 --loglevel=info
+          cd dashboard/frontend
+          FLASK_API_URL=http://127.0.0.1:5000 TRUSTED_PROXY_IPS=127.0.0.1 \
+            nohup node node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3000 > "$OUT/next.log" 2>&1 &
+          echo "NEXT_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:3000/api/latest && break; sleep 1; done
+          curl -sf http://127.0.0.1:3000/api/latest | head -c 300; echo
+
+      - name: Run k6, sampling CPU, memory and database connections
+        run: |
+          bash dashboard/loadtest/sample-resources.sh "$OUT/resources.csv" "$NEXT_PID" 5 &
+          sampler=$!
+          status=0
+          docker run --rm --network host -v "$PWD/dashboard/loadtest:/scripts:ro" -v "$OUT:/out" \
+            -e OUT_DIR=/out -e HISTORY_DAYS=$((YEARS * 365)) -e BURST_VUS="$CLASS_VUS" -e CLASS_VUS -e PEAK_VUS \
+            -e BURST_S -e RAMP_S -e CLASS_HOLD_S -e PEAK_HOLD_S \
+            -e K6_WEB_DASHBOARD=true -e K6_WEB_DASHBOARD_EXPORT=/out/report.html \
+            grafana/k6:1.8.2 run --quiet /scripts/page-load.js || status=$?
+          kill "$sampler" || true
+          exit "$status"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            cat "$OUT/summary.md" 2>/dev/null || echo "k6 wrote no summary; see the step above."
+            echo
+            echo "### Resources"
+            echo
+            class_start=$((BURST_S + 30)); peak_start=$((class_start + RAMP_S + CLASS_HOLD_S + 30))
+            bash dashboard/loadtest/resources-summary.sh "$OUT/resources.csv" \
+              "${CLASS_VUS}_at_once:0:$BURST_S" \
+              "${CLASS_VUS}_steady:$((class_start + RAMP_S)):$((class_start + RAMP_S + CLASS_HOLD_S))" \
+              "${PEAK_VUS}_steady:$((peak_start + RAMP_S)):$((peak_start + RAMP_S + PEAK_HOLD_S))" \
+              2>/dev/null || echo "No resource samples."
+            echo
+            echo "Seeded: $(docker exec lt-postgres psql -U postgres -d well -tAc "SELECT to_char(count(*), 'FM9,999,999,999') || ' readings, ' || min(recorded_at)::date || ' to ' || max(recorded_at)::date FROM sensor_measurements" 2>/dev/null)." \
+              "Runner: $(nproc) CPUs. Backend CPU limit: ${BACKEND_CPUS:-none}."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for c in lt-backend lt-export-worker; do docker logs "$c" > "$OUT/$c.log" 2>&1 || true; done
+
+      - name: Keep the k6 report, summary and samples
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-test-results
+          path: ${{ runner.temp }}/load-test
+          retention-days: 30
