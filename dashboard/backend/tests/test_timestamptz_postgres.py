@@ -227,11 +227,12 @@ class ApiOnPostgresTests(PostgresFixture):
 
     def app(self):
         from config import Config
+        import server
+        # create_app() builds the engine options with engine_options(); use this fixture's schema and session zone.
+        options = {"pool_pre_ping": True, "connect_args": {"options": self.options}}
         with unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", URL), \
-             unittest.mock.patch.object(Config, "SQLALCHEMY_ENGINE_OPTIONS", {"connect_args": {"options": self.options}},
-                               create=True):
-            from server import create_app
-            app = create_app()
+             unittest.mock.patch.object(server, "engine_options", lambda uri, timeout_ms: options):
+            app = server.create_app()
         self.apps.append(app)   # its engine is disposed before the schema is dropped
         return app
 
