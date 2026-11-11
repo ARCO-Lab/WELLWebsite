@@ -171,6 +171,20 @@ jobs:
           EOF
           docker compose config -q
 
+      # deploy.sh (and its cron run) applies wordpress/*.conf and *.ini by recreating the container, so check them here
+      # in the image docker-compose.yml runs: Apache's config test, and PHP must start without an ini warning.
+      - name: WordPress Apache/PHP config files
+        run: |
+          image=$(docker compose config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["wordpress"]["image"])')
+          mounts=()
+          for f in wordpress/*.conf; do if [ -e "$f" ]; then mounts+=(-v "$PWD/$f:/etc/apache2/conf-enabled/$(basename "$f"):ro"); fi; done
+          for f in wordpress/*.ini; do if [ -e "$f" ]; then mounts+=(-v "$PWD/$f:/usr/local/etc/php/conf.d/zz-$(basename "$f"):ro"); fi; done
+          echo "$image with: ${mounts[*]}"
+          docker run --rm "${mounts[@]}" "$image" apache2ctl -t
+          out=$(docker run --rm "${mounts[@]}" "$image" php -d display_startup_errors=1 -r 'echo "ok";' 2>&1)
+          echo "$out"
+          [ "$out" = ok ]
+
   deploy-script:
     name: Deploy script
     runs-on: ubuntu-latest
