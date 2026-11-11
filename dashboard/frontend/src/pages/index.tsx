@@ -144,10 +144,6 @@ export default function Dashboard() {
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
     
-  const cachedSamplingMetrics = {
-    creeks: <CreekMetrics key="creeks" subFilters={samplingSubFilters} /* Error necessary */ metrics={recentSamples} loading={recentSamplesLoading} />
-  };
-  
 
   const samplingMetricComponents = Object.entries(activeCreeks)
     .filter(([, isActive]) => isActive)
@@ -251,7 +247,7 @@ export default function Dashboard() {
 
   const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
   const [modalData, setModalData] = useState<any>(null);
-  const [modalType, setModalType] = useState<"weather" | "logger" | "quality" | "sampling">("weather");
+  const [modalType, setModalType] = useState<"weather" | "logger" | "gauges" | "quality" | "sampling">("weather");
   const [modalSubtypes, setModalSubtypes] = useState<string[]>([]);
 
 
@@ -259,7 +255,7 @@ export default function Dashboard() {
   const openModal = (
     content: React.ReactNode, 
     analysisType: "recent" | "alltime",
-    type: "weather" | "logger" | "quality" | "sampling",
+    type: "weather" | "logger" | "gauges" | "quality" | "sampling",
     subtypes: string[] = []
   ) => {
     setModalContent(content);
@@ -320,7 +316,6 @@ export default function Dashboard() {
                       <Information id={1} />
                     </h2>
                     <div className="space-y-4">
-                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={activeGroups}
@@ -388,7 +383,7 @@ export default function Dashboard() {
                                 onOpen={() => openModal(
                                   React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
                                   "recent",
-                                  comp.key as any, // 'weather', 'quality', or 'gauges'
+                                  comp.key as "weather" | "quality" | "gauges",
                                   subFilters[comp.key as string] || []
                                 )}
                                 className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
@@ -476,7 +471,7 @@ export default function Dashboard() {
                                   <ExpandableCard
                                     key={comp.key}
                                     label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                    onOpen={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                    onOpen={() => openModal(comp, "alltime", comp.key as "weather" | "quality" | "gauges", subFilters[comp.key as string] || [])}
                                     className="p-4 animate-fade-in-up"
                                   >
                                     {comp}
@@ -497,7 +492,7 @@ export default function Dashboard() {
                               <ExpandableCard
                                 key={comp.key}
                                 label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                onOpen={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                onOpen={() => openModal(comp, "alltime", comp.key as "weather" | "quality" | "gauges", subFilters[comp.key as string] || [])}
                                 className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 150}ms` }}
                               >
@@ -548,7 +543,6 @@ export default function Dashboard() {
                       <Information id={6} />
                     </h2>
                     <div className="space-y-4">
-                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={{}}  // Empty object for sampling mode

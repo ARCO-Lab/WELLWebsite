@@ -12,13 +12,6 @@ const nextConfig = {
   env: {
     FLASK_API_URL: process.env.FLASK_API_URL,
   },
-  // temporarily ignore errors during builds
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
 };
 
 // Sentry error reporting (src/lib/sentry.ts). The build talks to nothing: no source maps are uploaded (that would
