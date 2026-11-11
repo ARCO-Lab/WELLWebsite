@@ -1,7 +1,7 @@
 // This file defines a Calendar component for selecting start and end dates with popover date pickers.
 // It uses custom Button, Popover, and Calendar components for consistent UI.
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { CalendarIcon } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import { Calendar as CalendarComponent } from "@/components/animations/calendarPop";
@@ -32,6 +32,13 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
   // the default end date (and its month) late in the evening.
   const today = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
 
+  // The page is prerendered once at build time, so the server HTML holds the default dates of the build day,
+  // while the browser computes them for today. Showing the dates only after mounting keeps the first browser
+  // render identical to the server HTML (no React hydration mismatch); the buttons keep their fixed height.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const label = (date: Date | null | undefined) => (!mounted ? "" : date ? format(date, "PPP") : "Pick a date");
+
   // Shared by both pickers:
   // - fixedWeeks always draws six weeks, so the calendar keeps one size and the arrows stay put while you click
   //   through months (months with five weeks used to shrink it, and a quick click could land outside and close it);
@@ -56,7 +63,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
               className="w-full justify-start text-left font-normal mcmaster-input"
             >
               <CalendarIcon className="mr-2 h-4 w-4" />
-              {startDate ? format(startDate, "PPP") : "Pick a date"}
+              {label(startDate)}
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">
@@ -85,7 +92,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
               className="w-full justify-start text-left font-normal mcmaster-input"
             >
               <CalendarIcon className="mr-2 h-4 w-4" />
-              {endDate ? format(endDate, "PPP") : "Pick a date"}
+              {label(endDate)}
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">
