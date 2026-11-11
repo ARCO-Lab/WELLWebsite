@@ -158,6 +158,63 @@ Then add this to your crontab (`crontab -e`):
 
 `DEPLOY_HEALTHCHECK_URL` is optional. The script pings it on success (up to date, or deployed and healthy) and pings `<url>/fail` on a failure or a held commit. Runs that are waiting (CI still running, a problem already reported, another deploy in progress) don't ping. So set the Healthchecks period to 5 minutes and the grace time longer than CI takes (30 minutes is safe), or a slow CI run will look like an outage.
 
+### Error reporting (Sentry)
+
+Unexpected errors are reported to Sentry (organization `well-cs`, free tier), from the Flask API, the worker
+scheduler, the Celery export worker and the dashboard (browser and Next.js server). Each backend event is tagged
+`component` (`backend`, `worker` or `export_worker`); scheduler errors also carry `job` (e.g. `api_injection_job`)
+and, for a vendor ingestion failure, `source` (`LI-COR` or `WQData`).
+
+- **Sent:** the error type, message and stack trace (file and line, no local variables), the endpoint's method and
+  path, the environment, and recent breadcrumbs (log lines, page changes and outgoing requests, with their query
+  strings replaced by `[Filtered]`). For a failed scheduler subprocess, also its command, exit code and the last
+  2,000 characters of its stderr (a traceback when the script crashed) and the `ERROR:` and `[ERROR]` lines it
+  printed to stdout (its handled failures, e.g. "No sensor data found"; the rest of stdout is not sent).
+- **Not sent:** request bodies, cookies, headers, query strings, IP addresses or any user identity
+  (`send_default_pii` off, plus a `before_send` filter in `dashboard/backend/app/utils/sentry.py` and
+  `dashboard/frontend/src/lib/sentry.ts`). No performance tracing and no session replay, so nothing counts against
+  the free tier's transaction or replay quotas. Source maps are not uploaded, so dashboard stack traces show the
+  minified code.
+
+How backend failures are reported:
+- The scheduler runs the Borealis download, the monthly upload and the daily digest as subprocesses with
+  `SENTRY_DSN` emptied, so those scripts never report themselves. When one fails or times out, the scheduler sends
+  a single event for it. Most of those scripts catch their errors and exit non-zero, so a script reporting
+  itself would miss them, and a crash would be sent twice (the script's traceback plus the scheduler's
+  `CalledProcessError`).
+- A caught failure (a job, or one vendor's ingestion) is sent at most once an hour for the same job, vendor, error
+  type and message (its first line with numbers collapsed, HTTP statuses kept; for a failed subprocess, its arguments
+  such as the month, its exit code, and its last stderr line or, with no stderr, its last `ERROR:` or `[ERROR]`
+  stdout line).
+  So an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144, while a
+  different error is still sent at once. This limit covers only these scheduler failures; Flask and Celery errors
+  are sent each time.
+- A script run by hand (`docker compose exec worker python scripts/...`) reports its own uncaught errors, tagged
+  with the container's `SENTRY_COMPONENT`.
+
+Settings:
+- Backend, in `dashboard/backend/app/.env` (read by `backend`, `worker` and `export_worker`): `SENTRY_DSN` (unset or
+  empty turns reporting off; tests and local runs leave it unset, and the test suite removes it), `SENTRY_ENVIRONMENT`
+  (default `production`) and, optionally, `GIT_SHA` as the release. `SENTRY_COMPONENT` (the `component` tag, default
+  `backend`) is set in `docker-compose.yml` for `worker` and `export_worker`.
+- Dashboard: `NEXT_PUBLIC_SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` (default `production`), build args in
+  `dashboard/frontend/Dockerfile`. The DSN defaults to the dashboard project's key. It is inlined into the browser
+  bundle at build time, which is fine: a DSN can only send events. When you build an image for local testing, use
+  `docker build --build-arg NEXT_PUBLIC_SENTRY_ENVIRONMENT=development dashboard/frontend` (or
+  `--build-arg NEXT_PUBLIC_SENTRY_DSN=` to send nothing), so its errors aren't filed as production. `next dev` and
+  `next build` outside Docker send nothing unless `NEXT_PUBLIC_SENTRY_DSN` is set.
+
+Quota: the free tier allows 5,000 errors a month. In Sentry, turn on *Settings > Spike Protection* for the
+organization. Also give each project's key a rate limit under *Project Settings > Client Keys (DSN) > Configure > Rate
+Limits*, for example 100 events an hour, so one noisy failure can't use up the month.
+
+To rotate a key, create a new client key under the Sentry project's *Settings > Client Keys (DSN)*, put it in the
+`.env` (backend) or the Dockerfile default (dashboard), redeploy (`docker compose up -d --build --no-deps backend
+worker export_worker` or `dashboard`), then disable the old key. To turn reporting off, empty `SENTRY_DSN` and
+recreate the three backend containers, or build the dashboard with `--build-arg NEXT_PUBLIC_SENTRY_DSN=`; disabling
+the key in Sentry also stops everything at once. In the Sentry project settings, keep *Prevent storing of IP
+addresses* on as a second guard.
+
 ---
 
 ## AI Analysis

@@ -29,6 +29,7 @@ from api.services.weather import WeatherService
 from api.services.quality import QualityService
 from config import Config
 from utils.fetching import FMT, MAX_DAYS, RUN_LOOKBACK, fetch_range, start_from_newest
+from utils.sentry import capture_job_error
 from utils.parsers import (LOGGER_CONFIG, QUALITY_PARAM_ID_MAP, licor_rows,  # noqa: F401 (re-exported for other scripts)
                            parse_logger_entry, parse_quality_entry, parse_weather_entry, quality_rows)
 
@@ -100,8 +101,11 @@ def inject_all_new_data():
                 db.session.rollback()
                 failed.append(name)
                 print(f"[ERROR] {name} ingestion failed: {e!r}")
+                capture_job_error(e, source=name)   # a no-op unless the scheduler turned Sentry on
         if failed:
-            raise RuntimeError(f"ingestion failed for: {', '.join(failed)}")
+            error = RuntimeError(f"ingestion failed for: {', '.join(failed)}")
+            error.already_reported = True   # each failure above went to Sentry with its own traceback
+            raise error
 
 
 if __name__ == "__main__":
