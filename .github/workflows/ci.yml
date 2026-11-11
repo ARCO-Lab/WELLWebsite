@@ -136,6 +136,93 @@ jobs:
           grep -qi "^content-type: image/" logo.headers || { cat logo.headers; exit 1; }
           echo "optimized logo: $(wc -c < logo.out) bytes, $(grep -i '^content-type' logo.headers)"
           docker exec ci-dashboard node --version
+  # Vendor responses (dashboard/e2e/fixtures) through the real ingestion, PostgreSQL, the backend and the built
+  # dashboard, to what a browser shows and downloads, in three browser time zones. See dashboard/e2e/playwright.config.ts.
+  e2e:
+    name: End-to-end data (vendors to browser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      E2E_DATABASE_URL: postgresql://postgres:e2e@127.0.0.1:5432/e2e
+      E2E_BASE_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v7
+
+      # America/New_York on the VM; UTC here on purpose, so any dependence on the session zone fails. recorded_at is
+      # naive Toronto time, so code that writes it in the session's zone, or compares it with an aware time (which
+      # PostgreSQL reads in the session's zone), is 4-5 hours off here, and the checks catch it.
+      - name: Start a throwaway PostgreSQL 13 in UTC
+        run: |
+          docker run -d --name e2e-postgres -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=e2e -e POSTGRES_DB=e2e \
+            -e TZ=UTC postgres:13 -c timezone=UTC
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            dashboard/frontend/package-lock.json
+            dashboard/e2e/package-lock.json
+
+      - name: Build the backend image (as on the VM)
+        run: docker build -t well-backend:e2e dashboard/backend
+
+      - name: Build the dashboard
+        working-directory: dashboard/frontend
+        run: npm ci && npm run build
+
+      - name: Install Playwright and Chromium
+        working-directory: dashboard/e2e
+        run: npm ci && npx playwright install --with-deps chromium
+
+      - name: Create the tables and apply the migrations
+        run: |
+          for _ in $(seq 60); do docker exec e2e-postgres pg_isready -q -h 127.0.0.1 && break; sleep 1; done
+          test "$(docker exec e2e-postgres psql -U postgres -d e2e -tAc 'SHOW timezone')" = UTC
+          run=(docker run --rm --network host -w /app/app -e DATABASE_URL="$E2E_DATABASE_URL" well-backend:e2e)
+          "${run[@]}" python db/init_db.py
+          "${run[@]}" python scripts/migrate.py
+
+      # The stub accepts only these made-up keys and ids (dashboard/e2e/vendor_stub.py).
+      - name: Ingest the fixtures through the vendor stub
+        run: |
+          docker run -d --name e2e-vendors --network host -v "$PWD/dashboard/e2e:/e2e:ro" well-backend:e2e \
+            python /e2e/vendor_stub.py 8900
+          for _ in $(seq 30); do curl -s -o /dev/null http://127.0.0.1:8900/ && break; sleep 1; done
+          docker run --rm --network host -v "$PWD/dashboard/e2e:/e2e:ro" -w /app/app \
+            -e DATABASE_URL="$E2E_DATABASE_URL" \
+            -e HOBOLINK_API_URL=http://127.0.0.1:8900/licor/data -e HOBOLINK_API_TOKEN=e2e-licor-key \
+            -e HOBOLINK_LOGGERS=22051538 \
+            -e WQ_API_URL=http://127.0.0.1:8900/wqdata -e WQ_API_KEY=e2e-wq-key -e WQ_DEVICE_ID=4501 \
+            well-backend:e2e python /e2e/ingest.py
+
+      - name: Start the backend and the dashboard
+        run: |
+          docker run -d --name e2e-backend --network host -e DATABASE_URL="$E2E_DATABASE_URL" well-backend:e2e
+          cd dashboard/frontend
+          FLASK_API_URL=http://127.0.0.1:5000 nohup npx next start -H 127.0.0.1 -p 3000 > "$RUNNER_TEMP/next.log" 2>&1 &
+          for _ in $(seq 60); do curl -sf -o /dev/null "$E2E_BASE_URL/api/latest" && exit 0; sleep 1; done
+          echo "::error::the backend or the dashboard didn't start"; exit 1
+
+      - name: Playwright, in Toronto, Tokyo and London browsers
+        working-directory: dashboard/e2e
+        run: npx playwright test
+
+      - name: Service logs
+        if: failure()
+        run: |
+          for c in e2e-vendors e2e-backend; do echo "::group::$c"; docker logs "$c" 2>&1 || true; echo "::endgroup::"; done
+          echo "::group::next start"; cat "$RUNNER_TEMP/next.log" || true; echo "::endgroup::"
+
+      - name: Keep the Playwright report (traces and screenshots)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-report
+          path: |
+            dashboard/e2e/playwright-report
+            dashboard/e2e/test-results
+          retention-days: 7
 
   static:
     name: Lint Python, shell and compose
