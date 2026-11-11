@@ -1,27 +1,28 @@
-// This file configures ESLint for the Next.js frontend, including TypeScript and custom rule overrides.
-// It uses FlatCompat for compatibility with legacy ESLint config formats.
+// ESLint for the Next.js frontend: Next's recommended rules (Core Web Vitals and TypeScript), plus a few local
+// overrides. eslint-config-next ships flat configs since Next 16, so they are imported directly; `npm run lint`
+// runs `eslint .` because Next 16 no longer has `next lint`.
 
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import { FlatCompat } from "@eslint/eslintrc";
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
-
-const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Build output, and the MapLibre worker that scripts/copy-maplibre-worker.mjs copies in from node_modules.
+  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "public/maplibre/**"]),
   {
     rules: {
       // Temporary rule adjustments
       "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-unused-vars": "off",  
-
-    }
-  }
-];
+      "@typescript-eslint/no-unused-vars": "off",
+      // New in eslint-plugin-react-hooks 7 (with eslint-config-next 16). They flag existing code that works
+      // (setState at the top of an effect, refs read during render), so they warn rather than fail the lint
+      // until those components are reworked on their own.
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
+    },
+  },
+]);
 
 export default eslintConfig;
