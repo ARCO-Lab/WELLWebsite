@@ -21,6 +21,21 @@ updates:
         update-types: [minor, patch]
     assignees: [lukhsaankumar]
 
+  # Playwright and the PostgreSQL client used by the end-to-end checks (pinned; CI runs them on every PR).
+  - package-ecosystem: npm
+    directory: /dashboard/e2e
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 1
+    groups:
+      e2e-npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    assignees: [lukhsaankumar]
+
   # requirements.txt pins every package, dependencies of dependencies included, so each bump is explicit.
   - package-ecosystem: pip
     directory: /dashboard/backend

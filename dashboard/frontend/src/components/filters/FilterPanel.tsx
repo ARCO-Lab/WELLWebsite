@@ -208,7 +208,8 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
             onCheckedChange={() => handleMainToggle(groupKey)}
             className="data-[state=checked]:bg-primary data-[state=checked]:border-primary"
           />
-          <CollapsibleTrigger className="flex items-center space-x-2 flex-1 text-left">
+          {/* At least 40 px tall on phones, for fingers */}
+          <CollapsibleTrigger className="flex items-center space-x-2 flex-1 text-left max-sm:min-h-10">
             <Label htmlFor={groupKey} className="font-poppins font-semibold text-primary cursor-pointer">{config.label}</Label>
             {currentChevron ? <ChevronDown className="h-4 w-4 cursor-pointer" /> : <ChevronRight className="h-4 w-4 cursor-pointer" />}
           </CollapsibleTrigger>

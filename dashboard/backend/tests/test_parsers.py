@@ -155,6 +155,29 @@ class Units(unittest.TestCase):
                       licor("21999999-1", 1.0, kind="Leaf Wetness", unit="%")):    # a new sensor keeps LI-COR's unit
             self.assertIsNone(parsers.unit_mismatch(entry), entry["sensor_sn"])
 
+    def test_other_spellings_of_the_expected_unit_pass(self):
+        # The water-level loggers' depth channels report 'meters' (seen Nov 2026); case and spaces don't matter.
+        for unit in ("meters", "Meters", " metre ", "M"):
+            depth = licor("22168653-1", 0.4, kind="Sensor Depth", unit=unit)
+            self.assertIsNone(parsers.unit_mismatch(depth), unit)
+            self.assertEqual(parsers.parse_logger_entry(depth).measurement_type, "Water Surface Elevation")
+        for entry, args, parse in ((licor("21948438-1", 5.0, unit=" °c"), (STATION,), parsers.parse_weather_entry),
+                                   (licor("22168654-3", 4.4, kind="Water Temperature", unit="°c"), (), parsers.parse_logger_entry)):
+            self.assertEqual(parse(entry, *args).unit, "°C")   # stored as the expected unit, like the rows before it
+        self.assertIsNotNone(parsers.unit_mismatch(licor("21948438-1", 5.0, unit="meters")))  # an alias of m only
+        self.assertIsNotNone(parsers.unit_mismatch(licor("22168653-1", 0.4, kind="Sensor Depth", unit="feet")))
+
+    def test_licor_rows_keeps_depth_reported_in_meters(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rows = parsers.licor_rows([licor(f"2216865{n}-1", 0.4, kind="Sensor Depth", unit="meters") for n in (3, 4, 5, 6)],
+                                      {"Logger"}, STATION, UTC)
+        self.assertEqual(sorted(k[0] for k in rows), ["2577531", "2577532", "2577533", "2577534"])
+        self.assertEqual({r["unit"] for r in rows.values()}, {"m asl"})
+        self.assertEqual(out.getvalue(), "")
+
     def test_wrong_units_are_skipped(self):
         cases = [(licor("21948438-1", 41.0, unit="°F"), parsers.parse_weather_entry, (STATION,)),
                  (licor("22168653-1", 1.3, kind="Sensor Depth", unit="ft"), parsers.parse_logger_entry, ()),

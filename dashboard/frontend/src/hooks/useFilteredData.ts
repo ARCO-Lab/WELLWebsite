@@ -3,6 +3,7 @@
 // (useChartSeries); these raw readings are only fetched for the wind rose, while it is shown.
 
 import { useEffect, useState, useRef } from "react";
+import { siteDayBounds } from "@/utils/siteTime";
 
 export interface SensorData {
     sensor: string;
@@ -50,22 +51,18 @@ const useFilteredData = (
         const controller = new AbortController();
         let stale = false;
 
-        // Normalize dates to cover the full selected range
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0); // Normalize to start of day
-
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999); // Normalize to end of day
+        // The picked days, from Toronto midnight to the end of the last day, wherever the viewer is
+        const { start, end } = siteDayBounds(startDate, endDate);
 
         // Build cache key based on date range and group selection
         const params = new URLSearchParams();
-        params.append("start", start.toISOString());
-        params.append("end", end.toISOString());
+        params.append("start", start);
+        params.append("end", end);
         if (activeGroups.weather) params.append("weather", "true");
         if (activeGroups.quality) params.append("quality", "true");
         if (activeGroups.gauges) params.append("gauges", "true");
 
-        const key = `${start.toISOString()}|${end.toISOString()}|${JSON.stringify(activeGroups)}`;
+        const key = `${start}|${end}|${JSON.stringify(activeGroups)}`;
         const cached = cache.current.get(key);
         if (cached) {
             cache.current.delete(key); // mark as most recently used

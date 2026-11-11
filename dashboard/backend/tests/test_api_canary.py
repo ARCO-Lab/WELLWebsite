@@ -88,6 +88,12 @@ class LicorShape(unittest.TestCase):
         with self.assertRaisesRegex(canary.ShapeError, r"21948438-1 reports '°F', not '°C'; 22168653-1 reports 'ft'"):
             canary.check_licor({"data": [air, depth]})
 
+    def test_depth_in_meters_passes(self):
+        # What the live loggers send (Nov 2026): ingestion accepts it as 'm', so the canary mustn't fail on it.
+        depth = [{**LICOR["data"][1], "sensor_sn": f"2216865{n}-1", "unit": "meters"} for n in (3, 4, 5, 6)]
+        self.assertEqual(canary.check_licor({"data": [LICOR["data"][0], *depth]}),
+                         "5 records (1 weather, 4 water-level logger read by ingestion)")
+
     def test_constants_match_ingestion(self):
         p = parsers()
         from utils.sensor_names import WEATHER_SENSOR_NAMES
@@ -96,15 +102,20 @@ class LicorShape(unittest.TestCase):
         self.assertEqual(canary.WEATHER_UNITS, p.WEATHER_UNITS)
         self.assertEqual(canary.LOGGER_UNITS, p.LOGGER_UNITS)
         self.assertEqual(canary.SENTINEL_MAX, p.SENTINEL_MAX)
+        self.assertEqual(canary.UNIT_ALIASES, p.UNIT_ALIASES)
         self.assertEqual(canary.WEATHER_SENSOR_NAMES, WEATHER_SENSOR_NAMES)
 
     def test_numbers_and_units_judged_as_ingestion_does(self):
         p = parsers()
-        for value in (None, "", "n/a", True, float("nan"), "inf", 10 ** 400, 0, "4.5", -1.25, -100000, "-99999", -99998.5):
+        for value in (None, "", "n/a", True, float("nan"), "inf", 10 ** 400, 0, "4.5", -1.25,
+                      -100000, "-99999", -99998.5):  # the last three: the vendors' "no reading" sentinel and just above
             self.assertEqual(canary.has_number(value), p.reading_value(value) is not None, repr(value))
         for r in LICOR["data"][:2] + [{**LICOR["data"][0], "sensor_sn": "21948438-1", "unit": "°F"},
-                                      {**LICOR["data"][1], "unit": "ft"}]:
-            self.assertEqual(canary.expected_unit(r) is not None and canary.expected_unit(r) != r["unit"],
+                                      {**LICOR["data"][1], "unit": "ft"}, {**LICOR["data"][1], "unit": "meters"},
+                                      {**LICOR["data"][1], "unit": " Metre "}, {**LICOR["data"][0], "unit": "°c"},
+                                      {**LICOR["data"][0], "unit": "meters"}, {**LICOR["data"][1], "unit": None}]:
+            expected = canary.expected_unit(r)
+            self.assertEqual(expected is not None and not canary.same_unit(r["unit"], expected),
                              p.unit_mismatch(r) is not None, r)
 
     def test_skips_the_same_records_as_ingestion(self):

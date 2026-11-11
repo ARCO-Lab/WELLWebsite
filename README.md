@@ -222,6 +222,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
   - `dashboard/frontend/` → `dashboard`;
   - `dashboard/backend/` → `backend`, `worker`, `export_worker`;
   - `docker-compose.yml` → everything;
+  - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress` container is recreated, since Apache and PHP read them only at start;
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's live once pulled.
 - checks the site: `/api/latest`, the dashboard home page (both on port 8081) and the WordPress home page (port 8080). If `worker` or `export_worker` was rebuilt, it also checks a minute later that the container is still running and hasn't restarted (compose restarts crashing workers, so "running" alone proves nothing);
 - rolls back to the previous commit if any check fails.
@@ -372,7 +373,7 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 ## Monitoring
 
-Three simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
+Four simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
 
 **Data freshness check.** `GET /health/data` on the backend, passed through by the dashboard at `https://welldash.mcmaster.ca/api/health/data`, lists for each group (Weather, Logger, Quality) and each series (station and measurement) the newest `recorded_at` and its age in minutes. It answers **200** when every live series is within its limit and **503** with a `stale` list otherwise (also 503 if the database can't be read or a setting below is invalid). It walks the same index as `/api/latest`, so polling it every few minutes costs nothing noticeable.
 
@@ -392,6 +393,7 @@ Three simple pieces, all optional and all off until configured. On the VM their 
 | `HEALTHCHECK_URL_UPLOAD` | After the monthly Borealis upload (02:00 on the 1st, and daily retries); `/fail` if a month didn't go up. Days with nothing to upload don't ping. |
 | `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
+| `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
 | `HEALTHCHECK_URL_BACKUP` | Reserved for the database backup job on the host, which is outside the containers: end it with `curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL_BACKUP"`. |
 
@@ -400,6 +402,7 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 - **WELL monthly upload**: Cron `0 2 1 * *`, time zone America/Toronto, grace 4 hours (an upload may take up to 2 h).
 - **WELL SharePoint copy**, once SharePoint is set up: the same schedule and grace.
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
+- **WELL alerts**: Simple schedule, period 10 minutes, grace 30 minutes.
 - **WELL backup**, if the backup job pings it: its own schedule, grace about an hour.
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
@@ -414,11 +417,40 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 | `SMTP_FROM` | `SMTP_USER` | Sender address; required if there's no `SMTP_USER`. |
 | `DIGEST_HOUR` | `7` | Hour (0-23, Toronto time) the worker builds the digest. Not 1 or 2: clocks change at 02:00, so on those days the hour happens twice or not at all. An invalid value is logged and no digest runs. |
 
+**Email alerts.** After every 10-minute ingestion run the worker checks the data and the vendor APIs (`scripts/check_alerts.py`, rules in `utils/alerts.py`) and emails `ALERT_EMAILS` through the SMTP settings above when someone has to go and look. Each problem is an incident: it is emailed once when it starts, again at most every `ALERT_REMINDER_HOURS` while it lasts, and once when it clears, with how long it lasted. Everything one check finds goes in a single email, so there is never more than one email per 10 minutes. The subject says what to do, e.g. `[WELL] Water quality station 4501 silent for 3 h — vendor OK, check the sensor`.
+
+To keep flickering conditions (a vendor failing on and off, a value hovering at a limit) from emailing "new" and "recovered" over and over: an incident clears, and "recovered" is emailed, once its condition has been gone for `ALERT_CLEAR_MINUTES`. A condition that comes back within `ALERT_REOPEN_HOURS` of clearing reopens the same incident instead of being emailed as new, and if its recovery had been emailed, "back again" is emailed once it has stayed back `ALERT_CLEAR_MINUTES`. From then on the incident has to be gone for `ALERT_FLAP_CLEAR_MINUTES` before it clears again, doubled with each further "back again" up to 12 h (flap damping). So a flapping problem sends at most one "recovered" and one "back again" per window, and the last email about a problem is never wrong for longer than `ALERT_CLEAR_MINUTES` or its current window. An incident that then stays present without a break for `ALERT_REOPEN_HOURS` counts as steady again, and its real recovery is reported after `ALERT_CLEAR_MINUTES`. A problem that comes back later than `ALERT_REOPEN_HOURS` is a new incident. While a vendor's latest call failed, its sensor alerts are left as they are rather than cleared, and a suspect-values alert is left as it is while there are too few readings to judge (e.g. the water quality sonde at night). When a single sensor's alert grows into a whole-station (or whole-site) one, the sensor's incident is replaced without a "recovered" email. When it shrinks back (say the station alert down to the one sensor still silent), the station incident closes without a "recovered" email too, and the sensor's incident carries on without a "new" one: the partial recovery isn't emailed, because the remaining problem was already reported and the next email (reminder or recovery) names it.
+
+| Alert | When | What to do |
+|---|---|---|
+| Vendor down (`VENDOR_DOWN`) | The LI-COR or WQData API call failed on the last `ALERT_VENDOR_FAILURES` runs in a row: an HTTP error, a timeout, or a reply without data. | Check the vendor's status; our sensors may be fine. Ingestion catches up by itself (up to 14 days back) once the API answers. HTTP 401/403 says "rejects our credentials — rotate the API key" (set `HOBOLINK_API_TOKEN` or `WQ_API_KEY` in `.env` and in the repository secret), and WQData's 429 says "request quota exceeded" (stop any `wqdata_backfill.py` run). |
+| Sensor silent (`STALE_SENSOR`) | The vendor answered on the latest run, but a station, or one of its sensors, has sent nothing for longer than its group's limit. If every LI-COR station is silent it is one alert for the site (the loggers report through the weather station). | Go to the sensor: its power, cable, telemetry (cellular modem, data plan). Not raised while the vendor's latest call failed, since then the vendor is the likelier cause. |
+| Suspect values (`SUSPECT_VALUES`) | Data arrives but looks wrong over the whole last `ALERT_SUSPECT_HOURS`: a water quality probe stuck on one value (not TSS/turbidity at 0), at least half the readings outside the physical range, dissolved oxygen about 0, or a logger with about 0 m of water over it. A single odd reading is never an alert. | Look at the chart, then check and clean the probe if it isn't a real event. |
+| Recovered | The condition cleared, for an incident that was emailed. | Nothing; the email says how long it lasted. |
+
+The open incidents are also listed in the daily digest and under `alerts` in `GET /health/data` (with each vendor's latest call outcome), so the dashboard can show them; they don't change its status code. They are listed by kind, key, title and times only; the details and advice are in the emails. Without SMTP settings nothing is emailed: incidents are still recorded and the email is written to `logs/alerts.log` instead (in full when its content changes, otherwise one line per check), and once SMTP is set up the next check emails the incidents still open. To see what would be sent now without recording or sending anything: `docker compose exec worker python scripts/check_alerts.py --dry-run`. The state lives in two tables, `vendor_status` (written by every ingestion run) and `alert_incidents`, created by migration `0003_monitoring_alerts.sql` (see Database migrations); until it is applied the alert check fails (logged, reported to Sentry and to `HEALTHCHECK_URL_ALERTS`) and ingestion carries on as before.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ALERT_STALE_HOURS_WEATHER`, `_LOGGER`, `_QUALITY` | `3`, `3`, `2` | Hours without a new reading before a sensor-silent alert. LI-COR uploads about hourly, so Weather and Logger readings are already up to an hour old when they arrive and 3 h means two missed uploads; WQData reports every 10 minutes during the day. The quiet hours and excluded series of the freshness check (`HEALTH_QUIET_HOURS_*`, `HEALTH_EXCLUDED_SERIES`) apply here too, so the sonde's usual night-time silence isn't an alert. |
+| `ALERT_STALE_HOURS` | none | One limit for every group without its own `ALERT_STALE_HOURS_<GROUP>`. |
+| `ALERT_VENDOR_FAILURES` | `3` | Failed ingestion runs in a row (10 minutes apart) before a vendor-down alert. |
+| `ALERT_REMINDER_HOURS` | `24` | How often an ongoing incident is emailed again. |
+| `ALERT_SUSPECT_HOURS` | `6` | The window of the suspect-values rules. `ALERT_SUSPECT_VALUES=off` turns those rules off. |
+| `ALERT_CLEAR_MINUTES` | `30` | How long a condition must be gone before its incident clears and the "recovered" email goes out; also how long it must be back before "back again" goes out. |
+| `ALERT_FLAP_CLEAR_MINUTES` | `180` | How long a condition must be gone before an incident that has had a "back again" clears; doubled with each further "back again", up to 12 h. |
+| `ALERT_REOPEN_HOURS` | `6` | A condition that comes back within this long of clearing reopens its incident instead of being emailed as new. |
+| `ALERT_EXCLUDED_SERIES` | none | Series to mute, e.g. during field work or while a sensor is out for the winter: `station:measurement` or `station:*`, comma-separated, like `HEALTH_EXCLUDED_SERIES` (e.g. `4501:*` or `2577533:Water Surface Elevation`). Only the alerts change; `/health/data` still reports the series. Open alerts for a muted series close without a "recovered" email. Remove the entry to unmute. |
+| `ALERT_DASHBOARD_URL` | `https://welldash.mcmaster.ca/` | The dashboard link in the emails. |
+
+An invalid value makes the alert check fail with a message naming the variable (in `logs/alerts.log`, Sentry and the alerts heartbeat); recreate the worker after changing any of them.
+
 ```bash
 # dashboard/backend/app/.env (example)
 HEALTHCHECK_URL_INGESTION=https://hc-ping.com/your-check-uuid
 HEALTHCHECK_URL_UPLOAD=https://hc-ping.com/your-check-uuid
 HEALTHCHECK_URL_DIGEST=https://hc-ping.com/your-check-uuid
+HEALTHCHECK_URL_ALERTS=https://hc-ping.com/your-check-uuid
 ALERT_EMAILS=someone@mcmaster.ca,someone-else@mcmaster.ca
 # SMTP_HOST=smtp.example.mcmaster.ca
 # SMTP_PORT=587

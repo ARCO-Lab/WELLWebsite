@@ -39,6 +39,7 @@ WEATHER_UNITS = {                                                            # p
 }
 LOGGER_UNITS = {"1": "m", "3": "°C"}                                         # parsers.LOGGER_UNITS
 SENTINEL_MAX = -99999                                                         # parsers.SENTINEL_MAX
+UNIT_ALIASES = {"m": {"meters", "meter", "metres", "metre"}}                 # parsers.UNIT_ALIASES
 WEATHER_SENSOR_NAMES = {"21948438-1": "Air Temperature", "21948438-2": "Relative Humidity",  # utils/sensor_names.py
                         "22154270-1": "Soil Temperature"}
 
@@ -80,6 +81,14 @@ def expected_unit(record):
     return WEATHER_UNITS.get(WEATHER_SENSOR_NAMES.get(sensor_sn, record.get("sensor_measurement_type")))
 
 
+def same_unit(unit, expected):
+    """Whether LI-COR's unit names the expected one, as ingestion judges it (parsers.same_unit)."""
+    if not isinstance(unit, str):
+        return False
+    unit = unit.strip().casefold()
+    return unit == expected.casefold() or unit in UNIT_ALIASES.get(expected, ())
+
+
 def check_licor(body):
     # inject_from_api.py reads body["data"], and per record sensor_sn; for the records it doesn't skip, it also
     # parses timestamp (ISO 8601), value and unit. Ingestion skips a reading without a number, so a few of those
@@ -105,7 +114,7 @@ def check_licor(body):
             raise ShapeError(f"record {i} has a missing or unreadable timestamp")
         expected = expected_unit(r)
         unit = r.get("unit")
-        if expected is not None and not (isinstance(unit, str) and unit.strip() == expected):
+        if expected is not None and not same_unit(unit, expected):
             wrong_units.add(f"{r['sensor_sn']} reports {unit!r}, not {expected!r}")
         if not has_number(r.get("value")):
             no_number += 1

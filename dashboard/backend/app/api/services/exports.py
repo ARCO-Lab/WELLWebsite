@@ -151,6 +151,12 @@ def normalize_export_payload(payload: Dict) -> Dict:
     except ValueError as exc:
         raise ValueError("Invalid ISO datetime in start/end") from exc
 
+    # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in the
+    # session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone the export
+    # would be hours off. So aware times become site wall-clock time here, before they are compared (comparing an
+    # aware with a naive time raises TypeError).
+    start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+
     if start_dt > end_dt:
         raise ValueError("start must be before end")
 
@@ -195,6 +201,11 @@ def estimate_rows(payload: Dict) -> int:
     else:
         query = _sampling_query(filters)
     return int(query.count())
+
+
+def _site_naive(ts: datetime) -> datetime:
+    """An aware time as naive site (America/Toronto) wall-clock time; naive times are taken as site time already."""
+    return ts.astimezone(EST_TZ).replace(tzinfo=None) if ts.tzinfo is not None else ts
 
 
 def _local_date(value: str) -> str:

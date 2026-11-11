@@ -11,12 +11,13 @@ function Checkbox({
   className,
   ...props
 }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
-  // Renders a checkbox with custom styles and a checkmark indicator
+  // Renders a checkbox with custom styles and a checkmark indicator. On phones the box is 20 px and its ::after
+  // makes a 38 px tap target around it (rows are 40 px apart, so neighbours don't overlap).
   return (
     <CheckboxPrimitive.Root
       data-slot="checkbox"
       className={cn(
-        "border-secondary cursor-pointer peer dark:bg-input/30 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground dark:data-[state=checked]:bg-primary data-[state=checked]:border-primary focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive size-4 max-sm:size-5 shrink-0 rounded-[4px] border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
+        "border-secondary cursor-pointer peer dark:bg-input/30 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground dark:data-[state=checked]:bg-primary data-[state=checked]:border-primary focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive size-4 max-sm:size-5 shrink-0 rounded-[4px] relative max-sm:after:absolute max-sm:after:-inset-2.5 max-sm:after:content-[''] border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
         className
       )}
       {...props}
