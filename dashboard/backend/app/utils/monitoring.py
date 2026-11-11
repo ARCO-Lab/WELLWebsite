@@ -110,7 +110,7 @@ def in_quiet_hours(hour, quiet):
 
 
 def oldest_fresh(now_local, limit):
-    """The oldest newest-reading time (aware) that still counts as fresh at `now_local` (aware, site time).
+    """The oldest newest-reading time (aware, UTC) that still counts as fresh at `now_local` (aware, site time).
     The limit is subtracted in UTC, so it is real elapsed time even across a DST change."""
     since = now_local
     if in_quiet_hours(now_local.hour, limit.quiet_hours):
@@ -118,7 +118,7 @@ def oldest_fresh(now_local, limit):
         since = now_local.replace(hour=limit.quiet_hours[0], minute=0, second=0, microsecond=0)
         if since > now_local:
             since -= timedelta(days=1)
-    return (since.astimezone(timezone.utc) - limit.max_age).astimezone(EST_TZ)
+    return since.astimezone(timezone.utc) - limit.max_age
 
 
 def as_site_time(recorded_at):
@@ -129,7 +129,8 @@ def as_site_time(recorded_at):
 
 
 def age_minutes(recorded_at, now):
-    return int((now - as_site_time(recorded_at)).total_seconds() // 60)
+    # In UTC: Python subtracts two datetimes with the same tzinfo as wall-clock times, ignoring DST.
+    return int((now.astimezone(timezone.utc) - as_site_time(recorded_at).astimezone(timezone.utc)).total_seconds() // 60)
 
 
 def assess_freshness(latest, now, env=None):
@@ -160,7 +161,7 @@ def assess_freshness(latest, now, env=None):
         newest = as_site_time(row["recorded_at"])
         if is_excluded(row["station_id"], row["measurement_type"], excluded):
             status = "excluded"
-        elif newest < info["oldest_fresh"]:
+        elif newest.astimezone(timezone.utc) < info["oldest_fresh"]:
             status = "stale"
         else:
             status = "ok"
@@ -177,7 +178,7 @@ def assess_freshness(latest, now, env=None):
         if info["newest"] is None or series["newest"] > info["newest"]:
             info["newest"], info["age_minutes"] = series["newest"], series["age_minutes"]
     for info in groups.values():
-        info["oldest_fresh"] = info["oldest_fresh"].replace(tzinfo=None).isoformat()
+        info["oldest_fresh"] = info["oldest_fresh"].astimezone(EST_TZ).replace(tzinfo=None).isoformat()
     checked = [s for info in groups.values() for s in info["series"] if s["status"] != "excluded"]
     return {
         "status": "stale" if stale or not checked else "ok",
