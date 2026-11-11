@@ -133,14 +133,12 @@ services:
         # Build-time only (for next.config.js rewrites & public env)
         FLASK_API_URL: ${BACKEND_INTERNAL_URL}
         NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
-        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
     env_file:
       - ./dashboard/frontend/.env.local  # runtime server-side vars if you have any
     environment:
       # Runtime (Node/SSR or API routes) can also use these:
       FLASK_API_URL: ${BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
-      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
     depends_on:
       backend:
         condition: service_started
