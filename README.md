@@ -96,6 +96,8 @@ Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
 Without it, every container fails with "No route to host" after the next reboot, and ingestion stops. To add it without a reboot as well, run `sudo iptables -I INPUT -s 10.20.0.0/16 -p tcp --dport 5432 -j ACCEPT`. Never run `systemctl restart iptables`, which wipes Docker's own rules until Docker restarts. Never run `iptables-save > /etc/sysconfig/iptables` either, which would save Docker's temporary rules into the file.
 
+Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used only by welldash²'s check of WordPress (see [welldash²](#welldash²-operations-dashboard)). Nothing on it needs PostgreSQL, so a narrower rule should leave it out: welldash² reaches PostgreSQL from `internal_api`, which carries its default route.
+
 ---
 
 ## Data Sources & APIs
@@ -248,7 +250,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
 - pulls `main`;
 - rebuilds only the services whose files changed:
   - `dashboard/frontend/` → `dashboard`;
-  - `dashboard/backend/` → `backend`, `worker`, `export_worker`;
+  - `dashboard/backend/` → `backend`, `worker`, `export_worker`, and `ops` (welldash²) when it is running. A minute later `ops` is checked like the workers, but a failing `ops` is only logged ("welldash² needs a look"): it isn't public, so it never rolls the site back;
   - `docker-compose.yml` → everything;
   - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress` container is recreated, since Apache and PHP read them only at start;
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's live once pulled.
@@ -441,7 +443,7 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
 
-**Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); and every series' newest reading. It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
+**Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); every series' newest reading; and yesterday's API traffic (requests, errors, p95 response time, data sent, CSV downloads, busiest minute; see [welldash²](#welldash²-operations-dashboard)). It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -490,6 +492,110 @@ ALERT_EMAILS=someone@mcmaster.ca,someone-else@mcmaster.ca
 # SMTP_PORT=587
 # SMTP_FROM=welldash@mcmaster.ca
 ```
+
+---
+
+## welldash² (operations dashboard)
+
+welldash² ("WELLdashSquared") is a small, read-only dashboard for whoever runs the site. It is reachable **only on McMaster's network or the McMaster VPN**, at **http://well.cas.mcmaster.ca:8090** (the port is `OPS_PORT`), and asks for one shared password; there is no user name. It has five pages:
+
+- **Overview**: whether the dashboard (with its data API and database) and the WordPress site answer right now; data freshness per group (the `/health/data` rules); open and recently cleared email alerts; the vendor APIs' latest call outcome; CI of `main` (GitHub Actions); recent deploys (from `deploy.log`, see below); and, when their read-only keys are set, unresolved Sentry issues of the last 24 h and the Healthchecks.io job heartbeats.
+- **Uptime**: availability over 24 h, 7 and 30 days, response time, and every stretch of downtime in the last 30 days. welldash² itself checks the dashboard's home page, the data API's `/api/latest` (which reads the database) and the WordPress home page once a minute, from inside the VM (WordPress over a small network of its own, `wp_probe`, so welldash² never shares a network with MySQL). These checks aren't counted as traffic.
+- **Traffic**: the data API's requests, server and client errors, p95 response time, data sent, busiest minute and CSV downloads, per hour or day and per route; plus the export jobs (by status, rows written, run times, failures, the queue now). The backend counts its requests per minute by route pattern, method and status class (`utils/traffic.py`); no IP addresses, query strings or browser details are recorded. The daily digest has a "Traffic yesterday" summary from the same numbers.
+- **System**: database version and size, the largest tables, applied migrations, and the size of each log file in `dashboard/backend/app/logs`. Container states and disk space aren't shown: they would need the Docker socket, which gives full control of the VM.
+- **Visitors**: page-view counts from [GoatCounter](https://www.goatcounter.com) when it is set up (below); otherwise "not configured".
+
+It runs as the `ops` service in `docker-compose.yml` (code in `dashboard/backend/app/ops/`, built from the backend's image, with no JavaScript or outside files), and stores its uptime checks and the request counts in two tables from migration `0005_ops_metrics.sql`, kept for 90 days (`OPS_RETENTION_DAYS`). The service starts only when the `ops` compose profile is on, and refuses to start without its password hash and secret key.
+
+**Never route it through the public proxy.** `haproxy.cas.mcmaster.ca` forwards `welldash.mcmaster.ca` to port 8081 and `well.mcmaster.ca` to port 8080; it must never forward anything to 8090. welldash² takes the client's address straight from the connection for its login limit, and is meant to be reachable from the McMaster network only.
+
+### Setting it up
+
+On the VM, from `~/WELLWebsite`:
+
+1. Apply the migration (take a backup first, as in [Database migrations](#database-migrations)) and rebuild the backend, which then starts counting requests:
+   ```bash
+   ./git_pull.sh && docker compose up -d --build --no-deps backend
+   docker compose exec backend python scripts/migrate.py           # applies 0005_ops_metrics
+   ```
+2. Make the password hash and a secret key. This asks for the password twice (at least 12 characters; nothing is shown or stored) and prints two lines, `OPS_PASSWORD_HASH='...'` and `OPS_SECRET_KEY='...'`:
+   ```bash
+   docker compose exec backend python -m ops.hashpw
+   ```
+3. Add those two lines, `COMPOSE_PROFILES=ops` and `OPS_BIND=130.113.68.63` (the VM's campus address, which `well.cas.mcmaster.ca` resolves to; check with `getent hosts well.cas.mcmaster.ca`) to `.env` in `~/WELLWebsite` (the env file docker compose reads, which already holds the other passwords), and keep it readable by you only:
+   ```bash
+   umask 077
+   nano .env            # paste the two lines as printed (keep the single quotes); add COMPOSE_PROFILES=ops and OPS_BIND=...
+   chmod 600 .env
+   ```
+   `OPS_BIND` publishes the port on that address only. Without it, Docker publishes it on every address the VM has, and ports Docker publishes bypass the VM's own firewall rules (ufw, iptables INPUT).
+   The single quotes matter: the hash contains `$` signs, which compose would otherwise read as variables (welldash² then refuses to start, and says so). Never put the password itself in any file, only its hash.
+4. Start it:
+   ```bash
+   docker compose up -d --build --no-deps ops
+   ```
+5. Check it:
+   ```bash
+   docker compose logs --tail 20 ops      # no "welldash² not started" line
+   curl -s -o /dev/null -w '%{http_code}\n' http://130.113.68.63:8090/login   # 200 (your OPS_BIND address)
+   curl -s -o /dev/null -w '%{http_code}\n' http://130.113.68.63:8090/        # 302 (to the login page)
+   ```
+   Then, on the VPN, open http://well.cas.mcmaster.ca:8090 and sign in. The Uptime page shows its first checks after a minute, and the Traffic page the first requests a minute or two after someone uses the dashboard. If the page doesn't load from your laptop but the `curl` lines work on the VM, a firewall blocks port 8090: see the request to IT below.
+
+With `COMPOSE_PROFILES=ops` set, `docker compose up -d --build` includes welldash², and `./deploy.sh` rebuilds it with the backend whenever it is running. To stop it: `docker compose stop ops`, and remove `COMPOSE_PROFILES=ops` from `.env` to keep it off.
+
+**Changing the password.** Run `docker compose exec backend python -m ops.hashpw --hash-only`, replace the `OPS_PASSWORD_HASH` line in `.env` with the one it prints, and recreate the container: `docker compose up -d --no-deps ops`. Everyone is signed out. A new `OPS_SECRET_KEY` also signs everyone out.
+
+**How it is protected.** One password, checked against its scrypt hash in constant time. After 5 wrong passwords from one address in 15 minutes (or 50 from all addresses together), login is refused until the 15 minutes have passed. (Clients that reach the VM from the same address, as through some NAT or IPv6 paths, share one count; at worst a stranger's attempts lock them out for 15 minutes.) The session is a signed cookie (`OPS_SECRET_KEY`), HttpOnly and SameSite=Strict, that lasts 8 hours from login however it is used; "Sign out" ends it sooner. The login and sign-out forms carry a CSRF token. Every page except the login page needs the session, and every page is read-only: the pages read the database in read-only transactions, and no value from a request reaches the SQL. Pages send a Content-Security-Policy (`default-src 'self'`, no scripts, `frame-ancestors 'none'`), `nosniff` and `noindex`. welldash²'s only writes are its uptime checks and the daily deletion of rows older than 90 days.
+
+**HTTP or HTTPS.** Over plain HTTP, the password and the session cookie travel unencrypted between the VPN and the VM, so someone able to watch McMaster's internal network could read them. That is a reasonable trade-off for read-only operational numbers, but HTTPS is better: once IT provides a certificate (below) and TLS is set up in front of port 8090, set `OPS_COOKIE_SECURE=1` in `.env` and recreate the container, so the cookie is never sent over HTTP. With it on but no HTTPS, signing in silently fails (the browser drops the cookie).
+
+**A read-only database role (recommended).** By default welldash² uses the backend's role (`BACKEND_DATABASE_URL`). A role of its own limits what it could do if it were ever compromised. As the PostgreSQL superuser (e.g. `sudo -u postgres psql -d <database>`):
+```sql
+CREATE ROLE well_ops LOGIN PASSWORD '<a new random password>';
+GRANT CONNECT ON DATABASE <database> TO well_ops;
+GRANT USAGE ON SCHEMA public TO well_ops;
+GRANT SELECT ON sensor_measurements, vendor_status, alert_incidents, export_jobs, schema_migrations,
+                request_metrics, uptime_probes TO well_ops;
+GRANT INSERT, DELETE ON uptime_probes TO well_ops;     -- its uptime checks, and their 90-day cleanup
+GRANT USAGE ON SEQUENCE uptime_probes_id_seq TO well_ops;
+GRANT DELETE ON request_metrics TO well_ops;           -- the 90-day cleanup
+```
+Then set `OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/<database>` in `.env` (in single quotes if the password has a `$`), allow `well_ops` from the Docker network in `pg_hba.conf` the same way as the backend's role, and recreate the container. The System page shows which role welldash² reads with. `export_jobs` is owned by `postgres`: without `well_ops`, check that the backend's role can read it (`\dp export_jobs` in psql); the Traffic page says so if it can't.
+
+**Showing deploys.** The Overview lists deploys from `deploy.log` in the logs folder it can read (`dashboard/backend/app/logs`, mounted read-only). `deploy.sh` writes `~/WELLWebsite/deploy.log` by default, which welldash² can't see; to show deploys, set `DEPLOY_LOG=$HOME/WELLWebsite/dashboard/backend/app/logs/deploy.log` in the cron line (and send cron's stderr there too), if that folder is writable by your user.
+
+**Optional settings** (in `.env`; recreate the container after changing them):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OPS_PORT` | `8090` | Port on the VM. |
+| `OPS_BIND` | `0.0.0.0` | Address the port is published on. Set it to the VM's campus address (setup step 3). |
+| `OPS_COOKIE_SECURE` | `0` | `1` once welldash² is served over HTTPS (see above). |
+| `OPS_DATABASE_URL` | `BACKEND_DATABASE_URL` | Database URL, e.g. with the `well_ops` role above. |
+| `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
+| `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |
+| `OPS_HEALTHCHECKS_API_KEY` | none | The Healthchecks.io project's **read-only** API key (Project Settings, API Access). |
+| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Counting visits needs GoatCounter's script on the dashboard, which isn't added yet. |
+| `REQUEST_METRICS` | on | In `dashboard/backend/app/.env`: `0` stops the backend counting requests (recreate `backend`). |
+
+**Request to McMaster IT** (copy, fill in, send):
+
+> Subject: Internal DNS name and certificate for the WELL VM (well.cas.mcmaster.ca)
+>
+> Hello,
+>
+> The WELL project (Watershed and Ecosystems Living Lab) runs an internal operations dashboard on our VM well.cas.mcmaster.ca, on TCP port 8090. It is for project staff only and must stay internal: please do not add it to haproxy.cas.mcmaster.ca or expose it outside the McMaster network.
+>
+> Could you please:
+> 1. Create an internal DNS name, welldashsquared.cas.mcmaster.ca, for the same address as well.cas.mcmaster.ca (a CNAME or an A record), resolvable on campus and on the McMaster VPN only.
+> 2. Allow TCP port 8090 to well.cas.mcmaster.ca from the campus network and the VPN address ranges, if a firewall blocks it now.
+> 3. If possible, issue a TLS certificate for welldashsquared.cas.mcmaster.ca from McMaster's internal certificate authority (or tell us how to request one), so we can serve it over HTTPS.
+>
+> Thank you,
+> [name], WELL project, [email]
+
+Once the name exists, welldash² answers at http://welldashsquared.cas.mcmaster.ca:8090 as well, with no change on the VM. Serving it over HTTPS on that name needs the certificate and a TLS-terminating proxy in front of port 8090, a later change.
 
 ---
 
