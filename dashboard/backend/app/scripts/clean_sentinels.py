@@ -16,6 +16,11 @@ written, or the delete doesn't remove exactly the rows backed up, nothing is del
 rows back (e.g. psql \\copy sensor_measurements(id,station_id,group_type,measurement_type,value,unit,recorded_at)
 FROM 'file.csv' CSV HEADER).
 
+The backup is owned by the user the script runs as: root in the backend image, which sets no USER. In the worker
+container logs/ is the host's dashboard/backend/app/logs, so on the host the file is root's and mode 600: read or
+copy it with sudo, or through the container (docker compose exec -w /app/app worker
+cat logs/sentinels-<timestamp>.csv).
+
 A sentinel is any value at or below utils/parsers.SENTINEL_MAX (-99999); no sensor here reads anywhere near that.
 """
 from __future__ import annotations
