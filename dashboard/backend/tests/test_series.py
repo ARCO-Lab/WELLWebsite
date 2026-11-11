@@ -1,4 +1,4 @@
-"""Tests for /api/series (api/routes/series.py). Run from dashboard/backend: python -m unittest discover -s tests
+"""Tests for /api/series (api/routes/series.py). Run from dashboard/backend: python -m unittest discover -s tests -t .
 
 The SQL tests need PostgreSQL: set TEST_POSTGRES_URL to an empty, throwaway database (its tables are created and
 dropped), e.g. a `docker run postgres:13` container. Without it they're skipped.
