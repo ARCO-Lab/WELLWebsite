@@ -35,7 +35,7 @@ import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
 import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
-import { siteDay } from "@/utils/siteTime";
+import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
@@ -73,9 +73,6 @@ function useCodeReady(load: () => Promise<unknown>, wanted: boolean): boolean {
   }, [load, wanted, ready]);
   return ready;
 }
-
-// The first sampling day: the sampling tab shows everything from here by default.
-const SAMPLING_DATA_START = new Date(2025, 4, 1).getTime();
 
 // Graph cards side by side while each can be at least this wide, else stacked: rem-based, so large text stacks them.
 const GRAPH_GRID: Record<number, string> = {
@@ -160,7 +157,7 @@ export default function Dashboard() {
   const [endDate, setEndDate] = useState<Date | null>(() => siteDay());
 
   // Dates for the SAMPLING Tab: all of it, from the first samples (May 1, 2025) to today
-  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => new Date(SAMPLING_DATA_START));
+  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => new Date(DATA_START));
   const [samplingEndDate, setSamplingEndDate] = useState<Date | null>(() => siteDay());
 
   const [analysisType, setAnalysisType] = useState<"recent" | "alltime">("alltime");

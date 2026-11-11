@@ -12,7 +12,7 @@ import {
 } from "@/components/animations/popover";
 import { Label } from "@/components/animations/Label";
 import { format } from "date-fns";
-import { siteDay } from "@/utils/siteTime";
+import { DATA_START, siteDay } from "@/utils/siteTime";
 
 interface Props {
   startDate: Date | null | undefined;
@@ -20,10 +20,6 @@ interface Props {
   onStartChange: (date: Date | null) => void;
   onEndChange: (date: Date | null) => void;
 }
-
-// The first month with data (sensors from 2025-05-08, sampling from 2025-05-01): the month/year dropdowns
-// start here, so older months can't be picked by accident.
-const DATA_START = new Date(2025, 4, 1);
 
 const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndChange }) => {
   const disabledStyles = {
@@ -53,7 +49,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
   const pickerProps = {
     captionLayout: "dropdown" as const,
     fixedWeeks: true,
-    startMonth: DATA_START,
+    startMonth: DATA_START, // the first month with data, so older months can't be picked by accident
     endMonth: today,
   };
 
