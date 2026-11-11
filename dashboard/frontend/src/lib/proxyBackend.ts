@@ -8,23 +8,12 @@
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import type { NextApiRequest, NextApiResponse } from "next";
+import { clientIp, logClientIpSample } from "./clientIp";
 
 // Headers worth forwarding; Content-Disposition and Content-Length matter for CSV downloads.
 const FORWARDED_HEADERS = ["content-type", "content-disposition", "content-length"];
 
 const UNREACHABLE = { error: "The data service didn't respond. Please try again." };
-
-// The visitor's IP address, for the backend's per-visitor limits (queued exports). The site's reverse proxy
-// appends the address it saw to X-Forwarded-For, so its last entry is the real one; earlier entries are whatever
-// the browser sent. Without the header (a direct request, as in development) it's the address of the connection.
-export function clientIp(req: NextApiRequest): string {
-  const header = req.headers["x-forwarded-for"];
-  const hops = (Array.isArray(header) ? header.join(",") : header || "")
-    .split(",")
-    .map((hop) => hop.trim())
-    .filter(Boolean);
-  return hops[hops.length - 1] || req.socket?.remoteAddress || "";
-}
 
 export async function proxyToBackend(
   req: NextApiRequest,
@@ -43,9 +32,10 @@ export async function proxyToBackend(
   let first: ReadableStreamReadResult<Uint8Array> | undefined;
   try {
     // The backend has no public port, so this header (one entry, replacing any the browser sent) is the only
-    // client address it sees.
+    // client address it sees. See lib/clientIp.ts for which address that is.
     const headers = new Headers(init.headers);
     const ip = clientIp(req);
+    logClientIpSample(req, ip);
     if (ip) headers.set("X-Forwarded-For", ip);
     response = await fetch(`${process.env.FLASK_API_URL}${path}`, { ...init, headers, signal: upstream.signal });
     // Read the first chunk before sending anything, so a backend that fails this early still gets a clean 502.

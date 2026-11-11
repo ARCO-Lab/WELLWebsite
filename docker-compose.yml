@@ -140,6 +140,9 @@ services:
       # Runtime (Node/SSR or API routes) can also use these:
       FLASK_API_URL: ${BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+      # The reverse proxies whose X-Forwarded-For is believed (comma-separated addresses, as this container sees
+      # them connect); see src/lib/clientIp.ts. 130.113.68.30 is haproxy.cas.mcmaster.ca, which welldash points at.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-130.113.68.30}
     depends_on:
       backend:
         condition: service_started
