@@ -61,6 +61,18 @@ class Config:
     EXPORT_FILE_TTL_MINUTES = int(os.getenv("EXPORT_FILE_TTL_MINUTES", "60"))
     EXPORT_SYNC_ROW_THRESHOLD = int(os.getenv("EXPORT_SYNC_ROW_THRESHOLD", "100000"))
     EXPORT_POLL_INTERVAL_SECONDS = int(os.getenv("EXPORT_POLL_INTERVAL_SECONDS", "3"))
+    # Limits on queued (async) exports, so one visitor, or many at once, can't tie up the export worker:
+    # the largest export (in readings, as /api/exports/estimate counts them), and how many jobs may be queued or
+    # running at once, in total and per visitor (by IP address).
+    EXPORT_MAX_ROWS = int(os.getenv("EXPORT_MAX_ROWS", "5000000"))
+    EXPORT_MAX_ACTIVE_JOBS = int(os.getenv("EXPORT_MAX_ACTIVE_JOBS", "6"))
+    EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER = int(os.getenv("EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER", "2"))
+    # How long one export may run, in seconds: past the soft limit it is stopped and marked failed; the hard
+    # limit kills its worker process if it didn't stop.
+    EXPORT_SOFT_TIME_LIMIT_SECONDS = int(os.getenv("EXPORT_SOFT_TIME_LIMIT_SECONDS", str(15 * 60)))
+    EXPORT_HARD_TIME_LIMIT_SECONDS = int(os.getenv("EXPORT_HARD_TIME_LIMIT_SECONDS", str(20 * 60)))
+    # A worker process is replaced after a task leaves it using more than this much memory (KiB).
+    EXPORT_WORKER_MAX_MEMORY_KB = int(os.getenv("EXPORT_WORKER_MAX_MEMORY_KB", "512000"))
 
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
