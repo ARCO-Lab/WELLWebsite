@@ -2,7 +2,7 @@
 // It builds the CSV structure based on active filters, groups, and selected metrics/sites.
 
 import React, { useState } from "react";
-import { Download as DownloadIcon } from "lucide-react";
+import { Download as DownloadIcon, X } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import {
   SENSOR_FILTER_CONFIG,
@@ -77,6 +77,9 @@ const Download: React.FC<DownloadProps> = ({
 }) => {
   const [isExporting, setIsExporting] = useState(false);
   const [statusText, setStatusText] = useState<string>("");
+  // The last export's failure, shown under the button until it is dismissed or a new export starts. It is not hidden
+  // on a timer: exports can take a while, and someone who looked away would never learn why no file arrived.
+  const [errorText, setErrorText] = useState<string>("");
 
   const getFileName = () => {
     if (isSampling) {
@@ -248,7 +251,7 @@ const Download: React.FC<DownloadProps> = ({
     for (;;) {
       const statusRes = await fetch(`/api/exports/jobs/${encodeURIComponent(jobId)}`);
       if (!statusRes.ok) {
-        throw new Error("Failed to poll export job status");
+        throw new Error(await readError(statusRes, "Failed to check the export's progress"));
       }
 
       const status = await statusRes.json();
@@ -272,6 +275,7 @@ const Download: React.FC<DownloadProps> = ({
   const handleDownload = async () => {
     try {
       setIsExporting(true);
+      setErrorText("");
       setStatusText("Estimating export size");
       console.log("[Download] Starting export...");
 
@@ -334,10 +338,13 @@ const Download: React.FC<DownloadProps> = ({
     } catch (error: any) {
       console.error("[Download] ERROR:", error);
       console.error("[Download] Error message:", error?.message);
-      setStatusText(error?.message || "Download failed");
-      window.setTimeout(() => setStatusText(""), 6000);
+      // fetch() rejects with a bare TypeError ("Failed to fetch") when the request never got a reply.
+      const message =
+        error instanceof TypeError ? "Could not reach the server. Check your connection." : error?.message;
+      setErrorText(message || "Download failed");
     } finally {
       setIsExporting(false);
+      setStatusText("");
     }
   };
 
@@ -358,14 +365,44 @@ const Download: React.FC<DownloadProps> = ({
     })();
 
   return (
-    <Button
-      onClick={handleDownload}
-      disabled={!hasActiveData || isExporting}
-      className="btn-mcmaster-primary w-full"
-    >
-      <DownloadIcon className="h-4 w-4 mr-2" />
-      {isExporting ? statusText || "Preparing export" : "Download Data"}
-    </Button>
+    <div className="space-y-2">
+      <Button
+        onClick={handleDownload}
+        disabled={!hasActiveData || isExporting}
+        className="btn-mcmaster-primary w-full"
+      >
+        <DownloadIcon className="h-4 w-4 mr-2" />
+        {isExporting ? statusText || "Preparing export" : "Download Data"}
+      </Button>
+      {errorText && !isExporting && (
+        <div
+          className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+        >
+          <div className="min-w-0 flex-1 break-words">
+            <p className="font-medium">Download failed</p>
+            <p>{errorText}</p>
+            {hasActiveData && (
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="mt-1 font-medium underline underline-offset-2 hover:text-red-900"
+              >
+                Try again
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorText("")}
+            aria-label="Dismiss error"
+            className="-m-1 shrink-0 rounded p-1 hover:bg-red-100 hover:text-red-900"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 };
 
