@@ -30,11 +30,12 @@ rss_mib() {
   echo $((total / 1024))
 }
 
-psql_at() { docker exec lt-postgres psql -U postgres -d "$1" -tAF, -c "$2" 2>/dev/null || echo ","; }
+# psql_at <database> <empty fields if it fails> <query>: one row, comma-separated.
+psql_at() { docker exec lt-postgres psql -U postgres -d "$1" -tAF, -c "$3" 2>/dev/null || echo "$2"; }
 
 header="elapsed_s"
 for c in "${containers[@]}"; do header+=",${c}_cpu_pct,${c}_mem_mib"; done
-header+=",next_cpu_pct,next_mem_mib,pg_active,pg_connections,exports_queued,exports_running"
+header+=",next_cpu_pct,next_mem_mib,pg_active,pg_connections,pg_parallel_workers,exports_queued,exports_running"
 echo "$header" > "$out"
 
 start=$(date +%s)
@@ -54,12 +55,16 @@ while true; do
   ticks=$(cpu_ticks "$next_pid")
   now=$(date +%s.%N)
   row+=,$(awk -v d="$((ticks - prev_ticks))" -v t="$(awk -v a="$now" -v b="$prev_time" 'BEGIN {print a - b}')" \
-    -v clk="$clk" 'BEGIN { printf "%.1f", t > 0 ? 100 * d / clk / t : 0 }'),$(rss_mib "$next_pid")
+    -v clk="$clk" 'BEGIN { printf "%.1f", (t > 0 ? 100 * d / clk / t : 0) }'),$(rss_mib "$next_pid")
   prev_ticks=$ticks
   prev_time=$now
-  row+=,$(psql_at postgres "SELECT count(*) FILTER (WHERE state = 'active'), count(*) FROM pg_stat_activity
-                            WHERE datname = 'well' AND pid <> pg_backend_pid()")
-  row+=,$(psql_at well "SELECT count(*) FILTER (WHERE status = 'queued'), count(*) FILTER (WHERE status = 'running')
+  # Connections the backend and export worker opened (active: running a query), and the parallel workers
+  # PostgreSQL started to help with big queries (they count against max_worker_processes, not max_connections).
+  row+=,$(psql_at postgres ",," "SELECT count(*) FILTER (WHERE backend_type = 'client backend' AND state = 'active'),
+                                        count(*) FILTER (WHERE backend_type = 'client backend'),
+                                        count(*) FILTER (WHERE backend_type = 'parallel worker')
+                                 FROM pg_stat_activity WHERE datname = 'well' AND pid <> pg_backend_pid()")
+  row+=,$(psql_at well "," "SELECT count(*) FILTER (WHERE status = 'queued'), count(*) FILTER (WHERE status = 'running')
                         FROM export_jobs")
   echo "$row" >> "$out"
   sleep "$interval"

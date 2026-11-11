@@ -65,6 +65,9 @@ const ENDPOINTS = [
   ["export_download", "GET /api/exports/jobs/<id>/download"],
 ];
 
+// Error statuses counted one by one in the summary; anything else is "other". 0: no answer (connection failed).
+const ERROR_STATUSES = ["0", "400", "404", "413", "429", "500", "502", "503", "504", "other"];
+
 // Warnings, at 30 visitors (class30); the run passes regardless.
 const WARN = {
   latest: { p95: 300 },
@@ -89,6 +92,7 @@ for (const scenario of Object.keys(SCENARIOS)) {
     thresholds[`${name}{scenario:${scenario}}`] = ["count>=0"];
   }
   thresholds[`export_wait{scenario:${scenario}}`] = ["max>=0"];
+  for (const status of ERROR_STATUSES) thresholds[`error_answers{scenario:${scenario},status:${status}}`] = ["count>=0"];
 }
 
 export const options = {
@@ -119,6 +123,7 @@ const exportsRejected = new Counter("exports_rejected_429");
 const exportsReady = new Counter("exports_ready");
 const exportsFailed = new Counter("exports_failed");
 const exportsGaveUp = new Counter("exports_gave_up");
+const errorAnswers = new Counter("error_answers"); // by status (0: no answer), for the summary
 
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
@@ -150,6 +155,7 @@ function get(url, endpoint, extra = {}) {
 function record(res, endpoint, ok = [200]) {
   const good = ok.includes(res.status);
   unexpectedErrors.add(!good, { endpoint });
+  if (!good) errorAnswers.add(1, { endpoint, status: ERROR_STATUSES.includes(String(res.status)) ? String(res.status) : "other" });
   check(res, { [`${endpoint} answered ${ok.join("/")}`]: () => good });
 }
 
@@ -309,6 +315,10 @@ export function handleSummary(data) {
       `(the queue's limits, expected under load), ${count("exports_ready")} ready ` +
       `(queued to ready: median ${ms(wait && wait.med)}, max ${ms(wait && wait.max)}), ` +
       `${count("exports_failed")} failed, ${count("exports_gave_up")} still not ready after ${EXPORT_WAIT_S} s.`, "");
+    const byStatus = ERROR_STATUSES.map((s) => [s, (metric(data, `error_answers{scenario:${scenario},status:${s}}`) || { count: 0 }).count])
+      .filter(([, n]) => n > 0).map(([s, n]) => `${n} x ${s === "0" ? "no answer" : s}`);
+    if (byStatus.length) lines.push(`Error answers by status: ${byStatus.join(", ")} ` +
+      "(504: the backend's 25 s statement timeout; 502: the backend unreachable or the connection dropped).", "");
     if (scenario === "class30" && unexpected && unexpected.rate > WARN.errorRate) {
       warnings.push(`error answers at ${CLASS_VUS} visitors: ${pct(unexpected.rate)}, over ${pct(WARN.errorRate)}`);
     }
