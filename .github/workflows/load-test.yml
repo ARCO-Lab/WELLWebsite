@@ -23,6 +23,9 @@ on:
       backend_cpus:
         description: CPU limit for the backend container (e.g. "2", to mimic a smaller VM); empty for none
         default: ""
+  # TEMPORARY: runs on pushes to this branch until the workflow is on main (workflow_dispatch needs that).
+  push:
+    branches: [ci/load-test]
   schedule:
     - cron: "0 6 * * 1"  # Mondays 06:00 UTC, only when vars.LOAD_TEST_WEEKLY == 'true'
 
