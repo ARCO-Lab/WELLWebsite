@@ -20,7 +20,7 @@ from sqlalchemy.exc import OperationalError  # noqa: E402
 from config import Config, parse_timeout_ms  # noqa: E402
 import server  # noqa: E402
 from db.database import db, engine_options  # noqa: E402
-from api.routes.series import MAX_AGE_PAST, MAX_AGE_RECENT, cache_key, max_age, snap_range  # noqa: E402
+from api.routes.series import MAX_AGE_PAST, MAX_AGE_RECENT, MAX_AGE_SETTLED, cache_key, max_age, snap_range  # noqa: E402
 from utils import response_cache  # noqa: E402
 
 # Config reads DATABASE_URL once, when first imported; another test module may have imported it first.
@@ -155,6 +155,8 @@ class SeriesCacheRulesTests(TestCase):
         self.assertEqual(max_age(now, now), MAX_AGE_RECENT)
         self.assertEqual(max_age(now - dt.timedelta(minutes=59), now), MAX_AGE_RECENT)
         self.assertEqual(max_age(now - dt.timedelta(minutes=61), now), MAX_AGE_PAST)
+        self.assertEqual(max_age(now - dt.timedelta(hours=23), now), MAX_AGE_PAST)
+        self.assertEqual(max_age(now - dt.timedelta(hours=25), now), MAX_AGE_SETTLED)
         self.assertEqual((MAX_AGE_RECENT, MAX_AGE_PAST), (60, 300))
 
 

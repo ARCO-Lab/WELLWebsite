@@ -87,7 +87,7 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
           <ChevronRight aria-hidden className="h-3.5 w-3.5" />
         </ToolButton>
         <ToolButton label="Reset: show the picked days" title="Reset" off={atDefault} onPress={() => controller.reset()}>
-          <span className="flex items-center gap-1 px-0.5"><RotateCcw aria-hidden className="h-3 w-3" />Reset</span>
+          <span className="flex items-center gap-1 px-0.5"><RotateCcw aria-hidden className="h-3 w-3" /><span className="max-sm:hidden">Reset</span></span>
         </ToolButton>
       </div>
     </div>

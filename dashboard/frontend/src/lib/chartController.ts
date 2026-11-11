@@ -340,7 +340,8 @@ export class ChartController {
       extent: this.ext,
       shownBucket: coarsestIn(this.segments(), this.win),
       wantedBucket: this.wantB,
-      loading: owners.slice(0, 2).some((o) => this.loader.waiting(o)),
+      // The window's own tiles; the overview (the whole history, for the slider) loads in the background
+      loading: this.loader.waiting(owners[1]) || (this.lastData.shownBucket === null && this.loader.waiting(owners[0])),
       error,
       hasData,
       windowEmpty: ![...this.lastData.series.values()].some((pts) => hasPointIn(pts, this.win)),

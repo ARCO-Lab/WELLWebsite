@@ -17,7 +17,7 @@ const ChartGroup: React.FC<Props> = ({ title, chartCount, children, above }) => 
   const [linked, setLinked] = useState(false);
   return (
     <ChartLinkContext.Provider value={group}>
-      <div className="@container rounded bg-white p-4 shadow">
+      <div className="@container rounded bg-white p-4 shadow max-sm:p-0 max-sm:shadow-none">
         {above}
         <div className="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <h3 className="text-lg font-bold">{title}</h3>

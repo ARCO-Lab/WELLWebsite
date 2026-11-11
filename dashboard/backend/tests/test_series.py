@@ -296,11 +296,11 @@ class SeriesSqlTests(unittest.TestCase):
 
         with mock.patch.object(response_cache, "get", side_effect=get), \
                 mock.patch.object(response_cache, "put", side_effect=put):
-            # A range that ended over a day ago: stored for 5 minutes, and browsers may keep it for a day.
+            # A range that ended over a day ago: stored for an hour, and browsers may keep it for a day.
             r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=86400, immutable")
             (key, body), = bodies.items()
-            self.assertEqual(ttls[key], 300)
+            self.assertEqual(ttls[key], 3600)
             self.assertIn(":2026-11-01T00:10:00:2026-11-01T00:50:00:Weather", key)  # rounded inward to 10-min marks
             self.assertEqual(body, r.get_data())
             self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])  # as unrounded

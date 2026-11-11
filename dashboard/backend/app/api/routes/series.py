@@ -33,8 +33,8 @@
 # Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
 # same readings as the request (no bucket is added at either edge), while visitors who open the same view a few
 # minutes apart share one cache key. (A chart's tiles start and end on bucket edges, so for them this changes
-# nothing.) The answer is kept in Redis (utils/response_cache.py) for 5 minutes for a range that ended over an hour
-# ago, 1 minute otherwise. Browsers may keep an answer for a range that ended over a day ago for a day, as
+# nothing.) The answer is kept in Redis (utils/response_cache.py) for an hour for a range that ended over a day ago,
+# 5 minutes for one that ended over an hour ago, 1 minute otherwise. Browsers may keep an answer for a range that ended over a day ago for a day, as
 # "immutable" (readings that old don't change, so a chart scrolling back over them asks for nothing), and any other
 # for a minute at most, and no longer than the cached copy has left.
 
@@ -56,7 +56,7 @@ AGG = {"Rain": "sum", "Wind Direction": "vector_mean"}  # every other measuremen
 LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the zone recorded_at is stored in
 SNAP = timedelta(minutes=10)
 RECENT = timedelta(hours=1)  # a range ending less long ago than this is still filling in, so reuse it briefly
-MAX_AGE_RECENT, MAX_AGE_PAST = 60, 300  # seconds the shared cache keeps a response
+MAX_AGE_RECENT, MAX_AGE_PAST, MAX_AGE_SETTLED = 60, 300, 3600  # seconds the shared cache keeps a response
 SETTLED = timedelta(days=1)  # a range that ended longer ago than this is complete
 BROWSER_SETTLED = "public, max-age=86400, immutable"
 BROWSER_MAX_AGE = 60  # seconds browsers may reuse an answer for any other range
@@ -123,6 +123,8 @@ def snap_range(start, end):
 
 def max_age(end, now):
     """How long the shared cache keeps an answer for a range ending at `end`; both are naive local times."""
+    if end < now - SETTLED:
+        return MAX_AGE_SETTLED  # complete: every visitor's charts share it (e.g. the slider's daily history)
     return MAX_AGE_PAST if end < now - RECENT else MAX_AGE_RECENT
 
 
