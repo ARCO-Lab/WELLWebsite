@@ -94,7 +94,8 @@ def _signal_group(pgid, sig):
 
 def download_status(stdout):
     """The status download_data.py reports on its last `OUTPUT: <status>` line, e.g. "PROCESSED_2_FILES",
-    "NO_NEW_FILES", "NO_FILES" or "NO_FILES_PROCESSED". None if it printed no status.
+    "NO_NEW_FILES", "NO_FILES", "NO_FILES_PROCESSED", or REJECTED_<n>_FILES / FAILED_<n>_FILES (then it exits 1).
+    None if it printed no status.
 
     download_data.py imports every file it downloads itself, so this is a status, never a file path.
     """

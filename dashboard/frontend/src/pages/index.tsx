@@ -577,6 +577,13 @@ export default function Dashboard() {
                         data={samplingData}
                         isSampling={true}
                       />
+                      {/* For researchers adding sampling files: the standard format, with example rows */}
+                      <p className="pt-1 text-center text-sm text-muted">
+                        Adding sampling data?{" "}
+                        <a href="/api/sampling-template" download className="whitespace-nowrap font-medium text-primary underline underline-offset-2 hover:opacity-80">
+                          CSV template
+                        </a>
+                      </p>
                       </div>
                     </div>
                   </StickyPanel>

@@ -15,7 +15,7 @@ FILES = [{"filename": "WELLAncasterWatershed_2026-11-01.xlsx", "id": 7, "create_
 
 def run_main(*argv):
     with mock.patch.object(sys, "argv", ["download_data.py", *argv]), \
-            mock.patch.object(download_data, "load_state", return_value=[]), \
+            mock.patch.object(download_data, "load_state", return_value={"processed_files": [], "refused_files": []}), \
             mock.patch.object(download_data, "save_state"), \
             mock.patch.object(download_data, "get_files_from_dataset", return_value=FILES), \
             mock.patch.object(download_data, "process_single_file", side_effect=AssertionError("downloaded a file")) as download, \

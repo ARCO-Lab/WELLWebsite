@@ -53,6 +53,8 @@ export const SENSOR_FILTER_CONFIG = {
   },
 };
 
+// The sampling sites and metrics below must match SITES and PARAMETERS in dashboard/backend/app/utils/sampling_csv.py,
+// which checks every imported sampling file against them (docs/sampling-csv-format.md).
 export const SAMPLING_METRICS = [ "E. coli", "Total coliform", "Turbidity", "pH", "Conductivity", "Chloride", "Total phosphorus", "Soluble reactive phosphorus", "Total nitrogen", "Nitrate nitrogen", "Ammonia nitrogen" ];
 
 export const SAMPLING_FILTER_CONFIG = {
