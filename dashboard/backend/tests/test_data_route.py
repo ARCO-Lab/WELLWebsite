@@ -104,9 +104,7 @@ class MaxRowsSettingTests(unittest.TestCase):
                 importlib.reload(data_route)
             self.assertEqual(data_route.MAX_ROWS, data_route.DEFAULT_MAX_ROWS)
         finally:
-            with mock.patch.dict(os.environ):
-                os.environ.pop("DATA_MAX_ROWS", None)
-                importlib.reload(data_route)
+            importlib.reload(data_route)  # patch.dict has restored os.environ by now
 
 
 if __name__ == "__main__":

@@ -190,7 +190,7 @@ WQDATA_DEVICE_ID=your-device-id-here
 
 > `HOBOLINK_LOGGERS` should be the serial number of each logger, comma-separated.
 
-> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once when the backend starts; a value that isn't a positive whole number is logged as a warning and the default is used. The cap matters because gunicorn's 3 sync workers can't tell when a browser gives up: the Next.js proxy stops waiting, but the worker stays busy until the query and JSON encoding finish.
+> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number logs a warning and uses the default. The cap matters because gunicorn's 3 sync workers can't tell when a browser gives up: the Next.js proxy stops waiting, but the worker stays busy until the query and JSON encoding finish, or until gunicorn's 30 s timeout kills it.
 
 ---
 
