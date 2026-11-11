@@ -1,9 +1,13 @@
-// This file defines the QualityGraph component for rendering water quality time series data using MetricChart.
-// It maps frontend metric labels to backend keys; the series come from the page (useChartView).
+// This file defines the QualityGraph component: the water quality probe's readings, one chart per unit, each
+// zooming and panning by itself. TSS starts hidden (the sensor has only ever read 0; its legend entry shows it) and
+// ODO is marked as suspect since June 2026 (see utils/chartStyle SERIES_NOTES).
 
 import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
-// Dynamically import MetricChart with SSR disabled
+import { SENSOR_STATIONS } from '@/components/config/filters';
+import ChartGroup from '@/components/graphs/ChartGroup';
+import { QUALITY_PANELS, panelsFor } from '@/utils/chartStyle';
+
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 
 const QUALITY_METRIC_MAP: Record<string, string> = {
@@ -11,7 +15,6 @@ const QUALITY_METRIC_MAP: Record<string, string> = {
   "Dissolved Oxygen (ODO)": "ODO",
   "Dissolved Oxygen Saturation (ODOSat)": "ODOSat",
   "Total Suspended Solids (TSS)": "TSS",
-  // Add more if needed
 };
 
 interface Props {
@@ -29,23 +32,28 @@ interface Props {
 }
 
 const QualityGraph = ({ subFilters, modalOpen }: Props) => {
-  // Map frontend metric labels to backend keys if needed. Memoized so the chart doesn't rebuild its series
-  // on every page re-render.
-  const mappedSubFilters = useMemo(
-    () => subFilters.quality.map(label => QUALITY_METRIC_MAP[label] || label),
+  const panels = useMemo(
+    () => panelsFor(QUALITY_PANELS, subFilters.quality.map((label) => QUALITY_METRIC_MAP[label] || label)),
     [subFilters.quality]
   );
-
   return (
-    <div className="p-4 bg-white rounded shadow">
-      <MetricChart
-        title="Quality Data"
-        groupType="Quality"
-        measurements={mappedSubFilters}
-        height={500}
-        modalOpen={modalOpen}
-      />
-    </div>
+    <ChartGroup title="Water Quality" chartCount={panels.length}>
+      <div className="grid grid-cols-1 gap-x-6 gap-y-5 @xl:grid-cols-2 @5xl:grid-cols-3">
+        {panels.map((p) => (
+          <div key={p.id} data-testid={`chart-quality-${p.id}`}>
+            <MetricChart
+              id={`quality-${p.id}`}
+              title={p.title}
+              groupType="Quality"
+              stationId={SENSOR_STATIONS.quality}
+              panes={[p.measurements]}
+              height={200}
+              modalOpen={modalOpen}
+            />
+          </div>
+        ))}
+      </div>
+    </ChartGroup>
   );
 };
 
