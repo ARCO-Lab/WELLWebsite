@@ -17,12 +17,13 @@ export function LoadingOverlay({ label = "Loading…", className = "" }: { label
 }
 
 /** A graph card's body: while `waiting` (the chart code isn't loaded yet) it keeps a chart's height and says
- *  "Loading…"; `busy` (that, or the data still loading) is announced with aria-busy. The chart draws its own
+ *  "Loading…"; the chart itself is aria-busy while `busy` (that, or the data still loading). The "Loading…" note
+ *  sits outside the busy element: screen readers may hold back updates inside one. The chart draws its own
  *  "Loading data…" once its code is there. */
 export function GraphFrame({ busy, waiting, children }: { busy: boolean; waiting: boolean; children: React.ReactNode }) {
   return (
-    <div aria-busy={busy || undefined} className={`relative ${waiting ? "min-h-[20rem] sm:min-h-[26rem]" : ""}`}>
-      {children}
+    <div className={`relative ${waiting ? "min-h-[20rem] sm:min-h-[26rem]" : ""}`}>
+      <div aria-busy={busy || undefined}>{children}</div>
       {waiting && <LoadingOverlay label="Loading graph…" className="rounded bg-gray-50/80" />}
     </div>
   );

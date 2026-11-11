@@ -12,7 +12,7 @@ function Checkbox({
   ...props
 }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
   // Renders a checkbox with custom styles and a checkmark indicator. On phones the box is 20 px and its ::after
-  // makes a 40 px tap target around it (rows are 40 px apart, so neighbours don't overlap).
+  // makes a 38 px tap target around it (rows are 40 px apart, so neighbours don't overlap).
   return (
     <CheckboxPrimitive.Root
       data-slot="checkbox"

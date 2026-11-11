@@ -349,7 +349,7 @@ function Map<G extends { [key: string]: boolean }>({
   );
 
   return (
-    <div id={containerId} aria-busy={!drawn} className={`${styles.map} flex h-full min-h-[14rem] w-full flex-col overflow-hidden rounded-lg border border-input-border`}>
+    <div id={containerId} className={`${styles.map} flex h-full min-h-[14rem] w-full flex-col overflow-hidden rounded-lg border border-input-border`}>
       <div className="relative min-h-0 flex-1">
       <MapGL
         ref={mapRef}

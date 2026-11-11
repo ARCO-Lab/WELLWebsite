@@ -56,11 +56,12 @@
     height: 1.75rem;
   }
 
-  /* A 40 px tap target around the 28 px marker (markers drawn side by side, 34 px apart, overlap a little at the edges) */
+  /* A 36 px tap target around the 28 px marker (the ::after counts from inside the 2 px border); markers drawn
+     side by side are 34 px apart, so their tap targets don't overlap */
   .marker::after {
     content: "";
     position: absolute;
-    inset: -8px;
+    inset: -6px;
     border-radius: 9999px;
   }
 }
