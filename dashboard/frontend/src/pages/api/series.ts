@@ -1,8 +1,9 @@
 // This file defines the Next.js API route for /api/series: chart-ready sensor series, aggregated by the Flask
 // backend (see dashboard/backend/app/api/routes/series.py). It translates the frontend's group toggles to
-// group_type filters and passes the backend's status and body through unchanged.
+// group_type filters and passes the backend's status and body through unchanged (see lib/proxyBackend).
 
 import type { NextApiRequest, NextApiResponse } from "next";
+import { proxyToBackend } from "@/lib/proxyBackend";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const { start, end, weather, quality, gauges } = req.query;
@@ -18,21 +19,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: "Missing or invalid query parameters" });
   }
 
-  // Stop waiting for the backend if the browser goes away (e.g. the user zoomed again).
-  const upstream = new AbortController();
-  res.on("close", () => {
-    if (!res.writableEnded) upstream.abort();
-  });
-
-  try {
-    const response = await fetch(`${process.env.FLASK_API_URL}/api/series?${params.toString()}`, { signal: upstream.signal });
-    const body = Buffer.from(await response.arrayBuffer());
-    res.status(response.status);
-    res.setHeader("Content-Type", response.headers.get("content-type") ?? "application/json");
-    return res.send(body);
-  } catch (error: any) {
-    if (upstream.signal.aborted) return;
-    console.error("[ERROR] Failed to fetch series from Flask backend:", error);
-    return res.status(502).json({ error: "The data service didn't respond. Please try again." });
-  }
+  return proxyToBackend(req, res, `/api/series?${params.toString()}`, {}, "chart series");
 }
