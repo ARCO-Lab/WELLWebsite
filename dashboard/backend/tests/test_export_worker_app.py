@@ -7,8 +7,8 @@ import sys
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 import uuid
-from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
@@ -27,12 +27,12 @@ class WorkerAppTestCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="export-worker-test-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         patches = [
-            mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", self.database_url
+            unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", self.database_url
                               or f"sqlite:///{os.path.join(self.tmp, 'jobs.db')}"),
-            mock.patch.object(Config, "EXPORTS_DIR", os.path.join(self.tmp, "exports")),
+            unittest.mock.patch.object(Config, "EXPORTS_DIR", os.path.join(self.tmp, "exports")),
             # A fresh process: no app made yet. Restored afterwards so other tests see what they expect.
-            mock.patch.object(export_tasks, "_worker_app", None),
-            mock.patch.object(export_tasks, "_worker_app_pid", None),
+            unittest.mock.patch.object(export_tasks, "_worker_app", None),
+            unittest.mock.patch.object(export_tasks, "_worker_app_pid", None),
         ]
         for p in patches:
             p.start()
@@ -40,7 +40,7 @@ class WorkerAppTestCase(unittest.TestCase):
         self.addCleanup(self.tasks.close_worker_connections)  # runs before the patches are undone
         os.makedirs(Config.EXPORTS_DIR)
         from server import create_app
-        self.create_app = mock.patch.object(export_tasks, "create_app", wraps=create_app)
+        self.create_app = unittest.mock.patch.object(export_tasks, "create_app", wraps=create_app)
         self.made = self.create_app.start()
         self.addCleanup(self.create_app.stop)
         from db.database import db
@@ -64,7 +64,7 @@ class OneAppPerProcessTests(WorkerAppTestCase):
         with app.app_context():
             engine = self.db.engine
         self.tasks._worker_app_pid = -1  # as if made by the parent before this process was forked from it
-        with mock.patch.object(engine, "dispose", wraps=engine.dispose) as dispose:
+        with unittest.mock.patch.object(engine, "dispose", wraps=engine.dispose) as dispose:
             self.assertIs(self.tasks.worker_app(), app)
             self.run_tasks(2)
         dispose.assert_called_once_with(close=False)  # left open for the parent, not closed under it
@@ -78,7 +78,7 @@ class PostgresConnectionTests(WorkerAppTestCase):
     def setUp(self):
         self.database_url = os.environ["TEST_POSTGRES_URL"]
         self.name = f"well-test-{uuid.uuid4().hex[:12]}"
-        name = mock.patch.object(Config, "DB_APPLICATION_NAME", self.name)
+        name = unittest.mock.patch.object(Config, "DB_APPLICATION_NAME", self.name)
         name.start()
         self.addCleanup(name.stop)
         super().setUp()
