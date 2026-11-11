@@ -5,8 +5,8 @@
 # its own record of months, so either copy can fail and be retried without the other.
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
 # pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload (Borealis and
-# SharePoint each have their own) and digest
-# (utils/heartbeat.py).
+# SharePoint each have their own) and digest (utils/heartbeat.py). After every ingestion run it checks for
+# sensor and vendor problems and emails new ones (scripts/check_alerts.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
 # When SENTRY_DSN is set, every failure it logs is also reported to Sentry, tagged with the job (utils/sentry.py).
@@ -36,11 +36,13 @@ from utils.jobs import (  # noqa: E402
 )
 from utils.heartbeat import ping_heartbeat  # noqa: E402
 from utils import sharepoint  # noqa: E402
+import check_alerts  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
 upload_log_file_path = "logs/db_uploads.log"
 digest_log_file_path = "logs/daily_digest.log"
+alerts_log_file_path = "logs/alerts.log"
 # Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
 # on the host), so it survives restarts and rebuilds.
 uploaded_months_path = "logs/uploaded_months.json"
@@ -104,6 +106,15 @@ def timestamped_print_upload(*args, **kwargs):
 def timestamped_print_digest(*args, **kwargs):
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
     with open(digest_log_file_path, "a") as f:
+        builtins._original_print(timestamp, *args, file=f, **kwargs)
+        f.flush()
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
+
+# Override print for the alert check
+def timestamped_print_alerts(*args, **kwargs):
+    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+    with open(alerts_log_file_path, "a") as f:
         builtins._original_print(timestamp, *args, file=f, **kwargs)
         f.flush()
     if LOG_TO_STDOUT:
@@ -311,8 +322,8 @@ def daily_digest_check():
     ping_heartbeat("digest", "success" if ok else "fail")
 
 def api_injection_job():
-    """Every 10 minutes: fetch new vendor API data and store it, then ping the ingestion heartbeat:
-    success, or /fail when either vendor failed (inject_all_new_data raises then)."""
+    """Every 10 minutes: fetch new vendor API data and store it, ping the ingestion heartbeat (success, or /fail
+    when either vendor failed: inject_all_new_data raises then), then run the alert check."""
     try:
         print("========== API INJECTION STARTED ==========")
         print("Calling inject_all_new_data() function...")
@@ -327,8 +338,24 @@ def api_injection_job():
         print("========== API INJECTION ERROR END ==========")
         capture_job_error(e)   # LI-COR and WQData failures are reported in inject_all_new_data itself
         ping_heartbeat("ingestion", "fail")
-        return
-    ping_heartbeat("ingestion", "success")
+    else:
+        ping_heartbeat("ingestion", "success")
+    alert_check_job()   # after failed runs too: that's how a vendor outage is noticed
+
+def alert_check_job():
+    """Check for sensor and vendor problems and email new ones (scripts/check_alerts.py). Never raises: a crash is
+    logged to logs/alerts.log and reported to Sentry, and pings the alerts heartbeat with /fail, as does an email
+    that couldn't be sent."""
+    try:
+        from inject_from_api import app as ingestion_app   # its app (and connection pool) is reused, not rebuilt
+        with ingestion_app.app_context():
+            summary = check_alerts.run(log=timestamped_print_alerts)
+        ok = summary["email"] != "failed"
+    except Exception as e:
+        timestamped_print_alerts(f"[ERROR] The alert check failed: {type(e).__name__}: {e}")
+        capture_job_error(e)
+        ok = False
+    ping_heartbeat("alerts", "success" if ok else "fail")
 
 if __name__ == "__main__":
     # Main entry point: one scheduler loop for all jobs
@@ -360,7 +387,7 @@ if __name__ == "__main__":
     scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
     scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
 
-    print("Schedule: API injection every 10 minutes; Borealis download Sundays 00:00; "
+    print("Schedule: API injection every 10 minutes, each followed by the alert check; Borealis download Sundays 00:00; "
           "Borealis upload (then SharePoint, if configured) at 02:00 Toronto time of each ended month not yet "
           "uploaded; "
           f"daily digest at {DIGEST_HOUR}:00 Toronto time.")

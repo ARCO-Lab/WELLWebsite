@@ -17,6 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.services import quality, weather  # noqa: E402
 from scripts import wqdata_backfill as bf  # noqa: E402
 from utils import parsers  # noqa: E402
+from utils.fetching import BadVendorResponse  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 UTC = dt.timezone.utc
@@ -72,7 +73,7 @@ class Licor(unittest.TestCase):
         start, end = dt.datetime(2026, 11, 1, 4, 30, tzinfo=UTC), dt.datetime(2026, 11, 1, 7, 30, tzinfo=UTC)
         for body in ({"error": "invalid date range"}, {"data": None}, {"data": "x"}, [], None):
             with mock.patch.object(weather.requests, "get", return_value=reply(body)):
-                with self.assertRaisesRegex(weather.LicorReplyError, "no 'data' list"):
+                with self.assertRaisesRegex(BadVendorResponse, "no 'data' list"):
                     service.get_page(start, end)
         with mock.patch.object(weather.requests, "get", return_value=reply({"data": []})):
             self.assertEqual(service.get_page(start, end), ([], False))   # a real empty page is still fine
