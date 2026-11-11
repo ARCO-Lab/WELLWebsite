@@ -5,7 +5,6 @@
 
 // Times are epoch milliseconds (UTC); ranges are [start, end), end exclusive.
 export type Range = { start: number; end: number };
-export type Point = [number, number | null];
 
 export const TIME_ZONE = "America/Toronto";
 
@@ -110,49 +109,124 @@ export function detailRange(w: Range, picked: Range, gridS: number): Range {
   };
 }
 
-// Arrays, or typed arrays (as cached: NaN stands for a missing value there).
+// Arrays, or typed arrays (as cached: NaN stands for a missing value there). min, max and n (readings per bucket)
+// are optional: an older backend sends no n, and Wind Direction has no min/max.
 export interface SeriesValues {
   t: ArrayLike<number>;
   avg: ArrayLike<number | null>;
+  min?: ArrayLike<number | null>;
+  max?: ArrayLike<number | null>;
+  n?: ArrayLike<number | null>;
+}
+
+// What a plotted point stands for, kept on it for the tooltip and the markers.
+export interface PointInfo {
+  start: number; // the bucket's start (epoch ms); the point itself is drawn at its middle
+  bucketS: number; // the bucket's size
+  lo: number | null; // smallest and largest reading in it (null when unknown or meaningless)
+  hi: number | null;
+  n: number | null; // readings in it (null when the backend doesn't say)
+  partial: boolean; // fewer than half the readings a full bucket has
+  isolated: boolean; // no neighbour on either side, so a line alone wouldn't show it
+}
+
+export interface ChartPoint {
+  x: number;
+  y: number | null;
+  custom?: PointInfo;
+}
+
+const RAW_S = LADDER[0]; // every sensor reports every 10 minutes
+
+const num = (a: ArrayLike<number | null> | undefined, i: number): number | null => {
+  const v = a?.[i];
+  return v === undefined || v === null || Number.isNaN(v) ? null : v;
+};
+
+/** Whether a bucket holding `n` readings is less than half full (sensors report every 10 minutes). Raw readings
+ *  and buckets whose count is unknown are never partial. */
+export function isPartial(n: number | null, bucketS: number): boolean {
+  return n !== null && bucketS > RAW_S && n < bucketS / RAW_S / 2;
 }
 
 /** Points for one series: overview points outside the detail range and detail points inside it, so a pan or
- *  zoom never shows a gap while detail loads. A null is inserted wherever two neighbours are more than
- *  GAP_FACTOR buckets apart (using the coarser of their two buckets), so lines break across outages instead
- *  of drawing straight through them. */
+ *  zoom never shows a gap while detail loads. An averaged bucket is drawn at its middle (it stands for the whole
+ *  span, not its first moment); raw readings at their own time. A null is inserted wherever two neighbours are
+ *  more than GAP_FACTOR buckets apart (using the coarser of their two buckets), so lines break across outages
+ *  instead of drawing straight through them. */
 export function composePoints(
   overview: SeriesValues | undefined,
   overviewBucketS: number,
   detail?: { values: SeriesValues | undefined; bucketS: number; range: Range },
-): Point[] {
-  const pts: { t: number; v: number | null; b: number }[] = [];
+): ChartPoint[] {
+  const pts: { t: number; v: number | null; bS: number; lo: number | null; hi: number | null; n: number | null }[] = [];
   const ob = overviewBucketS * 1000;
-  const push = (s: SeriesValues | undefined, b: number, keep: (t: number) => boolean) => {
+  const push = (s: SeriesValues | undefined, bS: number, keep: (t: number) => boolean) => {
     if (!s) return;
     for (let i = 0; i < s.t.length; i++) if (keep(s.t[i])) {
-      const v = s.avg[i];
-      pts.push({ t: s.t[i], v: v === null || Number.isNaN(v) ? null : v, b });
+      pts.push({ t: s.t[i], v: num(s.avg, i), bS, lo: num(s.min, i), hi: num(s.max, i), n: num(s.n, i) });
     }
   };
   if (!detail) {
-    push(overview, ob, () => true);
+    push(overview, overviewBucketS, () => true);
   } else {
     const { start, end } = detail.range;
-    push(overview, ob, (t) => t + ob <= start);
-    push(detail.values, detail.bucketS * 1000, (t) => t >= start && t < end);
-    push(overview, ob, (t) => t >= end);
+    push(overview, overviewBucketS, (t) => t + ob <= start);
+    push(detail.values, detail.bucketS, (t) => t >= start && t < end);
+    push(overview, overviewBucketS, (t) => t >= end);
   }
 
-  const out: Point[] = [];
+  const out: ChartPoint[] = [];
   for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const b = p.bS * 1000;
     if (i > 0) {
       const prev = pts[i - 1];
-      const b = Math.max(prev.b, pts[i].b);
-      if (pts[i].t - prev.t > GAP_FACTOR * b) out.push([prev.t + prev.b, null]);
+      if (p.t - prev.t > GAP_FACTOR * Math.max(prev.bS * 1000, b)) out.push({ x: prev.t + prev.bS * 1000, y: null });
     }
-    out.push([pts[i].t, pts[i].v]);
+    out.push({
+      x: p.bS > RAW_S ? p.t + b / 2 : p.t,
+      y: p.v,
+      custom: { start: p.t, bucketS: p.bS, lo: p.lo, hi: p.hi, n: p.n, partial: isPartial(p.n, p.bS), isolated: false },
+    });
+  }
+  for (let i = 0; i < out.length; i++) {
+    const c = out[i].custom;
+    if (c && out[i].y !== null) c.isolated = (out[i - 1]?.y ?? null) === null && (out[i + 1]?.y ?? null) === null;
   }
   return out;
+}
+
+/** "10-min", "6-h", "daily": a bucket size, short, for tooltips. */
+export function shortBucket(bucketS: number): string {
+  if (bucketS === 86400) return "daily";
+  return bucketS >= 3600 ? `${bucketS / 3600}-h` : `${Math.round(bucketS / 60)}-min`;
+}
+
+const two = (v: number) => String(v).padStart(2, "0");
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The time a point covers, in Toronto time: "Oct 1, 2026 18:00–24:00" for a 6-hour bucket, "Oct 1, 2026" for a
+ *  day, "Oct 1, 2026 18:10" for a raw reading. Buckets follow the local wall clock, so the end is start + size
+ *  on that clock (a bucket ending at midnight ends at 24:00, not 00:00 the next day). */
+export function bucketSpanLabel(startMs: number, bucketS: number): string {
+  const wall = new Date(startMs + zoneOffsetMs(startMs));
+  const day = `${MONTHS[wall.getUTCMonth()]} ${wall.getUTCDate()}, ${wall.getUTCFullYear()}`;
+  if (bucketS >= 86400) return day;
+  const hm = (m: number) => `${two(Math.floor(m / 60))}:${two(m % 60)}`;
+  const from = wall.getUTCHours() * 60 + wall.getUTCMinutes();
+  if (bucketS <= RAW_S) return `${day} ${hm(from)}`;
+  return `${day} ${hm(from)}–${hm(from + bucketS / 60)}`;
+}
+
+// Decimals a value is shown with, by unit: water levels in m asl to the millimetre, the rest to what the
+// sensors actually resolve.
+const DECIMALS: Record<string, number> = {
+  "m": 3, "m asl": 3, "m³/m³": 3, "g/L": 3, "PPT": 2, "mg/L": 2,
+  "°C": 1, "%": 1, "mbar": 1, "mm": 1, "m/s": 1, "NTU": 1, "uS/cm": 0, "W/m²": 0, "°": 0,
+};
+export function valueDecimals(unit: string): number {
+  return DECIMALS[unit] ?? 2;
 }
 
 /** "10-minute readings", "1-hour averages", "daily averages"… for a bucket size. */
