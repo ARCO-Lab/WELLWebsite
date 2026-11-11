@@ -14,14 +14,12 @@ COPY . .
 # they must be passed here as build args.
 ARG FLASK_API_URL
 ARG NEXT_PUBLIC_FLASK_API_URL
-ARG NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
 # WordPress site the header links to (read in src/components/Header.tsx)
 ARG NEXT_PUBLIC_WP_HOME=https://well.mcmaster.ca
 
 # Set environment variables for the build process
 ENV FLASK_API_URL=${FLASK_API_URL}
 ENV NEXT_PUBLIC_FLASK_API_URL=${NEXT_PUBLIC_FLASK_API_URL}
-ENV NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
 ENV NEXT_PUBLIC_WP_HOME=${NEXT_PUBLIC_WP_HOME}
 
 RUN npm run build
