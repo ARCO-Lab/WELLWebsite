@@ -33,6 +33,32 @@ LOGGER_CONFIG = {
     "22168657": { "logger_num": 5, "station_id": 2577535, "z": 39.568, "L": 1.75, "theta": 48.4 },
 }
 
+# The unit each stored measurement is read in. A LI-COR record in another unit (a sensor swapped or reconfigured,
+# say to °F or kPa) is skipped, and licor_rows reports it, rather than stored under the wrong unit or, for depth,
+# turned into a wrong water surface elevation. Measurements not listed here aren't checked and keep LI-COR's unit.
+# Matches the units stored in Nov 2026.
+WEATHER_UNITS = {
+    "Air Temperature": "°C", "Soil Temperature": "°C", "Dew Point": "°C", "Relative Humidity": "%",
+    "Pressure": "mbar", "Rain": "mm", "Solar Radiation": "W/m²", "Water Content": "m³/m³",
+    "Wind Speed": "m/s", "Gust Speed": "m/s", "Wind Direction": "°",
+}
+LOGGER_UNITS = {"1": "m", "3": "°C"}   # logger channel suffix: 1 sensor depth (for the elevation), 3 water temperature
+
+
+def unit_mismatch(entry):
+    """(sensor_sn, LI-COR's unit, the expected unit) when a LI-COR record we store comes in an unexpected unit,
+    else None."""
+    sensor_sn = str(entry.get("sensor_sn") or "")
+    if sensor_sn.startswith(LOGGER_PREFIX):
+        base_sn, _, suffix = sensor_sn.partition("-")
+        expected = LOGGER_UNITS.get(suffix) if base_sn in LOGGER_CONFIG else None
+    else:
+        expected = WEATHER_UNITS.get(weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type")))
+    unit = entry.get("unit")
+    if expected is None or (isinstance(unit, str) and unit.strip() == expected):
+        return None
+    return sensor_sn, unit, expected
+
 
 def reading_value(raw):
     """A vendor reading as a finite float, or None when it can't be stored: missing (None or absent), not a
@@ -55,7 +81,7 @@ def parse_weather_entry(entry, logger_id):
     if sensor_sn and sensor_sn.endswith("-B"):
         return None
     value = reading_value(entry.get("value"))
-    if value is None:
+    if value is None or unit_mismatch(entry):
         return None
 
     return SensorMeasurement(
@@ -87,7 +113,7 @@ def parse_logger_entry(entry):
     config = LOGGER_CONFIG[base_sn]
     station_id = config["station_id"]
     h = reading_value(entry.get("value"))
-    if h is None:
+    if h is None or unit_mismatch(entry):
         return None
     recorded_at = datetime.fromisoformat(entry.get("timestamp"))
 
@@ -133,16 +159,26 @@ def to_row(obj, tz):
 
 
 def licor_rows(records, groups, weather_station, tz) -> dict:
-    """Rows from LI-COR records for the given groups ("Weather" and/or "Logger"), keyed by unique key."""
+    """Rows from LI-COR records for the given groups ("Weather" and/or "Logger"), keyed by unique key.
+    Prints one [ERROR] line per sensor whose records were skipped for an unexpected unit."""
     rows = {}
+    wrong_units = {}
     for entry in records:
-        if str(entry.get("sensor_sn", "")).startswith(LOGGER_PREFIX):
-            obj = parse_logger_entry(entry) if "Logger" in groups else None
-        else:
-            obj = parse_weather_entry(entry, weather_station) if "Weather" in groups else None
+        is_logger = str(entry.get("sensor_sn", "")).startswith(LOGGER_PREFIX)
+        if ("Logger" if is_logger else "Weather") not in groups:
+            continue
+        mismatch = unit_mismatch(entry)
+        if mismatch:
+            wrong_units[mismatch] = wrong_units.get(mismatch, 0) + 1
+            continue
+        obj = parse_logger_entry(entry) if is_logger else parse_weather_entry(entry, weather_station)
         if obj is not None:
             key, row = to_row(obj, tz)
             rows.setdefault(key, row)
+    for (sensor_sn, unit, expected), count in sorted(wrong_units.items(), key=str):
+        print(f"[ERROR] LI-COR sensor {sensor_sn} reports {unit!r}, not {expected!r}: skipped its {count} "
+              f"record(s). Check the sensor, then update WEATHER_UNITS/LOGGER_UNITS in utils/parsers.py "
+              f"(and convert if needed).")
     return rows
 
 
