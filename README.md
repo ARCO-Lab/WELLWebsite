@@ -153,7 +153,7 @@ Then add this to your crontab (`crontab -e`):
 
 ## AI Analysis
 
-> **Currently disabled.** The UI entry points and API routes are commented out, each marked `AI ANALYSIS DISABLED`. To turn the feature back on, search the code for that marker, uncomment those blocks, delete the four 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts`, and set `OPENAI_API_KEY`.
+> **Currently disabled.** The UI entry points and API routes are commented out, each marked `AI ANALYSIS DISABLED`. To turn the feature back on, search the code for that marker, uncomment those blocks, delete the four 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts`, and set `OPENAI_API_KEY`. Uncommenting alone is not enough: the background summaries the analysis routes read (`latest_summaries`, filled after each `/api/data` request, and `latest_sampling_summaries`, after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so that summary step has to be rebuilt too. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
 
 An API endpoint aggregates/downsamples a series and sends a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend renders the output inside an analysis modal and allows exporting the narrative.
 
@@ -189,6 +189,8 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```
 
 > `HOBOLINK_LOGGERS` should be the serial number of each logger, comma-separated.
+
+> Optional: `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group) is the most readings one `/api/data` chart request may return; a larger range gets a 413 asking the user to narrow it or use Download. It is read once when the backend starts; a value that isn't a positive whole number is logged as a warning and the default is used. The cap matters because gunicorn's 3 sync workers can't tell when a browser gives up: the Next.js proxy stops waiting, but the worker stays busy until the query and JSON encoding finish.
 
 ---
 

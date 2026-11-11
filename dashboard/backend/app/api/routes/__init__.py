@@ -5,7 +5,11 @@ from .data import register_data_route
 from .latest import register_latest_route
 # AI ANALYSIS DISABLED: the OpenAI-backed /api/analysis/* routes are switched off.
 # To restore the feature, uncomment every block marked "AI ANALYSIS DISABLED"
-# (here and in dashboard/frontend), then set OPENAI_API_KEY.
+# (here and in dashboard/frontend), then set OPENAI_API_KEY. Uncommenting is not enough on its own: the
+# background threads that filled latest_summaries (data.py) and latest_sampling_summaries (samples.py) were
+# deleted in commit 5b501eb, not commented out, so the analysis routes would read empty summaries. Rebuild that
+# summary step too; the old code is in the commit before it, e.g.
+# `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and samples.py).
 # from .analysis.alltime import register_analysis_alltime_route
 # from .analysis.recent import register_analysis_recent_route
 # from .analysis.wind import register_analysis_wind_route
