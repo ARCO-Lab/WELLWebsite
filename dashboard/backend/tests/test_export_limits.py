@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest import mock
+import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
@@ -29,8 +29,9 @@ class AppTestCase(unittest.TestCase):
         self.exports = os.path.join(self.tmp, "exports")
         os.makedirs(self.exports)
         patches = [
-            mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", f"sqlite:///{os.path.join(self.tmp, 'jobs.db')}"),
-            mock.patch.object(Config, "EXPORTS_DIR", self.exports),
+            unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI",
+                                       f"sqlite:///{os.path.join(self.tmp, 'jobs.db')}"),
+            unittest.mock.patch.object(Config, "EXPORTS_DIR", self.exports),
         ]
         for p in patches:
             p.start()
@@ -70,7 +71,7 @@ class JobLimitTests(AppTestCase):
     def setUp(self):
         super().setUp()
         from tasks import exports as export_tasks
-        delay = mock.patch.object(export_tasks.generate_export_job, "delay")
+        delay = unittest.mock.patch.object(export_tasks.generate_export_job, "delay")
         self.delay = delay.start()
         self.addCleanup(delay.stop)
         self.client = self.app.test_client()
@@ -122,7 +123,7 @@ class JobLimitTests(AppTestCase):
         self.assertEqual(self.queue().status_code, 429)
 
     def test_total_limit(self):
-        with mock.patch.object(Config, "EXPORT_MAX_ACTIVE_JOBS", 3):
+        with unittest.mock.patch.object(Config, "EXPORT_MAX_ACTIVE_JOBS", 3):
             for n in range(3):
                 self.assertEqual(self.queue(f"198.51.100.{n}").status_code, 202)
             r = self.queue("198.51.100.99")
@@ -130,7 +131,7 @@ class JobLimitTests(AppTestCase):
         self.assertIn("busy", r.get_json()["error"])
 
     def test_too_many_rows_is_refused_before_queueing(self):
-        with mock.patch("api.routes.exports.estimate_rows", return_value=6_000_000):
+        with unittest.mock.patch("api.routes.exports.estimate_rows", return_value=6_000_000):
             r = self.queue()
         self.assertEqual(r.status_code, 413)
         self.assertIn("too large", r.get_json()["error"])
@@ -159,7 +160,7 @@ class PostgresJobLimitTests(unittest.TestCase):
     """The limits on PostgreSQL, where the route takes a transaction lock before counting."""
 
     def setUp(self):
-        patch = mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"])
+        patch = unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"])
         patch.start()
         self.addCleanup(patch.stop)
         from server import create_app
@@ -173,7 +174,7 @@ class PostgresJobLimitTests(unittest.TestCase):
         db.create_all()
         db.session.query(ExportJob).delete()
         db.session.commit()
-        delay = mock.patch.object(export_tasks.generate_export_job, "delay")
+        delay = unittest.mock.patch.object(export_tasks.generate_export_job, "delay")
         delay.start()
         self.addCleanup(delay.stop)
 
@@ -203,12 +204,12 @@ class WorkerSettingsTests(unittest.TestCase):
 class TaskTests(AppTestCase):
     def run_task(self, job_id, **patches):
         from tasks import exports as export_tasks
-        with mock.patch.object(export_tasks, "create_app", return_value=self.app):
-            with mock.patch.object(export_tasks, "write_export_csv", **patches) as write:
+        with unittest.mock.patch.object(export_tasks, "create_app", return_value=self.app):
+            with unittest.mock.patch.object(export_tasks, "write_export_csv", **patches) as write:
                 try:
                     export_tasks.generate_export_job(job_id)
                 except SoftTimeLimitExceeded:
-                    pass
+                    pass  # re-raised by the task after marking the job failed, which is what the tests check
         return write
 
     def test_a_redelivered_job_that_was_running_is_failed_not_rerun(self):
@@ -242,11 +243,65 @@ class TaskTests(AppTestCase):
         write.assert_called_once()
         self.assertEqual(self.get("fine").status, "ready")
 
+    def test_a_job_is_marked_failed_even_after_a_database_error(self):
+        from sqlalchemy.exc import IntegrityError
+        from tasks import exports as export_tasks
+        self.add_job("dbfail", "queued")
+
+        def break_the_session(**kwargs):
+            self.db.session.add(self.ExportJob(id="dbfail", status="queued", domain="sampling", payload={}))
+            self.db.session.flush()  # a duplicate key: the session's transaction is now unusable
+
+        with unittest.mock.patch.object(export_tasks, "create_app", return_value=self.app):
+            with unittest.mock.patch.object(export_tasks, "write_export_csv", side_effect=break_the_session):
+                with self.assertRaises(IntegrityError):
+                    export_tasks.generate_export_job("dbfail")
+        self.assertEqual(self.get("dbfail").status, "failed")
+
+    def test_the_status_route_settles_a_job_whose_worker_died(self):
+        from api.services.exports import EXPORT_TOO_SLOW_MESSAGE
+        self.add_job("oom", "running", minutes_ago=40, started_minutes_ago=26)
+        self.add_job("alive", "running", minutes_ago=5, started_minutes_ago=4)
+        client = self.app.test_client()
+        body = client.get("/api/exports/jobs/oom").get_json()
+        self.assertEqual((body["status"], body["error_message"]), ("failed", EXPORT_TOO_SLOW_MESSAGE))
+        self.assertEqual(self.get("oom").status, "failed")
+        self.assertEqual(client.get("/api/exports/jobs/alive").get_json()["status"], "running")
+
+
+class StreamCleanupTests(AppTestCase):
+    def test_a_failed_write_returns_the_streaming_connection(self):
+        from api.services import exports as export_service
+        from db.models import SamplingMeasurement
+        when = dt.datetime(2026, 11, 1, 10, 0)
+        self.db.session.add_all(SamplingMeasurement(site_id=f"S{i}", creek_id="C", measurement_type="pH", unit="",
+                                                    value=7.0, recorded_at=when) for i in range(3))
+        self.db.session.commit()
+        self.db.session.close()
+        calls = []
+
+        def fail_on_a_data_row(row):
+            calls.append(row)
+            if len(calls) == 2:  # the header is call 1
+                raise OSError("disk full")
+
+        with unittest.mock.patch.object(export_service._SafeCsvWriter, "writerow",
+                                        side_effect=lambda row: fail_on_a_data_row(row)):
+            error = None
+            try:
+                export_service.write_export_csv(SAMPLING, os.path.join(self.exports, "x.csv"), estimated_rows=3)
+            except OSError as exc:
+                error = exc
+        # The error's traceback is still alive (as it is while the task logs and handles it), and with it the stack
+        # the row generator was used in: the connection must be back in the pool anyway.
+        self.assertIsNotNone(error.__traceback__)
+        self.assertEqual(self.db.engine.pool.checkedout(), 0)
+
 
 class CleanupTests(AppTestCase):
     def run_cleanup(self):
         from tasks.exports import cleanup_expired_artifacts
-        with mock.patch("tasks.exports.create_app", return_value=self.app):
+        with unittest.mock.patch("tasks.exports.create_app", return_value=self.app):
             cleanup_expired_artifacts()
         self.db.session.expire_all()
 
@@ -316,7 +371,8 @@ class CleanupTests(AppTestCase):
         from sqlalchemy.exc import ProgrammingError
         orphan = self.file("sync_export_abc.csv", hours_old=4)
         self.add_job("ancient", "expired", minutes_ago=31 * 24 * 60)
-        with mock.patch("sqlalchemy.orm.Query.delete", side_effect=ProgrammingError("DELETE", {}, Exception("denied"))):
+        denied = ProgrammingError("DELETE", {}, Exception("denied"))
+        with unittest.mock.patch("sqlalchemy.orm.Query.delete", side_effect=denied):
             self.run_cleanup()
         self.assertFalse(os.path.exists(orphan))
         self.assertIsNotNone(self.get("ancient"))

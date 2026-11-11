@@ -12,8 +12,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from typing import Dict, List
-from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
@@ -33,7 +33,8 @@ from db.models import SensorMeasurement  # noqa: E402
 
 def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
     """The sensor export as it was before streaming (every reading loaded with .all()), kept as the reference the
-    streamed output must match. Copied unchanged apart from the def line and this docstring."""
+    streamed output must match. Copied unchanged apart from the def line, this docstring and an unused loop
+    variable renamed to _."""
     requested_groups = set(filters.get("group_types", []))
 
     query = _sensor_query(filters)
@@ -133,7 +134,7 @@ def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
     if include_logger:
         headers.append("Group")
         if effective_logger_stations:
-            for station_id in effective_logger_stations:
+            for _ in effective_logger_stations:
                 headers.append("Sensor")
                 for metric in logger_metrics:
                     unit = units_by_metric.get(metric, "")
@@ -266,7 +267,7 @@ class StreamedCsvMatchesTheOldOne:
                 self.assertEqual(new, old)
 
     def test_same_bytes_when_read_a_few_rows_at_a_time(self):
-        with mock.patch.object(export_service, "STREAM_BATCH_ROWS", 7):
+        with unittest.mock.patch.object(export_service, "STREAM_BATCH_ROWS", 7):
             for name, case in FILTER_CASES.items():
                 with self.subTest(name):
                     old, new = self.both(case)
@@ -287,7 +288,7 @@ class StreamedCsvMatchesTheOldOne:
 
     def test_progress_is_reported_while_writing(self):
         calls = []
-        with mock.patch.object(export_service, "STREAM_BATCH_ROWS", 50):
+        with unittest.mock.patch.object(export_service, "STREAM_BATCH_ROWS", 50):
             written = write_export_csv(payload(group_types=ALL), os.path.join(self.tmp, "p.csv"),
                                        progress_callback=lambda done, total: calls.append(done), estimated_rows=999)
         self.assertEqual(calls[:-1], list(range(50, written + 1, 50)))
@@ -298,7 +299,8 @@ class SqliteStreamedCsvTests(StreamedCsvMatchesTheOldOne, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.dir = tempfile.mkdtemp(prefix="export-csv-db-")
-        with mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", f"sqlite:///{os.path.join(cls.dir, 't.db')}"):
+        uri = f"sqlite:///{os.path.join(cls.dir, 't.db')}"
+        with unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", uri):
             from server import create_app
             cls.app = create_app()
         from db.database import db
@@ -321,7 +323,7 @@ class SqliteStreamedCsvTests(StreamedCsvMatchesTheOldOne, unittest.TestCase):
 class PostgresStreamedCsvTests(StreamedCsvMatchesTheOldOne, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"]):
+        with unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"]):
             from server import create_app
             cls.app = create_app()
         from db.database import db
@@ -360,7 +362,8 @@ class SamplingExportTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="export-sampling-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-        patch = mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", f"sqlite:///{os.path.join(self.dir, 't.db')}")
+        uri = f"sqlite:///{os.path.join(self.dir, 't.db')}"
+        patch = unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", uri)
         patch.start()
         self.addCleanup(patch.stop)
         from server import create_app

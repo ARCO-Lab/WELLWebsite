@@ -5,9 +5,16 @@ from datetime import timedelta
 
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
-from sqlalchemy import and_, func, or_
+from sqlalchemy import or_
 
-from api.services.exports import QUEUED_STALE_AFTER, default_export_filename, running_stale_after, write_export_csv
+from api.services.exports import (
+    EXPORT_FAILED_MESSAGE,
+    EXPORT_TOO_SLOW_MESSAGE,
+    default_export_filename,
+    live_job_condition,
+    settle_if_stuck,
+    write_export_csv,
+)
 from config import Config
 from db.database import db
 from db.models import ExportJob
@@ -17,10 +24,7 @@ from utils.timezone import est_after, est_now
 
 logger = get_task_logger(__name__)
 
-# What a failed job reports to the page when the cause isn't a validation error.
-EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again later."
-# For an export stopped at the time limit, or found stuck by the cleanup.
-EXPORT_TOO_SLOW_MESSAGE = "This export took too long to build. Try a shorter date range."
+# EXPORT_FAILED_MESSAGE and EXPORT_TOO_SLOW_MESSAGE (api/services/exports.py) are the other failure messages.
 # For a job whose task was started before and didn't finish (its worker process died, most likely of running out
 # of memory). It isn't run again, since it would likely die the same way.
 EXPORT_INTERRUPTED_MESSAGE = "This export was interrupted. Try a shorter date range."
@@ -105,6 +109,9 @@ def generate_export_job(self, job_id: str):
 
         except Exception as exc:
             logger.exception("Export job failed: %s", job_id)
+            # The failure may have left the session's transaction broken (a database error, or the time limit
+            # landing mid-commit); start a fresh one so the job can still be marked failed.
+            db.session.rollback()
             # No row points at a failed export's file (the path is saved only on success), so the hourly cleanup
             # would never find it: delete it now.
             if artifact_path:
@@ -163,24 +170,14 @@ def cleanup_expired_artifacts():
 
 def _fail_stuck_jobs():
     now = est_now()
-    stuck = (
+    candidates = (
         db.session.query(ExportJob)
-        .filter(
-            or_(
-                and_(ExportJob.status == "queued", ExportJob.created_at < now - QUEUED_STALE_AFTER),
-                and_(
-                    ExportJob.status == "running",
-                    func.coalesce(ExportJob.started_at, ExportJob.created_at) < now - running_stale_after(),
-                ),
-            )
-        )
+        .filter(ExportJob.status.in_(("queued", "running")), ~live_job_condition(now))
         .all()
     )
+    stuck = [job for job in candidates if settle_if_stuck(job, now)]
     for job in stuck:
-        logger.warning("Export job %s was stuck %s; marking it failed", job.id, job.status)
-        job.error_message = EXPORT_TOO_SLOW_MESSAGE if job.status == "running" else EXPORT_FAILED_MESSAGE
-        job.status = "failed"
-        job.completed_at = now
+        logger.warning("Export job %s will never finish; marked it failed", job.id)
     if stuck:
         db.session.commit()
     for job in stuck:
@@ -283,7 +280,7 @@ def _remove_orphaned_files():
                 if removed_any or os.path.getmtime(folder) < cutoff:
                     os.rmdir(folder)
             except OSError:
-                pass
+                pass  # not empty yet (a file it holds is kept), or already gone
 
 
 def _remove_job_folder(job_id):

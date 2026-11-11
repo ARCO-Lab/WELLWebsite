@@ -1,6 +1,6 @@
 import csv
 import os
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -42,8 +42,13 @@ class _SafeCsvWriter:
 def _streaming_connection():
     """A connection of its own that reads results STREAM_BATCH_ROWS at a time (a server-side cursor on
     PostgreSQL) instead of loading them all. Separate from db.session, whose progress commits would otherwise end
-    the transaction the cursor lives in."""
+    the transaction the cursor lives in.
+
+    On PostgreSQL its transaction is REPEATABLE READ, so every query on it sees the same snapshot: the sensor
+    export's header query and its rows agree even while new readings arrive (a range ending "now")."""
     with db.engine.connect() as conn:
+        if conn.dialect.name == "postgresql":
+            conn = conn.execution_options(isolation_level="REPEATABLE READ")
         yield conn.execution_options(stream_results=True, yield_per=STREAM_BATCH_ROWS)
 
 
@@ -70,6 +75,30 @@ def live_job_condition(now: datetime):
             func.coalesce(ExportJob.started_at, ExportJob.created_at) >= now - running_stale_after(),
         ),
     )
+
+
+# What a failed job reports to the page when the cause isn't a validation error.
+EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again later."
+# For an export stopped at the time limit, or found stuck while running.
+EXPORT_TOO_SLOW_MESSAGE = "This export took too long to build. Try a shorter date range."
+
+
+def settle_if_stuck(job, now: datetime) -> bool:
+    """Mark a queued or running job that will never finish (see QUEUED_STALE_AFTER) failed, without committing.
+    Returns whether it did. Used by the hourly cleanup, and by the job status route so the page learns at once."""
+    if job.status == "queued":
+        stuck = job.created_at is not None and job.created_at < now - QUEUED_STALE_AFTER
+    elif job.status == "running":
+        since = job.started_at or job.created_at
+        stuck = since is not None and since < now - running_stale_after()
+    else:
+        stuck = False
+    if stuck:
+        job.error_message = EXPORT_TOO_SLOW_MESSAGE if job.status == "running" else EXPORT_FAILED_MESSAGE
+        job.status = "failed"
+        job.completed_at = now
+    return stuck
+
 
 SENSOR_FILTER_CONFIG = {
     "gauges": {
@@ -223,23 +252,26 @@ def write_export_csv(
             ]
         )
 
-        for row in iter_export_rows(filters):
-            writer.writerow(
-                [
-                    row.get("domain", ""),
-                    row.get("recorded_at", ""),
-                    row.get("group_type", ""),
-                    row.get("station_id", ""),
-                    row.get("creek_id", ""),
-                    row.get("site_id", ""),
-                    row.get("measurement_type", ""),
-                    row.get("value", ""),
-                    row.get("unit", ""),
-                ]
-            )
-            rows_written += 1
-            if progress_callback and rows_written % STREAM_BATCH_ROWS == 0:
-                progress_callback(rows_written, total)
+        # closing(): if writing fails part way, the generator is closed at once, which returns its connection
+        # instead of leaving it checked out mid-transaction until garbage collection.
+        with closing(iter_export_rows(filters)) as rows:
+            for row in rows:
+                writer.writerow(
+                    [
+                        row.get("domain", ""),
+                        row.get("recorded_at", ""),
+                        row.get("group_type", ""),
+                        row.get("station_id", ""),
+                        row.get("creek_id", ""),
+                        row.get("site_id", ""),
+                        row.get("measurement_type", ""),
+                        row.get("value", ""),
+                        row.get("unit", ""),
+                    ]
+                )
+                rows_written += 1
+                if progress_callback and rows_written % STREAM_BATCH_ROWS == 0:
+                    progress_callback(rows_written, total)
 
     if progress_callback:
         progress_callback(rows_written, total)
@@ -366,11 +398,11 @@ def _as_group_metric_map(value):
     return normalized
 
 
-def _sensor_columns_summary(conditions) -> Dict:
+def _sensor_columns_summary(conn, conditions) -> Dict:
     """What the header of a sensor export needs, from one GROUP BY query instead of every row: the metrics seen in
     each group, the logger stations seen, and each metric's unit (the one of its latest reading)."""
     latest = func.max(SensorMeasurement.recorded_at)
-    summary = db.session.execute(
+    summary = conn.execute(
         select(
             SensorMeasurement.group_type,
             SensorMeasurement.measurement_type,
@@ -414,6 +446,18 @@ def _write_sensor_frontend_style_csv(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     total: int = 0,
 ) -> int:
+    # The header query and the rows share one connection, and so one snapshot (_streaming_connection).
+    with _streaming_connection() as conn:
+        return _write_sensor_csv(conn, filters, output_path, progress_callback, total)
+
+
+def _write_sensor_csv(
+    conn,
+    filters: Dict,
+    output_path: str,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    total: int = 0,
+) -> int:
     """
     Export sensor data matching the exact CSV format from upload_data.py
     Structure: [ID, Timestamp, Weather section, blank, Quality section, blank, Logger section]
@@ -424,7 +468,7 @@ def _write_sensor_frontend_style_csv(
     """
     requested_groups = set(filters.get("group_types", []))
     conditions = _sensor_conditions(filters)
-    summary = _sensor_columns_summary(conditions)
+    summary = _sensor_columns_summary(conn, conditions)
     units_by_metric = summary["units_by_metric"]
     all_weather_metrics = summary["metrics"]["Weather"]
     all_quality_metrics = summary["metrics"]["Quality"]
@@ -488,7 +532,7 @@ def _write_sensor_frontend_style_csv(
     # Logger section: Include if requested (even if no data)
     if include_logger:
         headers.append("Group")
-        for station_id in effective_logger_stations:
+        for _ in effective_logger_stations:
             headers.append("Sensor")
             headers.extend(metric_header(metric) for metric in logger_metrics)
 
@@ -525,7 +569,7 @@ def _write_sensor_frontend_style_csv(
 
     records = 0
     row_num = 0
-    with open(output_path, "w", newline="", encoding="utf-8") as file_obj, _streaming_connection() as conn:
+    with open(output_path, "w", newline="", encoding="utf-8") as file_obj:
         writer = _SafeCsvWriter(file_obj)
         writer.writerow(headers)
 

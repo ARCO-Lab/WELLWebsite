@@ -11,6 +11,7 @@ from api.services.exports import (
     estimate_rows,
     live_job_condition,
     normalize_export_payload,
+    settle_if_stuck,
     write_export_csv,
 )
 from config import Config
@@ -174,6 +175,11 @@ def register_export_routes(app):
         job = db.session.get(ExportJob, job_id)
         if not job:
             return jsonify({"error": "Export job not found"}), 404
+
+        # A job whose worker died (killed for memory, say) would read "running" until the hourly cleanup; settle
+        # it here so the page stops waiting. The cleanup still deletes whatever it left behind.
+        if settle_if_stuck(job, est_now()):
+            db.session.commit()
 
         response = job.to_dict()
         response["download_ready"] = job.status == "ready"
