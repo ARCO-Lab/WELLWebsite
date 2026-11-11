@@ -43,6 +43,17 @@ WEATHER_UNITS = {
     "Wind Speed": "m/s", "Gust Speed": "m/s", "Wind Direction": "°",
 }
 LOGGER_UNITS = {"1": "m", "3": "°C"}   # logger channel suffix: 1 sensor depth (for the elevation), 3 water temperature
+# Other spellings LI-COR uses for an expected unit (compared ignoring case and surrounding spaces). The water-level
+# loggers' depth channels report 'meters' (seen Nov 2026); without this they'd all be skipped.
+UNIT_ALIASES = {"m": {"meters", "meter", "metres", "metre"}}
+
+
+def same_unit(unit, expected):
+    """Whether LI-COR's unit string names the expected unit: equal or a listed alias, ignoring case and spaces."""
+    if not isinstance(unit, str):
+        return False
+    unit = unit.strip().casefold()
+    return unit == expected.casefold() or unit in UNIT_ALIASES.get(expected, ())
 
 
 def unit_mismatch(entry):
@@ -55,9 +66,20 @@ def unit_mismatch(entry):
     else:
         expected = WEATHER_UNITS.get(weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type")))
     unit = entry.get("unit")
-    if expected is None or (isinstance(unit, str) and unit.strip() == expected):
+    if expected is None or same_unit(unit, expected):
         return None
     return sensor_sn, unit, expected
+
+
+def stored_unit(entry):
+    """The unit to store with a LI-COR record that passed unit_mismatch: the expected unit when one is checked
+    (so an alias such as 'meters' is stored as 'm', like the rows before it), else LI-COR's own unit."""
+    sensor_sn = str(entry.get("sensor_sn") or "")
+    if sensor_sn.startswith(LOGGER_PREFIX):
+        expected = LOGGER_UNITS.get(sensor_sn.partition("-")[2])
+    else:
+        expected = WEATHER_UNITS.get(weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type")))
+    return expected if expected is not None else entry.get("unit", "")
 
 
 def reading_value(raw):
@@ -89,7 +111,7 @@ def parse_weather_entry(entry, logger_id):
         group_type="Weather",
         measurement_type=weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type")),
         value=value,
-        unit=entry.get("unit", ""),
+        unit=stored_unit(entry),
         recorded_at=datetime.fromisoformat(entry.get("timestamp"))
     )
 
@@ -124,7 +146,7 @@ def parse_logger_entry(entry):
                                  value=wse, unit="m asl", recorded_at=recorded_at)
     if metric_suffix == '3':
         return SensorMeasurement(station_id=station_id, group_type="Logger", measurement_type="Water Temperature",
-                                 value=h, unit=entry.get("unit"), recorded_at=recorded_at)
+                                 value=h, unit=stored_unit(entry), recorded_at=recorded_at)
     return None
 
 
@@ -177,7 +199,8 @@ def licor_rows(records, groups, weather_station, tz) -> dict:
             rows.setdefault(key, row)
     for (sensor_sn, unit, expected), count in sorted(wrong_units.items(), key=str):
         print(f"[ERROR] LI-COR sensor {sensor_sn} reports {unit!r}, not {expected!r}: skipped its {count} "
-              f"record(s). Check the sensor, then update WEATHER_UNITS/LOGGER_UNITS in utils/parsers.py "
+              f"record(s). Check the sensor, then update WEATHER_UNITS/LOGGER_UNITS (or UNIT_ALIASES, for "
+              f"another spelling of the same unit) in utils/parsers.py "
               f"(and convert if needed), then run scripts/licor_backfill.py --days N for the skipped period: "
               f"the 10-minute ingestion won't fetch it again, since the other sensors' readings move its start.")
     return rows
