@@ -23,7 +23,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
-from utils.sentry import init_sentry, capture_job_error  # noqa: E402
+from utils.sentry import init_sentry, capture_job_error, capture_job_warning  # noqa: E402
 
 # Report errors to Sentry when SENTRY_DSN is set (utils/sentry.py). First, so they are tagged worker:
 # inject_from_api imports server.py, which would otherwise start reporting as the API.
@@ -353,6 +353,9 @@ def nightly_backup_check(log=None, run=None):
         log(f"backup_db.py stdout: {result.stdout}")
         if result.stderr:
             log(f"backup_db.py stderr: {result.stderr}")
+        for line in (result.stderr or "").splitlines():
+            if line.startswith("WARNING:"):   # the backup worked, but deleting old dumps didn't
+                capture_job_warning(line)
         ok = True
     except subprocess.TimeoutExpired as e:
         log(f"[ERROR] backup_db.py was stopped after {BACKUP_TIMEOUT_S // 60} min without finishing")

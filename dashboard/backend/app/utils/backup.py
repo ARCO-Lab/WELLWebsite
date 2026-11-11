@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 
 from sqlalchemy.engine import make_url
@@ -16,6 +17,16 @@ from sqlalchemy.engine import make_url
 # Dumps this job writes, and the only files it ever deletes: welldb-YYYYmmdd-HHMM.dump (Toronto time).
 DUMP_PREFIX = "welldb-"
 DUMP_PATTERN = re.compile(r"^welldb-(\d{8})-(\d{4})\.dump$")
+# A dump still being written (renamed to its final name once checked). One left behind by a run that was killed
+# is deleted by the next run, which holds the backup lock, so it can't be another run's.
+PARTIAL_PATTERN = re.compile(r"^\.welldb-\d{8}-\d{4}\.dump\.partial$")
+
+# Temporary password files live in a folder of their own, so ones left by a process that was killed (SIGKILL
+# skips every cleanup) can be found and deleted. Files older than PASSFILE_MAX_AGE_S are leftovers: libpq reads
+# the file when it connects, at the start of a run.
+PASSFILE_DIR_NAME = "welldb-pgpass"
+PASSFILE_PREFIX = "pgpass-"
+PASSFILE_MAX_AGE_S = 60 * 60
 DUMP_TIME_FORMAT = "%Y%m%d-%H%M"
 
 # Tables the app role can't read: they are owned by the postgres role, and pg_dump locks every table it dumps,
@@ -104,7 +115,7 @@ def libpq_env(settings, base_env=None):
     passfile = None
     try:
         if settings.get("password"):
-            fd, passfile = tempfile.mkstemp(prefix="pgpass-")   # mkstemp creates it 0600
+            fd, passfile = tempfile.mkstemp(prefix=PASSFILE_PREFIX, dir=passfile_dir())   # created 0600
             with os.fdopen(fd, "w") as f:
                 f.write(pgpass_line(settings["password"]))
             env["PGPASSFILE"] = passfile
@@ -113,6 +124,30 @@ def libpq_env(settings, base_env=None):
         if passfile:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(passfile)
+
+
+def passfile_dir():
+    """The folder for temporary password files (created 0700 under the system temp folder)."""
+    path = os.path.join(tempfile.gettempdir(), PASSFILE_DIR_NAME)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return path
+
+
+def remove_stale_passfiles(max_age_s=PASSFILE_MAX_AGE_S, now=None):
+    """Delete password files that a killed run left behind (older than `max_age_s`). Returns how many."""
+    directory, now, removed = passfile_dir(), now or time.time(), 0
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        with contextlib.suppress(FileNotFoundError):
+            if name.startswith(PASSFILE_PREFIX) and now - os.path.getmtime(path) > max_age_s:
+                os.remove(path)
+                removed += 1
+    return removed
+
+
+def stale_partials(names):
+    """The unfinished dumps (.welldb-*.dump.partial) among `names`."""
+    return sorted(name for name in names if PARTIAL_PATTERN.match(name))
 
 
 def psycopg2_kwargs(settings):

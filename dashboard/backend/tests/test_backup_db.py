@@ -5,6 +5,7 @@ RoundTrip runs pg_dump and pg_restore against PostgreSQL. It runs only when TEST
 server reached as a superuser (CI's postgres:13 container), because it creates and drops a role and databases there;
 never point it at a real one."""
 import datetime as dt
+import io
 import os
 import pathlib
 import stat
@@ -156,6 +157,140 @@ class SchedulerTests(unittest.TestCase):
                 self.assertEqual(self.pings, [("backup", "start"), ("backup", "fail")])
                 capture.assert_called_once_with(error)
 
+    def test_a_retention_warning_is_still_a_success_and_goes_to_sentry_as_a_warning(self):
+        warning = "WARNING: the backup is fine, but deleting old dumps failed: [Errno 13] Permission denied"
+        with mock.patch.object(self.scheduler, "capture_job_warning") as warn:
+            ok, capture = self.run_check(3, lambda cmd, timeout: subprocess.CompletedProcess(cmd, 0, "", warning))
+        self.assertTrue(ok)
+        self.assertEqual(self.pings, [("backup", "start"), ("backup", "success")])
+        warn.assert_called_once_with(warning)
+        capture.assert_not_called()
+
+    def test_the_steps_fit_inside_the_schedulers_limit(self):
+        import backup_db
+        steps = backup_db.DUMP_TIMEOUT_S + backup_db.LIST_TIMEOUT_S + backup_db.READ_BACK_TIMEOUT_S
+        self.assertLessEqual(steps + 10 * 60, self.scheduler.BACKUP_TIMEOUT_S)
+
+
+FAKE_PG_DUMP = """#!/bin/sh
+# Stands in for pg_dump: writes a few bytes to --file, notes its password file, then waits for $FAKE_DUMP_SLEEP s
+for arg in "$@"; do case "$arg" in --file=*) out="${arg#--file=}";; esac; done
+printf 'PGDMP' > "$out"
+echo "$PGPASSFILE" > "$FAKE_MARKER"
+exec sleep "${FAKE_DUMP_SLEEP:-0}"
+"""
+FAKE_PG_RESTORE = """#!/bin/sh
+# Stands in for pg_restore: --list prints a listing with the main tables' data; reading the archive succeeds
+if [ "$1" = "--list" ]; then cat "$FAKE_LISTING"; fi
+exit 0
+"""
+
+
+@unittest.skipUnless(os.name == "posix", "needs POSIX signals and shell scripts")
+class ScriptTests(unittest.TestCase):
+    """backup_db.py end to end, with stand-ins for pg_dump and pg_restore (no database needed)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = pathlib.Path(self.tmp.name)
+        self.bin, self.dir, self.temp = root / "bin", root / "backups", root / "tmp"
+        for path in (self.bin, self.dir, self.temp):
+            path.mkdir()
+        for name, text in (("pg_dump", FAKE_PG_DUMP), ("pg_restore", FAKE_PG_RESTORE)):
+            (self.bin / name).write_text(text)
+            (self.bin / name).chmod(0o755)
+        (root / "listing").write_text(LISTING)
+        self.marker = root / "passfile-used"
+        self.env = {**os.environ, "PG_BIN_DIR": str(self.bin), "TMPDIR": str(self.temp), "SENTRY_DSN": "",
+                    "DATABASE_URL": "postgresql+psycopg2://welluser:s3cret@127.0.0.1:1/welldb",
+                    "BACKUP_EXCLUDE_TABLES": "",   # nothing to exclude, so no catalog lookup (no database here)
+                    "BACKUP_MIN_FREE_MB": "0", "FAKE_LISTING": str(root / "listing"), "FAKE_MARKER": str(self.marker)}
+
+    def start(self, *args, **env):
+        return subprocess.Popen([sys.executable, str(APP / "scripts" / "backup_db.py"), "--dir", str(self.dir), *args],
+                                env={**self.env, **env}, cwd=APP, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+
+    def passfiles(self):
+        folder = self.temp / backup.PASSFILE_DIR_NAME
+        return sorted(os.listdir(folder)) if folder.exists() else []
+
+    def test_a_run_deletes_what_a_killed_run_left_and_only_that(self):
+        leftovers = [".welldb-20261101-0315.dump.partial"]
+        others = [".welldb-notes.partial", "welldb-20261101-0315.dump.partial", "notes.txt"]
+        for name in leftovers + others:
+            (self.dir / name).write_text("x")
+        folder = self.temp / backup.PASSFILE_DIR_NAME
+        folder.mkdir(mode=0o700)
+        old, recent = folder / "pgpass-old", folder / "pgpass-recent"
+        for path in (old, recent):
+            path.write_text("*:*:*:*:pw\n")
+        os.utime(old, (0, 0))
+        out, err = self.start("--no-prune").communicate(timeout=60)
+        self.assertIn("Backup written", out, err)
+        names = os.listdir(self.dir)
+        self.assertFalse(set(leftovers) & set(names))
+        self.assertTrue(set(others) <= set(names))
+        self.assertEqual(self.passfiles(), ["pgpass-recent"])   # its own file is gone too
+
+    def test_sigterm_cleans_up_the_partial_dump_and_the_password_file(self):
+        proc = self.start("--no-prune", FAKE_DUMP_SLEEP="60")
+        for _ in range(200):
+            if self.marker.exists() and self.marker.read_text().strip():
+                break
+            proc.poll()
+            self.assertIsNone(proc.returncode, proc.stderr.read() if proc.returncode is not None else "")
+            subprocess.run(["sleep", "0.05"])
+        passfile = self.marker.read_text().strip()
+        self.assertTrue(os.path.exists(passfile))
+        self.assertTrue(any(n.endswith(".partial") for n in os.listdir(self.dir)))
+        proc.terminate()
+        proc.communicate(timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(os.path.exists(passfile))
+        self.assertEqual([n for n in os.listdir(self.dir) if n != backup_lock_name()], [])
+
+    def test_only_one_run_at_a_time(self):
+        first = self.start("--no-prune", FAKE_DUMP_SLEEP="60")
+        try:
+            for _ in range(200):
+                if self.marker.exists():
+                    break
+                subprocess.run(["sleep", "0.05"])
+            out, err = self.start("--no-prune").communicate(timeout=60)
+            self.assertIn("another backup is running", err)
+        finally:
+            first.terminate()
+            first.communicate(timeout=30)
+
+    def test_a_failed_prune_after_a_good_backup_is_a_warning(self):
+        import backup_db
+        with mock.patch.object(backup_db, "back_up"), mock.patch.object(backup_db, "prepare_dir"), \
+                mock.patch.object(backup_db, "prune", side_effect=PermissionError(13, "Permission denied")), \
+                mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(backup_db.signal, "signal"), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(backup_db.main(["--dir", str(self.dir)]), 0)
+            self.assertIn("WARNING: the backup is fine", err.getvalue())
+            self.assertEqual(backup_db.main(["--dir", str(self.dir), "--prune-only"]), 1)
+
+
+def backup_lock_name():
+    import backup_db
+    return backup_db.LOCK_NAME
+
+
+class RestoreCheckGuardTests(unittest.TestCase):
+    def test_refuses_a_database_name_without_the_prefix(self):
+        env = {**os.environ, "DATABASE_URL": "postgresql://u:p@127.0.0.1:1/welldb", "SENTRY_DSN": ""}
+        for name in ("welldb", "postgres", "Welldb_restore_check", "welldb_restore_check; DROP"):
+            with self.subTest(name=name):
+                done = subprocess.run([sys.executable, str(APP / "scripts" / "restore_check.py"), "--database", name],
+                                      env=env, cwd=APP, capture_output=True, text=True, timeout=60)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("must start with welldb_restore_check", done.stderr)
+
 
 @unittest.skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the backup round trip against "
                                                      "PostgreSQL")
@@ -166,7 +301,7 @@ class RoundTrip(unittest.TestCase):
     ROLE = "backup_test_owner"
     PASSWORD = "p:w\\d@x"   # a colon and a backslash, which the password file must escape
     SOURCE = "backup_test_source"
-    RESTORED = "backup_test_restored"
+    RESTORED = "welldb_restore_check_test"
 
     @classmethod
     def setUpClass(cls):
@@ -225,7 +360,7 @@ class RoundTrip(unittest.TestCase):
         return rows
 
     def run_script(self, script, *args, **env):
-        environ = {**os.environ, "DATABASE_URL": self.owner_url, "SENTRY_DSN": "", **env}
+        environ = {**os.environ, "DATABASE_URL": self.owner_url, "SENTRY_DSN": "", "BACKUP_MIN_FREE_MB": "0", **env}
         return subprocess.run([sys.executable, str(APP / "scripts" / script), *args], env=environ, cwd=APP,
                               capture_output=True, text=True, timeout=300)
 
@@ -234,7 +369,7 @@ class RoundTrip(unittest.TestCase):
             done = self.run_script("backup_db.py", "--dir", directory, BACKUP_MIN_FREE_MB="0")
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertNotIn(self.PASSWORD, done.stdout + done.stderr)
-            dumps = os.listdir(directory)
+            dumps = [name for _, name in backup.dumps_in(os.listdir(directory))]
             self.assertEqual(len(dumps), 1, dumps)
             self.assertIsNotNone(backup.dump_time(dumps[0]))
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(directory, dumps[0])).st_mode), 0o600)
@@ -257,7 +392,7 @@ class RoundTrip(unittest.TestCase):
                                      BACKUP_EXCLUDE_TABLES="")
             self.assertEqual(failed.returncode, 1)
             self.assertIn("permission denied", failed.stderr)
-            self.assertEqual(sorted(os.listdir(directory)), dumps)
+            self.assertEqual(sorted(n for n in os.listdir(directory) if n != ".backup.lock"), dumps)
 
     def test_restore_check_without_createdb_explains(self):
         with tempfile.TemporaryDirectory() as directory:

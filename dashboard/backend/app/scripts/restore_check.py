@@ -13,10 +13,17 @@
 # The live database keeps changing (new readings every 10 minutes), so counts that grew since the dump are
 # expected and reported, not failures. It fails (exit 1) if the restore fails, a table the live database has is
 # missing from the restore (except BACKUP_EXCLUDE_TABLES), or a table restored empty while the live one has rows.
+#
+# The throwaway database is dropped first if it exists (left by an interrupted drill), so its name must start with
+# welldb_restore_check. The restore takes about as much disk as the live database: the drill refuses to start
+# unless the backup folder's disk (assumed to be the database's, as on the VM) has the live database's size plus
+# BACKUP_MIN_FREE_MB (default 2048) free. --no-space-check skips that when the database is on another disk.
 
 import argparse
 import os
 import pathlib
+import re
+import shutil
 import subprocess
 import sys
 
@@ -26,11 +33,13 @@ import psycopg2  # noqa: E402
 from psycopg2 import sql  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    DEFAULT_EXCLUDE_TABLES, csv_setting, dumps_in, libpq_env, parse_database_url, pg_tool, psycopg2_kwargs,
+    DEFAULT_EXCLUDE_TABLES, csv_setting, dumps_in, human_size, libpq_env, parse_database_url, pg_tool, psycopg2_kwargs,
     run_tool, with_database,
 )
 
 DEFAULT_RESTORE_DATABASE = "welldb_restore_check"
+# The only names the drill restores into (and so drops first): welldb_restore_check, optionally with a suffix
+RESTORE_DATABASE_PATTERN = re.compile(r"^welldb_restore_check[a-z0-9_]*$")
 RESTORE_TIMEOUT_S = 3 * 60 * 60
 
 # Every table outside the system schemas, and whether this role may read it (run without parameters, so % is literal)
@@ -77,6 +86,25 @@ def row_counts(settings, read_only=False):
         conn.close()
 
 
+def check_free_space(directory, live, min_free_mb):
+    """Refuse to restore unless `directory`'s disk has the live database's size plus `min_free_mb` free."""
+    conn = psycopg2.connect(**psycopg2_kwargs(live))
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_database_size(current_database())")
+            size = cur.fetchone()[0]
+    finally:
+        conn.close()
+    free = shutil.disk_usage(directory).free
+    needed = size + min_free_mb * 1024 * 1024
+    if free < needed:
+        raise RestoreCheckError(f"not enough disk space: the restore needs about the live database's size "
+                                f"({human_size(size)}) plus BACKUP_MIN_FREE_MB={min_free_mb}, {human_size(needed)} in "
+                                f"all, and {directory}'s disk has {human_size(free)} free (use --no-space-check if the "
+                                f"database is on another disk)")
+    print(f"Disk space: {human_size(free)} free, about {human_size(size)} needed for the restore.")
+
+
 def admin_execute(settings, statement):
     """Run CREATE/DROP DATABASE (which can't run in a transaction) on the server `settings` points at."""
     conn = psycopg2.connect(**psycopg2_kwargs(settings))
@@ -116,7 +144,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Restore a backup into a throwaway database and compare row counts.")
     parser.add_argument("--file", help="the dump to restore (default: the newest in --dir)")
     parser.add_argument("--dir", default=os.getenv("BACKUP_DIR", "/app/backups"), help="backup directory")
-    parser.add_argument("--database", default=DEFAULT_RESTORE_DATABASE, help="name of the throwaway database")
+    parser.add_argument("--database", default=DEFAULT_RESTORE_DATABASE,
+                        help="name of the throwaway database (must start with welldb_restore_check)")
+    parser.add_argument("--no-space-check", action="store_true",
+                        help="don't check free disk space first (the database is on another disk)")
     parser.add_argument("--keep", action="store_true", help="leave the throwaway database in place afterwards")
     args = parser.parse_args(argv)
 
@@ -126,9 +157,17 @@ def main(argv=None):
         live = parse_database_url(os.getenv("DATABASE_URL", "").strip())
         admin = parse_database_url((os.getenv("RESTORE_CHECK_DATABASE_URL") or "").strip()
                                    or os.getenv("DATABASE_URL", "").strip())
+        if not RESTORE_DATABASE_PATTERN.match(args.database):
+            raise RestoreCheckError(f"refusing to restore into {args.database}: the throwaway database's name must "
+                                    f"start with welldb_restore_check (lowercase letters, digits and _ after it)")
         if args.database in (live["database"], admin["database"]):
             raise RestoreCheckError(f"refusing to restore into {args.database}: that is a live database")
         dump = pathlib.Path(args.file) if args.file else latest_dump(args.dir)
+        if not args.no_space_check:
+            min_free = (os.getenv("BACKUP_MIN_FREE_MB") or "2048").strip()
+            if not min_free.isdigit():
+                raise RestoreCheckError(f"BACKUP_MIN_FREE_MB must be a whole number, got {min_free!r}")
+            check_free_space(dump.parent, live, int(min_free))
         print(f"Restoring {dump} into a new database {args.database}")
 
         # Only a database of this exact name, left over from an earlier drill that was interrupted, is dropped.

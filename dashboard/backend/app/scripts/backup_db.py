@@ -22,12 +22,17 @@
 #
 # Dumps are named welldb-YYYYmmdd-HHMM.dump (Toronto time). Only files with that name are ever deleted. A dump is
 # written as .welldb-*.partial and renamed once it is complete and checked, so a failed run leaves no file that
-# looks like a backup. Exit code 0 means a checked dump was written; 1 means it wasn't, and the reason is printed.
+# looks like a backup; one left by a run that was killed is deleted by the next run. Only one run at a time: a run
+# holds a lock (.backup.lock in BACKUP_DIR) and another one refuses to start.
+# Exit code 0 means a checked dump was written (a failure of the retention step after it is printed as a WARNING:
+# line, as the backup itself is fine); 1 means it wasn't, and the reason is printed.
 
 import argparse
+import fcntl
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -39,12 +44,18 @@ import psycopg2  # noqa: E402
 
 from utils.backup import (  # noqa: E402
     DEFAULT_EXCLUDE_TABLES, DEFAULT_EXPECT_TABLES, csv_setting, dump_name, dumps_in, dumps_to_prune, human_size,
-    libpq_env, missing_tables, owned_sequences, parse_database_url, pg_tool, run_tool, table_data_entries,
+    libpq_env, missing_tables, owned_sequences, parse_database_url, pg_tool, remove_stale_passfiles, run_tool,
+    stale_partials, table_data_entries,
 )
 
 SITE_TZ = ZoneInfo("America/Toronto")
-DUMP_TIMEOUT_S = 90 * 60
-CHECK_TIMEOUT_S = 30 * 60
+# Limits for each step. Together (105 min) they stay under the scheduler's 2 h limit for the whole run
+# (BACKUP_TIMEOUT_S in scripts/scheduler_temp.py), so a slow step fails here, with its own message and cleanup,
+# before the scheduler has to stop the run.
+DUMP_TIMEOUT_S = 80 * 60
+LIST_TIMEOUT_S = 10 * 60
+READ_BACK_TIMEOUT_S = 15 * 60
+LOCK_NAME = ".backup.lock"
 
 
 class BackupError(Exception):
@@ -84,7 +95,7 @@ def verify_dump(path, expected, env, log=print):
     the whole archive must decompress (pg_restore to /dev/null), so a truncated or damaged file fails here."""
     pg_restore = pg_tool("pg_restore")
     try:
-        listing = run_tool([pg_restore, "--list", str(path)], env, CHECK_TIMEOUT_S).stdout
+        listing = run_tool([pg_restore, "--list", str(path)], env, LIST_TIMEOUT_S).stdout
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         raise tool_error("pg_restore --list", e)
     entries = table_data_entries(listing)
@@ -92,7 +103,7 @@ def verify_dump(path, expected, env, log=print):
     if missing:
         raise BackupError(f"the dump has no data for {', '.join(missing)} ({len(entries)} tables with data)")
     try:
-        run_tool([pg_restore, "--file", os.devnull, str(path)], env, CHECK_TIMEOUT_S)
+        run_tool([pg_restore, "--file", os.devnull, str(path)], env, READ_BACK_TIMEOUT_S)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         raise tool_error("reading the whole dump back (pg_restore)", e)
     log(f"Checked: {len(entries)} tables with data, including {', '.join(expected)}; the archive reads back in full.")
@@ -112,11 +123,38 @@ def prune(directory, keep_daily, keep_weekly, log=print):
     return doomed
 
 
-def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=print):
-    """Dump the database into `directory` and check the dump. Returns the path of the new dump."""
-    os.umask(0o077)   # dumps hold all the data: readable by their owner only
+def prepare_dir(directory):
+    """Create the backup directory (0700) if needed; from here on, files are created readable by their owner only."""
+    os.umask(0o077)   # dumps hold all the data
     os.makedirs(directory, exist_ok=True)
     os.chmod(directory, 0o700)
+
+
+def take_lock(directory):
+    """Hold the backup lock for the rest of this process (the OS releases it when the process ends, however it
+    ends). BackupError if another run holds it."""
+    handle = open(os.path.join(directory, LOCK_NAME), "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise BackupError(f"another backup is running (it holds {os.path.join(directory, LOCK_NAME)})")
+    return handle
+
+
+def remove_leftovers(directory, log=print):
+    """Delete what a killed run left behind: unfinished dumps in `directory` and old temporary password files."""
+    for name in stale_partials(os.listdir(directory)):
+        os.remove(os.path.join(directory, name))
+        log(f"Deleted {name}, left unfinished by an earlier run that was stopped")
+    if remove_stale_passfiles():
+        log("Deleted temporary password files left by an earlier run that was stopped")
+
+
+def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=print):
+    """Dump the database into `directory` and check the dump. Returns the path of the new dump. The caller holds
+    the backup lock (take_lock)."""
+    remove_leftovers(directory, log)
     existing = dumps_in(os.listdir(directory))
     previous_size = os.path.getsize(os.path.join(directory, existing[0][1])) if existing else 0
     check_free_space(directory, previous_size, min_free_mb)
@@ -148,27 +186,52 @@ def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=p
     return final
 
 
+def stop_on_sigterm(signum, frame):
+    """SIGTERM (the scheduler's limit, or docker stop) ends the run through SystemExit, so the cleanup in back_up
+    and libpq_env still runs: the unfinished dump and the password file are deleted, and pg_dump is stopped."""
+    raise SystemExit(128 + signum)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Back up the database with pg_dump and keep N daily + M weekly dumps.")
     parser.add_argument("--dir", default=os.getenv("BACKUP_DIR", "/app/backups"), help="backup directory")
     parser.add_argument("--no-prune", action="store_true", help="don't delete old dumps")
     parser.add_argument("--prune-only", action="store_true", help="only apply retention to the existing dumps")
     args = parser.parse_args(argv)
+    signal.signal(signal.SIGTERM, stop_on_sigterm)
     try:
         keep_daily = int_setting("BACKUP_KEEP_DAILY", 7, minimum=1)
         keep_weekly = int_setting("BACKUP_KEEP_WEEKLY", 8)
+        prepare_dir(args.dir)
+        lock = take_lock(args.dir)
+    except (BackupError, OSError) as e:
+        print(f"ERROR: backup failed: {e}", file=sys.stderr)
+        return 1
+    with lock:   # held for the whole run, retention included
+        return run(args, keep_daily, keep_weekly)
+
+
+def run(args, keep_daily, keep_weekly):
+    """The backup (unless --prune-only), then retention (unless --no-prune). The exit code."""
+    try:
         if not args.prune_only:
             settings = parse_database_url(os.getenv("DATABASE_URL", "").strip())
             exclude = csv_setting(os.getenv("BACKUP_EXCLUDE_TABLES", DEFAULT_EXCLUDE_TABLES))
             expected = csv_setting(os.getenv("BACKUP_EXPECT_TABLES", DEFAULT_EXPECT_TABLES))
             back_up(args.dir, settings, exclude, expected, int_setting("BACKUP_MIN_FREE_MB", 2048))
-        if not args.no_prune:
-            prune(args.dir, keep_daily, keep_weekly)
     except (BackupError, ValueError, RuntimeError, OSError) as e:
         print(f"ERROR: backup failed: {e}", file=sys.stderr)
         return 1
+    if not args.no_prune:
+        try:
+            prune(args.dir, keep_daily, keep_weekly)
+        except OSError as e:
+            if args.prune_only:
+                print(f"ERROR: deleting old dumps failed: {e}", file=sys.stderr)
+                return 1
+            # The new dump is written and checked; the next run's retention tries the old ones again.
+            print(f"WARNING: the backup is fine, but deleting old dumps failed: {e}", file=sys.stderr)
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

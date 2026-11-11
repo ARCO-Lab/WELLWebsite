@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+# Debian trixie named explicitly: the PostgreSQL apt repository below is per Debian release, so the base image must
+# not move to a new release unnoticed.
+FROM python:3.11-slim-trixie
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
@@ -13,9 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # on the VM): Debian's own client is newer, and a newer pg_dump writes archives that pg_restore 13 can't read. They
 # come from the PostgreSQL project's apt repository and live in /usr/lib/postgresql/13/bin. Change the version
 # here, and DEFAULT_PG_BIN_DIR in utils/backup.py, when the server is upgraded.
+# The repository's signing key is checked against its SHA-256 (it is the key with fingerprint
+# B97B 0AFC AA1A 47F0 44F2 44A0 7FCC 7D46 ACCC 4CF8), so the build stops if the download isn't that key.
+# PostgreSQL 13 is past end of life: if its client ever leaves this repository, switch to the archive,
+# https://apt-archive.postgresql.org/pub/repos/apt with the suite trixie-pgdg-archive.
 RUN install -d /usr/share/postgresql-common/pgdg \
     && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76  /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc" \
+       | sha256sum -c - \
     && . /etc/os-release \
     && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
        > /etc/apt/sources.list.d/pgdg.list \
