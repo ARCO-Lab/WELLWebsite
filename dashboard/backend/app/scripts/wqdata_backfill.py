@@ -275,8 +275,7 @@ def main(argv=None) -> int:
                 record_ids(ids)   # before the commit: if this write fails, the day is rolled back
             return ids
 
-        with engine.connect() as c:
-            tz = ZoneInfo(c.execute(text("show timezone")).scalar())
+        tz = ZoneInfo("America/Toronto")   # recorded_at is site wall-clock time, whatever the database's TimeZone
         end = (dt.datetime.now(UTC) - SETTLE).replace(second=0, microsecond=0)
         days = day_windows(end, args.days, tz)
         print(f"{'Checking' if args.check else 'Backfilling'} WQData device {station} for {days[0][0]} to "

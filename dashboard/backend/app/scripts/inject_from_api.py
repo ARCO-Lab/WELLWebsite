@@ -91,7 +91,7 @@ def inject_all_new_data():
     # Fetch and store new readings from both vendors. A failure in one doesn't stop the other,
     # but the run still ends with an error so the scheduler logs it as failed.
     with app.app_context():
-        tz = ZoneInfo(db.session.execute(text("show timezone")).scalar())   # recorded_at is stored in this zone
+        tz = ZoneInfo("America/Toronto")   # recorded_at is site wall-clock time, whatever the database's TimeZone
         now = datetime.now(timezone.utc)
         failed = []
         for name, job in (("LI-COR", inject_licor), ("WQData", inject_quality)):
