@@ -11,18 +11,13 @@
           <div class="card-main border-top h-100">
             <div class="card border-0 no-shadow card-hover flex-lg-row">
               <div class="card-img-mask card-img-mask-full card-img-mh min-w-50 order-sm-1">
-                <img
-                srcset="/wp-content/uploads/2025/08/dashboardPreview.png 414w,
-                        /wp-content/uploads/2025/08/dashboardPreview.png 720w,
-                        /wp-content/uploads/2025/08/dashboardPreview.png 1080w"
-                sizes="(max-width: 576px) 100vw, (max-width: 991.98px) 90vw, 50vw"
-                src="/wp-content/uploads/2025/08/dashboardPreview.png"
-                loading="lazy"
-                decoding="async"
-                class="img-fluid"
-                alt="Dashboard preview"
-                role="presentation"
-                />            
+                <?php well_media_img('dashboard-preview', array(414, 720, 1080, 1600), array(1600, 838), array(
+                  'sizes'   => '(max-width: 576px) 100vw, (max-width: 991.98px) 90vw, 50vw',
+                  'loading' => 'lazy',
+                  'class'   => 'img-fluid',
+                  'alt'     => 'Dashboard preview',
+                  'role'    => 'presentation',
+                )); ?>
               </div>
               <div class="d-flex flex-column flex-grow-1 w-100 order-sm-2">
                 <div class="card-body pb-0">
