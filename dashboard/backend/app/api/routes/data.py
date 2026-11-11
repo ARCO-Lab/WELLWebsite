@@ -1,6 +1,10 @@
 # This file defines the /api/data route for retrieving raw sensor measurements for the dashboard's charts.
 # A range with more readings than the charts can handle is refused with a 413 instead of being loaded.
+# Gunicorn runs 3 sync workers and a worker can't notice that the browser left: once a request passes the
+# count, its worker stays busy until the query and jsonify finish (or until gunicorn's 30 s timeout kills it),
+# even if nobody is waiting for the answer. The row cap is what bounds that time.
 
+import logging
 import os
 from datetime import datetime
 
@@ -9,18 +13,35 @@ from flask import request, jsonify
 from db.database import db
 from db.models import SensorMeasurement
 
+log = logging.getLogger(__name__)
+
 # More readings than this make a JSON payload of ~50 MB and take the browser too long to draw; about 90 days
 # of every sensor group. Larger ranges get a 413 that tells the user to narrow the range or use Download.
 DEFAULT_MAX_ROWS = 300_000
 
 
-def max_rows():
-    return int(os.getenv("DATA_MAX_ROWS", DEFAULT_MAX_ROWS))
+def parse_max_rows(value):
+    """DATA_MAX_ROWS as a positive int; anything else (unset, empty, "300k", 0, -5) means the default."""
+    if value is None or value.strip() == "":
+        return DEFAULT_MAX_ROWS
+    try:
+        rows = int(value)
+    except ValueError:
+        rows = 0
+    if rows <= 0:
+        log.warning("DATA_MAX_ROWS=%r is not a positive whole number; using %d", value, DEFAULT_MAX_ROWS)
+        return DEFAULT_MAX_ROWS
+    return rows
+
+
+# Read once at import, so a bad value is reported once and can't make every request fail.
+MAX_ROWS = parse_max_rows(os.getenv("DATA_MAX_ROWS"))
 
 
 # AI ANALYSIS DISABLED: `latest_summaries` was filled by a per-request background thread that summarized the
 # returned rows with pandas (scripts/downsample.py) for the AI routes. Nothing reads it while those routes are
-# off, so the thread is gone. The parameter stays so the route registration is unchanged.
+# off, so commit 5b501eb deleted the thread (not commented out). The parameter stays so the route
+# registration is unchanged.
 def register_data_route(app, latest_summaries):
     @app.route("/api/data", methods=["GET"])
     def get_filtered_data():
@@ -44,10 +65,10 @@ def register_data_route(app, latest_summaries):
             SensorMeasurement.recorded_at.between(start_dt, end_dt),
         )
 
-        # Count first: cheap even for the whole table, and it keeps one oversized request from tying up a
-        # worker (and the browser) for minutes.
+        # Count first: cheap even for the whole table, and it refuses an oversized range before a worker spends
+        # minutes loading and serializing it (and the browser drawing it).
         total = db.session.query(db.func.count(SensorMeasurement.id)).filter(*filters).scalar()
-        limit = max_rows()
+        limit = MAX_ROWS
         if total > limit:
             return jsonify({
                 "error": (f"This range has {total:,} readings, more than the {limit:,} the charts can show at once. "

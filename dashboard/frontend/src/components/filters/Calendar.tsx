@@ -1,7 +1,7 @@
 // This file defines a Calendar component for selecting start and end dates with popover date pickers.
 // It uses custom Button, Popover, and Calendar components for consistent UI.
 
-import React from "react";
+import React, { useEffect, useId, useState } from "react";
 import { CalendarIcon } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import { Calendar as CalendarComponent } from "@/components/animations/calendarPop";
@@ -32,6 +32,17 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
   // the default end date (and its month) late in the evening.
   const today = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
 
+  // The page is prerendered once at build time, so the server HTML holds the default dates of the build day,
+  // while the browser computes them for today. Showing the dates only after mounting keeps the first browser
+  // render identical to the server HTML (no React hydration mismatch); the buttons keep their fixed height.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const label = (date: Date | null | undefined) => (!mounted ? "" : date ? format(date, "PPP") : "Pick a date");
+  // Each button is named by its label plus its date ("Start Date November 10th, 2026"), so screen readers know
+  // which date it is, and it still has a name ("Start Date") while the date is blank. useId keeps the ids unique
+  // (this component is on both tabs) and the same on server and browser.
+  const id = useId();
+
   // Shared by both pickers:
   // - fixedWeeks always draws six weeks, so the calendar keeps one size and the arrows stay put while you click
   //   through months (months with five weeks used to shrink it, and a quick click could land outside and close it);
@@ -48,15 +59,16 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
     <div className="space-y-4">
       {/* Start Date Picker */}
       <div className="space-y-2">
-        <Label className="font-poppins font-semibold text-primary">Start Date</Label>
+        <Label id={`${id}-start-label`} className="font-poppins font-semibold text-primary">Start Date</Label>
         <Popover>
           <PopoverTrigger asChild>
             <Button
               variant="outline"
               className="w-full justify-start text-left font-normal mcmaster-input"
+              aria-labelledby={`${id}-start-label ${id}-start-value`}
             >
-              <CalendarIcon className="mr-2 h-4 w-4" />
-              {startDate ? format(startDate, "PPP") : "Pick a date"}
+              <CalendarIcon className="mr-2 h-4 w-4" aria-hidden="true" />
+              <span id={`${id}-start-value`}>{label(startDate)}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">
@@ -77,15 +89,16 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
 
       {/* End Date Picker */}
       <div className="space-y-2">
-        <Label className="font-poppins font-semibold text-primary">End Date</Label>
+        <Label id={`${id}-end-label`} className="font-poppins font-semibold text-primary">End Date</Label>
         <Popover>
           <PopoverTrigger asChild>
             <Button
               variant="outline"
               className="w-full justify-start text-left font-normal mcmaster-input"
+              aria-labelledby={`${id}-end-label ${id}-end-value`}
             >
-              <CalendarIcon className="mr-2 h-4 w-4" />
-              {endDate ? format(endDate, "PPP") : "Pick a date"}
+              <CalendarIcon className="mr-2 h-4 w-4" aria-hidden="true" />
+              <span id={`${id}-end-value`}>{label(endDate)}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">

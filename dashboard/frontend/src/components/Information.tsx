@@ -10,7 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/animations
 const infoMap: Record<number, string> = {
   // --- Sensor Tab ---
   1: "Filter sensor data by category (Loggers, Weather, Quality), select individual metrics, and adjust date ranges. Your selections here and on the map are synchronized.",
-  2: "The map shows where each sensor is; the legend explains the icons. Hover over or tap a marker for its details and a Google Maps link, and click it to show or hide that sensor's data. Filled markers are the ones shown.",
+  2: "The map shows where each sensor is; the legend explains the icons. Click or tap a marker to show or hide that sensor's data and open a card with its details and a Google Maps link; the card's Show/Hide button switches it back. Hover over a marker to just see the card. With a keyboard, Enter opens the card and Escape closes it. Filled markers are the ones shown.",
   3: "This section shows the most recent readings for your selected sensor metrics. Click any metric to view it in a fullscreen modal for detailed analysis.",
   // AI ANALYSIS DISABLED: was "...Click a graph to open it fullscreen, revealing an AI-generated analysis of trends, correlations, and anomalies."
   4: "Graph visualizations for sensor data update based on your filters. Click a graph to open it fullscreen for a larger, zoomable view.",
@@ -18,7 +18,7 @@ const infoMap: Record<number, string> = {
 
   // --- Sampling Tab ---
   6: "Filter sampling data by creek, select metrics like E. coli or pH, and choose specific sampling sites. Your selections here and on the map are synchronized.",
-  7: "The map shows the sampling sites, numbered by site and coloured by creek (see the legend). Hover over or tap a site for its details and a Google Maps link, and click it to show or hide that site's data. Filled markers are the ones shown.",
+  7: "The map shows the sampling sites, numbered by site and coloured by creek (see the legend). Click or tap a site to show or hide its data and open a card with its details and a Google Maps link; the card's Show/Hide button switches it back. Hover over a site to just see the card. With a keyboard, Enter opens the card and Escape closes it. Filled markers are the ones shown.",
   8: "This section shows the latest measurements for your selected sampling metrics and sites. Click any metric to view it in a fullscreen modal for detailed analysis.",
   // AI ANALYSIS DISABLED: was "...Click a graph to open it fullscreen and view an AI-generated analysis of water quality trends over time."
   9: "Graphs are grouped first by creek, then by individual sampling site. Click a graph to open it fullscreen for a larger, zoomable view.",

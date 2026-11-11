@@ -14,6 +14,19 @@ from utils.timezone import est_after, est_now
 
 logger = get_task_logger(__name__)
 
+# What a failed job reports to the page when the cause isn't a validation error.
+EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again later."
+
+
+def user_facing_error(exc: Exception) -> str:
+    """The error_message to store for a failed job. The job status API returns it to the browser, so only a plain
+    ValueError (the payload validation messages, written for the user) is kept. Anything else, a database error
+    for one, can hold SQL, parameters or server paths: it gets a generic message and is logged in full instead.
+    Subclasses such as JSONDecodeError are not validation messages and get the generic one too."""
+    if type(exc) is ValueError and str(exc):
+        return str(exc)
+    return EXPORT_FAILED_MESSAGE
+
 
 @celery_app.task(bind=True, name="exports.generate_export_job")
 def generate_export_job(self, job_id: str):
@@ -79,7 +92,7 @@ def generate_export_job(self, job_id: str):
             failed_job = db.session.get(ExportJob, job_id)
             if failed_job:
                 failed_job.status = "failed"
-                failed_job.error_message = str(exc)
+                failed_job.error_message = user_facing_error(exc)
                 failed_job.completed_at = est_now()
                 db.session.commit()
             raise

@@ -64,7 +64,7 @@ def register_samples_route(app, latest_sampling_summaries):
 
         # AI ANALYSIS DISABLED: a per-request thread used to summarize `data` with pandas
         # (scripts/downsample.summarize_sampling_data) into latest_sampling_summaries for the AI routes.
-        # Nothing reads it while those routes are off; restore the thread with them.
+        # Nothing reads it while those routes are off, so commit 5b501eb deleted it.
         return jsonify(data)
 
     @app.route("/api/samples/template.csv", methods=["GET"])

@@ -15,7 +15,8 @@ interface SensorData {
 }
 
 interface MetricChartProps {
-  activeGroup: 'gauges' | 'weather' | 'quality';
+  // Shown in the chart title: a group name, or a logger or site name for the small multiples.
+  activeGroup: string;
   subFilters: string[];
   height?: number;
   startDate: Date | null;

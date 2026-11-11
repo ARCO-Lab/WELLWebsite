@@ -127,7 +127,7 @@ const LoggerGraph = ({
           return (
             <div key={stationId}>
               <MetricChart
-                activeGroup={loggerName} // Error necessary
+                activeGroup={loggerName}
                 subFilters={metrics}
                 height={300}
                 startDate={startDate}
