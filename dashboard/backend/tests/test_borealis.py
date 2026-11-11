@@ -351,14 +351,13 @@ class UploadScriptTests(unittest.TestCase):
         ]
         out = io.StringIO()
         quiet(upload_data.build_csv_frontend_style, rows, out)
-        self.assertEqual(out.getvalue().splitlines(), [
-            "ID,Timestamp,Group,Latitude,Longitude,Rain: mm,,Group,Sensor,Latitude,Longitude,Water Temperature: C,"
-            "Sensor,Latitude,Longitude,Water Temperature: C",
-            "1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,1.5,,Logger,Logger 1,43.2671,-79.92883,8.25,"
-            "Logger 2,43.26639,-79.9294,",
-            "2,2026-10-01T00:10:00,Weather,43.26611,-79.92866,,,Logger,Logger 1,43.2671,-79.92883,,"
-            "Logger 2,43.26639,-79.9294,9.0",
-        ])
+        header = ("ID,Timestamp,Group,Latitude,Longitude,Rain: mm,,Group,Sensor,Latitude,Longitude,"
+                  "Water Temperature: C,Sensor,Latitude,Longitude,Water Temperature: C")
+        row1 = ("1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,1.5,,Logger,Logger 1,43.2671,-79.92883,8.25,"
+                "Logger 2,43.26639,-79.9294,")
+        row2 = ("2,2026-10-01T00:10:00,Weather,43.26611,-79.92866,,,Logger,Logger 1,43.2671,-79.92883,,"
+                "Logger 2,43.26639,-79.9294,9.0")
+        self.assertEqual(out.getvalue().splitlines(), [header, row1, row2])
 
 
 class PreflightTests(unittest.TestCase):

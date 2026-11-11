@@ -220,7 +220,7 @@ class SharePoint:
             try:   # don't leave a half-finished session behind
                 self.call("DELETE", upload_url, "Cancelling the upload session", ok=(204,), auth=False)
             except SharePointError:
-                pass
+                pass   # an abandoned session expires by itself; report the upload's own error below
             raise
         if not item or "id" not in item:
             raise SharePointError(f"Uploading {path}", None, "the last chunk didn't return the file")

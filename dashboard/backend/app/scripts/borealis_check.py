@@ -92,7 +92,7 @@ def check_token(report, client):
         if expiry:
             report.info(expiry)
     except DataverseError:
-        pass
+        pass   # the expiry date is only informative; the token itself was just accepted
     return True
 
 
@@ -154,7 +154,7 @@ def check_dataset_common(report, client, pid, role):
             report.warn(f"{role} dataset is locked ({', '.join(str(lock.get('lockType')) for lock in locks)}); "
                         f"changes wait until it is unlocked")
     except DataverseError:
-        pass
+        pass   # locks are only a warning; a dataset that can't be read was already reported above
     return latest, published
 
 

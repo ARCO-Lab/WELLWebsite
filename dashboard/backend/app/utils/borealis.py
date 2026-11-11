@@ -238,7 +238,7 @@ def server_message(response):
         if isinstance(body, dict) and body.get("message"):
             return str(body["message"])
     except ValueError:
-        pass
+        pass   # not JSON (e.g. a proxy's HTML error page): fall back to the start of the body
     return (getattr(response, "text", "") or "")[:200]
 
 
