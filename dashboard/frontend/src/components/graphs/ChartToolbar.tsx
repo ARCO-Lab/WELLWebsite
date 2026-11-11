@@ -64,7 +64,7 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
       <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-gray-600">
         <span data-testid="chart-window-label">{windowLabel(w, ext.end)}</span>
         {snap.shownBucket !== null && (
-          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-700" data-testid="chart-resolution">
+          <span className="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-gray-700" data-testid="chart-resolution">
             {resolutionLabel(snap.shownBucket, kind)}
           </span>
         )}

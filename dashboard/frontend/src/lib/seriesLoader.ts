@@ -308,11 +308,16 @@ export async function fetchFromApi(req: TileRequest): Promise<ApiSeries[]> {
   const { start, end } = tileQuery(req.first, req.last, req.bucketS);
   const params = new URLSearchParams({ start, end, bucket: String(req.bucketS) });
   for (const k of req.keys) params.append("series", k);
-  let res: Response;
-  try {
-    res = await fetch(`/api/series?${params.toString()}`);
-  } catch {
-    throw new Error(UNREACHABLE);
+  let res: Response | null = null;
+  // A dropped connection is tried once more after a moment (one request can serve several charts, so one blip would
+  // otherwise put an error on all of them); an HTTP error is the server's answer and is reported as it is.
+  for (let attempt = 0; !res; attempt++) {
+    try {
+      res = await fetch(`/api/series?${params.toString()}`);
+    } catch {
+      if (attempt >= 1) throw new Error(UNREACHABLE);
+      await new Promise((r) => setTimeout(r, 800));
+    }
   }
   if (!res.ok) throw await errorFrom(res);
   return ((await res.json()) as { series: ApiSeries[] }).series;

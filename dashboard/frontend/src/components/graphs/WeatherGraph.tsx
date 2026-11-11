@@ -110,7 +110,7 @@ const WeatherGraph = ({
       {/* One column on a phone or in a narrow card, two or three where the card is wide */}
       <div className="grid grid-cols-1 gap-x-6 gap-y-5 @xl:grid-cols-2 @5xl:grid-cols-3">
         {panels.map((p) => (
-          <div key={p.id} data-testid={`chart-weather-${p.id}`}>
+          <div key={p.id}>
             <MetricChart
               id={`weather-${p.id}`}
               title={p.title}

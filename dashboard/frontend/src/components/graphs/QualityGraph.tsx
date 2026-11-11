@@ -40,7 +40,7 @@ const QualityGraph = ({ subFilters, modalOpen }: Props) => {
     <ChartGroup title="Water Quality" chartCount={panels.length}>
       <div className="grid grid-cols-1 gap-x-6 gap-y-5 @xl:grid-cols-2 @5xl:grid-cols-3">
         {panels.map((p) => (
-          <div key={p.id} data-testid={`chart-quality-${p.id}`}>
+          <div key={p.id}>
             <MetricChart
               id={`quality-${p.id}`}
               title={p.title}
