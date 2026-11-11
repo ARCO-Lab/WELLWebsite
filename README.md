@@ -159,7 +159,8 @@ and, for a vendor ingestion failure, `source` (`LI-COR` or `WQData`).
 - **Sent:** the error type, message and stack trace (file and line, no local variables), the endpoint's method and
   path, the environment, and recent breadcrumbs (log lines, page changes and outgoing requests, with their query
   strings replaced by `[Filtered]`). For a failed scheduler subprocess, also its command, exit code and the last
-  2,000 characters of its stderr (usually the traceback).
+  2,000 characters of its stderr (a traceback when the script crashed) and the `ERROR:` lines it printed to stdout
+  (its handled failures, e.g. "No sensor data found"; the rest of stdout is not sent).
 - **Not sent:** request bodies, cookies, headers, query strings, IP addresses or any user identity
   (`send_default_pii` off, plus a `before_send` filter in `dashboard/backend/app/utils/sentry.py` and
   `dashboard/frontend/src/lib/sentry.ts`). No performance tracing and no session replay, so nothing counts against
@@ -173,10 +174,11 @@ How backend failures are reported:
   itself would miss them, and a crash would be sent twice (the script's traceback plus the scheduler's
   `CalledProcessError`).
 - A caught failure (a job, or one vendor's ingestion) is sent at most once an hour for the same job, vendor, error
-  type and message (its first line with numbers collapsed; for a failed subprocess, the exit code and the last line
-  of stderr). So an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144,
-  while a different error is still sent at once. This limit covers only these scheduler failures; Flask and Celery
-  errors are sent each time.
+  type and message (its first line with numbers collapsed, HTTP statuses kept; for a failed subprocess, its arguments
+  such as the month, its exit code, and its last stderr line or, with no stderr, its last `ERROR:` stdout line).
+  So an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144, while a
+  different error is still sent at once. This limit covers only these scheduler failures; Flask and Celery errors
+  are sent each time.
 - A script run by hand (`docker compose exec worker python scripts/...`) reports its own uncaught errors, tagged
   with the container's `SENTRY_COMPONENT`.
 

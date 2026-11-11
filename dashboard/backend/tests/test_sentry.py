@@ -214,19 +214,48 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual([e["exception"]["values"][-1]["value"] for e in events],
                          ["connection refused", 'column "x" does not exist'])
 
-    def test_subprocess_failures_differ_by_exit_code_and_last_stderr_line_not_command(self):
-        def failed(month, code, stderr):
+    def test_subprocess_failures_differ_by_arguments_exit_code_and_last_error_line(self):
+        def failed(month, code, stderr="", stdout=""):
             return subprocess.CalledProcessError(code, ["python", "scripts/upload_data.py", "--month", month],
-                                                 stderr=stderr)
-        well_sentry.capture_job_error(failed("9", 1, "Traceback ...\nValueError: Borealis said 503\n"))
-        well_sentry.capture_job_error(failed("10", 1, "Traceback ...\nValueError: Borealis said 502\n"))  # same
-        well_sentry.capture_job_error(failed("10", 1, "Traceback ...\nKeyError: 'files'\n"))   # another error
-        well_sentry.capture_job_error(failed("10", 2, ""))                                      # another exit code
-        well_sentry.capture_job_error(subprocess.TimeoutExpired(["python", "scripts/upload_data.py"], 7200))
-        commands = [(e["contexts"]["subprocess"]["exit_code"], e["contexts"]["subprocess"]["stderr_tail"].strip())
-                    for e in self.flush()]
-        self.assertEqual(commands, [(1, "Traceback ...\nValueError: Borealis said 503"),
-                                    (1, "Traceback ...\nKeyError: 'files'"), (2, ""), (None, "")])
+                                                 output=stdout, stderr=stderr)
+        sent = [
+            failed("9", 1, "Traceback ...\nTimeoutError: no answer after 31 s\n"),
+            failed("9", 1, "Traceback ...\nTimeoutError: no answer after 30 s\n"),   # same failure: throttled
+            failed("9", 1, "Traceback ...\nKeyError: 'files'\n"),                    # another error
+            failed("9", 2, stdout="DEBUG: ...\nERROR: No sensor data found from 2026-09-01 to 2026-10-01\n"),
+            failed("10", 2, stdout="DEBUG: ...\nERROR: No sensor data found from 2026-10-01 to 2026-11-01\n"),
+            failed("10", 2, stdout="ERROR: No sensor data found from 2026-10-01 to 2026-11-01\n"),  # same: throttled
+            failed("10", 3),                                                          # another exit code
+            subprocess.TimeoutExpired(["python", "scripts/upload_data.py", "--month", "10"], 7200),
+        ]
+        for error in sent:
+            well_sentry.capture_job_error(error)
+        got = [(e["contexts"]["subprocess"]["command"].split()[-1], e["contexts"]["subprocess"]["exit_code"])
+               for e in self.flush()]
+        # Month 10's no-data failure isn't hidden behind month 9's (same exit code, empty stderr).
+        self.assertEqual(got, [("9", 1), ("9", 1), ("9", 2), ("10", 2), ("10", 3), ("10", None)])
+
+    def test_stdout_error_lines_go_with_the_event(self):
+        key = uuid.uuid4().hex
+        stdout = ("DEBUG: reading 4,000 rows of data\nINFO: station 3\n"
+                  f"ERROR: GET https://borealis.example/api?key={key} failed\n"
+                  "ERROR: No sensor data found from 2026-10-01 to 2026-11-01; nothing uploaded.\n")
+        well_sentry.capture_job_error(subprocess.CalledProcessError(2, ["python", "scripts/upload_data.py"],
+                                                                    output=stdout, stderr=""))
+        context = self.flush()[0]["contexts"]["subprocess"]
+        self.assertEqual(context["error_lines"], [
+            "ERROR: GET https://borealis.example/api?[Filtered] failed",
+            "ERROR: No sensor data found from 2026-10-01 to 2026-11-01; nothing uploaded."])
+        self.assertNotIn("DEBUG", repr(context))
+        self.assertNotIn(key, repr(context))
+
+    def test_http_statuses_are_not_collapsed(self):
+        sig = well_sentry.failure_signature
+        self.assertNotEqual(sig(RuntimeError("HTTP 401 from LI-COR")), sig(RuntimeError("HTTP 503 from LI-COR")))
+        self.assertEqual(sig(RuntimeError("HTTP 503 at 10:20, row 123456")),
+                         sig(RuntimeError("HTTP 503 at 11:40, row 98")))
+        self.assertEqual(sig(RuntimeError("timed out after 700 s")), sig(RuntimeError("timed out after 99 s")))
+        self.assertEqual(sig(RuntimeError("job ab12cd34 failed")), sig(RuntimeError("job 9f8e7d6c failed")))
 
     def test_a_failed_subprocess_is_sent_with_its_exit_code_and_stderr(self):
         error = subprocess.CalledProcessError(1, ["python", "scripts/upload_data.py", "--year", "2026"],
@@ -249,6 +278,12 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn(key[-10:], tail)
         self.assertTrue(tail.endswith("ValueError: boom"))
         self.assertLessEqual(len(tail), n)
+
+    def test_a_long_last_line_is_kept_rather_than_dropped_as_partial(self):
+        n = well_sentry.STDERR_TAIL_CHARS
+        stderr = "Traceback ...\nValueError: " + "z" * (n + 500) + "\n"
+        tail = well_sentry.stderr_tail(subprocess.CalledProcessError(1, ["python", "x.py"], stderr=stderr))
+        self.assertEqual(tail, ("z" * n + "\n")[-n:])
 
     def test_scheduler_subprocesses_run_without_the_dsn(self):
         # So a crash in upload_data.py is reported once, by the scheduler, not also by the script itself.

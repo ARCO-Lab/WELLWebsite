@@ -30,11 +30,12 @@ REPEAT_AFTER_S = 60 * 60
 _last_sent = {}
 _last_sent_lock = threading.Lock()
 
-# How much of a failed subprocess's stderr (usually its traceback) goes with the event.
+# How much of a failed subprocess's stderr (often a traceback) and of its stdout ERROR: lines goes with the event.
 STDERR_TAIL_CHARS = 2000
 
-# Numbers and hex ids (timestamps, ports, row and job ids), collapsed in failure_signature.
+# Numbers and hex ids (timestamps, ports, row and job ids), collapsed in failure_signature; an HTTP status is kept.
 _NUMBERS = re.compile(r"\b0x[0-9a-f]+\b|\b[0-9a-f]*\d[0-9a-f]*\b|\d+", re.IGNORECASE)
+_HTTP_STATUS = re.compile(r"[1-5]\d\d")
 
 
 def init_sentry(component):
@@ -68,8 +69,8 @@ def init_sentry(component):
 def capture_job_error(exc, source=None):
     """Report an error that was caught and logged (so it would otherwise never reach Sentry), unless it was
     already reported, or the same failure (this thread's job, `source`, the error type and failure_signature)
-    was sent in the last REPEAT_AFTER_S. A failed subprocess's exit code and the end of its stderr go with it.
-    No-op when reporting is off."""
+    was sent in the last REPEAT_AFTER_S. A failed subprocess's exit code, the end of its stderr and its stdout
+    `ERROR:` lines go with it. No-op when reporting is off."""
     if getattr(exc, "already_reported", False) or not sentry_sdk.is_initialized():
         return
     key = (threading.current_thread().name, source, type(exc).__name__, failure_signature(exc))
@@ -81,40 +82,83 @@ def capture_job_error(exc, source=None):
     with sentry_sdk.new_scope() as scope:
         if source:
             scope.set_tag("source", source)
-        if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        if _is_subprocess_error(exc):
             scope.set_context("subprocess", {
                 "command": " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd),
                 "exit_code": getattr(exc, "returncode", None),
                 "stderr_tail": stderr_tail(exc),
+                "error_lines": error_lines(exc),
             })
         sentry_sdk.capture_exception(exc)
 
 
+def _is_subprocess_error(exc):
+    return isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired))
+
+
+def _text(value):
+    value = value or ""
+    return value.decode(errors="replace") if isinstance(value, bytes) else str(value)
+
+
 def _stderr(exc):
-    stderr = getattr(exc, "stderr", None) or ""
-    return stderr.decode(errors="replace") if isinstance(stderr, bytes) else str(stderr)
+    return _text(getattr(exc, "stderr", None))
+
+
+def _collapse_numbers(text):
+    """`text` with numbers and hex ids replaced by #, except a standalone 100-599 (an HTTP status, which tells
+    one failure from another: HTTP 401 and HTTP 503 are different problems)."""
+    def replace(match):
+        number, start, end = match.group(), match.start(), match.end()
+        standalone = (start == 0 or not text[start - 1].isalnum()) and (end == len(text) or not text[end].isalnum())
+        return number if standalone and _HTTP_STATUS.fullmatch(number) else "#"
+    return _NUMBERS.sub(replace, text)
 
 
 def failure_signature(exc):
-    """What makes one failure the same as another, for the throttle: the first line of the message, or for a failed
-    subprocess its exit code and last stderr line (its message names the command, which differs per month), with
-    numbers and hex ids collapsed so timestamps, ports and ids don't make every repeat look new."""
-    if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
-        lines = [line for line in _stderr(exc).splitlines() if line.strip()]
+    """What makes one failure the same as another, for the throttle: the first line of the message, with numbers
+    and hex ids collapsed so timestamps, ports and ids don't make every repeat look new. For a failed subprocess:
+    its arguments (e.g. which month it uploads, kept as they are), its exit code, and its last stderr line, or, when
+    stderr is empty, its last stdout line starting with ERROR: (the scripts print their handled errors there)."""
+    if _is_subprocess_error(exc):
+        lines = [line.strip() for line in _stderr(exc).splitlines() if line.strip()] or error_lines(exc)
         code = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else exc.returncode
-        return f"exit {code}: " + _NUMBERS.sub("#", lines[-1].strip() if lines else "")[:300]
+        args = " ".join(map(str, exc.cmd[1:])) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd)
+        return f"{args} exit {code}: " + _collapse_numbers(scrub_urls(lines[-1]) if lines else "")[:300]
     lines = str(exc).strip().splitlines()
-    return _NUMBERS.sub("#", lines[0] if lines else "")[:300]
+    return _collapse_numbers(lines[0] if lines else "")[:300]
 
 
-def stderr_tail(exc):
-    """The last STDERR_TAIL_CHARS of a failed subprocess's stderr, scrubbed first (so a cut can't fall inside a URL
-    and hide its query string from the filter), starting at a whole line."""
-    text = scrub_urls(_stderr(exc))
+def _tail(text):
+    """The last STDERR_TAIL_CHARS of `text`, starting at a whole line when there is more than the cut-off one."""
     if len(text) <= STDERR_TAIL_CHARS:
         return text
     tail = text[-STDERR_TAIL_CHARS:]
-    return tail.split("\n", 1)[1] if "\n" in tail else tail
+    rest = tail.split("\n", 1)[1] if "\n" in tail else ""
+    return rest if rest.strip() else tail
+
+
+def stderr_tail(exc):
+    """The end of a failed subprocess's stderr, scrubbed first (so a cut can't fall inside a URL and hide its query
+    string from the filter)."""
+    return _tail(scrub_urls(_stderr(exc)))
+
+
+def error_lines(exc):
+    """A failed subprocess's stdout lines that start with ERROR: (download_data.py and upload_data.py print their
+    handled failures there, e.g. "ERROR: No sensor data found ..."), scrubbed, the last STDERR_TAIL_CHARS of them.
+    The rest of stdout (progress and data) isn't sent."""
+    stdout = _text(getattr(exc, "output", None))
+    lines = [line.strip() for line in scrub_urls(stdout).splitlines() if line.strip().startswith("ERROR:")]
+    if not lines:
+        return []
+    kept, size = [], 0
+    for line in reversed(lines):
+        size += len(line) + 1
+        if size > STDERR_TAIL_CHARS and kept:
+            break
+        kept.append(line[-STDERR_TAIL_CHARS:])
+    return kept[::-1]
 
 
 def scrub_urls(value):
