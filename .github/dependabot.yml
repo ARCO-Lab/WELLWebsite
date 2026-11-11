@@ -41,6 +41,10 @@ updates:
         versions: [">=2.5"]
       - dependency-name: sqlalchemy
         versions: [">=2.1"]
+      # celery 5.7.0 requires exactly python-dateutil 2.9.0.post0, so dateutil 4 cannot be installed with it.
+      # Remove when a celery release after 5.7.0 drops the ==2.9.0.post0 pin (celery/celery#11031).
+      - dependency-name: python-dateutil
+        versions: [">=3"]
     assignees: [lukhsaankumar]
 
   # Base images of the two images built on the server.
