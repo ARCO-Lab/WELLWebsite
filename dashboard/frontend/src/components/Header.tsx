@@ -131,6 +131,7 @@ const Header = () => {
               <p
                 className="text-balance text-black"
                 style={{
+                  fontFamily: "var(--font-family-poppins)", // the h1 typography it had
                   fontWeight: 600,
                   fontSize: "clamp(1.45rem, 0.9rem + 2.9vw, 2.35rem)",
                   lineHeight: 1.2631578947,
