@@ -108,6 +108,8 @@ All colors MUST be HSL for proper shadcn/ui integration.
   /* Primary colors (McMaster Maroon) */
   --color-primary: hsl(var(--primary));
   --color-primary-foreground: hsl(var(--primary-foreground));
+  /* McMaster Gold hover fill: the Button variants use hover:bg-primary-hover, which is only generated if this exists */
+  --color-primary-hover: hsl(var(--primary-hover));
   
   /* Secondary colors (McMaster Gold) */
   --color-secondary: hsl(var(--secondary));
