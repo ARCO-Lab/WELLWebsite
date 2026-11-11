@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failed, badge %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="grid">
+
+<section class="card">
+  <h2>Site status now</h2>
+  {% if probes.error %}{{ failed(probes, "the uptime checks") }}
+  {% elif not probes.probes %}<p class="muted">No uptime checks recorded yet; the first runs a minute after welldash² starts.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Checked</th><th>Status</th><th>Answer</th><th>Time</th><th>When</th></tr></thead>
+    <tbody>
+    {% for p in probes.probes %}
+    <tr>
+      <td>{{ {'dashboard': 'Dashboard + data API', 'wordpress': 'WordPress site'}.get(p.target, p.target) }}</td>
+      <td>{{ badge(p.ok) }}</td>
+      <td>{{ ('HTTP ' ~ p.status) if p.status is not none else (p.error or 'no answer') }}</td>
+      <td>{{ p.latency_ms | ms }}</td>
+      <td>{{ p.checked_at | ago(now) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="more"><a href="{{ url_for('uptime') }}">Uptime and downtime</a></p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Data freshness</h2>
+  {% if freshness.status is not defined %}{{ failed(freshness, "the newest readings") }}
+  {% elif not freshness.groups %}<p class="muted">No readings in the database yet.</p>
+  {% else %}
+  <p>{{ badge(freshness.status == 'ok', 'All series fresh', freshness.stale | length ~ ' stale') }}
+     <span class="muted">(the rules of /health/data)</span></p>
+  <table>
+    <thead><tr><th>Group</th><th>Newest reading</th><th>Limit</th><th>Series</th></tr></thead>
+    <tbody>
+    {% for name, g in freshness.groups | dictsort %}
+    <tr>
+      <td>{{ name }}{% if g.in_quiet_hours %} <span class="muted">(quiet hours)</span>{% endif %}</td>
+      <td>{{ g.newest | site_time }} <span class="muted">{{ g.newest | ago(now) }}</span></td>
+      <td>{{ '%g' | format(g.max_age_hours) }} h</td>
+      <td>{{ g.series | length }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if freshness.stale %}
+  <ul class="list bad-list">
+    {% for s in freshness.stale %}<li>{{ s.group }} · {{ s.station_id }} {{ s.measurement_type }}: newest {{ s.newest | site_time }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Email alerts</h2>
+  {% if alerts.error %}{{ failed(alerts, "the alerts") }}
+  {% else %}
+  {% if alerts.open %}
+  <ul class="list bad-list">
+    {% for a in alerts.open %}<li><strong>{{ a.title }}</strong> <span class="muted">since {{ a.started_at | site_time }}, {{ a.notifications }} email(s)</span></li>{% endfor %}
+  </ul>
+  {% else %}<p>{{ badge(true, 'No open alerts') }}</p>{% endif %}
+  <h3>Cleared in the last 7 days</h3>
+  {% if alerts.closed %}
+  <ul class="list">
+    {% for a in alerts.closed %}<li>{{ a.title }} <span class="muted">{{ a.started_at | site_time }} to {{ a.resolved_at | site_time }}</span></li>{% endfor %}
+  </ul>
+  {% else %}<p class="muted">None.</p>{% endif %}
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Vendor APIs</h2>
+  {% if vendors.error %}{{ failed(vendors, "the vendor status") }}
+  {% elif not vendors.vendors %}<p class="muted">No calls recorded yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Source</th><th>Status</th><th>Last success</th><th>Last call</th></tr></thead>
+    <tbody>
+    {% for v in vendors.vendors %}
+    <tr>
+      <td>{{ v.source }}</td>
+      <td>{% if v.consecutive_failures %}<span class="badge bad">{{ v.consecutive_failures }} failed</span> <span class="muted">{{ v.last_error or v.last_error_kind }}</span>{% else %}{{ badge(true) }}{% endif %}</td>
+      <td>{{ v.last_success_at | ago(now) }}</td>
+      <td>{{ v.last_attempt_at | ago(now) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>CI on main</h2>
+  {% if ci.error %}{{ failed(ci, "GitHub Actions") }}
+  {% elif not ci.runs %}<p class="muted">No workflow runs found.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Workflow</th><th>Result</th><th>Commit</th><th>Started</th></tr></thead>
+    <tbody>
+    {% for r in ci.runs %}
+    <tr>
+      <td><a href="{{ r.url }}" rel="noreferrer">{{ r.name }}</a></td>
+      <td>{% if r.status != 'completed' %}<span class="badge warn">{{ r.status }}</span>{% else %}{{ badge(r.conclusion == 'success', 'passed', r.conclusion or 'failed') }}{% endif %}</td>
+      <td><code>{{ r.sha }}</code></td>
+      <td>{{ r.created_at | ago(now) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Deploys</h2>
+  {% if deploys.missing %}<p class="muted">deploy.log isn't in the logs folder, so deploys aren't shown. The README (welldash²) says how to point deploy.sh's log there.</p>
+  {% elif deploys.error %}{{ failed(deploys, "deploy.log") }}
+  {% elif not deploys.entries %}<p class="muted">No deploys in deploy.log yet.</p>
+  {% else %}
+  <ul class="list">
+    {% for d in deploys.entries %}<li class="{{ d.kind }}"><span class="muted">{{ d.when }}</span> {{ d.message }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Sentry: unresolved issues seen in 24 h</h2>
+  {% if sentry.configured == false %}<p class="muted">Not configured (OPS_SENTRY_API_TOKEN and OPS_SENTRY_ORG in .env).</p>
+  {% elif sentry.error %}{{ failed(sentry, "Sentry") }}
+  {% elif not sentry.issues %}<p>{{ badge(true, 'None') }}</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Issue</th><th>Events</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {% for i in sentry.issues %}
+    <tr><td><a href="{{ i.url }}" rel="noreferrer">{{ i.title }}</a> <span class="muted">{{ i.project }}</span></td><td>{{ i.count }}</td><td>{{ i.last_seen | ago(now) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Job heartbeats (Healthchecks.io)</h2>
+  {% if healthchecks.configured == false %}<p class="muted">Not configured (OPS_HEALTHCHECKS_API_KEY in .env, a read-only key).</p>
+  {% elif healthchecks.error %}{{ failed(healthchecks, "Healthchecks.io") }}
+  {% elif not healthchecks.checks %}<p class="muted">No checks in this project.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Check</th><th>State</th><th>Last ping</th></tr></thead>
+    <tbody>
+    {% for c in healthchecks.checks %}
+    <tr><td>{{ c.name }}</td><td><span class="badge {{ 'ok' if c.status == 'up' else 'bad' if c.status == 'down' else 'warn' }}">{{ c.status }}</span></td><td>{{ c.last_ping | ago(now) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+</div>
+{% endblock %}

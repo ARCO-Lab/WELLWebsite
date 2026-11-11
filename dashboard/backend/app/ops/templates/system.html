@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failed %}
+{% block title %}System{% endblock %}
+{% block content %}
+<div class="grid">
+
+<section class="card">
+  <h2>Database</h2>
+  {% if database.error %}{{ failed(database, "the database") }}
+  {% else %}
+  <p>PostgreSQL {{ database.version }}, {{ database.size | bytes }}. welldash² reads it as <code>{{ database.role }}</code>.</p>
+  <table>
+    <thead><tr><th>Table</th><th class="num">Rows (estimate)</th><th class="num">Size</th></tr></thead>
+    <tbody>
+    {% for t in database.tables %}
+    <tr><td><code>{{ t.name }}</code></td><td class="num">{{ '{:,}'.format(t.rows if t.rows > 0 else 0) }}</td><td class="num">{{ t.size | bytes }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Log files</h2>
+  {% if logs.missing %}<p class="muted">The logs folder ({{ settings.logs_dir }}) isn't mounted.</p>
+  {% elif logs.error %}{{ failed(logs, "the logs folder") }}
+  {% elif not logs.files %}<p class="muted">No log files.</p>
+  {% else %}
+  <p>{{ logs.files | length }} files, {{ logs.total | bytes }} in all.</p>
+  <table>
+    <thead><tr><th>File</th><th class="num">Size</th><th>Last written</th></tr></thead>
+    <tbody>
+    {% for f in logs.files %}
+    <tr><td><code>{{ f.name }}</code></td><td class="num">{{ f.size | bytes }}</td><td>{{ f.modified | ago(now) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Migrations applied</h2>
+  {% if migrations.error %}{{ failed(migrations, "schema_migrations") }}
+  {% else %}
+  <ul class="list">
+    {% for m in migrations.applied %}<li><code>{{ m.version }}</code> <span class="muted">{{ m.applied_at | site_time }}</span></li>{% else %}<li class="muted">None recorded.</li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>welldash² itself</h2>
+  <ul class="list">
+    <li>Running since {{ started_at | site_time }} ({{ started_at | ago(now) }})</li>
+    <li>Uptime checks: {% if settings.probe_interval_s > 0 %}every {{ settings.probe_interval_s }} s{% else %}off{% endif %}{% if probes.probes %}, last {{ (probes.probes | map(attribute='checked_at') | max) | ago(now) }}{% endif %}</li>
+    <li>Keeps uptime checks and request counts for {{ settings.retention_days }} days</li>
+    <li>Session cookie: {{ 'HTTPS only' if settings.cookie_secure else 'sent over HTTP too (OPS_COOKIE_SECURE=0)' }}</li>
+  </ul>
+  <p class="muted">Container states and disk space aren't shown: reading them would need the Docker socket, which would give
+  this service control of the VM. The uptime checks and job heartbeats cover what matters.</p>
+</section>
+
+</div>
+{% endblock %}

@@ -35,6 +35,7 @@ bad_head() { [ -n "${BAD_WORKER_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" 
 case "$*" in
   "compose up"*) touch "$T/rebuilt"
     if [ -n "${BREAK_LOG:-}" ]; then rm -f "$DEPLOY_LOG"; mkdir -p "$DEPLOY_LOG"; fi ;;  # deploy.log unwritable mid-deploy
+  "compose ps -q ops") [ -n "${OPS_RUNNING:-}" ] && echo "id-ops" ;;   # welldash²: off unless the test turns it on
   "compose ps -q "*) if [ "$4" = "${MISSING:-}" ] && bad_head; then :; else echo "id-$4"; fi ;;
   "inspect -f {{.RestartCount}} "*) echo 0 ;;
   "inspect -f {{.State.Status}} {{.RestartCount}} "*)
@@ -109,6 +110,11 @@ check "frontend change: rebuilds only the dashboard, no worker check" 'rc 0 && h
 sync_vm; change dashboard/backend/app/x.py; ci success success; deploy --auto
 check "--auto, CI passed: rebuilds backend, worker, export_worker" 'rc 0 && head_is_remote && ran "--no-deps backend worker export_worker"'
 check "backend change: checks both workers' containers" 'ran "compose ps -q worker" && ran "compose ps -q export_worker" && ran "inspect -f {{.State.Status}} {{.RestartCount}} id-export_worker"'
+
+check "backend change, welldash² not running: not rebuilt" '! ran "export_worker ops"'
+
+sync_vm; change dashboard/backend/app/x.py; OPS_RUNNING=1 deploy
+check "backend change, welldash² running: rebuilt with the backend" 'rc 0 && ran "--no-deps backend worker export_worker ops" && said "healthy"'
 
 sync_vm; change dashboard/backend/app/x.py; ci pending success; deploy --auto
 check "--auto, CI still running: waits, changes nothing" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && [ ! -s "$T/out" ]'

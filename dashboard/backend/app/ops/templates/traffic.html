@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failed, ranges_nav %}
+{% block title %}Traffic{% endblock %}
+{% block content %}
+<div class="card-head">
+  <p class="muted">Requests the data API answered: every dashboard visit's data, CSV downloads and health checks, counted per minute by
+  route. No addresses, query strings or browsers are recorded. Includes welldash²'s own check of /api/latest, once a minute.</p>
+  {{ ranges_nav(ranges, range_name, 'traffic') }}
+</div>
+
+{% if summary.error %}{{ failed(summary, "the request counts") }}
+{% else %}
+<div class="tiles">
+  <div class="tile"><span class="n">{{ '{:,}'.format(summary.requests) }}</span><span>requests</span></div>
+  <div class="tile {{ 'bad' if summary.errors_5xx else '' }}"><span class="n">{{ '{:,}'.format(summary.errors_5xx) }}</span><span>server errors (5xx)</span></div>
+  <div class="tile"><span class="n">{{ '{:,}'.format(summary.errors_4xx) }}</span><span>client errors (4xx)</span></div>
+  <div class="tile"><span class="n">{{ summary.p95_ms | ms }}</span><span>p95 response time (estimate)</span></div>
+  <div class="tile"><span class="n">{{ summary.bytes_out | bytes }}</span><span>data sent</span></div>
+  <div class="tile"><span class="n">{{ summary.peak_per_minute }}</span><span>busiest minute{% if summary.peak_minute %} ({{ summary.peak_minute | site_time }}){% endif %}</span></div>
+  <div class="tile"><span class="n">{{ '{:,}'.format(summary.downloads) }}</span><span>CSV downloads</span></div>
+</div>
+{% endif %}
+
+{% if series.error %}{{ failed(series, "the traffic over time") }}
+{% else %}
+{% set per = 'day' if step.total_seconds() >= 86400 else (step.total_seconds() // 3600) | int ~ ' h' %}
+<div class="grid">
+  <section class="card"><h2>Requests per {{ per }}</h2>{{ charts.requests }}</section>
+  <section class="card"><h2>Server errors per {{ per }}</h2>{{ charts.errors }}</section>
+  <section class="card"><h2>p95 response time</h2>{{ charts.p95 }}</section>
+  <section class="card"><h2>Data sent per {{ per }}</h2>{{ charts.bytes }}</section>
+  <section class="card"><h2>Busiest minute (requests/min)</h2>{{ charts.peak }}</section>
+  <section class="card"><h2>CSV downloads per {{ per }}</h2>{{ charts.downloads }}</section>
+</div>
+{% endif %}
+
+{% if not summary.error %}
+<section class="card wide">
+  <h2>Routes</h2>
+  {% if not summary.endpoints %}<p class="muted">No requests recorded in this period.</p>
+  {% else %}
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Route</th><th>Method</th><th class="num">Requests</th><th class="num">5xx</th><th class="num">Average</th><th class="num">Slowest</th><th class="num">Data sent</th></tr></thead>
+    <tbody>
+    {% for e in summary.endpoints[:25] %}
+    <tr>
+      <td><code>{{ e.endpoint }}</code></td><td>{{ e.method }}</td>
+      <td class="num">{{ '{:,}'.format(e.requests) }}</td>
+      <td class="num {{ 'bad' if e.errors_5xx else '' }}">{{ e.errors_5xx }}</td>
+      <td class="num">{{ e.avg_ms | ms }}</td><td class="num">{{ e.max_ms | ms }}</td>
+      <td class="num">{{ e.bytes_out | bytes }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card wide">
+  <h2>Export jobs (large CSV exports)</h2>
+  {% if exports.error %}{{ failed(exports, "the export jobs") }}
+  {% else %}
+  <p>Queue now: <strong>{{ exports.queued }}</strong> queued, <strong>{{ exports.running }}</strong> running.
+    <span class="muted">Finished jobs are deleted after a while, so older periods may show fewer.</span></p>
+  {% if exports.by_status %}
+  <table>
+    <thead><tr><th>Status</th><th class="num">Jobs</th><th class="num">Rows written</th><th class="num">Average run</th><th class="num">Longest run</th></tr></thead>
+    <tbody>
+    {% for s in exports.by_status %}
+    <tr>
+      <td>{{ s.status }}</td><td class="num">{{ s.jobs }}</td><td class="num">{{ '{:,}'.format(s.rows | int) }}</td>
+      <td class="num">{{ (s.avg_s * 1000) | ms if s.avg_s is not none else 'n/a' }}</td>
+      <td class="num">{{ (s.max_s * 1000) | ms if s.max_s is not none else 'n/a' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No export jobs in this period.</p>{% endif %}
+  {% if exports.failures %}
+  <h3>Failed</h3>
+  <ul class="list bad-list">
+    {% for f in exports.failures %}<li><span class="muted">{{ f.created_at | site_time }}</span> {{ f.domain }}, about {{ '{:,}'.format(f.estimated_rows or 0) }} rows: {{ f.error }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

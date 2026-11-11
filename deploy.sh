@@ -154,7 +154,11 @@ fi
 SERVICES=()
 add() { local s; for s in "$@"; do [[ " ${SERVICES[*]-} " == *" $s "* ]] || SERVICES+=("$s"); done; }
 if grep -q '^dashboard/frontend/' <<<"$CHANGED"; then add dashboard; fi
-if grep -q '^dashboard/backend/' <<<"$CHANGED"; then add backend worker export_worker; fi
+if grep -q '^dashboard/backend/' <<<"$CHANGED"; then
+  add backend worker export_worker
+  # welldash² (the ops service) runs the backend image too, but only where it was turned on; rebuild it if it runs.
+  if [ -n "$("$DOCKER" compose ps -q ops 2>/dev/null || true)" ]; then add ops; fi
+fi
 if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then add ALL; fi
 # Apache/PHP config files in wordpress/ are bind-mounted into the wordpress container one file at a time. Apache and
 # PHP read them only at start, and git replaces a changed file with a new one, so the running container keeps the old

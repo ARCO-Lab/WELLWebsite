@@ -161,6 +161,46 @@ services:
     networks:
       - internal_api
 
+  # --- welldash², the operations dashboard (dashboard/backend/app/ops/; README "welldash² (operations dashboard)") ---
+  # Read-only pages of uptime, traffic, alerts and CI, behind one password. Only for McMaster's network/VPN: the
+  # front proxy (haproxy.cas.mcmaster.ca) must never route to this port. It starts only when the "ops" profile is on
+  # (COMPOSE_PROFILES=ops in .env), and refuses to start without OPS_PASSWORD_HASH and OPS_SECRET_KEY (also in .env).
+  ops:
+    profiles: ["ops"]
+    build:
+      context: ./dashboard/backend
+    # One worker process: the failed-login limit and the uptime checks live in its memory. Threads serve pages.
+    command: ["gunicorn", "-k", "gthread", "-w", "1", "--threads", "4", "--timeout", "60", "-b", "0.0.0.0:8090",
+              "ops.app:create_app()"]
+    environment:
+      # A read-only role is better (README); unset, it reads with the backend's role.
+      OPS_DATABASE_URL: ${OPS_DATABASE_URL:-${BACKEND_DATABASE_URL}}
+      OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:-}
+      OPS_SECRET_KEY: ${OPS_SECRET_KEY:-}
+      OPS_COOKIE_SECURE: ${OPS_COOKIE_SECURE:-0}
+      OPS_LOGS_DIR: /ops/logs
+      OPS_GITHUB_TOKEN: ${OPS_GITHUB_TOKEN:-}
+      SENTRY_API_TOKEN: ${OPS_SENTRY_API_TOKEN:-}
+      SENTRY_ORG: ${OPS_SENTRY_ORG:-}
+      SENTRY_API_URL: ${OPS_SENTRY_API_URL:-https://sentry.io}
+      HEALTHCHECKS_API_KEY: ${OPS_HEALTHCHECKS_API_KEY:-}
+      OPS_GOATCOUNTER_CODE: ${OPS_GOATCOUNTER_CODE:-}
+      OPS_GOATCOUNTER_TOKEN: ${OPS_GOATCOUNTER_TOKEN:-}
+    ports:
+      # OPS_BIND can pin it to one of the VM's addresses (e.g. its campus address) instead of all of them.
+      - "${OPS_BIND:-0.0.0.0}:${OPS_PORT:-8090}:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself
+    depends_on:
+      - dashboard
+    restart: unless-stopped
+    networks:
+      - internal_api   # to check the dashboard
+      - front          # to check WordPress
+    volumes:
+      # Log sizes on the System page, and deploy.log if deploy.sh writes it here (README). Read-only.
+      - ./dashboard/backend/app/logs:/ops/logs:ro
+
   # Optional internal reverse proxy. If the McMaster VM already has an external
   # reverse proxy, you can comment out or remove this service. Keeping it here
   # for local development: visiting http://localhost will serve WordPress. For 

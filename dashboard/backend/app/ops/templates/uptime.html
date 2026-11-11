@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failed, ranges_nav %}
+{% block title %}Uptime{% endblock %}
+{% block content %}
+<p class="muted">welldash² requests the dashboard's /api/latest (through the dashboard, so the backend and database are checked
+too) and the WordPress home page once a minute. A check is up when it answers 2xx.</p>
+
+<section class="card wide">
+  <h2>Availability</h2>
+  {% if availability.error %}{{ failed(availability, "the uptime checks") }}
+  {% elif not availability.targets %}<p class="muted">No checks recorded yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Checked</th><th>24 h</th><th>7 days</th><th>30 days</th><th>Checks (24 h)</th><th>Last check</th></tr></thead>
+    <tbody>
+    {% for t in availability.targets %}
+    <tr>
+      <td>{{ {'dashboard': 'Dashboard + data API', 'wordpress': 'WordPress site'}.get(t.target, t.target) }}</td>
+      <td class="{{ 'bad' if t.day is not none and t.day < 99 else '' }}">{{ t.day | pct }}</td>
+      <td>{{ t.week | pct }}</td>
+      <td>{{ t.month | pct }}</td>
+      <td>{{ t.checks_day }}</td>
+      <td>{{ t.last | ago(now) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card wide">
+  <div class="card-head"><h2>Response time</h2>{{ ranges_nav(ranges, range_name, 'uptime') }}</div>
+  {% if latency.error %}{{ failed(latency, "the response times") }}
+  {% else %}
+  <p class="legend">{% for target in latency.series | sort %}<span class="key s{{ loop.index0 }}"></span>{{ target }} {% endfor %}
+    <span class="muted">average of successful checks per {{ (latency.step.total_seconds() // 60) | int }} min; {{ latency.failed_checks }} failed check(s) in this period</span></p>
+  {{ latency_chart }}
+  {% endif %}
+</section>
+
+<section class="card wide">
+  <h2>Downtime in the last 30 days</h2>
+  {% if incidents.error %}{{ failed(incidents, "the failed checks") }}
+  {% elif not incidents.incidents %}<p class="muted">No failed checks.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Checked</th><th>From</th><th>Until</th><th>Length</th><th>Failed checks</th><th>Answer</th></tr></thead>
+    <tbody>
+    {% for i in incidents.incidents %}
+    <tr>
+      <td>{{ i.target }}</td>
+      <td>{{ i.start | site_time }}</td>
+      <td>{% if i.end %}{{ i.end | site_time }}{% else %}<span class="badge bad">still down</span>{% endif %}</td>
+      <td>{{ i.minutes }} min</td>
+      <td>{{ i.checks }}</td>
+      <td>{{ i.reasons }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}
