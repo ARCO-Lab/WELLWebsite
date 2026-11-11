@@ -105,7 +105,6 @@ class Sharing_Service {
 			'twitter'          => 'Share_Twitter',
 			'tumblr'           => 'Share_Tumblr',
 			'pinterest'        => 'Share_Pinterest',
-			'pocket'           => 'Share_Pocket',
 			'telegram'         => 'Share_Telegram',
 			'threads'          => 'Share_Threads',
 			'jetpack-whatsapp' => 'Jetpack_Share_WhatsApp',
@@ -401,13 +400,15 @@ class Sharing_Service {
 			$options = array();
 		}
 
+		$placement_saved = isset( $options['global']['show'] );
+
 		// Defaults.
 		$options['global'] = array(
 			'button_style'  => 'icon-text',
 			'sharing_label' => $this->default_sharing_label,
 			'open_links'    => 'same',
-			'show'          => ! isset( $options['global'] ) ? array( 'post', 'page' ) : array(),
-			'custom'        => isset( $options['global']['custom'] ) ? $options['global']['custom'] : array(),
+			'show'          => $placement_saved ? array() : array( 'post', 'page' ),
+			'custom'        => $options['global']['custom'] ?? array(),
 		);
 
 		/**
@@ -461,10 +462,13 @@ class Sharing_Service {
 				}
 			}
 
-			$data['show'] = array_intersect( $data['show'], $shows );
-			if ( $data['show'] ) {
-				$options['global']['show'] = $data['show'];
-			}
+			$options['global']['show'] = array_intersect( $data['show'], $shows );
+			$placement_saved           = true;
+		}
+
+		// Store no placement until one is chosen, so Likes keeps its own default; get_global_options() falls back to posts and pages.
+		if ( ! $placement_saved && array( 'post', 'page' ) === ( $options['global']['show'] ?? null ) ) {
+			unset( $options['global']['show'] );
 		}
 
 		update_option( 'sharing-options', $options );
@@ -513,7 +517,7 @@ class Sharing_Service {
 	/**
 	 * Save a sharing service for use.
 	 *
-	 * @param int                     $id Sharing unique ID.
+	 * @param string                  $id Sharing unique ID.
 	 * @param Sharing_Advanced_Source $service Sharing service.
 	 *
 	 * @return void
@@ -874,7 +878,7 @@ function sharing_add_footer() {
 				?>
 
 	<script type="text/javascript">
-		window.WPCOM_sharing_counts = <?php echo wp_json_encode( array_flip( $sharing_post_urls ) ); ?>;
+		window.WPCOM_sharing_counts = <?php echo wp_json_encode( array_flip( $sharing_post_urls ), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ); ?>;
 	</script>
 				<?php
 			endif;
@@ -925,7 +929,7 @@ function sharing_process_requests() {
 	global $post;
 
 	// Only process if: single post and share=X defined
-	if ( ( is_page() || is_single() ) && isset( $_GET['share'] ) && is_string( $_GET['share'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+	if ( $post instanceof WP_Post && ( is_page() || is_single() ) && isset( $_GET['share'] ) && is_string( $_GET['share'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$sharer = new Sharing_Service();
 
 		$service = $sharer->get_service( sanitize_text_field( wp_unslash( $_GET['share'] ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -1014,7 +1018,7 @@ function sharing_display( $text = '', $echo = false ) {
 	$display_options = null;
 
 	if ( is_array( $options ) ) {
-		$display_options = $options['global']['show'];
+		$display_options = $options['global']['show'] ?? array( 'post', 'page' );
 	}
 
 	if ( is_front_page() && ( is_array( $display_options ) && ! in_array( 'index', $display_options, true ) ) ) {
@@ -1107,7 +1111,7 @@ function sharing_display( $text = '', $echo = false ) {
 		 */
 		$enabled = apply_filters( 'sharing_enabled', $sharer->get_blog_services() );
 
-		if ( is_countable( $enabled['all'] ) && ( count( $enabled['all'] ) > 0 ) ) {
+		if ( ! empty( $enabled['all'] ) ) {
 			$dir = get_option( 'text_direction' );
 
 			// Wrapper.

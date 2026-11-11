@@ -16,8 +16,8 @@ use Automattic\Jetpack\Forms\Service\MailPoet_Integration;
 use Automattic\Jetpack\Redirect;
 use Automattic\Jetpack\Status;
 use Automattic\Jetpack\Status\Host;
-use Jetpack_AI_Helper;
 use WP_Error;
+use WP_Query;
 use WP_REST_Request;
 use WP_REST_Response;
 
@@ -33,73 +33,114 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 
 	/**
+	 * Seconds a chunked bulk delete may run before it stops and reports `has_more`.
+	 *
+	 * Kept well under the 120s gateway timeout measured on Atomic.
+	 *
+	 * @var int
+	 */
+	const BULK_DELETE_TIME_BUDGET = 20;
+
+	/**
+	 * Temporary storage for the source filter ID used in query modifications.
+	 *
+	 * @var int|null
+	 */
+	private $temp_source_filter_id;
+
+	/**
+	 * Cached SQL fragments for source filtering, to avoid recomputing per filter hook.
+	 *
+	 * @var array{join: string, where: string}|null
+	 */
+	private $temp_source_filter_sql;
+
+	/**
 	 * Get filtered list of supported integrations
 	 *
 	 * @return array Filtered list of supported integrations
 	 */
 	private function get_supported_integrations() {
 		$supported_integrations = array(
-			'akismet'                           => array(
+			'akismet'      => array(
 				'type'                    => 'plugin',
 				'file'                    => 'akismet/akismet.php',
 				'settings_url'            => 'admin.php?page=akismet-key-config',
 				'marketing_redirect_slug' => 'org-spam',
 				'title'                   => __( 'Akismet Spam Protection', 'jetpack-forms' ),
 				'subtitle'                => __( 'Akismet filters out form spam with 99% accuracy', 'jetpack-forms' ),
+				'active_tooltip'          => __( 'This form is protected with Akismet spam protection.', 'jetpack-forms' ),
 				// Overriding this may automatically enable/disable the integration when editing a form.
 				'enabled_by_default'      => false,
+				'icon_url'                => trailingslashit( Jetpack_Forms::assets_url() ) . 'images/integrations/akismet.svg',
 			),
-			'creative-mail-by-constant-contact' => array(
+			'zero-bs-crm'  => array(
 				'type'                    => 'plugin',
-				'file'                    => 'creative-mail-by-constant-contact/creative-mail-plugin.php',
-				'settings_url'            => 'admin.php?page=creativemail',
-				'marketing_redirect_slug' => 'creative-mail',
-				'title'                   => __( 'Creative Mail', 'jetpack-forms' ),
-				'subtitle'                => __( 'Manage email contacts and campaigns', 'jetpack-forms' ),
-				// Overriding this may automatically enable/disable the integration when editing a form.
-				'enabled_by_default'      => false,
-			),
-			'zero-bs-crm'                       => array(
-				'type'                    => 'plugin',
-				'file'                    => 'zero-bs-crm/ZeroBSCRM.php',
+				// White-label builds rename the folder and main file, so ask the CRM where it lives.
+				// Not ZBS_ROOTPLUGIN: it names a symlink's target folder, which WordPress does not key plugins by.
+				'file'                    => defined( 'ZBS_ROOTFILE' ) ? plugin_basename( ZBS_ROOTFILE ) : 'zero-bs-crm/ZeroBSCRM.php',
 				'settings_url'            => 'admin.php?page=zerobscrm-plugin-settings',
 				'marketing_redirect_slug' => 'org-crm',
 				'title'                   => __( 'Jetpack CRM', 'jetpack-forms' ),
 				'subtitle'                => __( 'Store contact form submissions in your CRM', 'jetpack-forms' ),
+				'active_tooltip'          => __( 'Jetpack CRM is connected for this form.', 'jetpack-forms' ),
 				// Overriding this may automatically enable/disable the integration when editing a form.
-				'enabled_by_default'      => true,
+				'enabled_by_default'      => false,
+				'icon_url'                => trailingslashit( Jetpack_Forms::assets_url() ) . 'images/integrations/zero-bs-crm.svg',
 			),
-			'salesforce'                        => array(
+			'salesforce'   => array(
 				'type'                    => 'service',
 				'file'                    => null,
 				'settings_url'            => null,
 				'marketing_redirect_slug' => null,
 				'title'                   => __( 'Salesforce', 'jetpack-forms' ),
 				'subtitle'                => __( 'Send form contacts to Salesforce', 'jetpack-forms' ),
+				'active_tooltip'          => __( 'Salesforce is connected for this form.', 'jetpack-forms' ),
 				// Overriding this may automatically enable/disable the integration when editing a form.
 				'enabled_by_default'      => false,
+				'icon_url'                => trailingslashit( Jetpack_Forms::assets_url() ) . 'images/integrations/salesforce.svg',
 			),
-			'google-drive'                      => array(
+			'google-drive' => array(
 				'type'                    => 'service',
 				'file'                    => null,
 				'settings_url'            => null,
 				'marketing_redirect_slug' => null,
 				'title'                   => __( 'Google Sheets', 'jetpack-forms' ),
 				'subtitle'                => __( 'Export form responses to Google Sheets.', 'jetpack-forms' ),
+				'active_tooltip'          => __( 'Google Sheets is connected for this form.', 'jetpack-forms' ),
 				// Overriding this may automatically enable/disable the integration when editing a form.
 				'enabled_by_default'      => false,
+				'icon_url'                => trailingslashit( Jetpack_Forms::assets_url() ) . 'images/integrations/google-drive.svg',
 			),
-			'mailpoet'                          => array(
+			'mailpoet'     => array(
 				'type'                    => 'plugin',
 				'file'                    => 'mailpoet/mailpoet.php',
 				'settings_url'            => 'admin.php?page=mailpoet-homepage',
 				'marketing_redirect_slug' => 'org-mailpoet',
 				'title'                   => __( 'MailPoet email marketing', 'jetpack-forms' ),
 				'subtitle'                => __( 'Send newsletters and marketing emails directly from your site.', 'jetpack-forms' ),
+				'active_tooltip'          => __( 'MailPoet is connected for this form.', 'jetpack-forms' ),
 				// Overriding this may automatically enable/disable the integration when editing a form.
 				'enabled_by_default'      => false,
+				'icon_url'                => trailingslashit( Jetpack_Forms::assets_url() ) . 'images/integrations/mailpoet.svg',
 			),
 		);
+
+		// Conditionally add Hostinger Reach integration behind feature flag.
+		if ( Jetpack_Forms::is_hostinger_reach_enabled() ) {
+			$supported_integrations['hostinger-reach'] = array(
+				'type'                    => 'plugin',
+				'file'                    => 'hostinger-reach/hostinger-reach.php',
+				'settings_url'            => 'admin.php?page=hostinger-reach#/home',
+				'marketing_redirect_slug' => 'hostinger-reach',
+				'title'                   => __( 'Hostinger Reach', 'jetpack-forms' ),
+				'subtitle'                => __( 'Send newsletters and marketing emails via Hostinger Reach.', 'jetpack-forms' ),
+				'active_tooltip'          => __( 'Hostinger Reach is connected for this form.', 'jetpack-forms' ),
+				// Overriding this may automatically enable/disable the integration when editing a form.
+				'enabled_by_default'      => false,
+				'icon_url'                => trailingslashit( Jetpack_Forms::assets_url() ) . 'images/integrations/hostinger-reach.svg',
+			);
+		}
 
 		/**
 		 * Filters the list of supported integrations available in Jetpack Forms.
@@ -118,6 +159,9 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 		 *                            - marketing_redirect_slug (string|null) : Redirect slug for marketing links, or null.
 		 *                            - title (string)                 : Default UI title for the integration.
 		 *                            - subtitle (string)              : Default UI subtitle/description for the integration.
+		 *                            - active_tooltip (string)        : Tooltip copy for when the integration is active/connected.
+		 *                            - enabled_by_default (bool)      : Whether the integration is enabled by default on new forms.
+		 *                            - icon_url (string|null)         : Absolute URL to an icon to display in the UI.
 		 */
 		return apply_filters( 'jetpack_forms_supported_integrations', $supported_integrations );
 	}
@@ -158,6 +202,16 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 						},
 					),
 				),
+			)
+		);
+
+		register_rest_route(
+			$this->namespace,
+			$this->rest_base . '/integrations-metadata',
+			array(
+				'methods'             => \WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'get_integrations_metadata' ),
+				'permission_callback' => array( $this, 'get_items_permissions_check' ),
 			)
 		);
 
@@ -233,14 +287,7 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 				'methods'             => \WP_REST_Server::DELETABLE,
 				'callback'            => array( $this, 'delete_posts_by_status' ),
 				'permission_callback' => array( $this, 'delete_items_permissions_check' ),
-				'args'                => array(
-					'status' => array(
-						'type'     => 'string',
-						'enum'     => array( 'trash', 'spam' ),
-						'required' => false,
-						'default'  => 'trash',
-					),
-				),
+				'args'                => $this->get_bulk_scope_args( array( 'trash', 'spam' ), 'trash' ),
 			)
 		);
 
@@ -254,6 +301,140 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 				'callback'            => array( $this, 'get_forms_config' ),
 			)
 		);
+
+		// Mark feedback as read/unread endpoint.
+		register_rest_route(
+			$this->namespace,
+			$this->rest_base . '/(?P<id>\d+)/read',
+			array(
+				'methods'             => \WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'update_read_status' ),
+				'permission_callback' => array( $this, 'update_item_permissions_check' ),
+				'args'                => array(
+					'id'        => array(
+						'type'              => 'integer',
+						'required'          => true,
+						'sanitize_callback' => 'absint',
+					),
+					'is_unread' => array(
+						'type'              => 'boolean',
+						'required'          => true,
+						'sanitize_callback' => 'rest_sanitize_boolean',
+					),
+				),
+			)
+		);
+
+		// Dismiss the classic forms notice.
+		register_rest_route(
+			$this->namespace,
+			$this->rest_base . '/dismiss-classic-forms-notice',
+			array(
+				'methods'             => \WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'dismiss_classic_forms_notice' ),
+				'permission_callback' => array( $this, 'get_items_permissions_check' ),
+			)
+		);
+
+		// Get optimized status counts.
+		register_rest_route(
+			$this->namespace,
+			$this->rest_base . '/counts',
+			array(
+				'methods'             => \WP_REST_Server::READABLE,
+				'permission_callback' => array( $this, 'get_items_permissions_check' ),
+				'callback'            => array( $this, 'get_status_counts' ),
+				'args'                => array(
+					'search'    => array(
+						'description'       => 'Limit results to those matching a string.',
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+					'parent'    => array(
+						'description'       => 'Limit results to those of a specific parent ID.',
+						'type'              => 'integer',
+						'sanitize_callback' => 'absint',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+					'before'    => array(
+						'description'       => 'Limit results to feedback published before a given ISO8601 compliant date.',
+						'type'              => 'string',
+						'format'            => 'date-time',
+						'sanitize_callback' => 'sanitize_text_field',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+					'after'     => array(
+						'description'       => 'Limit results to feedback published after a given ISO8601 compliant date.',
+						'type'              => 'string',
+						'format'            => 'date-time',
+						'sanitize_callback' => 'sanitize_text_field',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+					'is_unread' => array(
+						'description'       => 'Limit results to read or unread feedback items.',
+						'type'              => 'boolean',
+						'sanitize_callback' => 'rest_sanitize_boolean',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+					'is_test'   => array(
+						'description'       => 'Limit results to test responses or exclude them.',
+						'type'              => 'boolean',
+						'sanitize_callback' => 'rest_sanitize_boolean',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+					'source'    => array(
+						'description'       => 'Limit results to feedback submitted from a specific source post ID.',
+						'type'              => 'integer',
+						'sanitize_callback' => 'absint',
+						'validate_callback' => 'rest_validate_request_arg',
+					),
+				),
+			)
+		);
+	}
+	/**
+	 * Get source array from post IDs
+	 *
+	 * @param array $post_ids Array of post IDs.
+	 *
+	 * @return array Array of sources.
+	 */
+	private static function get_source_array( $post_ids ) {
+		if ( empty( $post_ids ) ) {
+			return array();
+		}
+
+		$source_query = new WP_Query(
+			array(
+				'post__in'       => $post_ids,
+				'post_status'    => array( 'publish', 'draft', 'pending', 'future', 'private', 'inherit', 'trash' ),
+				'post_type'      => 'any',
+				'orderby'        => 'post_title',
+				'order'          => 'ASC',
+				'posts_per_page' => count( $post_ids ), // Retrieve all in the post_ids array but no more than that.
+			)
+		);
+
+		return array_map(
+			static function ( $post ) {
+				$permalink = get_permalink( $post->ID );
+				if ( $permalink === false ) {
+					$permalink = '';
+				}
+				$status = get_post_status( $post );
+				$title  = get_the_title( $post->ID );
+				if ( 'trash' === $status ) {
+					$title = sprintf( /* translators: %s: post title */ __( '(trashed) %s', 'jetpack-forms' ), $title );
+				}
+				return array(
+					'id'    => $post->ID,
+					'title' => $title,
+					'url'   => $permalink,
+				);
+			},
+			$source_query->posts
+		);
 	}
 
 	/**
@@ -263,8 +444,6 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 	 * @return WP_REST_Response Response object on success.
 	 */
 	public function get_filters() {
-		// TODO: investigate how we can do this better regarding usage of $wpdb
-		// performance by querying all the entities, etc..
 		global $wpdb;
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$months = $wpdb->get_results(
@@ -273,10 +452,10 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			WHERE post_type = 'feedback'
 			ORDER BY post_date DESC"
 		);
+
+		$source_ids = Feedback::get_all_source_post_ids();
 		// phpcs:enable
-		$source_ids = Contact_Form_Plugin::get_all_parent_post_ids(
-			array_diff_key( array( 'post_status' => array( 'draft', 'publish', 'spam', 'trash' ) ), array( 'post_parent' => '' ) )
-		);
+
 		return rest_ensure_response(
 			array(
 				'date'   => array_map(
@@ -288,18 +467,88 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 					},
 					$months
 				),
-				'source' => array_map(
-					static function ( $post_id ) {
-						return array(
-							'id'    => $post_id,
-							'title' => get_the_title( $post_id ),
-							'url'   => get_permalink( $post_id ),
-						);
-					},
-					$source_ids
-				),
+				'source' => self::get_source_array( $source_ids ),
 			)
 		);
+	}
+
+	/**
+	 * Retrieves status counts for inbox, spam, and trash.
+	 *
+	 * @param WP_REST_Request $request Full data about the request.
+	 * @return WP_REST_Response Response object on success.
+	 */
+	public function get_status_counts( $request ) {
+		global $wpdb;
+
+		$search    = $request->get_param( 'search' );
+		$parent    = $request->get_param( 'parent' );
+		$source    = $request->get_param( 'source' );
+		$before    = $request->get_param( 'before' );
+		$after     = $request->get_param( 'after' );
+		$is_unread = $request->get_param( 'is_unread' );
+		$is_test   = $request->get_param( 'is_test' );
+
+		$join_clause      = '';
+		$where_conditions = array( $wpdb->prepare( "{$wpdb->posts}.post_type = %s", 'feedback' ) );
+
+		if ( ! empty( $search ) ) {
+			$search_like        = '%' . $wpdb->esc_like( $search ) . '%';
+			$where_conditions[] = $wpdb->prepare( "({$wpdb->posts}.post_title LIKE %s OR {$wpdb->posts}.post_content LIKE %s)", $search_like, $search_like );
+		}
+
+		if ( ! empty( $parent ) ) {
+			$where_conditions[] = $wpdb->prepare( "{$wpdb->posts}.post_parent = %d", $parent );
+		}
+
+		if ( ! empty( $source ) ) {
+			$source_sql         = Feedback::get_source_filter_sql( absint( $source ) );
+			$join_clause       .= $source_sql['join'];
+			$where_conditions[] = $source_sql['where'];
+		}
+
+		if ( ! empty( $before ) ) {
+			$where_conditions[] = $wpdb->prepare( "{$wpdb->posts}.post_date <= %s", $before );
+		}
+
+		if ( ! empty( $after ) ) {
+			$where_conditions[] = $wpdb->prepare( "{$wpdb->posts}.post_date >= %s", $after );
+		}
+
+		if ( null !== $is_unread ) {
+			$comment_status     = $is_unread ? Feedback::STATUS_UNREAD : Feedback::STATUS_READ;
+			$where_conditions[] = $wpdb->prepare( "{$wpdb->posts}.comment_status = %s", $comment_status );
+		}
+
+		if ( null !== $is_test ) {
+			$is_test_meta_key   = esc_sql( Feedback::IS_TEST_META_KEY );
+			$join_clause       .= " LEFT JOIN {$wpdb->postmeta} AS is_test_meta ON ({$wpdb->posts}.ID = is_test_meta.post_id AND is_test_meta.meta_key = '{$is_test_meta_key}')";
+			$where_conditions[] = $is_test ? "is_test_meta.meta_value = '1'" : 'is_test_meta.meta_id IS NULL';
+		}
+
+		$where_clause = implode( ' AND ', $where_conditions );
+
+		// Execute single query with CASE statements for all status counts.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$counts = $wpdb->get_row(
+			"SELECT
+			SUM(CASE WHEN {$wpdb->posts}.post_status IN ('publish', 'draft') THEN 1 ELSE 0 END) as inbox,
+			SUM(CASE WHEN {$wpdb->posts}.post_status = 'spam' THEN 1 ELSE 0 END) as spam,
+			SUM(CASE WHEN {$wpdb->posts}.post_status = 'trash' THEN 1 ELSE 0 END) as trash
+			FROM {$wpdb->posts}
+			{$join_clause}
+			WHERE {$where_clause}",
+			ARRAY_A
+		);
+		// phpcs:enable
+
+		$result = array(
+			'inbox' => (int) ( $counts['inbox'] ?? 0 ),
+			'spam'  => (int) ( $counts['spam'] ?? 0 ),
+			'trash' => (int) ( $counts['trash'] ?? 0 ),
+		);
+
+		return rest_ensure_response( $result );
 	}
 
 	/**
@@ -309,6 +558,13 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 	 */
 	public function get_item_schema() {
 		$schema = parent::get_item_schema();
+
+		// Remove fields that are not relevant to feedback.
+		foreach ( array( 'link', 'password', 'template', 'title', 'content', 'excerpt' ) as $key ) {
+			if ( isset( $schema['properties'][ $key ] ) ) {
+				unset( $schema['properties'][ $key ] );
+			}
+		}
 
 		$schema['properties']['parent'] = array(
 			'description' => __( 'The ID for the parent of the post. This refers to the post/page where the feedback was created.', 'jetpack-forms' ),
@@ -329,6 +585,16 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 
 		$schema['properties']['author_name'] = array(
 			'description' => __( 'The name of the person who submitted the form.', 'jetpack-forms' ),
+			'type'        => 'string',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['author_display_name'] = array(
+			'description' => __( 'The display name of the person who submitted the form. Either the name or the email if the name is not set.', 'jetpack-forms' ),
 			'type'        => 'string',
 			'context'     => array( 'view', 'edit', 'embed' ),
 			'arg_options' => array(
@@ -387,6 +653,65 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			'readonly'    => true,
 		);
 
+		$schema['properties']['country_code'] = array(
+			'description' => __( 'The country code derived from the IP address.', 'jetpack-forms' ),
+			'type'        => 'string',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['form_fill_duration'] = array(
+			'description' => __( 'The duration in seconds from first user interaction to form submission. Null when the duration is unknown, such as for submissions predating this feature.', 'jetpack-forms' ),
+			'type'        => array( 'integer', 'null' ),
+			'context'     => array( 'view', 'edit', 'embed' ),
+			// No sanitize_callback: the field is readonly and sanitized on storage, and
+			// `absint` would coerce a legitimate null into 0.
+			'readonly'    => true,
+		);
+
+		$schema['properties']['browser'] = array(
+			'description' => __( 'The browser and platform used to submit the form.', 'jetpack-forms' ),
+			'type'        => 'string',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['logged_in_user'] = array(
+			'description' => __( 'The logged-in user who submitted the form, if any.', 'jetpack-forms' ),
+			'type'        => array( 'object', 'null' ),
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'properties'  => array(
+				'display_name' => array(
+					'type'        => 'string',
+					'description' => __( 'The display name of the logged-in user.', 'jetpack-forms' ),
+					'arg_options' => array(
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+				'username'     => array(
+					'type'        => 'string',
+					'description' => __( 'The username of the logged-in user.', 'jetpack-forms' ),
+					'arg_options' => array(
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+				'id'           => array(
+					'type'        => 'integer',
+					'description' => __( 'The ID of the logged-in user.', 'jetpack-forms' ),
+					'arg_options' => array(
+						'sanitize_callback' => 'absint',
+					),
+				),
+			),
+			'readonly'    => true,
+		);
+
 		$schema['properties']['entry_title'] = array(
 			'description' => __( 'The title of the page or post where the form was submitted.', 'jetpack-forms' ),
 			'type'        => 'string',
@@ -399,6 +724,23 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 
 		$schema['properties']['entry_permalink'] = array(
 			'description' => __( 'The URL of the page or post where the form was submitted.', 'jetpack-forms' ),
+			'type'        => 'string',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['form_id'] = array(
+			'description' => __( 'The ID of the jetpack_form post the response is tied to, or 0 for classic (embedded) forms.', 'jetpack-forms' ),
+			'type'        => 'integer',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['edit_form_url'] = array(
+			'description' => __( 'The URL to edit the form.', 'jetpack-forms' ),
 			'type'        => 'string',
 			'context'     => array( 'view', 'edit', 'embed' ),
 			'arg_options' => array(
@@ -484,6 +826,36 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			'context'     => array( 'view', 'edit', 'embed' ),
 			'arg_options' => array(
 				'sanitize_callback' => 'booleanval',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['is_unread'] = array(
+			'description' => __( 'Whether the form response is unread.', 'jetpack-forms' ),
+			'type'        => 'boolean',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'rest_sanitize_boolean',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['is_test'] = array(
+			'description' => __( 'Whether the form response was submitted from a form preview (test response).', 'jetpack-forms' ),
+			'type'        => 'boolean',
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'rest_sanitize_boolean',
+			),
+			'readonly'    => true,
+		);
+
+		$schema['properties']['preview_url'] = array(
+			'description' => __( 'URL to the form preview that produced this response, when the response is a test submission.', 'jetpack-forms' ),
+			'type'        => array( 'string', 'null' ),
+			'context'     => array( 'view', 'edit', 'embed' ),
+			'arg_options' => array(
+				'sanitize_callback' => 'esc_url_raw',
 			),
 			'readonly'    => true,
 		);
@@ -592,48 +964,248 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			return rest_ensure_response( $data );
 		}
 
+		// Lazily backfill source meta for old feedback that doesn't have it yet.
+		Feedback::maybe_backfill_source_meta( $item->ID, $feedback_response );
+
 		$data['date'] = get_the_date( 'c', $data['id'] );
 		if ( rest_is_field_included( 'uid', $fields ) ) {
 			$data['uid'] = $feedback_response->get_feedback_id();
 		}
+
 		if ( rest_is_field_included( 'author_name', $fields ) ) {
-			$data['author_name'] = $feedback_response->get_author();
+			$data['author_name'] = $feedback_response->get_author_name();
 		}
+
+		if ( rest_is_field_included( 'author_display_name', $fields ) ) {
+			$data['author_display_name'] = $feedback_response->get_author();
+		}
+
 		if ( rest_is_field_included( 'author_email', $fields ) ) {
 			$data['author_email'] = $feedback_response->get_author_email();
 		}
+
 		if ( rest_is_field_included( 'author_url', $fields ) ) {
 			$data['author_url'] = $feedback_response->get_author_url();
 		}
+
 		if ( rest_is_field_included( 'author_avatar', $fields ) ) {
 			$data['author_avatar'] = $feedback_response->get_author_avatar();
 		}
+
 		if ( rest_is_field_included( 'email_marketing_consent', $fields ) ) {
 			$data['email_marketing_consent'] = $feedback_response->has_consent() ? '1' : '';
 		}
+
 		if ( rest_is_field_included( 'ip', $fields ) ) {
 			$data['ip'] = $feedback_response->get_ip_address();
 		}
+
+		if ( rest_is_field_included( 'country_code', $fields ) ) {
+			$data['country_code'] = $feedback_response->get_country_code();
+		}
+
+		if ( rest_is_field_included( 'form_fill_duration', $fields ) ) {
+			$data['form_fill_duration'] = $feedback_response->get_form_fill_duration();
+		}
+
+		if ( rest_is_field_included( 'browser', $fields ) ) {
+			$data['browser'] = $feedback_response->get_browser();
+		}
+
+		if ( rest_is_field_included( 'logged_in_user', $fields ) ) {
+			$data['logged_in_user'] = $feedback_response->get_logged_in_user();
+		}
+
 		if ( rest_is_field_included( 'entry_title', $fields ) ) {
 			$data['entry_title'] = $feedback_response->get_entry_title();
 		}
+
 		if ( rest_is_field_included( 'entry_permalink', $fields ) ) {
 			$data['entry_permalink'] = $feedback_response->get_entry_permalink();
 		}
+
+		if ( rest_is_field_included( 'form_id', $fields ) ) {
+			$data['form_id'] = (int) $feedback_response->get_form_id();
+		}
+
+		if ( rest_is_field_included( 'edit_form_url', $fields ) ) {
+			$data['edit_form_url'] = $feedback_response->get_edit_form_url();
+		}
+
 		if ( rest_is_field_included( 'subject', $fields ) ) {
 			$data['subject'] = $feedback_response->get_subject();
 		}
+
 		if ( rest_is_field_included( 'fields', $fields ) ) {
-			$data['fields'] = $feedback_response->get_compiled_fields( 'api', 'label-value' );
+			$fields_format  = $request->get_param( 'fields_format' ) ?? 'label-value';
+			$data['fields'] = $feedback_response->get_compiled_fields( 'api', $fields_format );
 		}
 
 		if ( rest_is_field_included( 'has_file', $fields ) ) {
 			$data['has_file'] = $feedback_response->has_file();
 		}
 
+		if ( rest_is_field_included( 'is_unread', $fields ) ) {
+			$data['is_unread'] = $feedback_response->is_unread();
+		}
+
+		if ( rest_is_field_included( 'is_test', $fields ) ) {
+			$data['is_test'] = $feedback_response->is_test();
+		}
+
+		if ( rest_is_field_included( 'preview_url', $fields ) ) {
+			$preview_url = null;
+			if ( $feedback_response->is_test() ) {
+				$form_id = $feedback_response->get_form_id();
+				if ( $form_id ) {
+					$preview_url = Form_Preview::generate_preview_url( (int) $form_id );
+				}
+			}
+			$data['preview_url'] = $preview_url;
+		}
+
 		$response->set_data( $data );
 
 		return rest_ensure_response( $response );
+	}
+
+	/**
+	 * Retrieves a collection of feedback items.
+	 * Overrides parent to support invalid_ids with OR logic.
+	 *
+	 * @param WP_REST_Request $request Full details about the request.
+	 * @return WP_REST_Response|WP_Error Response object on success, or WP_Error object on failure.
+	 */
+	public function get_items( $request ) {
+		$invalid_ids = $request->get_param( 'invalid_ids' );
+
+		// If we have invalid_ids, we need to modify the query with a WHERE clause
+		if ( ! empty( $invalid_ids ) ) {
+			add_filter( 'posts_where', array( $this, 'modify_query_for_invalid_ids' ), 10, 2 );
+			// Store invalid_ids temporarily so the filter can access them
+			$this->temp_invalid_ids = $invalid_ids;
+		}
+
+		$response = parent::get_items( $request );
+
+		// Clean up
+		if ( ! empty( $invalid_ids ) ) {
+			remove_filter( 'posts_where', array( $this, 'modify_query_for_invalid_ids' ), 10 );
+			unset( $this->temp_invalid_ids );
+		}
+		if ( ! empty( $this->temp_source_filter_id ) ) {
+			remove_filter( 'posts_join', array( $this, 'join_source_meta' ), 10 );
+			remove_filter( 'posts_where', array( $this, 'filter_by_source_id' ), 10 );
+			$this->temp_source_filter_id  = null;
+			$this->temp_source_filter_sql = null;
+		}
+
+		return $response;
+	}
+
+	/**
+	 * Modify the WHERE clause to include invalid_ids with OR logic.
+	 *
+	 * @param string   $where The WHERE clause.
+	 * @param WP_Query $query The WP_Query instance.
+	 * @return string Modified WHERE clause.
+	 */
+	public function modify_query_for_invalid_ids( $where, $query ) {
+		global $wpdb;
+
+		// Only modify our feedback queries
+		if ( ! isset( $this->temp_invalid_ids ) || empty( $this->temp_invalid_ids ) ) {
+			return $where;
+		}
+
+		// Only modify if this is a feedback query
+		$post_type = $query->get( 'post_type' );
+		if ( $post_type !== 'feedback' ) {
+			return $where;
+		}
+
+		$invalid_ids_sql = implode( ',', array_map( 'absint', $this->temp_invalid_ids ) );
+
+		// Wrap the existing WHERE in parentheses before appending the OR branch, and re-assert
+		// post_type='feedback' on the OR side. SQL AND binds tighter than OR; without these
+		// guards the appended " OR ID IN (...)" would collapse the existing post_type filter
+		// and let any post ID (regardless of type or status) be returned by the endpoint.
+		$where = "({$where}) OR ({$wpdb->posts}.ID IN ({$invalid_ids_sql}) AND {$wpdb->posts}.post_type = 'feedback')";
+
+		return $where;
+	}
+
+	/**
+	 * Filters the query arguments for the feedback collection.
+	 *
+	 * @param array           $args    Key value array of query var to query value.
+	 * @param WP_REST_Request $request The request used.
+	 * @return array Modified query arguments.
+	 */
+	protected function prepare_items_query( $args = array(), $request = null ) {
+		$args = parent::prepare_items_query( $args, $request );
+
+		if ( isset( $request['is_unread'] ) ) {
+			$args['comment_status'] = $request['is_unread'] ? Feedback::STATUS_UNREAD : Feedback::STATUS_READ;
+		}
+
+		// Filter by source post ID using meta (with fallback to post_parent for old data).
+		$source = $request->get_param( 'source' );
+		if ( ! empty( $source ) ) {
+			$this->temp_source_filter_id  = absint( $source );
+			$this->temp_source_filter_sql = Feedback::get_source_filter_sql( $this->temp_source_filter_id );
+			add_filter( 'posts_join', array( $this, 'join_source_meta' ), 10, 2 );
+			add_filter( 'posts_where', array( $this, 'filter_by_source_id' ), 10, 2 );
+		}
+
+		// Filter by test/non-test responses via the _feedback_is_test meta.
+		$is_test = $request->get_param( 'is_test' );
+		if ( null !== $is_test ) {
+			$meta_query = isset( $args['meta_query'] ) && is_array( $args['meta_query'] ) ? $args['meta_query'] : array();
+			if ( $is_test ) {
+				$meta_query[] = array(
+					'key'     => Feedback::IS_TEST_META_KEY,
+					'value'   => '1',
+					'compare' => '=',
+				);
+			} else {
+				$meta_query[] = array(
+					'key'     => Feedback::IS_TEST_META_KEY,
+					'compare' => 'NOT EXISTS',
+				);
+			}
+			$args['meta_query'] = $meta_query;
+		}
+
+		return $args;
+	}
+
+	/**
+	 * Joins the postmeta table for source filtering.
+	 *
+	 * @param string   $join  The JOIN clause.
+	 * @param WP_Query $query The WP_Query instance.
+	 * @return string Modified JOIN clause.
+	 */
+	public function join_source_meta( $join, $query ) {
+		if ( empty( $this->temp_source_filter_sql ) || Feedback::POST_TYPE !== $query->get( 'post_type' ) ) {
+			return $join;
+		}
+		return $join . $this->temp_source_filter_sql['join'];
+	}
+
+	/**
+	 * Filters feedback by source post ID, using meta with fallback to post_parent for old data.
+	 *
+	 * @param string   $where The WHERE clause.
+	 * @param WP_Query $query The WP_Query instance.
+	 * @return string Modified WHERE clause.
+	 */
+	public function filter_by_source_id( $where, $query ) {
+		if ( empty( $this->temp_source_filter_sql ) || Feedback::POST_TYPE !== $query->get( 'post_type' ) ) {
+			return $where;
+		}
+		return $where . ' AND ' . $this->temp_source_filter_sql['where'];
 	}
 
 	/**
@@ -661,6 +1233,44 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 				'type' => 'integer',
 			),
 			'default'     => array(),
+		);
+		$query_params['source']         = array(
+			'description'       => __( 'Limit result set to feedback submitted from a particular source post ID.', 'jetpack-forms' ),
+			'type'              => 'integer',
+			'sanitize_callback' => 'absint',
+			'validate_callback' => 'rest_validate_request_arg',
+		);
+		$query_params['is_unread']      = array(
+			'description'       => __( 'Limit result set to read or unread feedback items.', 'jetpack-forms' ),
+			'type'              => 'boolean',
+			'sanitize_callback' => 'rest_sanitize_boolean',
+			'validate_callback' => 'rest_validate_request_arg',
+		);
+		$query_params['is_test']        = array(
+			'description'       => __( 'Limit result set to test responses (from form preview) or exclude them.', 'jetpack-forms' ),
+			'type'              => 'boolean',
+			'sanitize_callback' => 'rest_sanitize_boolean',
+			'validate_callback' => 'rest_validate_request_arg',
+		);
+		$query_params['invalid_ids']    = array(
+			'description'       => __( 'List of item IDs to include in results regardless of filters.', 'jetpack-forms' ),
+			'type'              => 'array',
+			'items'             => array(
+				'type' => 'integer',
+			),
+			'default'           => array(),
+			'sanitize_callback' => function ( $param ) {
+				return array_map( 'absint', (array) $param );
+			},
+			'validate_callback' => 'rest_validate_request_arg',
+		);
+		$query_params['fields_format']  = array(
+			'description'       => __( 'Format for the fields data in the response.', 'jetpack-forms' ),
+			'type'              => 'string',
+			'enum'              => array( 'label-value', 'collection' ),
+			'default'           => 'label-value',
+			'sanitize_callback' => 'sanitize_text_field',
+			'validate_callback' => 'rest_validate_request_arg',
 		);
 		return $query_params;
 	}
@@ -693,49 +1303,290 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 	}
 
 	/**
-	 * Handles emptying Jetpack Forms responses based on status.
+	 * Builds the REST args for the scope-aware `/trash` endpoint.
 	 *
-	 * By default, it empties the trash, meaning it will delete all feedbacks in the trash (status = trash).
-	 * Passing a status will delete all feedbacks in the status.
-	 * The operation is non reversible and thus restricted to statuses spam and trash,
-	 * enforced by endpoint query args enum[spam, trash] but also double checked by the endpoint.
+	 * @param string[] $allowed_statuses Statuses that may be operated on.
+	 * @param string   $default_status   Default status if none is provided.
+	 * @return array
+	 */
+	protected function get_bulk_scope_args( $allowed_statuses, $default_status ) {
+		return array(
+			'status'    => array(
+				'type'     => 'string',
+				'enum'     => $allowed_statuses,
+				'required' => false,
+				'default'  => $default_status,
+			),
+			'post_ids'  => array(
+				'type'              => 'array',
+				'items'             => array( 'type' => 'integer' ),
+				'required'          => false,
+				'sanitize_callback' => function ( $param ) {
+					$ids = array_map( 'intval', (array) $param );
+					return array_values(
+						array_filter(
+							$ids,
+							function ( $id ) {
+								return $id > 0;
+							}
+						)
+					);
+				},
+			),
+			'search'    => array(
+				'type'              => 'string',
+				'required'          => false,
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'parent'    => array(
+				'type'              => 'integer',
+				'required'          => false,
+				'sanitize_callback' => 'absint',
+			),
+			'source'    => array(
+				'type'              => 'integer',
+				'required'          => false,
+				'sanitize_callback' => 'absint',
+			),
+			'before'    => array(
+				'type'              => 'string',
+				'format'            => 'date-time',
+				'required'          => false,
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'after'     => array(
+				'type'              => 'string',
+				'format'            => 'date-time',
+				'required'          => false,
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'is_unread' => array(
+				'type'              => 'boolean',
+				'required'          => false,
+				'sanitize_callback' => 'rest_sanitize_boolean',
+			),
+			'is_test'   => array(
+				'type'              => 'boolean',
+				'required'          => false,
+				'sanitize_callback' => 'rest_sanitize_boolean',
+			),
+			'limit'     => array(
+				'description' => __( 'Delete at most this many responses, then report whether more remain.', 'jetpack-forms' ),
+				'type'        => 'integer',
+				'minimum'     => 1,
+				'maximum'     => 5000,
+				'required'    => false,
+			),
+		);
+	}
+
+	/**
+	 * Fetches a batch of feedback IDs within the requested status, honoring the
+	 * bulk-scope params (explicit IDs or filter query). Source filtering is
+	 * applied via the existing `posts_join` / `posts_where` hooks.
+	 *
+	 * @param WP_REST_Request $request    The request.
+	 * @param string          $status     Post status to scope to (`spam` or `trash`).
+	 * @param int             $batch_size Max IDs to return.
+	 * @return int[] Feedback post IDs.
+	 */
+	private function fetch_bulk_scope_batch( $request, $status, $batch_size ) {
+		$post_ids_param = (array) $request->get_param( 'post_ids' );
+		$has_explicit   = ! empty( $post_ids_param );
+
+		$query_args = array(
+			'post_type'      => 'feedback',
+			'post_status'    => $status,
+			'posts_per_page' => $batch_size,
+			'fields'         => 'ids',
+		);
+
+		if ( $has_explicit ) {
+			$query_args['post__in'] = $post_ids_param;
+			$query_args['orderby']  = 'post__in';
+		} else {
+			$search = $request->get_param( 'search' );
+			if ( is_string( $search ) && $search !== '' ) {
+				$query_args['s'] = $search;
+			}
+
+			$parent = $request->get_param( 'parent' );
+			if ( is_numeric( $parent ) && (int) $parent > 0 ) {
+				$query_args['post_parent'] = (int) $parent;
+			}
+
+			$before = $request->get_param( 'before' );
+			$after  = $request->get_param( 'after' );
+			if ( ! empty( $before ) || ! empty( $after ) ) {
+				$query_args['date_query'] = array_filter(
+					array(
+						'before' => $before,
+						'after'  => $after,
+					)
+				);
+			}
+
+			$is_unread = $request->get_param( 'is_unread' );
+			if ( null !== $is_unread ) {
+				$query_args['comment_status'] = $is_unread ? Feedback::STATUS_UNREAD : Feedback::STATUS_READ;
+			}
+
+			$is_test = $request->get_param( 'is_test' );
+			if ( null !== $is_test ) {
+				$is_test_clause = array(
+					'key'     => Feedback::IS_TEST_META_KEY,
+					'compare' => 'NOT EXISTS',
+				);
+				if ( $is_test ) {
+					$is_test_clause = array(
+						'key'     => Feedback::IS_TEST_META_KEY,
+						'value'   => '1',
+						'compare' => '=',
+					);
+				}
+				$query_args['meta_query'] = array( $is_test_clause );
+			}
+		}
+
+		$query = new \WP_Query( $query_args );
+		return array_map( 'intval', $query->get_posts() );
+	}
+
+	/**
+	 * Attaches source-filter hooks if the request includes a `source` param and
+	 * no explicit `post_ids`. Returns true if hooks were attached (caller must
+	 * call `remove_source_filter_hooks()` after the loop).
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return bool Whether hooks were attached.
+	 */
+	private function maybe_attach_source_filter_hooks( $request ) {
+		if ( ! empty( (array) $request->get_param( 'post_ids' ) ) ) {
+			return false;
+		}
+		$source = $request->get_param( 'source' );
+		$source = is_numeric( $source ) ? absint( $source ) : 0;
+		if ( $source <= 0 ) {
+			return false;
+		}
+		$this->temp_source_filter_id  = $source;
+		$this->temp_source_filter_sql = Feedback::get_source_filter_sql( $source );
+		add_filter( 'posts_join', array( $this, 'join_source_meta' ), 10, 2 );
+		add_filter( 'posts_where', array( $this, 'filter_by_source_id' ), 10, 2 );
+		return true;
+	}
+
+	/**
+	 * Removes source-filter hooks attached by `maybe_attach_source_filter_hooks`.
+	 */
+	private function remove_source_filter_hooks() {
+		remove_filter( 'posts_join', array( $this, 'join_source_meta' ), 10 );
+		remove_filter( 'posts_where', array( $this, 'filter_by_source_id' ), 10 );
+		$this->temp_source_filter_id  = null;
+		$this->temp_source_filter_sql = null;
+	}
+
+	/**
+	 * Handles permanently deleting Jetpack Forms responses by status.
+	 *
+	 * Scope resolution:
+	 *  - With `post_ids` → deletes those IDs (filtered to rows actually in `status`).
+	 *  - Else with any filter (search / parent / source / before / after / is_unread / is_test) →
+	 *    deletes every response in `status` matching those filters.
+	 *  - Else → deletes every response in `status` (legacy behavior).
+	 *
+	 * With `limit`, at most that many are deleted (stopping early after
+	 * BULK_DELETE_TIME_BUDGET seconds) and `has_more` tells the caller to repeat the request.
+	 *
+	 * The operation is non-reversible; restricted to statuses spam and trash via the
+	 * route args enum, and re-checked here for defense in depth.
 	 *
 	 * @param WP_REST_Request $request The request sent to the WP REST API.
 	 *
 	 * @return WP_REST_Response A response object..
 	 */
-	public function delete_posts_by_status( $request ) { //phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+	public function delete_posts_by_status( $request ) {
 		$from_status = $request->get_param( 'status' );
 
 		if ( ! in_array( $from_status, array( 'spam', 'trash' ), true ) ) {
 			return new WP_REST_Response( array( 'error' => __( 'Bad request', 'jetpack-forms' ) ), 400 );
 		}
 
-		$query_args = array(
-			'post_type'      => 'feedback',
-			'post_status'    => $from_status ?? 'trash',
-			'posts_per_page' => 1000, // phpcs:ignore WordPress.WP.PostsPerPage.posts_per_page_posts_per_page
-		);
-
-		$query           = new \WP_Query( $query_args );
-		$trash_feedbacks = $query->get_posts();
-
-		$deleted = 0;
-		foreach ( (array) $trash_feedbacks as $feedback ) {
-			$feedback_deleted = wp_delete_post( $feedback->ID, true );
-			if ( ! $feedback_deleted ) {
-				if ( $from_status === 'trash' ) {
-					return new WP_REST_Response( array( 'error' => __( 'Failed to empty trash.', 'jetpack-forms' ) ), 400 );
-				}
-
-				if ( $from_status === 'spam' ) {
-					return new WP_REST_Response( array( 'error' => __( 'Failed to empty spam.', 'jetpack-forms' ) ), 400 );
-				}
-			}
-			++$deleted;
+		// A `post_ids` that sanitizes to nothing must not fall through to "delete everything".
+		if ( $request->has_param( 'post_ids' ) && empty( (array) $request->get_param( 'post_ids' ) ) ) {
+			return new WP_REST_Response( array( 'error' => __( 'No valid responses to delete.', 'jetpack-forms' ) ), 400 );
 		}
 
-		return new WP_REST_Response( array( 'deleted' => $deleted ), 200 );
+		$status        = $from_status;
+		$limit         = $request->get_param( 'limit' );
+		$limit         = is_numeric( $limit ) ? (int) $limit : 0;
+		$deadline      = $limit > 0 ? microtime( true ) + self::BULK_DELETE_TIME_BUDGET : 0;
+		$batch_size    = 1000;
+		$total_deleted = 0;
+		$has_more      = true;
+		$processed_ids = array();
+
+		$has_source_hooks = $this->maybe_attach_source_filter_hooks( $request );
+
+		while ( $has_more ) {
+			$want        = $limit > 0 ? min( $batch_size, $limit - $total_deleted ) : $batch_size;
+			$fetched_ids = $this->fetch_bulk_scope_batch( $request, $status, $want );
+			// Skip IDs already handled, so a delete short-circuited by `pre_delete_post` can't loop forever.
+			$post_ids = array_values( array_diff( $fetched_ids, $processed_ids ) );
+
+			if ( empty( $post_ids ) ) {
+				break;
+			}
+
+			foreach ( $post_ids as $post_id ) {
+				$feedback_deleted = wp_delete_post( $post_id, true );
+
+				if ( ! $feedback_deleted ) {
+					if ( $has_source_hooks ) {
+						$this->remove_source_filter_hooks();
+					}
+					$error = $status === 'spam'
+						? __( 'Failed to empty spam.', 'jetpack-forms' )
+						: __( 'Failed to empty trash.', 'jetpack-forms' );
+					return new WP_REST_Response(
+						array(
+							'error'   => $error,
+							'deleted' => $total_deleted,
+						),
+						400
+					);
+				}
+
+				$processed_ids[] = $post_id;
+				++$total_deleted;
+
+				if ( $deadline && microtime( true ) >= $deadline ) {
+					break 2;
+				}
+			}
+
+			if ( count( $fetched_ids ) < $want || ( $limit > 0 && $total_deleted >= $limit ) ) {
+				$has_more = false;
+			}
+		}
+
+		$has_more = false;
+		if ( $limit > 0 ) {
+			$next     = array_diff( $this->fetch_bulk_scope_batch( $request, $status, 1 ), $processed_ids );
+			$has_more = ! empty( $next );
+		}
+
+		if ( $has_source_hooks ) {
+			$this->remove_source_filter_hooks();
+		}
+
+		return new WP_REST_Response(
+			array(
+				'deleted'  => $total_deleted,
+				'has_more' => $has_more,
+			),
+			200
+		);
 	}
 
 	/**
@@ -811,7 +1662,7 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			return true;
 		}
 
-		if ( ! current_user_can( 'delete_posts' ) ) {
+		if ( ! current_user_can( 'delete_others_pages' ) ) {
 			return false;
 		}
 
@@ -848,6 +1699,31 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 	}
 
 	/**
+	 * Get static metadata for an integration (without status checks).
+	 *
+	 * @param string $slug Integration slug.
+	 * @param array  $config Integration configuration.
+	 * @return array Integration metadata.
+	 */
+	private function get_integration_metadata_fields( $slug, $config ) {
+		$type                    = $config['type'] ?? null;
+		$marketing_redirect_slug = $config['marketing_redirect_slug'] ?? null;
+		$icon_url                = $config['icon_url'] ?? null;
+
+		return array(
+			'id'               => $slug,
+			'slug'             => $slug,
+			'type'             => $type,
+			'title'            => isset( $config['title'] ) ? sanitize_text_field( $config['title'] ) : '',
+			'subtitle'         => isset( $config['subtitle'] ) ? sanitize_text_field( $config['subtitle'] ) : '',
+			'marketingUrl'     => $marketing_redirect_slug ? Redirect::get_url( $marketing_redirect_slug ) : null,
+			'enabledByDefault' => isset( $config['enabled_by_default'] ) ? (bool) $config['enabled_by_default'] : false,
+			'iconUrl'          => $icon_url ? esc_url_raw( $icon_url ) : null,
+			'activeTooltip'    => isset( $config['active_tooltip'] ) ? sanitize_text_field( $config['active_tooltip'] ) : '',
+		);
+	}
+
+	/**
 	 * Core logic for a single integration
 	 *
 	 * @param string $slug Integration slug.
@@ -857,26 +1733,18 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 		$config = $this->get_supported_integrations()[ $slug ];
 		$type   = $config['type'] ?? null;
 
-		$marketing_redirect_slug = $config['marketing_redirect_slug'] ?? null;
+		// Start with metadata fields
+		$base = $this->get_integration_metadata_fields( $slug, $config );
 
-		// Base shape for all integrations.
-		$base = array(
-			'id'               => $slug,
-			'slug'             => $slug,
-			'type'             => $type,
-			'title'            => isset( $config['title'] ) ? sanitize_text_field( $config['title'] ) : '',
-			'subtitle'         => isset( $config['subtitle'] ) ? sanitize_text_field( $config['subtitle'] ) : '',
-			'marketingUrl'     => $marketing_redirect_slug ? Redirect::get_url( $marketing_redirect_slug ) : null,
-			'pluginFile'       => ( $type === 'plugin' && ! empty( $config['file'] ) ) ? str_replace( '.php', '', $config['file'] ) : null,
-			'isInstalled'      => false,
-			'isActive'         => false,
-			'needsConnection'  => ( $type === 'service' ),
-			'isConnected'      => false,
-			'version'          => null,
-			'settingsUrl'      => null,
-			'details'          => array(),
-			'enabledByDefault' => isset( $config['enabled_by_default'] ) ? (bool) $config['enabled_by_default'] : false,
-		);
+		// Add status fields that require checks
+		$base['pluginFile']      = ( $type === 'plugin' && ! empty( $config['file'] ) ) ? str_replace( '.php', '', $config['file'] ) : null;
+		$base['isInstalled']     = false;
+		$base['isActive']        = false;
+		$base['needsConnection'] = ( $type === 'service' );
+		$base['isConnected']     = false;
+		$base['version']         = null;
+		$base['settingsUrl']     = null;
+		$base['details']         = array();
 
 		// Override base shape based on integration type.
 		$status = $type === 'plugin'
@@ -918,6 +1786,28 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			} else {
 				$integrations[] = $status;
 			}
+		}
+
+		return rest_ensure_response( $integrations );
+	}
+
+	/**
+	 * REST callback for /integrations-metadata
+	 *
+	 * Returns only static metadata (name, description, type, etc.) without making
+	 * expensive calls to check connection status or plugin installation status.
+	 * This endpoint is designed to be fast and suitable for preloading.
+	 *
+	 * Uses the same field generation logic as get_integration() to ensure consistency.
+	 *
+	 * @param WP_REST_Request $request Request object.
+	 * @return WP_REST_Response Response object.
+	 */
+	public function get_integrations_metadata( $request ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+		$integrations = array();
+
+		foreach ( $this->get_supported_integrations() as $slug => $config ) {
+			$integrations[] = $this->get_integration_metadata_fields( $slug, $config );
 		}
 
 		return rest_ensure_response( $integrations );
@@ -979,7 +1869,9 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 		$status['isInstalled'] = $is_installed;
 		$status['isActive']    = $is_active;
 		$status['version']     = $is_installed ? $installed_plugins[ $plugin_config['file'] ]['Version'] : null;
-		$status['settingsUrl'] = $is_active ? admin_url( $plugin_config['settings_url'] ) : null;
+		$status['settingsUrl'] = ( $is_active && ! empty( $plugin_config['settings_url'] ) )
+			? admin_url( $plugin_config['settings_url'] )
+			: null;
 
 		// Override base shape for specific plugins.
 		switch ( $plugin_slug ) {
@@ -1009,6 +1901,29 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 				// Add MailPoet lists to details
 				$status['details']['lists'] = MailPoet_Integration::get_all_lists();
 				break;
+			case 'hostinger-reach':
+				// Hostinger Reach is a plugin that requires additional setup/connection.
+				$status['needsConnection'] = true;
+				$status['isConnected']     = false;
+				// Determine if Hostinger Reach is connected using its public handler.
+				if ( $is_active
+					// @phan-suppress-next-line PhanUndeclaredClassReference
+					&& class_exists( \Hostinger\Reach\Api\Handlers\ReachApiHandler::class )
+					// @phan-suppress-next-line PhanUndeclaredClassReference
+					&& class_exists( \Hostinger\Reach\Functions::class )
+					// @phan-suppress-next-line PhanUndeclaredClassReference
+					&& class_exists( \Hostinger\Reach\Api\ApiKeyManager::class )
+				) {
+					$reach_handler = new \Hostinger\Reach\Api\Handlers\ReachApiHandler( // @phan-suppress-current-line PhanUndeclaredClassMethod
+						new \Hostinger\Reach\Functions(), // @phan-suppress-current-line PhanUndeclaredClassMethod
+						new \Hostinger\Reach\Api\ApiKeyManager() // @phan-suppress-current-line PhanUndeclaredClassMethod
+					);
+					if ( method_exists( $reach_handler, 'is_connected' ) ) {
+						// @phan-suppress-next-line PhanUndeclaredClassMethod
+						$status['isConnected'] = (bool) $reach_handler->is_connected();
+					}
+				}
+				break;
 		}
 
 		return $status;
@@ -1034,36 +1949,93 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 	}
 
 	/**
+	 * Updates the read/unread status of a feedback item.
+	 *
+	 * @param WP_REST_Request $request Request object.
+	 * @return WP_REST_Response|WP_Error Response object on success, or WP_Error object on failure.
+	 */
+	public function update_read_status( $request ) {
+		$post_id   = $request->get_param( 'id' );
+		$is_unread = $request->get_param( 'is_unread' );
+
+		$feedback_response = Feedback::get( $post_id );
+		if ( ! $feedback_response ) {
+			return new WP_Error(
+				'rest_post_invalid_id',
+				__( 'Invalid feedback ID.', 'jetpack-forms' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		$success = $is_unread ? $feedback_response->mark_as_unread() : $feedback_response->mark_as_read();
+
+		Contact_Form_Plugin::recalculate_unread_count();
+		if ( ! $success ) {
+			return new WP_Error(
+				'rest_cannot_update',
+				__( 'Failed to update feedback read status.', 'jetpack-forms' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		return rest_ensure_response(
+			array(
+				'id'        => $post_id,
+				'is_unread' => $feedback_response->is_unread(),
+				'count'     => Contact_Form_Plugin::get_unread_count(),
+			)
+		);
+	}
+
+	/**
+	 * Dismiss the classic forms notice by updating the option to 'dismissed'.
+	 *
+	 * @return WP_REST_Response
+	 */
+	public function dismiss_classic_forms_notice() {
+		update_option( Forms_Dashboard::CLASSIC_FORMS_OPTION, Forms_Dashboard::CLASSIC_FORMS_STATE_DISMISSED, false );
+
+		return rest_ensure_response( array( 'success' => true ) );
+	}
+
+	/**
 	 * Return consolidated Forms config payload.
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return WP_REST_Response
 	 */
 	public function get_forms_config( WP_REST_Request $request ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
-		$has_ai = false;
-		if ( class_exists( 'Jetpack_AI_Helper' ) ) {
-			$feature = Jetpack_AI_Helper::get_ai_assistance_feature();
-			$has_ai  = ! is_wp_error( $feature ) ? ( $feature['has-feature'] ?? false ) : false;
-		}
-
 		$config = array(
+			// Feature flags.
+			'isCentralFormManagementEnabled' => Contact_Form_Plugin::has_editor_feature_flag( 'central-form-management' ),
 			// From jpFormsBlocks in class-contact-form-block.php.
-			'formsResponsesUrl'       => Forms_Dashboard::get_forms_admin_url(),
-			'isMailPoetEnabled'       => Jetpack_Forms::is_mailpoet_enabled(),
+			'formsResponsesUrl'              => Forms_Dashboard::get_forms_admin_url(),
+			'isMailPoetEnabled'              => Jetpack_Forms::is_mailpoet_enabled(),
+			'isHostingerReachEnabled'        => Jetpack_Forms::is_hostinger_reach_enabled(),
 			// From config in class-dashboard.php.
-			'blogId'                  => get_current_blog_id(),
-			'gdriveConnectSupportURL' => esc_url( Redirect::get_url( 'jetpack-support-contact-form-export' ) ),
-			'pluginAssetsURL'         => Jetpack_Forms::assets_url(),
-			'siteURL'                 => ( new Status() )->get_site_suffix(),
-			'hasFeedback'             => ( new Forms_Dashboard() )->has_feedback(),
-			'hasAI'                   => $has_ai,
-			'isIntegrationsEnabled'   => Jetpack_Forms::is_integrations_enabled(),
-			'dashboardURL'            => Forms_Dashboard::get_forms_admin_url(),
+			'blogId'                         => get_current_blog_id(),
+			'gdriveConnectSupportURL'        => esc_url( Redirect::get_url( 'jetpack-support-contact-form-export' ) ),
+			'pluginAssetsURL'                => Jetpack_Forms::assets_url(),
+			'fileIconsUrl'                   => Jetpack_Forms::plugin_url() . 'contact-form/images/file-icons/',
+			'siteURL'                        => ( new Status() )->get_site_suffix(),
+			'hasFeedback'                    => ( new Forms_Dashboard() )->has_feedback(),
+			'hasClassicForms'                => ( new Forms_Dashboard() )->get_classic_forms_state() === Forms_Dashboard::CLASSIC_FORMS_STATE_CLASSIC,
+			'isNotesEnabled'                 => Forms_Dashboard::is_notes_enabled(),
+			'isIntegrationsEnabled'          => Jetpack_Forms::is_integrations_enabled(),
+			'isWebhooksEnabled'              => Jetpack_Forms::is_webhooks_enabled(),
+			'showDashboardIntegrations'      => Jetpack_Forms::show_dashboard_integrations(),
+			'showBlockIntegrations'          => Jetpack_Forms::show_block_integrations(),
+			'showIntegrationIcons'           => Jetpack_Forms::show_integration_icons(),
+			'dashboardURL'                   => Forms_Dashboard::get_forms_admin_url(),
 			// New data.
-			'canInstallPlugins'       => current_user_can( 'install_plugins' ),
-			'canActivatePlugins'      => current_user_can( 'activate_plugins' ),
-			'exportNonce'             => wp_create_nonce( 'feedback_export' ),
-			'newFormNonce'            => wp_create_nonce( 'create_new_form' ),
+			'canInstallPlugins'              => current_user_can( 'install_plugins' ),
+			'canActivatePlugins'             => current_user_can( 'activate_plugins' ),
+			'exportNonce'                    => wp_create_nonce( 'feedback_export' ),
+			'newFormNonce'                   => wp_create_nonce( 'create_new_form' ),
+			'emptyTrashDays'                 => defined( 'EMPTY_TRASH_DAYS' ) ? EMPTY_TRASH_DAYS : 0,
+			// Admin URLs for external admin contexts.
+			'adminUrl'                       => admin_url(),
+			'ajaxUrl'                        => admin_url( 'admin-ajax.php' ),
 		);
 
 		return rest_ensure_response( $config );
