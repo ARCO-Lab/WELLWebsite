@@ -164,7 +164,6 @@ All colors MUST be HSL for proper shadcn/ui integration.
   /* === ANIMATIONS === */
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
-  --animate-scroll: scroll 20s linear infinite;
   --animate-fade-in-up: fadeInUp 0.5s ease-out forwards;
   --animate-scale-in: scaleIn 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
 }
@@ -297,9 +296,15 @@ All colors MUST be HSL for proper shadcn/ui integration.
     transition: all 0.3s ease;
   }
 
-  .mcmaster-card:hover {
+  /* Only cards that open something react to the pointer (ExpandableCard). Panels stay put: scaling them on
+     hover made big panels slide over their neighbours. */
+  .mcmaster-card-interactive:hover {
     box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-    transform: scale(1.02);
+    border-color: hsl(var(--primary) / 0.35);
+  }
+
+  .mcmaster-card-interactive:focus-within {
+    border-color: hsl(var(--primary) / 0.35);
   }
   
   /* McMaster Form Elements */
@@ -442,25 +447,20 @@ All colors MUST be HSL for proper shadcn/ui integration.
   }
 }
 
-@keyframes scroll {
-  0% {
-    transform: translateX(0);
+/* People who ask their system for less motion get the content without the entrance animations. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-up,
+  .animate-scale-in,
+  .animate-metric-expand,
+  .animate-metric-contract {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
-  100% {
-    transform: translateX(-33.333%);
+
+  .mcmaster-card {
+    transition: none;
   }
-}
-
-.animate-scroll {
-  animation: scroll 30s linear infinite;
-}
-
-.pause-animation {
-  animation-play-state: paused;
-}
-
-.hover\:pause-animation:hover {
-  animation-play-state: paused;
 }
 
 html, body {

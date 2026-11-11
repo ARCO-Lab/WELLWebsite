@@ -1,6 +1,7 @@
 # Turns raw vendor API records into SensorMeasurement objects and table rows.
 # Pure functions (no network or database access), shared by the 10-minute ingestion
-# (scripts/inject_from_api.py) and the backfill (scripts/licor_backfill.py) so both store identical rows.
+# (scripts/inject_from_api.py) and the backfills (scripts/licor_backfill.py, scripts/wqdata_backfill.py)
+# so they all store identical rows.
 import math
 from datetime import datetime, timezone
 
