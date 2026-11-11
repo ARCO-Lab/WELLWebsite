@@ -92,6 +92,9 @@ Look at which resource ran out first:
 - **Many export 429s, or exports wait long**: that is the queue protecting the server. Raise
   `EXPORT_MAX_ACTIVE_JOBS` and the export worker's `--concurrency` together only if the VM has CPU and memory to
   spare while exports run.
+- **Open PostgreSQL connections keep climbing while few queries run**: a process opens connections and keeps
+  them. The summary lists which processes hold connections when the run ends; each gunicorn worker should hold
+  only a handful.
 - **The Next.js server's CPU is at 100% of one core**: it is a single Node process. Run a second dashboard
   container behind the front proxy.
 
