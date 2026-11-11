@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS alert_incidents (
     notifications        integer NOT NULL DEFAULT 0,
     resolved_at          timestamptz,
     close_reason         varchar(16),
+    reopened_at          timestamptz,
+    back_again_at        timestamptz,
     recovery_notified_at timestamptz
 );
 

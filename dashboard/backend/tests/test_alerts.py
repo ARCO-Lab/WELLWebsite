@@ -68,6 +68,9 @@ class SettingsTests(unittest.TestCase):
                                "ALERT_DASHBOARD_URL": "https://example.test/"})
         self.assertEqual((s.vendor_failures, s.reminder, s.suspect_values, s.dashboard_url),
                          (6, dt.timedelta(hours=12), False, "https://example.test/"))
+        self.assertEqual(settings_from_env({"ALERT_CLEAR_MINUTES": "45"}).clear_after, dt.timedelta(minutes=45))
+        with self.assertRaisesRegex(ValueError, "ALERT_CLEAR_MINUTES must be a number of minutes"):
+            settings_from_env({"ALERT_CLEAR_MINUTES": "half an hour"})
         for bad in ({"ALERT_VENDOR_FAILURES": "0"}, {"ALERT_REMINDER_HOURS": "soon"}, {"ALERT_SUSPECT_VALUES": "maybe"}):
             with self.assertRaises(ValueError):
                 settings_from_env(bad)
@@ -410,12 +413,46 @@ class CheckAlertsTests(unittest.TestCase):
         # Silent again 2.5 h later: the same incident reopens, no "new" email.
         self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=2, minutes=30))["email"])
         self.assertEqual((self.open_keys(), len(self.incidents()), len(self.sent)), ([f"stale:WQData:{WQ}"], 1, 2))
-        # ... and is reminded about as usual, after which its recovery is worth an email again.
-        self.run_at(NOW + dt.timedelta(hours=24))
-        self.assertTrue(self.sent[2][1].startswith("[WELL] Still ongoing:"))
-        self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(hours=24, minutes=5), count=1)
-        self.run_at(NOW + dt.timedelta(hours=24, minutes=40))
-        self.assertTrue(self.sent[3][1].startswith("[WELL] Recovered:"))
+
+    def test_back_again_after_an_emailed_recovery(self):
+        """08:00 down (emailed), 11:00 up (recovery emailed 11:30), 11:40 down again ("back again" by 12:10),
+        14:00 up (not emailed: it flapped), 17:00 down (not emailed: the last word was "back again")."""
+        day = dt.datetime(2026, 11, 11, 13, 0, tzinfo=UTC)   # 08:00 in Toronto
+
+        def at(hour, minute=0):
+            return day + dt.timedelta(hours=hour - 8, minutes=minute)
+
+        def down(when):
+            for minutes in (30, 20, 10):
+                self.record("WQData", http_error(503), now=when - dt.timedelta(minutes=minutes))
+
+        def emails_at(*times):
+            return [self.run_at(t)["email"] for t in times]
+
+        down(at(8))
+        self.assertEqual(emails_at(at(8), at(11)), ["sent", None])
+        self.assertIn("WQData API not responding", self.sent[0][1])
+        self.record("WQData", now=at(11, 5))
+        self.assertEqual(emails_at(at(11, 10), at(11, 20), at(11, 30)), [None, None, "sent"])
+        self.assertTrue(self.sent[1][1].startswith("[WELL] Recovered: WQData API"), self.sent[1][1])
+        down(at(11, 40))
+        self.assertEqual(emails_at(at(11, 40), at(12, 0), at(12, 10)), [None, None, "sent"])   # back 30 min
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Back again: WQData API"), self.sent[2][1])
+        self.assertIn("BACK AGAIN", self.sent[2][2])
+        self.assertEqual(emails_at(at(13, 50)), [None])
+        self.record("WQData", now=at(13, 55))
+        self.assertEqual(emails_at(at(14), at(14, 20), at(14, 30)), [None, None, None])   # flapping: not emailed
+        self.assertEqual(self.open_keys(), [])
+        down(at(17))
+        self.assertEqual(emails_at(at(17), at(17, 30), at(18)), [None, None, None])
+        self.assertEqual((self.open_keys(), len(self.incidents()), len(self.sent)), (["vendor:WQData"], 1, 3))
+        # It is reminded about a day after the "back again" email, and its recovery is emailed after that.
+        self.assertEqual(emails_at(at(12, 10) + dt.timedelta(days=1)), ["sent"])
+        self.assertTrue(self.sent[3][1].startswith("[WELL] Still ongoing:"), self.sent[3][1])
+        late = at(13) + dt.timedelta(days=1)
+        self.record("WQData", now=late)
+        self.assertEqual(emails_at(late), ["sent"])
+        self.assertTrue(self.sent[4][1].startswith("[WELL] Recovered:"), self.sent[4][1])
 
     def test_a_stuck_probe_doesnt_recover_overnight(self):
         stuck = lambda i: 7.2   # noqa: E731
@@ -504,15 +541,17 @@ class VendorReplyTests(unittest.TestCase):
                 service.get_page(start, start + dt.timedelta(hours=1))
         with mock.patch.object(weather.requests, "get", return_value=reply(200, {"data": []})):
             self.assertEqual(service.get_page(start, start + dt.timedelta(hours=1)), ([], False))
-        # The normal envelope with "data" left out or null reads as an empty range, not a vendor failure ...
-        for body in ({"max_results": False}, {"max_results": False, "data": None}):
-            with mock.patch.object(weather.requests, "get", return_value=reply(200, body)):
-                self.assertEqual(service.get_page(start, start + dt.timedelta(hours=1)), ([], False))
-        # ... but not with an error in it, or a data field of the wrong kind.
-        for body in ({"max_results": False, "error": "x"}, {"max_results": False, "data": "x"}, []):
+        # Strict: only a data list is a reply. Anything else is a vendor problem, never "vendor OK".
+        messages = []
+        for body in ({"max_results": False}, {"max_results": False, "data": None}, {"data": "x"}, []):
             with mock.patch.object(weather.requests, "get", return_value=reply(200, body)), \
-                    self.assertRaises(BadVendorResponse):
+                    self.assertRaises(BadVendorResponse) as caught:
                 service.get_page(start, start + dt.timedelta(hours=1))
+            messages.append(str(caught.exception))
+        self.assertEqual(messages, ["LI-COR reply has no 'data' list (got ['max_results'])",
+                                    "LI-COR reply has no 'data' list (got ['data', 'max_results'])",
+                                    "LI-COR reply has no 'data' list (got ['data'])",
+                                    "LI-COR reply has no 'data' list (got list)"])
         with mock.patch.object(weather.requests, "get", return_value=reply(401)), self.assertRaises(requests.HTTPError):
             service.get_page(start, start + dt.timedelta(hours=1))
 

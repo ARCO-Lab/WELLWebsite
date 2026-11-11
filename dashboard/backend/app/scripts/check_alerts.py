@@ -135,15 +135,20 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         new_rows.append(row)
     for incident in actions.reopen:   # back soon after closing: the same incident again, not a new one
         incident.resolved_at, incident.close_reason = None, None
+        if incident.recovery_notified_at is not None:   # the team was told it recovered: say so once it stays back
+            incident.reopened_at = now
     for incident, condition in actions.update:   # keep the wording current (durations, failure counts)
         incident.title, incident.detail, incident.last_seen_at = condition.title, condition.detail, now
     for incident in actions.resolve:
         incident.resolved_at, incident.close_reason = now, "cleared"
     for incident in actions.supersede:
         incident.resolved_at, incident.close_reason = now, "superseded"
+    for incident in actions.quiet_recovered:   # cleared again soon after "back again": recorded, never emailed
+        incident.close_reason = "cleared_quietly"
     open_count = len(current) + len(actions.reopen) + len(new_rows) - len(actions.resolve) - len(actions.supersede)
-    email = build_email(new, actions.remind, actions.recovered, open_count, now, settings)
-    summary = {"open": open_count, "new": len(new), "reminders": len(actions.remind),
+    email = build_email(new, actions.remind, actions.recovered, open_count, now, settings, actions.back_again)
+    summary = {"open": open_count, "new": len(new), "back_again": len(actions.back_again),
+               "reminders": len(actions.remind),
                "recovered": len(actions.recovered), "email": None}
     if dry_run:
         db.session.rollback()
@@ -156,7 +161,8 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
     db.session.commit()   # record the incidents first: they show in /health/data even if the email fails
     if email:
         signature = tuple(sorted((section, i.incident_key) for section, items in
-                                 (("new", new), ("remind", actions.remind), ("recovered", actions.recovered))
+                                 (("new", new), ("back", actions.back_again), ("remind", actions.remind),
+                                  ("recovered", actions.recovered))
                                  for i in items))
         summary["email"] = deliver(email[0], email[1], env, send, log, signature)
         if summary["email"] == "sent":
@@ -164,6 +170,10 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
                 incident.last_notified_at = now
                 incident.notifications = (incident.notifications or 0) + 1
                 incident.recovery_notified_at = None   # told it's on again, so its recovery is worth an email
+            for incident in actions.back_again:
+                incident.last_notified_at = incident.back_again_at = now
+                incident.notifications = (incident.notifications or 0) + 1
+                incident.recovery_notified_at = incident.reopened_at = None
             for incident in actions.recovered:
                 incident.recovery_notified_at = now
             db.session.commit()

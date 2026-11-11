@@ -89,7 +89,20 @@ class Plan:
     supersede: list = field(default_factory=list)     # open incidents replaced by a coarser/finer one, or muted
     notify_new: list = field(default_factory=list)    # open incidents never emailed (new rows: see open_new)
     remind: list = field(default_factory=list)        # emailed incidents due a reminder
+    back_again: list = field(default_factory=list)    # back after an emailed recovery, and stayed back
+    quiet_recovered: list = field(default_factory=list)   # cleared again soon after "back again": not emailed
     recovered: list = field(default_factory=list)     # emailed incidents that cleared, recovery not yet emailed
+
+
+def parse_positive(text, name, unit):
+    """A positive number from a setting, e.g. "30"; ValueError naming the variable and its unit otherwise."""
+    try:
+        number = float(str(text).strip())
+    except ValueError:
+        raise ValueError(f"{name} must be a number of {unit}, got {text!r}") from None
+    if not number > 0 or number == float("inf"):
+        raise ValueError(f"{name} must be more than 0 {unit}, got {text!r}")
+    return number
 
 
 def settings_from_env(env=None):
@@ -107,7 +120,7 @@ def settings_from_env(env=None):
         muted = frozenset(parse_excluded_series(muted_text))
     except ValueError:
         raise ValueError(f"ALERT_EXCLUDED_SERIES entries must look like 4501:ODO or 2577533:*, got {muted_text!r}") from None
-    clear = (env.get("ALERT_CLEAR_MINUTES") or "").strip()   # a positive number, like the hour settings
+    clear = (env.get("ALERT_CLEAR_MINUTES") or "").strip()
     suspect = (env.get("ALERT_SUSPECT_VALUES") or "on").strip().lower()
     if suspect not in ("on", "off", "1", "0", "true", "false", "yes", "no"):
         raise ValueError(f"ALERT_SUSPECT_VALUES must be on or off, got {suspect!r}")
@@ -117,7 +130,8 @@ def settings_from_env(env=None):
         suspect_window=hours("ALERT_SUSPECT_HOURS", DEFAULT_SUSPECT_HOURS),
         suspect_values=suspect in ("on", "1", "true", "yes"),
         dashboard_url=(env.get("ALERT_DASHBOARD_URL") or "").strip() or DEFAULT_DASHBOARD_URL,
-        clear_after=timedelta(minutes=parse_hours(clear, "ALERT_CLEAR_MINUTES") if clear else DEFAULT_CLEAR_MINUTES),
+        clear_after=timedelta(minutes=parse_positive(clear, "ALERT_CLEAR_MINUTES", "minutes") if clear
+                              else DEFAULT_CLEAR_MINUTES),
         reopen_within=hours("ALERT_REOPEN_HOURS", DEFAULT_REOPEN_HOURS),
         muted=muted,
     )
@@ -376,9 +390,11 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
     hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES).
 
     - An incident only clears after its condition has been gone for ALERT_CLEAR_MINUTES, and a condition that comes
-      back within ALERT_REOPEN_HOURS of closing reopens its incident instead of being emailed as new. So a
-      flickering condition (a vendor failing on and off, a value hovering at a limit) doesn't email new/recovered
-      every few runs; while it is open it is reminded about as usual.
+      back within ALERT_REOPEN_HOURS of closing reopens its incident instead of being emailed as new. If its
+      recovery had been emailed, it is emailed as "back again" once it has stayed back ALERT_CLEAR_MINUTES, so a
+      "recovered" email is never followed by a long silence while the problem is back. "Back again" goes out at
+      most once per ALERT_REMINDER_HOURS per incident; if it clears again within that time, that recovery isn't
+      emailed (the incident is flapping, and the team was last told it is on), so the emails can't flap either.
     - Keys nest (site > station > sensor). When a coarser condition replaces finer open incidents, or finer
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
@@ -405,6 +421,10 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
         result.update.append((incident, condition))
         if incident.last_notified_at is None:
             result.notify_new.append(incident)
+        elif (incident.reopened_at is not None and incident.recovery_notified_at is not None
+              and now - aware(incident.reopened_at) >= settings.clear_after
+              and not recently_back_again(incident, now, settings)):
+            result.back_again.append(incident)
         elif now - aware(incident.last_notified_at) >= settings.reminder:
             result.remind.append(incident)
     for key, incident in open_by_key.items():
@@ -415,10 +435,17 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
         elif now - aware(incident.last_seen_at) >= settings.clear_after:
             result.resolve.append(incident)
             if incident.last_notified_at is not None and incident.recovery_notified_at is None:
-                result.recovered.append(incident)
+                if recently_back_again(incident, now, settings):
+                    result.quiet_recovered.append(incident)
+                else:
+                    result.recovered.append(incident)
     result.recovered += [i for i in pending_recoveries
                          if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
+
+
+def recently_back_again(incident, now, settings):
+    return incident.back_again_at is not None and now - aware(incident.back_again_at) < settings.reminder
 
 
 def is_muted(key, muted):
@@ -434,15 +461,20 @@ def sort_key(item):
     return KIND_ORDER.get(item.kind, 9), item.title
 
 
-def build_email(new, reminders, recovered, open_count, now, settings):
+def build_email(new, reminders, recovered, open_count, now, settings, back_again=()):
     """(subject, body) of one batched email; items have kind, title, detail, started_at (recovered ones also
     resolved_at). None when there is nothing to send."""
     new, reminders, recovered = sorted(new, key=sort_key), sorted(reminders, key=sort_key), sorted(recovered, key=sort_key)
-    if not (new or reminders or recovered):
+    back_again = sorted(back_again, key=sort_key)
+    if not (new or reminders or recovered or back_again):
         return None
-    if new:
-        subject = new[0].title if len(new) == 1 else f"{len(new)} new alerts: {new[0].title} (+{len(new) - 1} more)"
-        extra = [f"{len(x)} {word}" for x, word in ((recovered, "recovered"), (reminders, "still ongoing")) if x]
+    if new or back_again:
+        lead = new or back_again
+        subject = ((lead[0].title if new else f"Back again: {lead[0].title}") if len(lead) == 1
+                   else f"{len(lead)} {'new alerts' if new else 'alerts back again'}: {lead[0].title} "
+                        f"(+{len(lead) - 1} more)")
+        extra = [f"{len(x)} {w}" for x, w in ((back_again if new else (), "back again"), (recovered, "recovered"),
+                                              (reminders, "still ongoing")) if x]
         subject += f"; {', '.join(extra)}" if extra else ""
     elif recovered and not reminders:
         subject = (f"Recovered: {recovered[0].title}" if len(recovered) == 1
@@ -454,8 +486,10 @@ def build_email(new, reminders, recovered, open_count, now, settings):
         subject = f"{len(recovered)} alerts recovered, {len(reminders)} still ongoing"
 
     lines = [f"WELL dashboard alerts, checked {site_time(now)} (Toronto time).", ""]
-    for heading, items in (("NEW", new), (f"STILL ONGOING (reminder, at most every "
-                                          f"{duration(settings.reminder)})", reminders)):
+    for heading, items in (("NEW", new),
+                           (f"BACK AGAIN (after the recovery emailed earlier; if it clears again within "
+                            f"{duration(settings.reminder)}, that isn't emailed: check the dashboard)", back_again),
+                           (f"STILL ONGOING (reminder, at most every {duration(settings.reminder)})", reminders)):
         if not items:
             continue
         lines += [heading, ""]

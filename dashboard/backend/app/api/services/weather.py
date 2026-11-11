@@ -7,23 +7,15 @@ from config import Config
 from utils.fetching import BadVendorResponse
 from datetime import datetime, timedelta, timezone
 
-# Keys of a LI-COR error reply. A 200 reply carrying one of them (or that isn't a JSON object at all) is a failed call.
-LICOR_ERROR_KEYS = ("error", "errors", "message", "error_description")
-
-
 def licor_records(body):
-    """The records of a LI-COR reply. A reply with no "data" list isn't "no readings": it raises BadVendorResponse,
-    so the outage is seen, unless it is the normal envelope ("max_results", no error keys) with "data" left out or
-    null, which is read as an empty time range: the repo has no example of how LI-COR answers one, and a station
-    outage mustn't be mistaken for a vendor outage."""
-    if not isinstance(body, dict):
-        raise BadVendorResponse("LI-COR replied without a data list")
-    data = body.get("data")
-    if isinstance(data, list):
-        return data
-    if data is None and "max_results" in body and not any(k in body for k in LICOR_ERROR_KEYS):
-        return []
-    raise BadVendorResponse("LI-COR replied without a data list")
+    """The records of a LI-COR reply: its "data" list, possibly empty. Anything else (not a JSON object, "data"
+    missing, null or not a list) raises BadVendorResponse, so the call counts as failed and the alerts say "vendor
+    problem" rather than "vendor OK, check the sensor". The API canary and the test fixture both expect a data list;
+    loosen this only for a reply shape LI-COR has actually been seen to send for an empty window, with a fixture."""
+    if isinstance(body, dict) and isinstance(body.get("data"), list):
+        return body["data"]
+    got = sorted(body) if isinstance(body, dict) else type(body).__name__   # field names only, never values
+    raise BadVendorResponse(f"LI-COR reply has no 'data' list (got {got})")
 
 
 class WeatherService:

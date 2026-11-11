@@ -106,7 +106,10 @@ class AlertIncident(db.Model):
     last_notified_at = db.Column(db.DateTime(timezone=True))    # NULL until it is emailed
     notifications = db.Column(db.Integer, nullable=False, default=0)
     resolved_at = db.Column(db.DateTime(timezone=True))
-    close_reason = db.Column(db.String(16))   # "cleared", or "superseded" (replaced or muted; no recovery email)
+    # "cleared"; "cleared_quietly" (soon after "back again": no recovery email); "superseded" (replaced or muted)
+    close_reason = db.Column(db.String(16))
+    reopened_at = db.Column(db.DateTime(timezone=True))     # came back after its recovery was emailed
+    back_again_at = db.Column(db.DateTime(timezone=True))   # when "back again" was last emailed
     recovery_notified_at = db.Column(db.DateTime(timezone=True))
 
     __table_args__ = (
