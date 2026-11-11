@@ -13,8 +13,8 @@ A variable that a service's `environment:` block in `docker-compose.yml` sets wi
 `dashboard/backend/app/.env`. So the variables in the first table below are set in the root `.env`, not in `app/.env`.
 
 After changing an env file, recreate the containers that read it, e.g. `docker compose up -d --no-deps backend worker
-export_worker`. `NEXT_PUBLIC_*` values are built into the dashboard, so they need a rebuild
-(`docker compose up -d --build --no-deps dashboard`).
+export_worker`. `NEXT_PUBLIC_*` values and `FLASK_API_URL` (from `BACKEND_INTERNAL_URL`) are built into the
+dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashboard`).
 
 ## Root `.env` (docker compose)
 
@@ -27,7 +27,7 @@ export_worker`. `NEXT_PUBLIC_*` values are built into the dashboard, so they nee
 | `DASHBOARD_URL` | `https://welldash.mcmaster.ca` | The dashboard address the WordPress theme links to and embeds. |
 | `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see "Host firewall" in the README). |
 | `BACKEND_PORT` | must be `5000` | Only feeds the backend's `expose:` line. Gunicorn always listens on 5000 (`dashboard/backend/Dockerfile`), so any other value breaks the stack. |
-| `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`. |
+| `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`, which is fixed when the image is built, so a change needs a dashboard rebuild. |
 | `NEXT_PUBLIC_FLASK_API_URL` | none | Passed to the dashboard build and container, but no code reads it. |
 | `DASHBOARD_PORT` | none (use `8081`) | Host port of the dashboard. `deploy.sh`'s health checks assume 8081. |
 | `TRUSTED_PROXY_IPS` | `130.113.68.30` | Reverse proxies whose `X-Forwarded-For` the dashboard believes, comma-separated. The default is McMaster's `haproxy.cas.mcmaster.ca`. Set but empty trusts none. See `dashboard/frontend/src/lib/clientIp.ts`. |
@@ -103,14 +103,17 @@ export_worker`. `NEXT_PUBLIC_*` values are built into the dashboard, so they nee
 
 | Variable | Kind | Default | Meaning |
 |---|---|---|---|
-| `FLASK_API_URL` | build arg and run time | from `BACKEND_INTERNAL_URL` | Where the API routes in `src/pages/api/` send requests. For `next dev` outside Docker, set it to your backend, e.g. `http://localhost:5000`. |
+| `FLASK_API_URL` | build time only | from `BACKEND_INTERNAL_URL` | Where the API routes in `src/pages/api/` send requests. The `env` block in `next.config.ts` inlines it into the build, server code included, so the run-time value compose also sets is never read: after changing `BACKEND_INTERNAL_URL`, rebuild with `docker compose up -d --build --no-deps dashboard`. For `next dev` outside Docker, set it to your backend, e.g. `http://localhost:5000`. |
 | `TRUSTED_PROXY_IPS` | run time | see above | Set by `docker-compose.yml` from the root `.env`. |
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |
 
-Build args are set in `dashboard/frontend/Dockerfile` and `docker-compose.yml`; env files are kept out of the image
-build (`.dockerignore`), so `.env.local` can't set them.
+`docker-compose.yml` passes only two build args, `FLASK_API_URL` (from `BACKEND_INTERNAL_URL`) and
+`NEXT_PUBLIC_FLASK_API_URL`. The other three come from the `ARG` defaults in `dashboard/frontend/Dockerfile`. To change
+one, edit that default, build by hand with `docker build --build-arg NAME=value dashboard/frontend`, or add it under
+the dashboard's `build: args:` in `docker-compose.yml`. Env files are kept out of the image build (`.dockerignore`),
+so `.env.local` can't set any of them.
 
 ## Deploy script (`deploy.sh`, set in the crontab line)
 
