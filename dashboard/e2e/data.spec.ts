@@ -131,7 +131,8 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     expect(url.searchParams.get("start")).toBe(RANGE_START);
     const end = Date.parse(url.searchParams.get("end") ?? "");
     expect(end).toBeLessThanOrEqual(Date.parse(RANGE_END_LATEST));
-    expect(end).toBeGreaterThanOrEqual(NOW.getTime());
+    // The API's end is inclusive, so charts that stop exactly at "now" (on the hour here) ask up to now - 1 ms
+    expect(end).toBeGreaterThanOrEqual(NOW.getTime() - 1);
     const body = await response.json();
     expect(body.aggregated).toBe(false); // 10-minute buckets: one point per reading
     const points = new Map<string, number>();
