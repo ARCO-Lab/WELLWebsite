@@ -111,7 +111,11 @@ class LicorShape(unittest.TestCase):
         for r in LICOR["data"][:2] + [{**LICOR["data"][0], "sensor_sn": "21948438-1", "unit": "°F"},
                                       {**LICOR["data"][1], "unit": "ft"}, {**LICOR["data"][1], "unit": "meters"},
                                       {**LICOR["data"][1], "unit": " Metre "}, {**LICOR["data"][0], "unit": "°c"},
-                                      {**LICOR["data"][0], "unit": "meters"}, {**LICOR["data"][1], "unit": None}]:
+                                      {**LICOR["data"][0], "unit": "meters"}, {**LICOR["data"][1], "unit": None},
+                                      {**LICOR["data"][0], "unit": " °C "}, {**LICOR["data"][1], "unit": "M"},
+                                      {**LICOR["data"][1], "unit": "METERS"},
+                                      *({**LICOR["data"][0], "sensor_sn": "21999998-1", "sensor_measurement_type": "Pressure",
+                                         "unit": unit} for unit in ("mbar", " mbar ", "Mbar"))]:
             expected = canary.expected_unit(r)
             self.assertEqual(expected is not None and not canary.same_unit(r["unit"], expected),
                              p.unit_mismatch(r) is not None, r)

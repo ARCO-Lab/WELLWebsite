@@ -43,17 +43,19 @@ WEATHER_UNITS = {
     "Wind Speed": "m/s", "Gust Speed": "m/s", "Wind Direction": "°",
 }
 LOGGER_UNITS = {"1": "m", "3": "°C"}   # logger channel suffix: 1 sensor depth (for the elevation), 3 water temperature
-# Other spellings LI-COR uses for an expected unit (compared ignoring case and surrounding spaces). The water-level
+# Other spellings LI-COR uses for an expected unit, as lowercase words (compared ignoring case and surrounding spaces;
+# the units themselves must match exactly, since case matters in SI symbols: mm vs Mm, mbar vs Mbar). The water-level
 # loggers' depth channels report 'meters' (seen Nov 2026); without this they'd all be skipped.
 UNIT_ALIASES = {"m": {"meters", "meter", "metres", "metre"}}
 
 
 def same_unit(unit, expected):
-    """Whether LI-COR's unit string names the expected unit: equal or a listed alias, ignoring case and spaces."""
+    """Whether LI-COR's unit string names the expected unit: equal, or a listed alias in any case, ignoring
+    surrounding spaces. Units themselves are compared exactly: 'Mbar' (megabar) isn't 'mbar'."""
     if not isinstance(unit, str):
         return False
-    unit = unit.strip().casefold()
-    return unit == expected.casefold() or unit in UNIT_ALIASES.get(expected, ())
+    unit = unit.strip()
+    return unit == expected or unit.casefold() in UNIT_ALIASES.get(expected, ())
 
 
 def unit_mismatch(entry):

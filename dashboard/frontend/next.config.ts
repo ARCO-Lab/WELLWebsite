@@ -8,7 +8,8 @@ const nextConfig = {
     deviceSizes: [320, 375, 430, 640, 768, 820, 992, 1200, 1440, 1920],
     imageSizes: [16, 32, 48, 64, 96, 128, 180, 256, 384],
   },
-  // Add this section to expose basePath to the client
+  // Inlines FLASK_API_URL (the backend's internal address) at build time. Only the server-side API routes in
+  // src/pages/api read it; no browser code does.
   env: {
     FLASK_API_URL: process.env.FLASK_API_URL,
   },

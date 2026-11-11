@@ -1,0 +1,4 @@
+ID,Timestamp,Group,Sensor,Water Temperature: °C,Water Surface Elevation: m,Sensor,Water Temperature: °C,Water Surface Elevation: m
+1,2026-11-01T00:00:00,Logger,Logger 3,4.5,84.96,Logger 2577599,,
+2,2026-11-01T01:30:00,Logger,Logger 3,,,Logger 2577599,5.0,85.0
+3,2026-11-01T02:00:00,Logger,Logger 3,4.5,84.97,Logger 2577599,,

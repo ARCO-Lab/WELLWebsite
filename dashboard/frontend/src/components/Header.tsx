@@ -4,8 +4,8 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
-// Base site URL for WordPress, provided via .env.local as NEXT_PUBLIC_WP_HOME
-// Falls back to production URL if not set
+// Base site URL for WordPress: NEXT_PUBLIC_WP_HOME, a build arg in the Dockerfile (env files are kept out of the
+// image build). Falls back to the production URL if not set.
 const WP_HOME = (process.env.NEXT_PUBLIC_WP_HOME || "https://well.mcmaster.ca").replace(/\/$/, "");
 
 const Header = () => {
