@@ -1,4 +1,4 @@
-"""Tests for scripts/licor_backfill.py. Run from dashboard/backend: python -m unittest discover -s tests"""
+"""Tests for scripts/licor_backfill.py. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import pathlib
 import sys

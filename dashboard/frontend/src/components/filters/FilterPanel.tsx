@@ -193,7 +193,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
 
     return (
       <Collapsible key={groupKey} open={open[groupKey]} onOpenChange={(isOpen) => handleChevronClick(groupKey)}>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 max-sm:min-h-8">
           <Checkbox
             id={groupKey}
             checked={activeTab === 'sensor' ? activeGroups[groupKey] : activeCreeks[groupKey]}
@@ -209,7 +209,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
           {/* Render metrics first */}
           {config.metrics.map((label: string, idx: number) => (
             <FadeAnimation key={label} delay={idx * 30} duration={400} resetKey={open[groupKey]}>
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2 max-sm:min-h-8">
                 <Checkbox id={`${groupKey}-${label}`} checked={subs.includes(label)} onCheckedChange={() => handleSubToggle(groupKey, label)} className="data-[state=checked]:bg-accent" />
                 <Label htmlFor={`${groupKey}-${label}`} className="mcmaster-body cursor-pointer">{label}</Label>
               </div>
@@ -221,7 +221,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
             <>
               {/* "All Items" Toggle */}
               <FadeAnimation delay={config.metrics.length * 30} duration={400} resetKey={open[groupKey]}>
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2 max-sm:min-h-8">
                   <Checkbox id={`${groupKey}-${itemsLabel}`} checked={subs.includes(itemsLabel)} onCheckedChange={() => handleSubToggle(groupKey, itemsLabel)} className="data-[state=checked]:bg-accent" />
                   <Label htmlFor={`${groupKey}-${itemsLabel}`} className="mcmaster-body cursor-pointer">{itemsLabel}</Label>
                 </div>
@@ -232,7 +232,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
                 <div className="ml-6 space-y-2 mt-2">
                   {itemsToRender.map(([id, name]: [string, string], idx: number) => (
                     <FadeAnimation key={id} delay={idx * 30} duration={400} resetKey={!subs.includes(itemsLabel)}>
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-2 max-sm:min-h-8">
                         <Checkbox id={`${groupKey}-${id}`} checked={subs.includes(id)} onCheckedChange={() => handleSubToggle(groupKey, id)} className="data-[state=checked]:bg-accent" />
                         <Label htmlFor={`${groupKey}-${id}`} className="mcmaster-body cursor-pointer text-sm">{name}</Label>
                       </div>

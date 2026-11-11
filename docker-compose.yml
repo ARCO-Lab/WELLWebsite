@@ -101,7 +101,8 @@ services:
   export_worker:
     build:
       context: ./dashboard/backend
-    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "--loglevel=info"]
+    # -B runs the beat scheduler inside this (single) worker, for the hourly cleanup of expired exports.
+    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--loglevel=info"]
     env_file:
       - ./dashboard/backend/app/.env
     environment:

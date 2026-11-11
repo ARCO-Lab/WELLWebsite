@@ -1,19 +1,19 @@
 # Exact versions of everything installed in the backend image that ran in production (built 2026-03-27).
 # They're pinned because an unpinned rebuild on 2026-11-10 pulled SQLAlchemy 2.1, whose default PostgreSQL
 # driver (psycopg 3) isn't installed, and the worker crashed on start. To upgrade, change a version here on
-# purpose, rebuild, and run the tests (from dashboard/backend: python -m unittest discover -s tests).
+# purpose, rebuild, and run the tests (from dashboard/backend: python -m unittest discover -s tests -t .).
 #
 # Packages the code uses directly: celery, dotenv, Flask, flask-cors, Flask-SQLAlchemy, gunicorn, openai,
 # openpyxl, pandas, psycopg2, pyDataverse, python-dotenv, redis, requests, Routes, schedule.
 # Everything else below is a dependency of those.
 amqp==5.3.1
 annotated-types==0.7.0
-anyio==4.13.0
+anyio==4.14.2
 attrs==26.1.0
 billiard==4.2.4
 blinker==1.9.0
 celery==5.6.3
-certifi==2026.2.25
+certifi==2026.10.23
 charset-normalizer==3.4.6
 click==8.3.1
 click-didyoumean==0.3.1
@@ -30,7 +30,7 @@ gunicorn==25.3.0
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
-idna==3.11
+idna==3.15
 itsdangerous==2.2.0
 Jinja2==3.1.6
 jiter==0.13.0
@@ -65,7 +65,7 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2025.3
 tzlocal==5.3.1
-urllib3==2.6.3
+urllib3==2.8.0
 vine==5.1.0
 wcwidth==0.6.0
-Werkzeug==3.1.7
+Werkzeug==3.1.9

@@ -13,6 +13,7 @@ MIN_WINDOW = dt.timedelta(hours=1)   # a capped 1-hour window means something el
 OVERLAP = dt.timedelta(hours=1)      # re-read the last hour each run to catch readings that arrive late
 RUN_LOOKBACK = dt.timedelta(days=14) # the 10-minute ingestion never looks further back than this;
                                      # older gaps are found and filled by scripts/licor_backfill.py
+                                     # and scripts/wqdata_backfill.py
 FMT = "%Y-%m-%d %H:%M:%S"
 UTC = dt.timezone.utc
 

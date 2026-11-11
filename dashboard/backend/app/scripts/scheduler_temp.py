@@ -1,19 +1,55 @@
-# This script runs scheduled jobs for API data injection, data download, and data upload.
-# It manages logging, thread scheduling, and invokes other scripts as subprocesses.
+# This script runs the worker's scheduled jobs: vendor API ingestion every 10 minutes, the weekly
+# Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
+# month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily).
+# It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
+# pings a Healthchecks.io check after each ingestion run, monthly upload and digest (utils/heartbeat.py).
+# One scheduler loop starts each job in its own thread, and a job that is still running is never
+# started again, so every job runs once per slot. It logs to files under logs/.
 
 import schedule
 import time
 import sys
 import builtins
 import subprocess
-import threading
 import os
-import re
+import pathlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from inject_from_api import inject_all_new_data
+
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+from utils.jobs import (  # noqa: E402
+    run_in_background, run_bounded, download_status,
+    load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
+)
+from utils.heartbeat import ping_heartbeat  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
 download_log_file_path = "logs/download_injections.log"
 upload_log_file_path = "logs/db_uploads.log"
+digest_log_file_path = "logs/daily_digest.log"
+# Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
+# on the host), so it survives restarts and rebuilds.
+uploaded_months_path = "logs/uploaded_months.json"
+# The first month the scheduler uploads; earlier months are never sent (they went up, or didn't, before
+# uploads were recorded). Override with BOREALIS_UPLOAD_FIRST_MONTH=YYYY-MM.
+UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
+
+# Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
+# (the container's clock).
+SITE_TZ = ZoneInfo("America/Toronto")
+
+# Hard limits for the Borealis subprocesses. A run that hangs is stopped, so it can't hold its
+# job's lock (see utils.jobs.run_in_background) and block every later run.
+DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
+UPLOAD_TIMEOUT_S = 2 * 60 * 60
+LIST_FILES_TIMEOUT_S = 5 * 60
+DIGEST_TIMEOUT_S = 10 * 60
+
+# The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
+# logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
+# happens twice (two digests) or 02:00 not at all (none).
+DIGEST_HOUR = os.getenv("DIGEST_HOUR", "7").strip()
 
 # Control whether to also mirror file logs to stdout (Docker logs)
 # Set WORKER_LOG_TO_STDOUT=1|true to enable
@@ -48,32 +84,31 @@ def timestamped_print_upload(*args, **kwargs):
     if LOG_TO_STDOUT:
         builtins._original_print(timestamp, *args, **kwargs)
 
-def run_download_data(first_run=False):
-    """Run download_data.py and return the temporary file path if new data was downloaded."""
+# Override print for the daily digest
+def timestamped_print_digest(*args, **kwargs):
+    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+    with open(digest_log_file_path, "a") as f:
+        builtins._original_print(timestamp, *args, file=f, **kwargs)
+        f.flush()
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
+
+def run_download_data():
+    """Run download_data.py. It downloads every new Borealis file and imports each one itself
+    (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES or NO_NEW_FILES."""
+    cmd = [sys.executable, "scripts/download_data.py"]
+    timestamped_print_download(f"Running command: {' '.join(cmd)}")
     try:
-        cmd = [sys.executable, "scripts/download_data.py"]
-        if first_run:
-            cmd.append("--force")
-            timestamped_print_download(f"Running command: {' '.join(cmd)}")
-        else:
-            timestamped_print_download(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = run_bounded(cmd, DOWNLOAD_TIMEOUT_S)
         timestamped_print_download(f"download_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_download(f"download_data.py stderr: {result.stderr}")
-        
-        # Check for OUTPUT line with temporary file path
-        match = re.search(r'OUTPUT: (.+)', result.stdout)
-        if match and "ERROR" not in result.stdout:
-            tmp_file_path = match.group(1)
-            timestamped_print_download(f"Success: download_data.py downloaded new file. Temporary file path: {tmp_file_path}")
-            return tmp_file_path
-        timestamped_print_download("No new file downloaded by download_data.py")
+        status = download_status(result.stdout)
+        timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
+        return status
+    except subprocess.TimeoutExpired as e:
+        timestamped_print_download(f"[ERROR] download_data.py was stopped after {DOWNLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_download(f"download_data.py stdout so far: {e.stdout}")
         return None
     except subprocess.CalledProcessError as e:
         timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
@@ -83,11 +118,10 @@ def run_download_data(first_run=False):
         try:
             list_cmd = [sys.executable, "scripts/download_data.py", "--list-files"]
             timestamped_print_download(f"Running debug command: {' '.join(list_cmd)}")
-            list_result = subprocess.run(
-                list_cmd,
-                capture_output=True,
-                text=True
-            )
+            try:
+                list_result = run_bounded(list_cmd, LIST_FILES_TIMEOUT_S)
+            except subprocess.CalledProcessError as list_error:  # --list-files exits 1 when it finds nothing
+                list_result = list_error
             timestamped_print_download(f"--list-files stdout: {list_result.stdout}")
             if list_result.stderr:
                 timestamped_print_download(f"--list-files stderr: {list_result.stderr}")
@@ -98,78 +132,112 @@ def run_download_data(first_run=False):
         timestamped_print_download(f"[ERROR] Unexpected error running download_data.py: {e}")
         return None
 
-def run_inject_sampling(tmp_file_path):
-    """Run inject_sampling.py with the temporary file path."""
+def run_upload_data(year, month):
+    """Run upload_data.py for one month. True only if it exited 0 and reported the file as uploaded."""
     try:
-        cmd = [sys.executable, "scripts/inject_sampling.py", tmp_file_path]
-        timestamped_print_download(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        timestamped_print_download(f"inject_sampling.py stdout: {result.stdout}")
-        if result.stderr:
-            timestamped_print_download(f"inject_sampling.py stderr: {result.stderr}")
-        timestamped_print_download("Success: inject_sampling.py completed")
-    except subprocess.CalledProcessError as e:
-        timestamped_print_download(f"[ERROR] inject_sampling.py failed with exit code {e.returncode}: {e}")
-        timestamped_print_download(f"inject_sampling.py stdout: {e.stdout}")
-        timestamped_print_download(f"inject_sampling.py stderr: {e.stderr}")
-    except Exception as e:
-        timestamped_print_download(f"[ERROR] Unexpected error running inject_sampling.py: {e}")
-    finally:
-        # Clean up temporary file
-        try:
-            if os.path.exists(tmp_file_path):
-                os.remove(tmp_file_path)
-                timestamped_print_download(f"DEBUG: Cleaned up temporary file: {tmp_file_path}")
-        except Exception as e:
-            timestamped_print_download(f"[ERROR] Failed to clean up temporary file {tmp_file_path}: {e}")
-
-def run_upload_data():
-    """Run upload_data.py for the previous month's data."""
-    try:
-        # Run upload_data.py without arguments (defaults to last month)
-        cmd = [sys.executable, "scripts/upload_data.py"]
+        cmd = [sys.executable, "scripts/upload_data.py", "--year", str(year), "--month", str(month)]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = run_bounded(cmd, UPLOAD_TIMEOUT_S)
         timestamped_print_upload(f"upload_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_upload(f"upload_data.py stderr: {result.stderr}")
+        if "Successfully uploaded" not in result.stdout:
+            timestamped_print_upload("[ERROR] upload_data.py finished but didn't report an upload")
+            return False
         timestamped_print_upload("Success: upload_data.py completed")
+        return True
+    except subprocess.TimeoutExpired as e:
+        timestamped_print_upload(f"[ERROR] upload_data.py was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_upload(f"upload_data.py stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
         timestamped_print_upload(f"[ERROR] upload_data.py failed with exit code {e.returncode}: {e}")
         timestamped_print_upload(f"upload_data.py stdout: {e.stdout}")
         timestamped_print_upload(f"upload_data.py stderr: {e.stderr}")
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Unexpected error running upload_data.py: {e}")
+    return False
 
-def download_job(first_run=False):
-    """Weekly job: run download_data.py and inject_sampling.py if new data is found."""
-    timestamped_print_download(f"========== DOWNLOAD JOB STARTED (first_run={first_run}) ==========")
-    tmp_file_path = run_download_data(first_run=first_run)
-    if tmp_file_path:
-        timestamped_print_download(f"New data file downloaded. Running inject_sampling.py with {tmp_file_path}...")
-        run_inject_sampling(tmp_file_path)
-    else:
-        timestamped_print_download("No new data file downloaded. Skipping inject_sampling.py.")
+def download_job():
+    """Weekly job: download and import any new Borealis sampling files."""
+    timestamped_print_download("========== DOWNLOAD JOB STARTED ==========")
+    run_download_data()
     timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
-def upload_job(first_run=False):
-    """Monthly job: run upload_data.py for the previous month."""
-    timestamped_print_upload(f"========== UPLOAD JOB STARTED (first_run={first_run}) ==========")
-    run_upload_data()
-    timestamped_print_upload("========== UPLOAD JOB COMPLETED ==========")
+def upload_job(year, month):
+    """Upload one month's sensor data to Borealis. True if it succeeded."""
+    timestamped_print_upload(f"========== UPLOAD JOB STARTED ({month_key(year, month)}) ==========")
+    ok = run_upload_data(year, month)
+    timestamped_print_upload(f"========== UPLOAD JOB {'COMPLETED' if ok else 'FAILED'} ==========")
+    return ok
+
+def monthly_upload_check():
+    """Runs every hour and acts only at 02:00 Toronto time. It uploads, oldest first, each month from
+    UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
+    goes up. So a missed slot (the worker was down) or a failed upload is retried the next day, a month that
+    went up is never sent again, and errors are logged once a day, not every hour."""
+    now = datetime.now(SITE_TZ)
+    if now.hour != UPLOAD_HOUR:
+        return
+    try:
+        first_month = parse_month_key(UPLOAD_FIRST_MONTH)
+        uploaded = load_uploaded_months(uploaded_months_path)
+    except Exception as e:
+        timestamped_print_upload(f"[ERROR] Not uploading: {type(e).__name__}: {e} "
+                                 f"(check BOREALIS_UPLOAD_FIRST_MONTH and {uploaded_months_path})")
+        ping_heartbeat("upload", "fail")
+        return
+    due = months_due_for_upload(now, uploaded, first_month)
+    failed = 0
+    for year, month in due:
+        if upload_job(year, month):
+            record_uploaded_month(uploaded_months_path, year, month)
+            timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {uploaded_months_path}")
+        else:
+            failed += 1
+            timestamped_print_upload(f"{month_key(year, month)} was not uploaded; trying again tomorrow at 02:00")
+    if due:   # the upload check expects one ping a month, so days with nothing to upload don't ping
+        ping_heartbeat("upload", "fail" if failed else "success")
+
+def digest_hour():
+    """DIGEST_HOUR as an hour 0-23 other than 1 and 2 (the DST hours). ValueError otherwise."""
+    if not DIGEST_HOUR.isdigit() or int(DIGEST_HOUR) > 23 or int(DIGEST_HOUR) in (1, 2):
+        raise ValueError(f"DIGEST_HOUR must be an hour from 0 to 23 other than 1 and 2 (DST changes at 02:00), "
+                         f"got {DIGEST_HOUR!r}")
+    return int(DIGEST_HOUR)
+
+def daily_digest_check():
+    """Runs every hour and acts only at DIGEST_HOUR Toronto time: builds the daily digest, which emails or
+    prints itself (scripts/daily_digest.py), and logs its output."""
+    try:
+        hour = digest_hour()
+    except ValueError as e:
+        if datetime.now(SITE_TZ).hour == 0:   # once a day, not every hour
+            timestamped_print_digest(f"[ERROR] No daily digest: {e}")
+        return
+    if datetime.now(SITE_TZ).hour != hour:
+        return
+    cmd = [sys.executable, "scripts/daily_digest.py"]
+    timestamped_print_digest(f"Running command: {' '.join(cmd)}")
+    try:
+        result = run_bounded(cmd, DIGEST_TIMEOUT_S)
+        timestamped_print_digest(f"daily_digest.py stdout: {result.stdout}")
+        if result.stderr:
+            timestamped_print_digest(f"daily_digest.py stderr: {result.stderr}")
+        ok = True
+    except subprocess.TimeoutExpired as e:
+        timestamped_print_digest(f"[ERROR] daily_digest.py was stopped after {DIGEST_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_digest(f"daily_digest.py stdout so far: {e.stdout}")
+        ok = False
+    except subprocess.CalledProcessError as e:
+        timestamped_print_digest(f"[ERROR] daily_digest.py failed with exit code {e.returncode}")
+        timestamped_print_digest(f"daily_digest.py stdout: {e.stdout}")
+        timestamped_print_digest(f"daily_digest.py stderr: {e.stderr}")
+        ok = False
+    ping_heartbeat("digest", "success" if ok else "fail")
 
 def api_injection_job():
-    """Original job: run inject_all_new_data every 10 minutes."""
+    """Every 10 minutes: fetch new vendor API data and store it, then ping the ingestion heartbeat:
+    success, or /fail when either vendor failed (inject_all_new_data raises then)."""
     try:
         print("========== API INJECTION STARTED ==========")
         print("Calling inject_all_new_data() function...")
@@ -177,56 +245,17 @@ def api_injection_job():
         print("inject_all_new_data() function completed")
         print("========== API INJECTION COMPLETED ==========")
     except Exception as e:
-        print(f"========== API INJECTION FAILED ==========")
+        print("========== API INJECTION FAILED ==========")
         print(f"[ERROR] inject_all_new_data failed: {e}")
         import traceback
         print(f"[ERROR] Full traceback: {traceback.format_exc()}")
         print("========== API INJECTION ERROR END ==========")
-
-def run_api_scheduler():
-    """Run the original API injection scheduler (every 10 minutes)."""
-    print("API Scheduler started. Running every 10 minutes...\n")
-    api_injection_job()
-    schedule.every(10).minutes.do(api_injection_job)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-def run_download_scheduler():
-    """Run the download scheduler (weekly)."""
-    timestamped_print_download("Download Scheduler started. Running every Sunday at 00:00...\n")
-    timestamped_print_download("Executing immediate download job")
-    download_job(first_run=True)
-    timestamped_print_download("Immediate download job completed")
-    schedule.every().sunday.at("00:00").do(download_job, first_run=False)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-def run_upload_scheduler():
-    """Run the upload scheduler (monthly)."""
-    timestamped_print_upload("Upload Scheduler started. Running on the 1st of each month at 02:00...\n")
-    timestamped_print_upload("Executing immediate upload job for last month's data")
-    upload_job(first_run=True)
-    timestamped_print_upload("Immediate upload job completed")
-    
-    # Schedule daily check for monthly upload (since schedule doesn't have built-in monthly support)
-    def check_monthly_upload():
-        current_day = time.strftime("%d")
-        if current_day == "01":
-            upload_job(first_run=False)
-    
-    schedule.every().day.at("02:00").do(check_monthly_upload)
-    
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+        ping_heartbeat("ingestion", "fail")
+        return
+    ping_heartbeat("ingestion", "success")
 
 if __name__ == "__main__":
-    # Main entry point: starts all scheduler threads and logging
-    # Save original stdout before any redirection
-    original_stdout = sys.stdout
-    
+    # Main entry point: one scheduler loop for all jobs
     # Ensure log directories exist
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
     os.makedirs(os.path.dirname(download_log_file_path), exist_ok=True)
@@ -238,37 +267,40 @@ if __name__ == "__main__":
 
     # Initial startup message (file; optionally stdout)
     print("WELL Scheduler Container Started!")
-    print("Main thread started. Starting all schedulers...")
     if LOG_TO_STDOUT:
         builtins._original_print("[scheduler] Mirroring logs to stdout is ENABLED via WORKER_LOG_TO_STDOUT.")
     else:
         builtins._original_print("[scheduler] Logs are written to /app/app/logs/*. Set WORKER_LOG_TO_STDOUT=1 to mirror to stdout.")
 
-    # Start API scheduler in one thread
-    print("Starting API scheduler thread")
-    api_thread = threading.Thread(target=run_api_scheduler, daemon=True)
-    api_thread.start()
+    # Each job starts in its own thread and is skipped while its previous run is still going.
+    api_run = run_in_background(api_injection_job, log=print)
+    download_run = run_in_background(download_job, log=timestamped_print_download)
+    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload)
+    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest)
 
-    # Start download scheduler in another thread
-    timestamped_print_download("Starting download scheduler thread")
-    download_thread = threading.Thread(target=run_download_scheduler, daemon=True)
-    download_thread.start()
+    scheduler = schedule.Scheduler()
+    scheduler.every(10).minutes.do(api_run)
+    scheduler.every().sunday.at("00:00").do(download_run)
+    scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
+    scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
 
-    # Start upload scheduler in a third thread
-    timestamped_print_upload("Starting upload scheduler thread")
-    upload_thread = threading.Thread(target=run_upload_scheduler, daemon=True)
-    upload_thread.start()
+    print("Schedule: API injection every 10 minutes; Borealis download Sundays 00:00; "
+          "Borealis upload at 02:00 Toronto time of each ended month not yet uploaded; "
+          f"daily digest at {DIGEST_HOUR}:00 Toronto time.")
+    timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
+                               "run `python scripts/download_data.py` by hand to fetch now.")
+    timestamped_print_upload("Upload scheduler ready: at 02:00 Toronto time, each month from "
+                             f"{UPLOAD_FIRST_MONTH} on that has ended and isn't recorded in {uploaded_months_path} "
+                             "is uploaded (so last month goes up on the 1st, and a failed month is retried daily). "
+                             "Nothing runs at startup; run `python scripts/upload_data.py --year Y --month M` by hand "
+                             "to upload a month.")
 
-    # Keep main thread alive
+    # Catch up on vendor data right away after a restart; the Borealis jobs wait for their slots.
+    api_run()
+
     try:
-        print("Main thread running with 3 schedulers. Press Ctrl+C to stop.")
-        print("- API injections: every 10 minutes")
-        print("- Download jobs: every Sunday at 00:00")
-        print("- Upload jobs: 1st of each month at 02:00")
         while True:
-            time.sleep(10)
+            scheduler.run_pending()
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("Shutting down all schedulers...")
-        timestamped_print_download("Shutting down download scheduler...")
-        timestamped_print_upload("Shutting down upload scheduler...")
-        sys.exit(0)
+        print("Shutting down the scheduler...")

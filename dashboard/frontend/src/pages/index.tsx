@@ -19,13 +19,16 @@ import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
 import Modal from "@/components/Modal";
+import ExpandableCard from "@/components/ExpandableCard";
+import EmptyState from "@/components/EmptyState";
+import StickyPanel from "@/components/StickyPanel";
 // AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
 // import AIAnalysis from "@/components/AIAnalysis";
 import useFilteredData from "@/hooks/useFilteredData";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
-import { SENSOR_FILTER_CONFIG } from "@/components/config/filters";
+import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 type ActiveFilters = { [key: string]: string[] };
@@ -213,9 +216,11 @@ export default function Dashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
-    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data}/>,
-    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} modalOpen={isModalOpen} />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} loading={loading} error={error} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} loading={loading} error={error} />,
+    // modalOpen is only for the copy the modal renders (it injects it); passing it here redrew every
+    // on-page logger chart whenever any modal opened
+    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} loading={loading} error={error} />,
   };
   
   const graphComponents = [];
@@ -277,8 +282,14 @@ export default function Dashboard() {
     setIsModalOpen(false);
   };
 
+  // Names for the "open in a larger view" buttons.
+  const groupNames: Record<string, string> = { gauges: "water logger", weather: "weather", quality: "water quality" };
+
   return (
     <>
+      <Head>
+        <title>Dashboard | Watershed and Ecosystems Living Lab</title>
+      </Head>
 
       {/* Header is hidden in iframe mode */}
       {!inIframe && <Header />}
@@ -301,11 +312,11 @@ export default function Dashboard() {
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               <div className="col-span-full grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
                 
-                {/* Filters Sidebar */}
+                {/* Filters Sidebar: always shown in full, and kept in view on large screens (StickyPanel) */}
                 <div className="lg:col-span-1">
-                  <div className="mcmaster-card h-fit p-6 lg:sticky lg:top-6">
+                  <StickyPanel className="mcmaster-card h-fit p-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
-                      Filters 
+                      Filters
                       <Information id={1} />
                     </h2>
                     <div className="space-y-4">
@@ -350,7 +361,7 @@ export default function Dashboard() {
                         />
                       </div>
                     </div>
-                  </div>
+                  </StickyPanel>
                 </div>
 
                 {/* Main Content Area */}
@@ -359,47 +370,46 @@ export default function Dashboard() {
                   {/* Top Row: Latest Data + Map */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     
-                    {/* Latest Data */}
+                    {/* Latest Data: one scrolling strip per group */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex min-h-[24rem] flex-col p-6 lg:min-h-[30rem]">
+                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
-                          Latest Data 
+                          Latest Data
                           <Information id={3} />
                         </h2>
-                        <div className="flex-1 flex flex-col min-h-0 space-y-2">
-                          {metricComponents.map((comp, index) => (
-                            <div
-                              key={index}
-                              onClick={() => openModal(
-                                React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
-                                "recent",
-                                comp.key as any, // 'weather', 'quality', or 'gauges'
-                                subFilters[comp.key as string] || []
-                              )}
-                              className={`
-                                transition-all duration-500 ease-out cursor-pointer 
-                                hover:shadow-lg rounded-lg p-3 min-h-0 mcmaster-card
-                                ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}
-                              `}
-                              style={{
-                                animationDelay: `${index * 100}ms`
-                              }}
-                            >
-                              {comp}
-                            </div>
-                          ))}
-                        </div>
+                        {metricComponents.length === 0 ? (
+                          <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its latest readings.</EmptyState>
+                        ) : (
+                          <div className="min-w-0 space-y-3">
+                            {metricComponents.map((comp, index) => (
+                              <ExpandableCard
+                                key={comp.key as string}
+                                label={`the latest ${groupNames[comp.key as string] ?? ""} readings`}
+                                onOpen={() => openModal(
+                                  React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
+                                  "recent",
+                                  comp.key as any, // 'weather', 'quality', or 'gauges'
+                                  subFilters[comp.key as string] || []
+                                )}
+                                className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
+                                style={{ animationDelay: `${index * 100}ms` }}
+                              >
+                                {comp}
+                              </ExpandableCard>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
-                    
-                    {/* Map */}
+
+                    {/* Map (taller on phones, where it's full width) */}
                     <div className="lg:col-span-2">
-                      <div className="mcmaster-card flex h-[20rem] flex-col p-6 sm:h-[22rem] lg:h-[30rem]">
+                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-[24rem] lg:h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
-                          Map 
+                          Map
                           <Information id={2} />
                         </h2>
-                        <div className="h-full">
+                        <div className="min-h-0 flex-1">
                           <Map
                             activeGroups={activeGroups}
                             setActiveGroups={setActiveGroups}
@@ -440,6 +450,10 @@ export default function Dashboard() {
                       const weatherGraph = activeGroups.weather ? cachedGraphs.weather : null;
                       const qualityGraph = activeGroups.quality ? cachedGraphs.quality : null;
 
+                      if (!loggerGraph && !weatherGraph && !qualityGraph) {
+                        return <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its graphs.</EmptyState>;
+                      }
+
                       // 3. RENDER SPECIAL LAYOUT: If more than 2 loggers are selected
                       if (selectedLoggerCount > 2) {
                         const otherGraphs = [weatherGraph, qualityGraph].filter(Boolean);
@@ -447,24 +461,26 @@ export default function Dashboard() {
                           <div className="space-y-6">
                             {/* Row 1: Logger Graph takes the full width */}
                             {loggerGraph && (
-                              <div
-                                onClick={() => openModal(loggerGraph, "alltime", "logger", subFilters.gauges || [])}
-                                className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
+                              <ExpandableCard
+                                label="the water logger graphs"
+                                onOpen={() => openModal(loggerGraph, "alltime", "logger", subFilters.gauges || [])}
+                                className="p-4 animate-fade-in-up"
                               >
                                 {loggerGraph}
-                              </div>
+                              </ExpandableCard>
                             )}
                             {/* Row 2: Weather and Quality graphs in a responsive grid below */}
                             <div className={`grid gap-6 ${getGraphGridClass(otherGraphs.length)}`}>
                               {otherGraphs.map((comp) =>
                                 comp && (
-                                  <div
+                                  <ExpandableCard
                                     key={comp.key}
-                                    onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
-                                    className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
+                                    label={`the ${groupNames[comp.key as string] ?? ""} graph`}
+                                    onOpen={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                    className="p-4 animate-fade-in-up"
                                   >
                                     {comp}
-                                  </div>
+                                  </ExpandableCard>
                                 )
                               )}
                             </div>
@@ -478,18 +494,15 @@ export default function Dashboard() {
                         <div className={`grid gap-6 ${getGraphGridClass(allGraphs.length)}`}>
                           {allGraphs.map((comp, index) => (
                             comp ? (
-                              <div
+                              <ExpandableCard
                                 key={comp.key}
-                                onClick={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
-                                className={`
-                                  transition-all duration-500 ease-out cursor-pointer hover:shadow-lg 
-                                  mcmaster-card p-4 animate-fade-in-up
-                                  ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}
-                                `}
+                                label={`the ${groupNames[comp.key as string] ?? ""} graph`}
+                                onOpen={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 150}ms` }}
                               >
                                 {comp}
-                              </div>
+                              </ExpandableCard>
                             ) : null
                           ))}
                         </div>
@@ -527,11 +540,11 @@ export default function Dashboard() {
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               <div className="col-span-full grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
                 
-                {/* Filters Sidebar */}
+                {/* Filters Sidebar: always shown in full, and kept in view on large screens (StickyPanel) */}
                 <div className="lg:col-span-1">
-                  <div className="mcmaster-card h-fit p-6 lg:sticky lg:top-6">
+                  <StickyPanel className="mcmaster-card h-fit p-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
-                      Filters 
+                      Filters
                       <Information id={6} />
                     </h2>
                     <div className="space-y-4">
@@ -570,7 +583,7 @@ export default function Dashboard() {
                       />
                       </div>
                     </div>
-                  </div>
+                  </StickyPanel>
                 </div>
 
 
@@ -580,47 +593,46 @@ export default function Dashboard() {
                   {/* Top Row: Latest Data + Map */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6"> 
                     
-                    {/* Latest Data */}
+                    {/* Latest Data: one scrolling strip per group */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card p-6 lg:min-h-[30rem] flex flex-col">
+                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
-                          Latest Data 
+                          Latest Data
                           <Information id={8} />
                         </h2>
-                        <div className="flex-1 flex flex-col min-h-0 space-y-2">
-                          {samplingMetricComponents.map((comp, index) => (
-                            <div
-                              key={index}
-                              onClick={() => openModal(
-                                React.cloneElement(comp, { metrics: recentSamples, loading: recentSamplesLoading }),
-                                "recent",
-                                "sampling",
-                                comp.props.subFilters
-                              )}
-                              className={`
-                                transition-all duration-500 ease-out cursor-pointer 
-                                hover:shadow-lg rounded-lg p-3 min-h-0 mcmaster-card
-                                ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}
-                              `}
-                              style={{
-                                animationDelay: `${index * 100}ms`
-                              }}
-                            >
-                              {comp}
-                            </div>
-                          ))}
-                        </div>
+                        {samplingMetricComponents.length === 0 ? (
+                          <EmptyState>Tick a creek under Filters, or click a site on the map, to see its latest samples.</EmptyState>
+                        ) : (
+                          <div className="min-w-0 space-y-3">
+                            {samplingMetricComponents.map((comp, index) => (
+                              <ExpandableCard
+                                key={comp.key as string}
+                                label="the latest samples"
+                                onOpen={() => openModal(
+                                  React.cloneElement(comp, { metrics: recentSamples, loading: recentSamplesLoading }),
+                                  "recent",
+                                  "sampling",
+                                  comp.props.subFilters
+                                )}
+                                className={`rounded-lg p-3 pr-9 ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
+                                style={{ animationDelay: `${index * 100}ms` }}
+                              >
+                                {comp}
+                              </ExpandableCard>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
-                    
-                    {/* Map */}
+
+                    {/* Map (taller on phones, where it's full width) */}
                     <div className="lg:col-span-2">
-                      <div className="mcmaster-card p-6 lg:min-h-[30rem] flex flex-col h-full">
+                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-[24rem] lg:h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
-                          Map 
+                          Map
                           <Information id={7} />
                         </h2>
-                        <div className="flex-1">
+                        <div className="min-h-0 flex-1">
                           <Map
                             activeGroups={activeCreeks}
                             setActiveGroups={() => {}} // No-op to satisfy type, since Map expects sensor groups setter
@@ -645,27 +657,27 @@ export default function Dashboard() {
                     
                     {(() => {
                       const count = samplingGraphComponents.length;
+                      const creekGraphCard = (comp: React.ReactElement<any>, key: React.Key) => (
+                        <ExpandableCard
+                          key={key}
+                          label={`the ${SAMPLING_FILTER_CONFIG[comp.props.creekKey as keyof typeof SAMPLING_FILTER_CONFIG]?.label ?? "creek"} graphs`}
+                          onOpen={() => openModal(comp, "alltime", "sampling", comp.props.subFilters)}
+                          className="p-4 animate-fade-in-up"
+                        >
+                          {comp}
+                        </ExpandableCard>
+                      );
+                      if (count === 0) {
+                        return <EmptyState>Tick a creek under Filters, or click a site on the map, to see its graphs.</EmptyState>;
+                      }
                       // If 3 or fewer graphs, render them in a single row with the existing logic.
                       if (count <= 3) {
                         return (
                           <div className={`grid gap-6 ${getGraphGridClass(count)}`}>
-                            {samplingGraphComponents.map((comp, index) => (
-                              <div
-                                key={index}
-                                onClick={() => openModal(
-                                  comp, 
-                                  "alltime", 
-                                  "sampling", 
-                                  comp.props.subFilters
-                                )}
-                                className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
-                              >
-                                {comp}
-                              </div>
-                            ))}
+                            {samplingGraphComponents.map((comp, index) => creekGraphCard(comp, index))}
                           </div>
                         );
-                      } 
+                      }
                       // If more than 3 graphs, split them into two distinct rows.
                       else {
                         const topRow = samplingGraphComponents.slice(0, 3);
@@ -674,37 +686,11 @@ export default function Dashboard() {
                           <div className="space-y-6">
                             {/* Top Row is always 3 columns */}
                             <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-                            {topRow.map((comp, index) => (
-                                <div
-                                  key={index}
-                                  onClick={() => openModal(
-                                    comp, 
-                                    "alltime", 
-                                    "sampling", 
-                                    comp.props.subFilters
-                                  )}
-                                  className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
-                                >
-                                  {comp}
-                                </div>
-                              ))}
+                              {topRow.map((comp, index) => creekGraphCard(comp, index))}
                             </div>
                             {/* Bottom Row's columns are based on how many items are left */}
                             <div className={`grid gap-6 ${getGraphGridClass(bottomRow.length)}`}>
-                              {bottomRow.map((comp, index) => (
-                                <div
-                                  key={index + 3} // Use an offset key
-                                  onClick={() => openModal(
-                                    comp, 
-                                    "alltime", 
-                                    "sampling", 
-                                    comp.props.subFilters
-                                  )}
-                                  className="transition-all duration-500 ease-out cursor-pointer hover:shadow-lg mcmaster-card p-4 animate-fade-in-up"
-                                >
-                                  {comp}
-                                </div>
-                              ))}
+                              {bottomRow.map((comp, index) => creekGraphCard(comp, index + 3))}
                             </div>
                           </div>
                         );

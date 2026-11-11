@@ -36,15 +36,17 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-[90vw] max-h-[95vh] overflow-y-auto mcmaster-card">
-        <DialogHeader>
+      {/* Only the body scrolls, and never sideways: the title and the close button stay where they are.
+          (When the whole dialog scrolled, wide content dragged the close button off to the side.) */}
+      <DialogContent aria-describedby={undefined} className="flex max-h-[95vh] max-w-[90vw] flex-col overflow-hidden mcmaster-card max-sm:h-[100dvh] max-sm:max-h-none max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:p-4">
+        <DialogHeader className="shrink-0 pr-10">
           <DialogTitle className="text-2xl font-poppins font-bold text-primary flex items-center justify-between">
             {/* Show group type and context in modal title */}
             {`${type === "gauges" /* Error Necessary */ ? "Logger" : type.charAt(0).toUpperCase() + type.slice(1)} ${analysisType === "recent" ? "Metrics" : "Graph"}`}
           </DialogTitle>
         </DialogHeader>
         
-        <div className="mt-4">
+        <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1">
           {/* Main content: inject modal props if children is a valid React element */}
           {React.isValidElement(children)
             ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })
