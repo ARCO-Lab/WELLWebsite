@@ -184,7 +184,7 @@ const Footer = () => {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={social.name}
-                  className="relative p-1 rounded-full border-2 border-white/80 text-primary-foreground hover:border-secondary hover:text-secondary transition-colors flex items-center justify-center after:absolute after:-inset-2 after:rounded-full after:content-['']"
+                  className="relative p-1 rounded-full border-2 border-white/80 text-primary-foreground hover:border-secondary hover:text-secondary transition-colors flex items-center justify-center after:absolute after:-inset-2.5 after:rounded-full after:content-['']"
                 >
                   {social.icon}
                 </a>

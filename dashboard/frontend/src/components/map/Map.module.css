@@ -56,11 +56,11 @@
     height: 1.75rem;
   }
 
-  /* A 40 px tap target around the 28 px marker (neighbours spread 34 px apart overlap a little, at the edges) */
+  /* A 40 px tap target around the 28 px marker (markers drawn side by side, 34 px apart, overlap a little at the edges) */
   .marker::after {
     content: "";
     position: absolute;
-    inset: -6px;
+    inset: -8px;
     border-radius: 9999px;
   }
 }
