@@ -54,12 +54,18 @@ class EngineOptionsTests(TestCase):
     def test_sqlite_never_gets_postgres_options(self):
         self.assertEqual(engine_options("sqlite://", 25000), {"pool_pre_ping": True})
 
+    def test_postgres_connections_are_named(self):
+        self.assertEqual(engine_options("postgresql://u:p@h/db", 0, "well-export_worker"),
+                         {"pool_pre_ping": True, "connect_args": {"application_name": "well-export_worker"}})
+        self.assertEqual(engine_options("sqlite://", 0, "well-backend"), {"pool_pre_ping": True})
+
     def test_the_app_uses_them(self):
         with mock.patch.object(Config, "DB_STATEMENT_TIMEOUT_MS", 1234), \
+                mock.patch.object(Config, "DB_APPLICATION_NAME", "well-test"), \
                 mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", "postgresql://u:p@h/db"):
             app = server.create_app()
         self.assertEqual(app.config["SQLALCHEMY_ENGINE_OPTIONS"]["connect_args"],
-                         {"options": "-c statement_timeout=1234"})
+                         {"options": "-c statement_timeout=1234", "application_name": "well-test"})
 
 
 class FakePgError(Exception):

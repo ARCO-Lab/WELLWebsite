@@ -1,6 +1,6 @@
 # Builds the daily plain-text digest of the sensor data: the open email alerts (scripts/check_alerts.py), stale
 # series, implausible values, readings and gaps per group over the last 24 h, the newest reading of every series,
-# and the WQData device's primary power and last contact. scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
+# the WQData device's primary power and last contact, and yesterday's API traffic (request_metrics, utils/traffic.py). scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
 #
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
 # SMTP_FROM are optional), and otherwise prints it. It reads the database only, and makes at most one WQData
@@ -64,6 +64,17 @@ def read_groups(db, freshness, now):
             groups[group] = {"rows": rows, "series": count, "timestamps": timestamps,
                              "gaps": find_gaps(timestamps, since_utc, now.astimezone(timezone.utc))}
     return groups, findings
+
+
+def read_traffic(db, now):
+    """Yesterday's (site time) request totals from request_metrics, or {"error"} (e.g. migration 0005 not applied)."""
+    from utils.traffic import summarize_traffic, yesterday_window
+    start, end = yesterday_window(now, EST_TZ)
+    try:
+        return summarize_traffic(lambda sql, params: db.session.execute(db.text(sql), params), start, end)
+    except Exception as e:   # the type only: a connection error's text can include the database URL
+        db.session.rollback()
+        return {"error": type(e).__name__}
 
 
 def read_wqdata(config, now):
@@ -144,9 +155,10 @@ def main(argv=None):
         except Exception as e:   # e.g. the alert tables' migration hasn't run yet
             db.session.rollback()
             incidents = {"error": type(e).__name__}
+        traffic = read_traffic(db, now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
-                                 incidents)
+                                 incidents, traffic)
     return deliver(subject, body, args.dry_run)
 
 

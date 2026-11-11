@@ -16,6 +16,7 @@ from api.routes import register_routes  # noqa: E402
 from api.routes.health import register_health_routes  # noqa: E402
 from db.database import db, engine_options  # noqa: E402
 from db.models import check_schema  # noqa: E402
+from utils.traffic import init_request_metrics  # noqa: E402
 
 # PostgreSQL's error code for a statement it cancelled, here because it ran past DB_STATEMENT_TIMEOUT_MS.
 QUERY_CANCELED = "57014"
@@ -34,7 +35,8 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options(
-        app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"])
+        app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"],
+        app.config["DB_APPLICATION_NAME"])
     # Before serving anything: this code reads recorded_at as instants, so it must not run on the pre-0002
     # schema, where it would show every reading time 4-5 hours off. Raises (the process doesn't start) if so.
     check_schema(app.config.get("SQLALCHEMY_DATABASE_URI"), app.config.get("SQLALCHEMY_ENGINE_OPTIONS"),
@@ -42,6 +44,9 @@ def create_app():
     db.init_app(app)
     CORS(app)
     register_routes(app)
+    # Per-minute request counts for welldash² and the daily digest (utils/traffic.py); route patterns only, no
+    # addresses or query strings. On by default with PostgreSQL; REQUEST_METRICS=0 turns it off.
+    init_request_metrics(app)
 
     # Database errors answer with a short JSON error the dashboard can show, instead of a 500 and a traceback.
     # A query cut off by the statement timeout (a slow range) or a lost connection (a database restart) isn't a
