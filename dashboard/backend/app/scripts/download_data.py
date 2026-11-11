@@ -318,17 +318,28 @@ def main():
 
         # Get all files from dataset
         all_files = get_files_from_dataset(list_files=args.list_files)
+        # A --file that names no file of the dataset is a typo; importing nothing would hide it
+        unmatched = [name for name in args.file if not any(is_named(f, [name]) for f in all_files)]
+        if unmatched:
+            print(f"ERROR: --file {', '.join(unmatched)} matches no file of the dataset (give a file id or its exact "
+                  f"filename; --list-files lists them)")
+            sys.exit(2)
         if not all_files:
             print("No files to process. Use --list-files to debug available files.")
-            sys.exit(1 if args.list_files else 0)
+            if args.list_files:
+                sys.exit(1)
+            print("OUTPUT: NO_NEW_FILES")   # the scheduler reads this line (utils/jobs.download_status)
+            sys.exit(0)
 
         files_to_process = choose_files(all_files, state, args.file, args.force)
         print(f"DEBUG: Processed files: {len(state['processed_files'])}")
         print(f"DEBUG: Files to import: {[f['filename'] for f in files_to_process]}")
-        # A refused file's problems were listed when it was refused; later runs give a one-line reminder
+        # A refused file's problems were listed when it was refused; later runs give a one-line reminder, for the
+        # refused files still in the dataset (one deleted from it needs no correction)
         chosen_ids = {f["id"] for f in files_to_process}
+        dataset_ids = {f["id"] for f in all_files}
         for rf in state["refused_files"]:
-            if rf["id"] not in chosen_ids:
+            if rf["id"] in dataset_ids and rf["id"] not in chosen_ids:
                 print(f"WARNING: {rf['filename']} (ID: {rf['id']}) was refused on {rf.get('refused_at', '?')} with "
                       f"{rf.get('errors', '?')} problems; upload a corrected file to import it")
 

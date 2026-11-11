@@ -66,7 +66,7 @@ class BookkeepingTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
-    def run_main(self, state, outcomes, *argv):
+    def run_main(self, state, outcomes, *argv, files=(OLD, BAD, NEW)):
         """main() over OLD, BAD and NEW with the given state; outcomes maps file id -> (returncode, stdout)."""
         saved = []
 
@@ -78,7 +78,7 @@ class MainTests(unittest.TestCase):
         with mock.patch.object(sys, "argv", ["download_data.py", *argv]), \
                 mock.patch.object(download_data, "load_state", return_value=state), \
                 mock.patch.object(download_data, "save_state", side_effect=lambda s: saved.append(s)), \
-                mock.patch.object(download_data, "get_files_from_dataset", return_value=[OLD, BAD, NEW]), \
+                mock.patch.object(download_data, "get_files_from_dataset", return_value=list(files)), \
                 mock.patch.object(download_data, "process_single_file", side_effect=lambda f: f"/tmp/{f['id']}.xlsx"), \
                 mock.patch.object(download_data.os, "unlink"), \
                 mock.patch.object(download_data.subprocess, "run", side_effect=importer) as run, \
@@ -130,6 +130,25 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("OUTPUT: FAILED_3_FILES", out)
         self.assertEqual(saved[-1], empty_state())   # nothing recorded, so the next run tries again
+
+    def test_no_reminder_for_a_refused_file_no_longer_in_the_dataset(self):
+        state = empty_state()
+        download_data.record(state, BAD, "refused", 7)
+        code, out, _, _ = self.run_main(state, {3: (0, "[INFO] Inserted 1 new sampling records.\n")}, files=(NEW,))
+        self.assertEqual(code, 0)
+        self.assertNotIn("was refused", out)
+
+    def test_an_empty_dataset_reports_no_new_files(self):
+        code, out, _, run = self.run_main(empty_state(), {}, files=())
+        self.assertEqual((code, run.call_count), (0, 0))
+        self.assertIn("OUTPUT: NO_NEW_FILES", out)
+
+    def test_a_file_name_matching_nothing_is_an_error(self):
+        code, out, _, run = self.run_main(empty_state(), {}, "--force", "--file", "99", "--file", "2")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(run.call_count, 0)
+        self.assertIn("ERROR: --file 99 matches no file of the dataset", out)
+        self.assertNotIn("OUTPUT:", out)
 
 
 class SchedulerTests(unittest.TestCase):
