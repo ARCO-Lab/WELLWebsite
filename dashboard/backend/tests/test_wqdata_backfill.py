@@ -122,6 +122,16 @@ class Requests(unittest.TestCase):
         self.assertIn("HTTP 429 (Request exceeds hourly limit for ***)", str(cm.exception))
         self.assert_no_key(cm.exception)
 
+    def test_key_across_the_200_character_cut_is_scrubbed_whole(self):
+        # Shortening first would keep the key's first characters, then no longer match it to scrub it.
+        wq, _, _ = client(Response(401, {"message": "x" * 195 + KEY + " and more"}))
+        with self.assertRaises(bf.WQDataError) as cm:
+            wq.get_page("a", "b")
+        text = str(cm.exception)
+        self.assertIn("(" + "x" * 195 + "*** a)", text)   # scrubbed, then cut to 200 characters
+        self.assertNotIn(KEY[:4], text)
+        self.assert_no_key(cm.exception)
+
     def test_non_json_response(self):
         wq, _, _ = client(Response(200, None))
         with self.assertRaises(bf.WQDataError) as cm:

@@ -98,10 +98,12 @@ class WQData:
     def message(self, response) -> str:
         """WQData's own error message, e.g. "Request exceeds hourly limit" with a 429, with the key scrubbed."""
         try:
-            text = str(response.json().get("message") or "")[:200]
+            text = str(response.json().get("message") or "")
         except (ValueError, AttributeError):
             return ""
-        return f" ({text.replace(str(self.api_key), '***')})" if text else ""
+        if self.api_key:
+            text = text.replace(str(self.api_key), "***")   # before shortening, so no part of the key is left
+        return f" ({text[:200]})" if text else ""
 
 
 def fetch_points(get_page, start: dt.datetime, end: dt.datetime) -> list:
