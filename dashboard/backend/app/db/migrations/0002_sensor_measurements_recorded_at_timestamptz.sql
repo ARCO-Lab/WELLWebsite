@@ -23,8 +23,8 @@
 -- ix_sensor_measurements_group_type_recorded_at from 0001) are rebuilt by the ALTER and keep their names.
 --
 -- Locking: ALTER ... TYPE rewrites the table and its indexes under an ACCESS EXCLUSIVE lock: nothing can read
--- or write sensor_measurements until it commits. On a copy of production's size (1.45 M rows, PostgreSQL 13 on
--- the production VM) the whole migration took about 10 seconds; see the pull request. Stop the worker and the
+-- or write sensor_measurements until it commits. On a table of production's size (1.46 M rows, 131 MB plus its three
+-- indexes, PostgreSQL 13 on the production VM) it took 9.4 seconds, so expect 10-15 s. Stop the worker and the
 -- backend first (the deploy steps say how), so nothing queues behind the lock; lock_timeout makes the migration
 -- fail rather than wait if something still holds the table.
 --
