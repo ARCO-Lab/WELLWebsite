@@ -132,13 +132,24 @@ function Tile({ row, caption, staleAfterHours, wrap = false }: { row: MetricRow;
 }
 
 const SPEED_PX_PER_S = 30;
+// Keys that scroll a focused strip: pressing one pauses it, even when the focus came from a click or a closing modal.
+const SCROLL_KEYS = new Set(["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
+
+// Whether focus came from the keyboard. Browsers without :focus-visible (old iOS Safari) throw; pause there too.
+function keyboardFocus(el: Element): boolean {
+  try {
+    return el.matches(":focus-visible");
+  } catch {
+    return true;
+  }
+}
 
 // The scrolling strip. It scrolls by moving scrollLeft, so the strip is also an ordinary horizontal scroller:
 // a trackpad, Shift + wheel, a swipe or the arrow keys move it by hand, while a normal wheel still scrolls the page.
 // When the tiles don't all fit, a second copy follows the first and the strip wraps by exactly one copy's width,
 // so the loop is seamless. It pauses where it is while a mouse is over it or it has keyboard focus, and for 2.5 s
-// after a touch (a tap is not a hover, and focus from a click or a closing modal doesn't pause it). It doesn't
-// auto-scroll at all for people who ask their system for reduced motion.
+// after a touch. A tap is not a hover, and focus from a click or a closing modal pauses it only once a scrolling
+// key is pressed. It doesn't auto-scroll at all for people who ask their system for reduced motion.
 function Ticker({ label, children }: { label: string; children: React.ReactNode }) {
   const scroller = useRef<HTMLDivElement>(null);
   const firstCopy = useRef<HTMLDivElement>(null);
@@ -205,7 +216,8 @@ function Ticker({ label, children }: { label: string; children: React.ReactNode 
       tabIndex={0}
       onPointerEnter={(e) => { if (e.pointerType === "mouse") pause(); }}
       onPointerLeave={(e) => { if (e.pointerType === "mouse") resume(); }}
-      onFocus={(e) => { if (e.currentTarget.matches(":focus-visible")) pause(); }}
+      onFocus={(e) => { if (keyboardFocus(e.currentTarget)) pause(); }}
+      onKeyDown={(e) => { if (SCROLL_KEYS.has(e.key)) pause(); }}
       onBlur={() => resume()}
       onTouchStart={pause}
       onTouchEnd={() => resume(2500)}
