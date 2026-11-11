@@ -1,5 +1,5 @@
 """Tests for scripts/migrate.py, run against throwaway SQLite databases and migration folders. Run from
-dashboard/backend: python -m unittest discover -s tests
+dashboard/backend: python -m unittest discover -s tests -t .
 
 The PostgreSQL-only paths (the advisory lock, the invalid-index refusal after a failed CREATE INDEX CONCURRENTLY,
 and rolling back a multi-statement file, which SQLite can't run in one call) are in PostgresRunner. It runs only

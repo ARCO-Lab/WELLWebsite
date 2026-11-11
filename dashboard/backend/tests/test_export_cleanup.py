@@ -1,5 +1,5 @@
 """Tests for the hourly export cleanup (tasks/exports.py) and DST-safe expiry times, against a throwaway
-SQLite file. Run from dashboard/backend: python -m unittest discover -s tests"""
+SQLite file. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import os
 import pathlib
@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-os.environ.setdefault("DATABASE_URL", "sqlite://")  # never a real database
+os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
 from config import Config  # noqa: E402
 from utils.timezone import est_after, est_now, est_passed  # noqa: E402

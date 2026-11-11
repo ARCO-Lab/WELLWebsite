@@ -1,4 +1,4 @@
-"""The scheduler's monthly Borealis upload check. Run from dashboard/backend: python -m unittest discover -s tests"""
+"""The scheduler's monthly Borealis upload check. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import os
 import pathlib

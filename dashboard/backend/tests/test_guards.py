@@ -1,4 +1,4 @@
-"""Tests for utils/guards.py. Run from dashboard/backend: python -m unittest discover -s tests"""
+"""Tests for utils/guards.py. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import pathlib
 import sys
 import unittest

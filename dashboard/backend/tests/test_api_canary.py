@@ -1,4 +1,4 @@
-"""Tests for scripts/api_canary.py (no network). Run from dashboard/backend: python -m unittest discover -s tests
+"""Tests for scripts/api_canary.py (no network). Run from dashboard/backend: python -m unittest discover -s tests -t .
 
 CI runs these on every pull request, including the checks that the constants the canary copies still match
 utils/parsers.py (the canary's own workflow installs only requests, so it can't run them)."""
@@ -11,7 +11,7 @@ from unittest import mock
 
 import requests
 
-os.environ.setdefault("DATABASE_URL", "sqlite://")  # config is read once on first import; never a real database
+os.environ["DATABASE_URL"] = "sqlite://"  # config is read once on first import; never a real database
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from scripts import api_canary as canary  # noqa: E402
 

@@ -58,6 +58,7 @@ clear_state() { [ "$DRY" = 1 ] || rm -f "$STATE"; }
 # A command that fails unexpectedly (anywhere: set -E carries the trap into functions and subshells) still gets a
 # FAILED line and a /fail ping, reported once per line. In a subshell such as $(...) it only exits with the
 # command's status, so the failure is reported once, by the main shell.
+# shellcheck disable=SC2329  # called by the ERR trap below
 on_err() {
   [ "$BASHPID" = "$$" ] || exit "$1"
   trap - ERR
@@ -174,8 +175,8 @@ rebuild() {
 # /api/latest (5 s apart), the slowest to come back after a rebuild. The checks set PROBLEM rather than print it so
 # they're called straight from `if`, where the ERR trap doesn't apply, not from a $(...) subshell.
 site_ok() {
-  local i code=000
-  for i in $(seq 1 "$1"); do
+  local code=000
+  for _ in $(seq 1 "$1"); do
     code=$("$CURL" -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:8081/api/latest || true)
     [ "$code" = 200 ] && break
     sleep "${DEPLOY_HEALTH_WAIT:-5}"

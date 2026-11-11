@@ -1,4 +1,4 @@
-"""`download_data.py --list-files` must only list. Run from dashboard/backend: python -m unittest discover -s tests"""
+"""`download_data.py --list-files` must only list. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import contextlib
 import datetime as dt
 import io
