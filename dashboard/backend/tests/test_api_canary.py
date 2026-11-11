@@ -1,4 +1,7 @@
-"""Tests for scripts/api_canary.py (no network). Run from dashboard/backend: python -m unittest discover -s tests"""
+"""Tests for scripts/api_canary.py (no network). Run from dashboard/backend: python -m unittest discover -s tests
+
+The canary's workflow doesn't run these, so the checks that its copied constants still match utils/parsers.py
+only run when the backend tests are run by hand, until CI runs the backend tests on every pull request."""
 import datetime as dt
 import pathlib
 import sys
@@ -18,7 +21,25 @@ LICOR = {"max_results": False, "data": [
      "value": 3.2, "unit": "°C", "sensor_measurement_type": "Temperature"},
     {"logger_sn": "21893775", "sensor_sn": "22168653-1", "timestamp": "2026-11-10 10:00:00Z",
      "value": "0.41", "unit": "m"},
+    # Records ingestion skips, so a null value or timestamp in them mustn't fail the canary: battery channels
+    # ("-B") and logger channels whose base serial isn't a known logger.
+    {"logger_sn": "21893775", "sensor_sn": "22168653-B", "timestamp": "2026-11-10 10:00:00Z",
+     "value": None, "unit": "V"},
+    {"logger_sn": "21893775", "sensor_sn": "21901556-B", "timestamp": None, "value": None},
+    {"logger_sn": "21893775", "sensor_sn": "22168659-1", "timestamp": "2026-11-10 10:00:00Z", "value": None},
 ]}
+
+
+def parsers():
+    """utils.parsers, for the checks that the canary's copies of its constants still match. Skips only when a
+    third-party package it needs (the database libraries) isn't installed; any other import error fails."""
+    try:
+        from utils import parsers as p
+    except ModuleNotFoundError as e:
+        if (e.name or "").split(".")[0] in {"utils", "db", "config", "scripts", "api"}:
+            raise
+        raise unittest.SkipTest(f"backend package not installed: {e.name}")
+    return p
 WQDATA = {"info": {"count": 2, "total": 2, "more": False, "lastDataPointTimestamp": "2026-11-10 10:00:00"},
           "data": [{"timestamp": "2026-11-10 10:00:00",
                     "values": [{"parameterId": 125001, "value": "7.1"}, {"parameterId": 999, "value": "x"}]}]}
@@ -33,27 +54,37 @@ def without(d, key):
 
 class LicorShape(unittest.TestCase):
     def test_ok(self):
-        self.assertEqual(canary.check_licor(LICOR), "2 records (1 weather, 1 water-level logger)")
+        self.assertEqual(canary.check_licor(LICOR),
+                         "5 records (1 weather, 1 water-level logger read by ingestion)")
 
     def test_rejects(self):
+        weather, logger, battery = LICOR["data"][0], LICOR["data"][1], LICOR["data"][2]
         bad = [
             [],                                                        # not an object
             without(LICOR, "data"),
             {"data": []},                                              # no recent data
-            {"data": [without(LICOR["data"][0], "sensor_sn")]},
-            {"data": [{**LICOR["data"][0], "timestamp": "yesterday"}]},
-            {"data": [{**LICOR["data"][0], "value": "n/a"}]},
+            {"data": [without(weather, "sensor_sn")]},
+            {"data": [{**weather, "timestamp": "yesterday"}]},
+            {"data": [{**weather, "value": "n/a"}]},
+            {"data": [{**weather, "value": None}]},
+            {"data": [without(logger, "value")]},
+            {"data": [battery]},                                       # nothing ingestion would store
         ]
         for body in bad:
             with self.subTest(body=body), self.assertRaises(canary.ShapeError):
                 canary.check_licor(body)
 
-    def test_logger_prefix_matches_ingestion(self):
-        try:
-            from utils.parsers import LOGGER_PREFIX
-        except ImportError as e:
-            self.skipTest(f"backend packages not installed: {e}")
-        self.assertEqual(canary.LOGGER_PREFIX, LOGGER_PREFIX)
+    def test_constants_match_ingestion(self):
+        p = parsers()
+        self.assertEqual(canary.LOGGER_PREFIX, p.LOGGER_PREFIX)
+        self.assertEqual(canary.LOGGER_SERIALS, set(p.LOGGER_CONFIG))
+
+    def test_skips_the_same_records_as_ingestion(self):
+        p = parsers()
+        for r in LICOR["data"]:
+            with self.subTest(sensor_sn=r["sensor_sn"]):
+                rows = p.licor_rows([r], {"Weather", "Logger"}, "21893775", dt.timezone.utc)
+                self.assertEqual(canary.licor_record_used(r["sensor_sn"]), bool(rows))
 
 
 class WqdataShape(unittest.TestCase):
@@ -77,11 +108,7 @@ class WqdataShape(unittest.TestCase):
                 canary.check_wqdata(body)
 
     def test_parameter_ids_match_ingestion(self):
-        try:
-            from utils.parsers import QUALITY_PARAM_ID_MAP
-        except ImportError as e:
-            self.skipTest(f"backend packages not installed: {e}")
-        self.assertEqual(canary.WQ_PARAMETER_IDS, set(QUALITY_PARAM_ID_MAP))
+        self.assertEqual(canary.WQ_PARAMETER_IDS, set(parsers().QUALITY_PARAM_ID_MAP))
 
 
 class BorealisShape(unittest.TestCase):

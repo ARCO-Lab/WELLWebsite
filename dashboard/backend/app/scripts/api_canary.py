@@ -27,8 +27,9 @@ FMT = "%Y-%m-%d %H:%M:%S"
 
 # Copies of the values in utils/parsers.py, which can't be imported here without the database packages
 # (the workflow installs only requests). tests/test_api_canary.py checks they still match.
-LOGGER_PREFIX = "2216865"
-WQ_PARAMETER_IDS = {125001, 125002, 125004, 125005, 125006, 125007, 125008, 125009}
+LOGGER_PREFIX = "2216865"                                                    # parsers.LOGGER_PREFIX
+LOGGER_SERIALS = {"22168653", "22168654", "22168655", "22168656", "22168657"}  # parsers.LOGGER_CONFIG keys
+WQ_PARAMETER_IDS = {125001, 125002, 125004, 125005, 125006, 125007, 125008, 125009}  # parsers.QUALITY_PARAM_ID_MAP
 
 
 class ShapeError(Exception):
@@ -37,26 +38,45 @@ class ShapeError(Exception):
 
 # ---- Shape checks: pure functions on a parsed response body. Each returns a short summary or raises ShapeError.
 
+def licor_record_used(sensor_sn):
+    """Whether ingestion (parsers.licor_rows) parses a record with this serial, rather than skipping it:
+    battery channels ("-B") are skipped, and so are logger channels whose base serial isn't a known logger."""
+    if sensor_sn.endswith("-B"):
+        return False
+    if sensor_sn.startswith(LOGGER_PREFIX):
+        parts = sensor_sn.split("-")
+        return len(parts) == 2 and parts[0] in LOGGER_SERIALS
+    return True
+
+
 def check_licor(body):
-    # inject_from_api.py reads body["data"], and per record sensor_sn, timestamp (ISO 8601) and a numeric value.
+    # inject_from_api.py reads body["data"], and per record sensor_sn; for the records it doesn't skip, it also
+    # parses timestamp (ISO 8601) and value (a number), so those are only required there.
     if not isinstance(body, dict) or not isinstance(body.get("data"), list):
         raise ShapeError("no 'data' list")
     records = body["data"]
     if not records:
         raise ShapeError(f"no records in the last {WINDOW.total_seconds() / 3600:g} h")
+    weather = loggers = 0
     for i, r in enumerate(records):
         if not isinstance(r, dict):
             raise ShapeError(f"record {i} isn't an object")
-        missing = [k for k in ("sensor_sn", "timestamp", "value") if r.get(k) is None]
-        if missing:
-            raise ShapeError(f"record {i} has no {', '.join(missing)}")
+        if not isinstance(r.get("sensor_sn"), str):
+            raise ShapeError(f"record {i} has no sensor_sn")
+        if not licor_record_used(r["sensor_sn"]):
+            continue
         try:
-            datetime.fromisoformat(r["timestamp"])
-            float(r["value"])
+            datetime.fromisoformat(r.get("timestamp"))
+            float(r.get("value"))   # ingestion would store a missing value as 0
         except (TypeError, ValueError):
-            raise ShapeError(f"record {i} has an unreadable timestamp or value")
-    loggers = sum(str(r["sensor_sn"]).startswith(LOGGER_PREFIX) for r in records)
-    return f"{len(records)} records ({len(records) - loggers} weather, {loggers} water-level logger)"
+            raise ShapeError(f"record {i} has a missing or unreadable timestamp or value")
+        if r["sensor_sn"].startswith(LOGGER_PREFIX):
+            loggers += 1
+        else:
+            weather += 1
+    if not weather + loggers:
+        raise ShapeError("only records ingestion skips (battery or unknown logger channels)")
+    return f"{len(records)} records ({weather} weather, {loggers} water-level logger read by ingestion)"
 
 
 def check_wqdata(body):
