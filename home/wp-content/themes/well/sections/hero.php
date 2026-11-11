@@ -2,6 +2,11 @@
 // This section renders the homepage hero carousel for the WELL WordPress theme.
 // It displays rotating banners with images and calls to action for WELL, Dashboard, and News.
 // The slide images are pre-sized WebP copies (see well_media_img() in functions.php).
+
+// How wide the slide image is drawn, following the .carousel-bg-left/-right rules in css/mcm-bw.css:
+// full width on phones and tablets, about 1170 px (500 px tall) up to 1300 px, then 90% down to 69%.
+$hero_sizes = '(max-width: 991.98px) 100vw, (max-width: 1299.98px) 1170px, (max-width: 1399.98px) 90vw, '
+    . '(max-width: 1499.98px) 85vw, (max-width: 1599.98px) 80vw, (max-width: 1669.98px) 75vw, 69vw';
 ?>
 <banner>
   <section class="carousel">
@@ -10,7 +15,7 @@
       <div class="carousel-cell drop">
         <?php well_media_img('hero-teaching', array(414, 800), array(800, 343), array(
              'class'         => 'carousel-bg carousel-bg-left carousel-bg-bottom',
-             'sizes'         => '(max-width: 991.98px) 100vw, 90vw',
+             'sizes'         => $hero_sizes,
              'alt'           => 'Teaching Photo',
              'role'          => 'presentation',
              // First slide: the largest image above the fold, so fetch it first.
@@ -35,7 +40,7 @@
       <div class="carousel-cell drop">
         <?php well_media_img('hero-weather', array(414, 720, 1080, 1600), array(1600, 685), array(
              'class'         => 'carousel-bg carousel-bg-left',
-             'sizes'         => '(max-width: 991.98px) 100vw, 90vw',
+             'sizes'         => $hero_sizes,
              'alt'           => 'Weather Preview',
              'role'          => 'presentation',
              'loading'       => 'lazy',
@@ -60,7 +65,7 @@
       <div class="carousel-cell drop">
         <?php well_media_img('hero-installation', array(414, 720, 1080, 1600, 2000), array(2000, 857), array(
              'class'         => 'carousel-bg carousel-bg-right',
-             'sizes'         => '(max-width: 991.98px) 100vw, 90vw',
+             'sizes'         => $hero_sizes,
              'alt'           => 'Installation Photo 2',
              'role'          => 'presentation',
              'loading'       => 'lazy',
