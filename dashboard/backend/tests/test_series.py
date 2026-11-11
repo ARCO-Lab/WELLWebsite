@@ -10,7 +10,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-from api.routes.series import LADDER, MAX_POINTS, columnar, pick_bucket, to_local_naive  # noqa: E402
+from api.routes.series import (  # noqa: E402
+    LADDER, MAX_POINTS, browser_cache_control, columnar, parse_bucket, pick_bucket, to_local_naive)
 
 DAY = 86400
 
@@ -33,6 +34,32 @@ class PickBucketTests(unittest.TestCase):
             self.assertLessEqual(days * DAY / pick_bucket(days * DAY), MAX_POINTS, days)
         # past MAX_POINTS days (about 5.5 years) buckets stay daily, so there are more points
         self.assertGreater(3000 * DAY / pick_bucket(3000 * DAY), MAX_POINTS)
+
+
+class ParseBucketTests(unittest.TestCase):
+    def test_only_ladder_values(self):
+        self.assertIsNone(parse_bucket(None))
+        self.assertIsNone(parse_bucket(""))
+        for b in LADDER:
+            self.assertEqual(parse_bucket(str(b)), b)
+        for bad in ("601", "0", "-600", "600.0", "abc", "1e3", " 600"):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_bucket(bad)
+
+
+class BrowserCacheControlTests(unittest.TestCase):
+    now = dt.datetime(2026, 11, 11, 12, 0)
+
+    def test_settled_ranges_are_immutable_for_a_day(self):
+        self.assertEqual(browser_cache_control(self.now - dt.timedelta(days=2), self.now),
+                         "public, max-age=86400, immutable")
+        self.assertEqual(browser_cache_control(self.now - dt.timedelta(days=2), self.now, seconds_left=5),
+                         "public, max-age=86400, immutable")
+
+    def test_anything_newer_a_minute_at_most(self):
+        self.assertEqual(browser_cache_control(self.now - dt.timedelta(hours=23), self.now), "public, max-age=60")
+        self.assertEqual(browser_cache_control(self.now, self.now, seconds_left=42), "public, max-age=42")
+        self.assertEqual(browser_cache_control(self.now, self.now, seconds_left=300), "public, max-age=60")
 
 
 class ToLocalNaiveTests(unittest.TestCase):
@@ -269,21 +296,40 @@ class SeriesSqlTests(unittest.TestCase):
 
         with mock.patch.object(response_cache, "get", side_effect=get), \
                 mock.patch.object(response_cache, "put", side_effect=put):
-            # A past range: cacheable for 5 minutes, and stored for as long.
+            # A range that ended over a day ago: stored for 5 minutes, and browsers may keep it for a day.
             r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
-            self.assertEqual(r.headers["Cache-Control"], "public, max-age=300")
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=86400, immutable")
             (key, body), = bodies.items()
             self.assertEqual(ttls[key], 300)
             self.assertIn(":2026-11-01T00:10:00:2026-11-01T00:50:00:Weather", key)  # rounded inward to 10-min marks
             self.assertEqual(body, r.get_data())
             self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])  # as unrounded
 
-            # A request a few minutes apart is the same rounded range, answered from the cache, not the database,
-            # and browsers are told only what is left of the cached copy's time.
+            # A request a few minutes apart is the same rounded range, answered from the cache, not the database.
             bodies[key], ttls[key] = b'{"cached": true}', 42
             r = self.client.get("/api/series?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00&group_type=Weather")
             self.assertEqual(r.get_json(), {"cached": True})
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=86400, immutable")
+
+            # A range that ended two hours ago: stored for 5 minutes; browsers get a minute at most, and no longer
+            # than the cached copy has left.
+            now = dt.datetime.now(dt.timezone.utc)
+            started, ended = ((now - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:00Z") for h in (5, 2))
+            bodies.clear()
+            r = self.client.get(f"/api/series?start={started}&end={ended}&group_type=Weather")
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=60")
+            (key,) = bodies
+            self.assertEqual(ttls[key], 300)
+            ttls[key] = 42
+            r = self.client.get(f"/api/series?start={started}&end={ended}&group_type=Weather")
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=42")
+
+            # The bucket and every filter are part of the key
+            bodies.clear()
+            for q in ("", "&bucket=1800", "&series=Weather|22051538|Rain", "&station_id=22051538",
+                      "&measurement_type=Rain"):
+                self.client.get(f"/api/series?start=2026-11-01T00:00:00&end=2026-11-01T01:00:00&group_type=Weather{q}")
+            self.assertEqual(len(bodies), 5)
 
         # A range that runs to now: a minute only.
         now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -297,6 +343,58 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertNotIn("Air Temperature", by)  # its first reading is at 2026-11-01 00:00
         _, by = self.series("2026-11-01T00:00:00", "2026-11-01T00:29:59.999", "Weather")
         self.assertEqual(by["Air Temperature"]["avg"], [10.0, 11.0, 12.0])
+
+    def get(self, query):
+        return self.client.get(f"/api/series?{query.replace('+', '%2B')}")
+
+    def test_an_asked_bucket_is_used(self):
+        body = self.get("start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&group_type=Weather&bucket=1800").get_json()
+        self.assertEqual((body["bucket_seconds"], body["aggregated"]), (1800, True))
+        air = next(s for s in body["series"] if s["measurement_type"] == "Air Temperature")
+        self.assertEqual((air["avg"], air["n"]), ([11.0, 14.0], [3, 3]))
+        body = self.get("start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&group_type=Weather&bucket=600").get_json()
+        self.assertEqual(body["bucket_seconds"], 600)
+
+    def test_bucket_must_be_on_the_ladder_and_points_are_capped(self):
+        base = "start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&group_type=Weather"
+        for bad in ("601", "abc", "0", "-600"):
+            r = self.get(f"{base}&bucket={bad}")
+            self.assertEqual(r.status_code, 400, bad)
+            self.assertIn("bucket", r.get_json()["error"])
+        # 28 days of 10-minute buckets is 4,032 points per series: too many. 27 days (3,888) is allowed.
+        r = self.get("start=2026-10-01T00:00:00&end=2026-10-29T00:00:00&group_type=Weather&bucket=600")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("4000", r.get_json()["error"])
+        self.assertEqual(self.get("start=2026-10-01T00:00:00&end=2026-10-28T00:00:00&group_type=Weather"
+                                  "&bucket=600").status_code, 200)
+        # Without a bucket: a span so long that even daily buckets are too many (over ~11 years)
+        r = self.get("start=2000-01-01T00:00:00&end=2026-01-01T00:00:00&group_type=Weather")
+        self.assertEqual(r.status_code, 400)
+
+    def test_series_keys_pick_exact_series_without_group_type(self):
+        body = self.get("start=2026-11-01T00:00:00&end=2026-11-02T00:00:00"
+                        "&series=Weather|22051538|Rain&series=Logger|2577531|Water Temperature").get_json()
+        self.assertEqual(sorted((s["group_type"], s["measurement_type"]) for s in body["series"]),
+                         [("Logger", "Water Temperature"), ("Weather", "Rain")])
+        # A key names one series exactly: the quality station's ODO isn't the weather station's
+        body = self.get("start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&series=Weather|4501|ODO").get_json()
+        self.assertEqual(body["series"], [])
+
+    def test_station_and_measurement_filters(self):
+        q = "start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&group_type=Weather&group_type=Logger"
+        body = self.get(f"{q}&station_id=2577531").get_json()
+        self.assertEqual([s["measurement_type"] for s in body["series"]], ["Water Temperature"])
+        body = self.get(f"{q}&measurement_type=Rain&measurement_type=Wind Direction").get_json()
+        self.assertEqual(sorted(s["measurement_type"] for s in body["series"]), ["Rain", "Wind Direction"])
+        body = self.get(f"{q}&station_id=22051538&measurement_type=Water Temperature").get_json()
+        self.assertEqual(body["series"], [])
+
+    def test_bad_filters(self):
+        base = "start=2026-11-01T00:00:00&end=2026-11-02T00:00:00"
+        too_many = "group_type=Weather&" + "&".join(f"station_id={i}" for i in range(41))
+        for bad in ("series=Weather", "series=Weather|22051538", "series=Nope|1|Rain", "series=Weather||Rain",
+                    "series=Weather|1|Rain|x", too_many):
+            self.assertEqual(self.get(f"{base}&{bad}").status_code, 400, bad)
 
     def test_bad_requests(self):
         self.assertEqual(self.client.get("/api/series?start=2026-11-01&end=2026-11-02").status_code, 400)
