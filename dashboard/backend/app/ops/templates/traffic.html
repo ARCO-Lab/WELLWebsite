@@ -4,7 +4,7 @@
 {% block content %}
 <div class="card-head">
   <p class="muted">Requests the data API answered: every dashboard visit's data, CSV downloads and health checks, counted per minute by
-  route. No addresses, query strings or browsers are recorded. Includes welldash²'s own check of /api/latest, once a minute.</p>
+  route. No addresses, query strings or browsers are recorded, and welldash²'s own uptime checks aren't counted.</p>
   {{ ranges_nav(ranges, range_name, 'traffic') }}
 </div>
 

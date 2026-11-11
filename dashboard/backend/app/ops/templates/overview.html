@@ -14,7 +14,7 @@
     <tbody>
     {% for p in probes.probes %}
     <tr>
-      <td>{{ {'dashboard': 'Dashboard + data API', 'wordpress': 'WordPress site'}.get(p.target, p.target) }}</td>
+      <td>{{ target_labels.get(p.target, p.target) }}</td>
       <td>{{ badge(p.ok) }}</td>
       <td>{{ ('HTTP ' ~ p.status) if p.status is not none else (p.error or 'no answer') }}</td>
       <td>{{ p.latency_ms | ms }}</td>

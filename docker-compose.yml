@@ -187,16 +187,16 @@ services:
       OPS_GOATCOUNTER_CODE: ${OPS_GOATCOUNTER_CODE:-}
       OPS_GOATCOUNTER_TOKEN: ${OPS_GOATCOUNTER_TOKEN:-}
     ports:
-      # OPS_BIND can pin it to one of the VM's addresses (e.g. its campus address) instead of all of them.
+      # Set OPS_BIND to the VM's campus address (README): Docker's published ports bypass the host firewall, and
+      # 0.0.0.0 publishes it on every address the VM has.
       - "${OPS_BIND:-0.0.0.0}:${OPS_PORT:-8090}:8090"
     extra_hosts:
-      - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself
+      - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself; WordPress is checked on its port 8080
     depends_on:
       - dashboard
     restart: unless-stopped
     networks:
-      - internal_api   # to check the dashboard
-      - front          # to check WordPress
+      - internal_api   # to check the dashboard and the backend (not front, which WordPress shares with MySQL)
     volumes:
       # Log sizes on the System page, and deploy.log if deploy.sh writes it here (README). Read-only.
       - ./dashboard/backend/app/logs:/ops/logs:ro

@@ -2,7 +2,7 @@
 :root {
   --bg: #f4f6f8; --card: #fff; --ink: #1d2733; --muted: #5f6b78; --line: #dde3ea;
   --brand: #7a003c; --ok: #1b7f3b; --ok-bg: #e3f4e8; --bad: #b42318; --bad-bg: #fde8e6; --warn: #8a5a00; --warn-bg: #fff3d6;
-  --s0: #1f6feb; --s1: #7a003c; --bar: #4a7fb5;
+  --s0: #1f6feb; --s1: #7a003c; --s2: #1b7f3b; --bar: #4a7fb5;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
@@ -64,7 +64,7 @@ td.bad, .tile.bad .n { color: var(--bad); font-weight: 600; }
 
 .legend { margin: 0 0 6px; font-size: 12px; }
 .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 8px; vertical-align: middle; }
-.key.s0 { background: var(--s0); } .key.s1 { background: var(--s1); }
+.key.s0 { background: var(--s0); } .key.s1 { background: var(--s1); } .key.s2 { background: var(--s2); }
 
 .chart { width: 100%; height: auto; display: block; }
 .chart.phone { display: none; }
@@ -72,10 +72,10 @@ td.bad, .tile.bad .n { color: var(--bad); font-weight: 600; }
 .chart .axis { fill: var(--muted); font-size: 11px; }
 .chart .empty { fill: var(--muted); font-size: 13px; }
 .chart .line { fill: none; stroke-width: 1.8; }
-.chart .line.s0 { stroke: var(--s0); } .chart .line.s1 { stroke: var(--s1); }
+.chart .line.s0 { stroke: var(--s0); } .chart .line.s1 { stroke: var(--s1); } .chart .line.s2 { stroke: var(--s2); }
 .chart .dot { fill: transparent; }
 .chart .dot:hover { fill: currentColor; }
-.chart .dot.s0 { color: var(--s0); } .chart .dot.s1 { color: var(--s1); }
+.chart .dot.s0 { color: var(--s0); } .chart .dot.s1 { color: var(--s1); } .chart .dot.s2 { color: var(--s2); }
 .chart .bar { fill: var(--bar); }
 .chart .bar.bad { fill: var(--bad); }
 .chart rect:hover { opacity: .75; }

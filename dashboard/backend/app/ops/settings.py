@@ -8,7 +8,8 @@ Optional:
   OPS_COOKIE_SECURE    1 to send the session cookie over HTTPS only (set it once the site has TLS; default 0)
   OPS_RETENTION_DAYS   days of request_metrics and uptime_probes to keep (default 90)
   OPS_PROBE_INTERVAL_S seconds between uptime checks (default 60; 0 turns the checks off)
-  OPS_PROBE_DASHBOARD_URL, OPS_PROBE_WORDPRESS_URL, OPS_PROBE_WORDPRESS_HOST   what the uptime checks request
+  OPS_PROBE_DASHBOARD_URL, OPS_PROBE_API_URL, OPS_PROBE_WORDPRESS_URL, OPS_PROBE_WORDPRESS_HOST
+                       what the uptime checks request (ops/probe.py; an empty URL turns that check off)
   OPS_LOGS_DIR         read-only folder of log files whose sizes are shown (default /ops/logs)
   OPS_GITHUB_REPO, OPS_GITHUB_TOKEN          CI status of main (the token is optional: public repo)
   SENTRY_API_TOKEN, SENTRY_ORG, SENTRY_API_URL   recent Sentry issues (read-only token; skipped when unset);
@@ -56,8 +57,10 @@ class Settings:
     cookie_secure: bool = False
     retention_days: int = 90
     probe_interval_s: int = 60
-    probe_dashboard_url: str = "http://dashboard:8081/api/latest"
-    probe_wordpress_url: str = "http://wordpress/"
+    probe_dashboard_url: str = "http://dashboard:8081/"
+    probe_api_url: str = "http://backend:5000/api/latest"
+    # WordPress through the VM's published port, so welldash² needn't join the network WordPress shares with MySQL
+    probe_wordpress_url: str = "http://host.docker.internal:8080/"
     probe_wordpress_host: str = "well.mcmaster.ca"
     logs_dir: str = "/ops/logs"
     github_repo: str = "ARCO-Lab/WELLWebsite"
@@ -107,6 +110,7 @@ def load_settings(env=None):
         probe_interval_s=whole_number(env, "OPS_PROBE_INTERVAL_S", defaults.probe_interval_s),
         # Set but empty turns that check off.
         probe_dashboard_url=env.get("OPS_PROBE_DASHBOARD_URL", defaults.probe_dashboard_url).strip(),
+        probe_api_url=env.get("OPS_PROBE_API_URL", defaults.probe_api_url).strip(),
         probe_wordpress_url=env.get("OPS_PROBE_WORDPRESS_URL", defaults.probe_wordpress_url).strip(),
         probe_wordpress_host=text("OPS_PROBE_WORDPRESS_HOST", defaults.probe_wordpress_host),
         logs_dir=text("OPS_LOGS_DIR", defaults.logs_dir),

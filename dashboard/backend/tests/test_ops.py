@@ -9,9 +9,11 @@ import pathlib
 import sys
 import time
 import unittest
-from unittest import mock
+import unittest.mock
 
 import requests
+
+mock = unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -255,9 +257,13 @@ class ProbeAndHelperTests(unittest.TestCase):
     def test_targets(self):
         settings = load_settings(ENV)
         targets = probe.probe_targets(settings)
-        self.assertEqual([t[0] for t in targets], ["dashboard", "wordpress"])
-        self.assertEqual(targets[1][2]["Host"], "well.mcmaster.ca")
-        none = load_settings({**ENV, "OPS_PROBE_DASHBOARD_URL": "", "OPS_PROBE_WORDPRESS_URL": ""})
+        self.assertEqual([t[0] for t in targets], ["dashboard", "api", "wordpress"])
+        self.assertEqual(targets[1][1], "http://backend:5000/api/latest")
+        self.assertEqual(targets[1][2], {"X-Welldash2-Probe": "1"})   # kept out of the traffic counts
+        self.assertEqual(targets[2][1], "http://host.docker.internal:8080/")
+        self.assertEqual(targets[2][2]["Host"], "well.mcmaster.ca")
+        none = load_settings({**ENV, "OPS_PROBE_DASHBOARD_URL": "", "OPS_PROBE_API_URL": "",
+                              "OPS_PROBE_WORDPRESS_URL": ""})
         self.assertEqual(probe.probe_targets(none), [])
 
     def test_hashpw_prints_a_hash_never_the_password(self):
@@ -383,7 +389,8 @@ class PostgresPageTests(unittest.TestCase):
             conn.execute(text("INSERT INTO schema_migrations (version) VALUES ('0005_ops_metrics')"))
         pages = self.get_all()
         overview = pages["/"]
-        self.assertIn("Dashboard + data API", overview)
+        self.assertIn("Dashboard page", overview)
+        self.assertIn("WordPress site", overview)
         self.assertIn("ConnectionError", overview)
         self.assertIn("WQData API not responding", overview)
         self.assertIn("4 failed", overview)
@@ -412,7 +419,15 @@ class PostgresPageTests(unittest.TestCase):
         with self.engine.connect() as conn:
             self.assertEqual(conn.execute(text("SELECT count(*) FROM uptime_probes WHERE target = 'x'")).scalar(), 1)
 
-    def test_4_pages_cannot_write(self):
+    def test_4_statement_timeout(self):
+        """welldash²'s own engine cuts a statement off after 20 s."""
+        app = create_app(env={**ENV, "OPS_DATABASE_URL": os.environ["TEST_POSTGRES_URL"]}, start_background=False)
+        engine = app.extensions["ops_engine"]
+        with engine.connect() as conn:
+            self.assertEqual(conn.exec_driver_sql("SHOW statement_timeout").scalar(), "20s")
+        engine.dispose()
+
+    def test_5_pages_cannot_write(self):
         """The page reads run in READ ONLY transactions."""
         from sqlalchemy import text
         from sqlalchemy.exc import InternalError, OperationalError, ProgrammingError

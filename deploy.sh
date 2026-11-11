@@ -204,15 +204,18 @@ site_ok() {
   if [ "$code" != 200 ]; then PROBLEM="WordPress home answered $code"; return 1; fi
 }
 
-# The rebuilt background workers serve no page, and compose restarts them when they crash (Docker even reports a
-# restarting container as Running), so a single "is it running" sample proves nothing. Instead: note each rebuilt
-# worker's container and restart count right after the rebuild...
+# The rebuilt background workers serve no page (nor is welldash² checked by page: its port may be bound to the campus
+# address only), and compose restarts them when they crash (Docker even reports a restarting container as Running),
+# so a single "is it running" sample proves nothing. Instead: note each rebuilt worker's container and restart count
+# right after the rebuild...
 WORKERS=()
 note_workers() {
   local s id
   WORKERS=()
-  for s in worker export_worker; do
-    [[ " ${SERVICES[*]-} " == *" $s "* || " ${SERVICES[*]-} " == *" ALL "* ]] || continue
+  for s in worker export_worker ops; do
+    # welldash² (ops) is checked only when it was rebuilt by name: under ALL it may be off (its compose profile)
+    if [ "$s" = ops ]; then [[ " ${SERVICES[*]-} " == *" ops "* ]] || continue
+    else [[ " ${SERVICES[*]-} " == *" $s "* || " ${SERVICES[*]-} " == *" ALL "* ]] || continue; fi
     id=$("$DOCKER" compose ps -q "$s" 2>/dev/null | head -1 || true)
     WORKERS+=("$s:$id:$("$DOCKER" inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || echo '?')")
   done

@@ -114,7 +114,11 @@ check "backend change: checks both workers' containers" 'ran "compose ps -q work
 check "backend change, welldash² not running: not rebuilt" '! ran "export_worker ops"'
 
 sync_vm; change dashboard/backend/app/x.py; OPS_RUNNING=1 deploy
-check "backend change, welldash² running: rebuilt with the backend" 'rc 0 && ran "--no-deps backend worker export_worker ops" && said "healthy"'
+check "backend change, welldash² running: rebuilt with the backend, and checked like the workers" 'rc 0 && ran "--no-deps backend worker export_worker ops" && ran "inspect -f {{.State.Status}} {{.RestartCount}} id-ops" && said "healthy"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
+OPS_RUNNING=1 BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=ops deploy
+check "welldash² crash-looping after a backend change: rolls back" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "ops container didn'"'"'t stay up" && said "healthy again"'
 
 sync_vm; change dashboard/backend/app/x.py; ci pending success; deploy --auto
 check "--auto, CI still running: waits, changes nothing" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && [ ! -s "$T/out" ]'

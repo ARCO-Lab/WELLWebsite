@@ -10,16 +10,18 @@ from datetime import datetime, timezone
 from flask import Flask, render_template, request
 from sqlalchemy import create_engine
 
+from db.database import engine_options
 from ops import data, external
 from ops.auth import install_auth
 from ops.charts import bar_chart, line_chart, responsive
-from ops.probe import Prober
+from ops.probe import TARGET_LABELS, Prober
 from ops.settings import SESSION_LIFETIME, ConfigError, load_settings
 from utils.timezone import EST_TZ
 from utils.traffic import fmt_bytes
 
 log = logging.getLogger("ops")
 
+STATEMENT_TIMEOUT_MS = 20000
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; "
        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
@@ -86,11 +88,14 @@ def create_app(env=None, engine=None, start_background=True):
         SESSION_REFRESH_EACH_REQUEST=False,
         MAX_CONTENT_LENGTH=16 * 1024,   # the login form is all that is ever posted
     )
-    engine = engine or create_engine(settings.database_url, pool_pre_ping=True, pool_size=3, max_overflow=2)
+    # Every statement is cut off after 20 s (engine_options), so a slow page can't hold a connection for long.
+    engine = engine or create_engine(settings.database_url, pool_size=3, max_overflow=2,
+                                     **engine_options(settings.database_url, STATEMENT_TIMEOUT_MS))
     app.extensions["ops_engine"] = engine
     app.extensions["ops_settings"] = settings
     install_auth(app, settings)
     app.jinja_env.filters.update(site_time=site_time, ago=ago, pct=pct, ms=ms, bytes=fmt_bytes)
+    app.jinja_env.globals["target_labels"] = TARGET_LABELS
     started_at = datetime.now(timezone.utc)
 
     @app.after_request

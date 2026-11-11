@@ -1,8 +1,9 @@
 """welldash²'s uptime checks and housekeeping, run by a background thread of the ops service.
 
-Once a minute (OPS_PROBE_INTERVAL_S) it requests the dashboard's /api/latest (through the dashboard container, so
-the Next.js proxy, the backend and the database are all checked) and the WordPress home page (with the public host
-name, as deploy.sh does), and records each answer's status and time in uptime_probes. Once a day it deletes rows
+Once a minute (OPS_PROBE_INTERVAL_S) it requests the dashboard's home page, the backend's /api/latest (which reads
+the database), and the WordPress home page (through the VM's published port 8080, with the public host name, as
+deploy.sh does), and records each answer's status and time in uptime_probes. The API check carries a header that
+keeps it out of the traffic counts (utils/traffic.py, PROBE_HEADER). Once a day it deletes rows
 older than OPS_RETENTION_DAYS (90) from uptime_probes and request_metrics. These are welldash²'s only writes.
 """
 import logging
@@ -13,10 +14,13 @@ from datetime import datetime, timedelta, timezone
 import requests
 from sqlalchemy import text
 
+from utils.traffic import PROBE_HEADER
+
 log = logging.getLogger("ops.probe")
 
 PROBE_TIMEOUT = (5, 20)
 PRUNE_EVERY = timedelta(days=1)
+TARGET_LABELS = {"dashboard": "Dashboard page", "api": "Data API and database", "wordpress": "WordPress site"}
 
 INSERT_SQL = text("INSERT INTO uptime_probes (checked_at, target, ok, status, latency_ms, error) "
                   "VALUES (:checked_at, :target, :ok, :status, :latency_ms, :error)")
@@ -27,6 +31,8 @@ def probe_targets(settings):
     targets = []
     if settings.probe_dashboard_url:
         targets.append(("dashboard", settings.probe_dashboard_url, {}))
+    if settings.probe_api_url:
+        targets.append(("api", settings.probe_api_url, {PROBE_HEADER: "1"}))
     if settings.probe_wordpress_url:
         # WordPress redirects any other host name to its own, so ask for the public one, over "https" as the
         # front proxy does.

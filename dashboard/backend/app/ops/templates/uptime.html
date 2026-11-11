@@ -2,8 +2,9 @@
 {% from "_macros.html" import failed, ranges_nav %}
 {% block title %}Uptime{% endblock %}
 {% block content %}
-<p class="muted">welldash² requests the dashboard's /api/latest (through the dashboard, so the backend and database are checked
-too) and the WordPress home page once a minute. A check is up when it answers 2xx.</p>
+<p class="muted">Once a minute welldash² requests the dashboard's home page, the data API's /api/latest (which reads the
+database) and the WordPress home page, from inside the VM. A check is up when it answers 2xx. These checks aren't counted
+as traffic.</p>
 
 <section class="card wide">
   <h2>Availability</h2>
@@ -15,7 +16,7 @@ too) and the WordPress home page once a minute. A check is up when it answers 2x
     <tbody>
     {% for t in availability.targets %}
     <tr>
-      <td>{{ {'dashboard': 'Dashboard + data API', 'wordpress': 'WordPress site'}.get(t.target, t.target) }}</td>
+      <td>{{ target_labels.get(t.target, t.target) }}</td>
       <td class="{{ 'bad' if t.day is not none and t.day < 99 else '' }}">{{ t.day | pct }}</td>
       <td>{{ t.week | pct }}</td>
       <td>{{ t.month | pct }}</td>
@@ -32,7 +33,7 @@ too) and the WordPress home page once a minute. A check is up when it answers 2x
   <div class="card-head"><h2>Response time</h2>{{ ranges_nav(ranges, range_name, 'uptime') }}</div>
   {% if latency.error %}{{ failed(latency, "the response times") }}
   {% else %}
-  <p class="legend">{% for target in latency.series | sort %}<span class="key s{{ loop.index0 }}"></span>{{ target }} {% endfor %}
+  <p class="legend">{% for target in latency.series | sort %}<span class="key s{{ loop.index0 }}"></span>{{ target_labels.get(target, target) }} {% endfor %}
     <span class="muted">average of successful checks per {{ (latency.step.total_seconds() // 60) | int }} min; {{ latency.failed_checks }} failed check(s) in this period</span></p>
   {{ latency_chart }}
   {% endif %}

@@ -5,6 +5,7 @@ total and longest time, a small latency histogram and the bytes sent. A backgrou
 writes the finished minutes to the request_metrics table about every 15 s, adding to any row another worker wrote
 for the same key (db/migrations/0005_ops_metrics.sql). Only the route pattern is kept ("/api/exports/jobs/<job_id>",
 never the id, the query string, the client's address or its user agent), so the table holds no personal data.
+welldash²'s own uptime check of the API isn't counted (PROBE_HEADER).
 
 Counting is on by default when the database is PostgreSQL; REQUEST_METRICS=0 turns it off. A failed write is
 logged and the minutes dropped, so a missing table (migration not applied yet) never breaks a request. Counts
@@ -25,6 +26,10 @@ BUCKETS = len(LATENCY_BUCKETS_MS) + 1
 # Requests that hand the visitor a CSV file: the small synchronous export and a finished export job's file.
 DOWNLOAD_ENDPOINTS = ("/api/exports/sync", "/api/exports/jobs/<job_id>/download")
 NO_ROUTE = "(no route)"     # a path no route matches (404/405): the path itself isn't kept
+# welldash²'s uptime check of the API (ops/probe.py) sends this header, and isn't counted: it would add a request a
+# minute, and its failures during an outage, to the visitors' numbers. Only containers on the VM can send it: the
+# backend has no public port, and the dashboard's proxy (lib/proxyBackend.ts) doesn't pass it on.
+PROBE_HEADER = "X-Welldash2-Probe"
 FLUSH_EVERY_S = 15
 MAX_KEYS = 20000            # a flush that keeps failing must not grow memory without end
 
@@ -84,7 +89,8 @@ class RequestAggregator:
     def take(self, before=None):
         """Remove and return the rows of minutes before `before` (all rows when None), as dicts for UPSERT_SQL."""
         with self.lock:
-            keys = [k for k in self.rows if before is None or k[0] < before]
+            # Sorted, so every worker upserts its rows in the same order and two can't deadlock on each other's
+            keys = sorted(k for k in self.rows if before is None or k[0] < before)
             taken = [(k, self.rows.pop(k)) for k in keys]
         return [{"minute": k[0], "endpoint": k[1], "method": k[2], "status_class": k[3], **v,
                  "buckets": list(v["buckets"])} for k, v in taken]
@@ -138,9 +144,9 @@ class MetricsRecorder:
         def count_request(response):
             try:
                 started = g.pop("_metrics_started", None)
-                if started is not None:
+                if started is not None and not request.headers.get(PROBE_HEADER):
                     ms = (time.perf_counter() - started) * 1000
-                    rule = request.url_rule.rule if request.url_rule is not None else NO_ROUTE
+                    rule = request.url_rule.rule[:128] if request.url_rule is not None else NO_ROUTE   # the column
                     self.aggregator.record(self.clock(), rule, request.method[:8], response.status_code, ms,
                                            response.content_length)
                     self.ensure_thread()

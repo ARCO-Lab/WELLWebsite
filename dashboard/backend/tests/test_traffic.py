@@ -7,6 +7,7 @@ import os
 import pathlib
 import sys
 import unittest
+import unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -59,6 +60,15 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual([(r["endpoint"], r["requests"]) for r in rest], [("/api/latest", 1)])
         self.assertEqual(agg.take(), [])
 
+    def test_rows_come_out_sorted(self):
+        """Every worker upserts in the same order, so two can't deadlock on each other's rows."""
+        agg = traffic.RequestAggregator()
+        for endpoint in ("/z", "/a", "/m"):
+            agg.record(T + dt.timedelta(minutes=1), endpoint, "GET", 200, 1.0, 1)
+            agg.record(T, endpoint, "POST", 500, 1.0, 1)
+        rows = [(r["minute"], r["endpoint"], r["method"], r["status_class"]) for r in agg.take()]
+        self.assertEqual(rows, sorted(rows))
+
     def test_enabled_only_for_postgresql(self):
         self.assertTrue(traffic.metrics_enabled("postgresql://u@h/db", {}))
         self.assertFalse(traffic.metrics_enabled("postgresql://u@h/db", {"REQUEST_METRICS": "0"}))
@@ -73,6 +83,10 @@ class FlaskHookTests(unittest.TestCase):
         def download(job_id):
             return Response("a,b\n1,2\n", mimetype="text/csv")
 
+        @app.route("/api/" + "x" * 200)
+        def long_route():
+            return "ok"
+
         @app.route("/boom")
         def boom():
             raise RuntimeError("bug")
@@ -84,6 +98,12 @@ class FlaskHookTests(unittest.TestCase):
 
     def tearDown(self):
         self.recorder.aggregator.take()   # nothing left for the atexit flush
+
+    def test_uptime_probe_is_not_counted(self):
+        self.client.get("/api/exports/jobs/1/download", headers={traffic.PROBE_HEADER: "1"})
+        self.assertEqual(self.recorder.aggregator.take(), [])
+        self.client.get("/api/" + "x" * 200)
+        self.assertEqual([len(r["endpoint"]) for r in self.recorder.aggregator.take()], [128])   # the column's size
 
     def test_keeps_route_patterns_only(self):
         headers = {"X-Forwarded-For": "203.0.113.9", "User-Agent": "Secret-Browser/1.0"}
@@ -192,8 +212,8 @@ class PostgresTests(unittest.TestCase):
     def test_backend_app_records_requests(self):
         """The real backend app counts a request once the metrics are on (PostgreSQL), and the row holds no
         address or query string."""
-        from unittest import mock
-        with mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"]),                 mock.patch.dict(os.environ, {"REQUEST_METRICS": "1"}):
+        with unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", os.environ["TEST_POSTGRES_URL"]), \
+                unittest.mock.patch.dict(os.environ, {"REQUEST_METRICS": "1"}):
             from server import create_app
             app = create_app()
         recorder = app.extensions["request_metrics"]

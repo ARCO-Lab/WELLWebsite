@@ -103,6 +103,7 @@ def install_auth(app, settings, limiter=None):
         if request.method in ("GET", "HEAD"):
             return redirect(url_for("login"))
         abort(401)
+        return None   # not reached: abort raises
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
