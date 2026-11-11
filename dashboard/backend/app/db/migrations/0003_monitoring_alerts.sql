@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS alert_incidents (
     recovery_notified_at timestamptz
 );
 
+-- Columns added while this migration was in review, for a development database that ran an earlier version of it.
+ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS close_reason varchar(16);
+ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS reopened_at timestamptz;
+ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS back_again_at timestamptz;
+
 CREATE UNIQUE INDEX IF NOT EXISTS ux_alert_incidents_open_key ON alert_incidents (incident_key)
     WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS ix_alert_incidents_resolved_at ON alert_incidents (resolved_at);

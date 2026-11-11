@@ -55,7 +55,7 @@ DEFAULT_SUSPECT_HOURS = 6.0
 DEFAULT_CLEAR_MINUTES = 30.0
 DEFAULT_REOPEN_HOURS = 6.0
 DEFAULT_DASHBOARD_URL = "https://welldash.mcmaster.ca/"
-RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long is dropped
+RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long after it was due is dropped
 
 
 @dataclass
@@ -393,8 +393,8 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
       back within ALERT_REOPEN_HOURS of closing reopens its incident instead of being emailed as new. If its
       recovery had been emailed, it is emailed as "back again" once it has stayed back ALERT_CLEAR_MINUTES, so a
       "recovered" email is never followed by a long silence while the problem is back. "Back again" goes out at
-      most once per ALERT_REMINDER_HOURS per incident; if it clears again within that time, that recovery isn't
-      emailed (the incident is flapping, and the team was last told it is on), so the emails can't flap either.
+      most once per ALERT_REMINDER_HOURS per incident; if it clears again within that time, its recovery email
+      waits until that time is up (and goes out then if it is still clear), so the emails can't flap either.
     - Keys nest (site > station > sensor). When a coarser condition replaces finer open incidents, or finer
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
@@ -440,8 +440,18 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
                 else:
                     result.recovered.append(incident)
     result.recovered += [i for i in pending_recoveries
-                         if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
+                         if id(i) not in reopened and timedelta(0) <= now - recovery_due(i, settings) <= RECOVERY_WINDOW]
     return result
+
+
+def recovery_due(incident, settings):
+    """When an incident's recovery email is due: when it cleared, or for one that cleared quietly soon after a
+    "back again" email, ALERT_REMINDER_HOURS after that email (if it is still closed then), so "back again" is never
+    the last word on a problem that has gone away."""
+    resolved = aware(incident.resolved_at)
+    if incident.close_reason == "cleared_quietly" and incident.back_again_at is not None:
+        return max(resolved, aware(incident.back_again_at) + settings.reminder)
+    return resolved
 
 
 def recently_back_again(incident, now, settings):
@@ -487,8 +497,9 @@ def build_email(new, reminders, recovered, open_count, now, settings, back_again
 
     lines = [f"WELL dashboard alerts, checked {site_time(now)} (Toronto time).", ""]
     for heading, items in (("NEW", new),
-                           (f"BACK AGAIN (after the recovery emailed earlier; if it clears again within "
-                            f"{duration(settings.reminder)}, that isn't emailed: check the dashboard)", back_again),
+                           (f"BACK AGAIN (after the recovery emailed earlier; if it clears again, the recovery "
+                            f"email waits until {duration(settings.reminder)} after this one, so check the dashboard "
+                            f"meanwhile)", back_again),
                            (f"STILL ONGOING (reminder, at most every {duration(settings.reminder)})", reminders)):
         if not items:
             continue
@@ -505,7 +516,8 @@ def build_email(new, reminders, recovered, open_count, now, settings, back_again
         lines.append("")
     base = settings.dashboard_url.rstrip("/")
     lines += [f"Open alerts now: {open_count}. You get one email per new problem, a reminder at most every "
-              f"{duration(settings.reminder)} while it lasts, and one when it clears.",
+              f"{duration(settings.reminder)} while it lasts, and one when it clears (if it comes back and clears "
+              f"again soon after, that one waits up to {duration(settings.reminder)}).",
               f"Dashboard: {base}/",
               f"Data freshness and open alerts (JSON): {base}/api/health/data",
               "What each alert means and how to tune it: the README's Monitoring section."]

@@ -414,45 +414,81 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=2, minutes=30))["email"])
         self.assertEqual((self.open_keys(), len(self.incidents()), len(self.sent)), ([f"stale:WQData:{WQ}"], 1, 2))
 
-    def test_back_again_after_an_emailed_recovery(self):
-        """08:00 down (emailed), 11:00 up (recovery emailed 11:30), 11:40 down again ("back again" by 12:10),
-        14:00 up (not emailed: it flapped), 17:00 down (not emailed: the last word was "back again")."""
-        day = dt.datetime(2026, 11, 11, 13, 0, tzinfo=UTC)   # 08:00 in Toronto
+    DAY = dt.datetime(2026, 11, 11, 13, 0, tzinfo=UTC)   # 08:00 in Toronto
 
-        def at(hour, minute=0):
-            return day + dt.timedelta(hours=hour - 8, minutes=minute)
+    def at(self, hour, minute=0, days=0):
+        return self.DAY + dt.timedelta(days=days, hours=hour - 8, minutes=minute)
 
-        def down(when):
-            for minutes in (30, 20, 10):
-                self.record("WQData", http_error(503), now=when - dt.timedelta(minutes=minutes))
+    def down(self, when):
+        for minutes in (30, 20, 10):
+            self.record("WQData", http_error(503), now=when - dt.timedelta(minutes=minutes))
 
-        def emails_at(*times):
-            return [self.run_at(t)["email"] for t in times]
+    def emails_at(self, *times):
+        return [self.run_at(t)["email"] for t in times]
 
-        down(at(8))
+    def flap_until_quiet_clear(self):
+        """08:00 down (emailed), 11:00 up (recovery emailed 11:30), 11:40 down again ("back again" at 12:10),
+        13:55 up (cleared quietly at 14:20: its recovery email waits)."""
+        at, emails_at = self.at, self.emails_at
+        self.down(at(8))
         self.assertEqual(emails_at(at(8), at(11)), ["sent", None])
         self.assertIn("WQData API not responding", self.sent[0][1])
         self.record("WQData", now=at(11, 5))
         self.assertEqual(emails_at(at(11, 10), at(11, 20), at(11, 30)), [None, None, "sent"])
         self.assertTrue(self.sent[1][1].startswith("[WELL] Recovered: WQData API"), self.sent[1][1])
-        down(at(11, 40))
+        self.down(at(11, 40))
         self.assertEqual(emails_at(at(11, 40), at(12, 0), at(12, 10)), [None, None, "sent"])   # back 30 min
         self.assertTrue(self.sent[2][1].startswith("[WELL] Back again: WQData API"), self.sent[2][1])
         self.assertIn("BACK AGAIN", self.sent[2][2])
         self.assertEqual(emails_at(at(13, 50)), [None])
         self.record("WQData", now=at(13, 55))
-        self.assertEqual(emails_at(at(14), at(14, 20), at(14, 30)), [None, None, None])   # flapping: not emailed
+        self.assertEqual(emails_at(at(14), at(14, 20), at(14, 30)), [None, None, None])   # flapping: deferred
         self.assertEqual(self.open_keys(), [])
-        down(at(17))
-        self.assertEqual(emails_at(at(17), at(17, 30), at(18)), [None, None, None])
+
+    def test_back_again_then_a_quiet_clear_is_emailed_later(self):
+        self.flap_until_quiet_clear()
+        at = self.at
+        self.assertEqual(self.emails_at(at(18), at(12, 0, days=1)), [None, None])
+        self.assertEqual(self.emails_at(at(12, 10, days=1)), ["sent"])   # a day after "back again", still clear
+        self.assertTrue(self.sent[3][1].startswith("[WELL] Recovered: WQData API"), self.sent[3][1])
+        self.assertIn("recovered at 2026-11-11 14:20", self.sent[3][2])
+        self.assertEqual(self.emails_at(at(12, 20, days=1)), [None])
+        self.assertEqual(len(self.sent), 4)
+
+    def test_back_again_then_back_once_more_gets_the_reminder(self):
+        self.flap_until_quiet_clear()
+        at = self.at
+        self.down(at(17))   # back within ALERT_REOPEN_HOURS: reopened; the last email already said it is on
+        self.assertEqual(self.emails_at(at(17), at(17, 30), at(18)), [None, None, None])
         self.assertEqual((self.open_keys(), len(self.incidents()), len(self.sent)), (["vendor:WQData"], 1, 3))
-        # It is reminded about a day after the "back again" email, and its recovery is emailed after that.
-        self.assertEqual(emails_at(at(12, 10) + dt.timedelta(days=1)), ["sent"])
+        self.assertEqual(self.emails_at(at(12, 10, days=1)), ["sent"])   # the reminder, a day after "back again"
         self.assertTrue(self.sent[3][1].startswith("[WELL] Still ongoing:"), self.sent[3][1])
-        late = at(13) + dt.timedelta(days=1)
+        late = at(13, days=1)
         self.record("WQData", now=late)
-        self.assertEqual(emails_at(late), ["sent"])
+        self.assertEqual(self.emails_at(late), ["sent"])
         self.assertTrue(self.sent[4][1].startswith("[WELL] Recovered:"), self.sent[4][1])
+
+    def test_a_pending_back_again_survives_narrowing(self):
+        for measurement in ("Rain", "Air Temperature"):
+            self.add_readings("Weather", WEATHER, measurement, NOW - dt.timedelta(hours=4))
+        self.record("LI-COR")
+        self.run_at(NOW)                                                    # 1: the station is silent
+        self.assertIn("Weather station 22051538 silent", self.sent[0][1])
+        for measurement in ("Rain", "Air Temperature"):
+            self.add_readings("Weather", WEATHER, measurement, NOW + dt.timedelta(minutes=5), count=1)
+        self.run_at(NOW + dt.timedelta(minutes=10))
+        self.run_at(NOW + dt.timedelta(minutes=40))                         # 2: recovered
+        self.assertTrue(self.sent[1][1].startswith("[WELL] Recovered: Weather station"), self.sent[1][1])
+        back = NOW + dt.timedelta(hours=3, minutes=10)                      # both silent again: reopened
+        self.record("LI-COR", now=back)
+        self.assertIsNone(self.run_at(back)["email"])
+        self.add_readings("Weather", WEATHER, "Air Temperature", back + dt.timedelta(minutes=5), count=1)
+        self.assertIsNone(self.run_at(back + dt.timedelta(minutes=10))["email"])   # narrowed to Rain: quiet
+        self.assertEqual(self.open_keys(), [f"stale:LI-COR:{WEATHER}:Rain"])
+        self.run_at(back + dt.timedelta(minutes=30))                        # 3: back again, for the sensor
+        self.assertEqual(len(self.sent), 3)
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Back again: Weather station 22051538 Rain silent"),
+                        self.sent[2][1])
 
     def test_a_stuck_probe_doesnt_recover_overnight(self):
         stuck = lambda i: 7.2   # noqa: E731

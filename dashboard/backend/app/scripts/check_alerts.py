@@ -129,7 +129,9 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
                             opened_at=now, last_seen_at=now, notifications=0)
         if parent is not None and parent.last_notified_at is not None:
             # A finer incident split off one already emailed: it has been reported, so it isn't new.
-            row.last_notified_at, row.notifications = parent.last_notified_at, parent.notifications
+            # Its notification state too, so a pending "back again" (or a deferred recovery) still goes out.
+            for name in ("last_notified_at", "notifications", "recovery_notified_at", "reopened_at", "back_again_at"):
+                setattr(row, name, getattr(parent, name))
         else:
             new.append(row)
         new_rows.append(row)
@@ -177,7 +179,8 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
             for incident in actions.recovered:
                 incident.recovery_notified_at = now
             db.session.commit()
-    log(f"[INFO] Alert check: {open_count} open, {summary['new']} new, {summary['reminders']} reminders, "
+    log(f"[INFO] Alert check: {open_count} open, {summary['new']} new, {summary['back_again']} back again, "
+        f"{summary['reminders']} reminders, "
         f"{summary['recovered']} recovered; email: {summary['email'] or 'nothing to send'}")
     return summary
 

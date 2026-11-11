@@ -52,10 +52,13 @@ def open_incidents():
 
 
 def pending_recoveries(since):
-    """Incidents that cleared (not superseded) since `since` after being emailed, whose recovery hasn't been emailed."""
-    return (AlertIncident.query.filter(AlertIncident.resolved_at >= since, AlertIncident.close_reason == "cleared",
-                                       AlertIncident.last_notified_at.isnot(None),
-                                       AlertIncident.recovery_notified_at.is_(None)).all())
+    """Incidents that cleared (not superseded) after being emailed and whose recovery hasn't been emailed: cleared
+    since `since`, or cleared quietly soon after a "back again" emailed since `since` (their recovery email is
+    deferred, utils.alerts.recovery_due). The plan decides which are due now."""
+    i = AlertIncident
+    return (i.query.filter(i.last_notified_at.isnot(None), i.recovery_notified_at.is_(None),
+                           db.or_(db.and_(i.close_reason == "cleared", i.resolved_at >= since),
+                                  db.and_(i.close_reason == "cleared_quietly", i.back_again_at >= since))).all())
 
 
 def recently_closed(since):
