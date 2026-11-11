@@ -1,14 +1,19 @@
 """Tests for utils/sentry.py (error reporting). Nothing is sent anywhere: events go to an in-memory transport.
-Run from dashboard/backend: python -m unittest discover -s tests"""
+Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import os
 import pathlib
+import subprocess
 import sys
 import unittest
+import unittest.mock as mock
 import uuid
-from unittest import mock
 
 import sentry_sdk
 from sentry_sdk.transport import Transport
+
+# Also when this module runs on its own, without tests/__init__.py: no test may see the real DSN.
+for _name in ("SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_COMPONENT"):
+    os.environ.pop(_name, None)
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from utils import sentry as well_sentry  # noqa: E402
@@ -28,6 +33,7 @@ class MemoryTransport(Transport):
 
 
 def stop_sentry():
+    well_sentry._last_sent.clear()
     sentry_sdk.get_client().close()
     sentry_sdk.get_global_scope().set_client(None)
     sentry_sdk.get_global_scope().remove_tag("component")
@@ -69,6 +75,13 @@ class InitTests(unittest.TestCase):
         self.assertEqual(init.call_args.kwargs["environment"], "production")
         self.assertIsNone(init.call_args.kwargs["release"])
 
+    def test_sentry_component_overrides_the_default_tag(self):
+        # docker-compose.yml sets it for worker and export_worker, whose scripts import server.py ("backend").
+        env = {"SENTRY_DSN": FAKE_DSN, "SENTRY_COMPONENT": "worker"}
+        with mock.patch.dict(os.environ, env), mock.patch("sentry_sdk.init"):
+            well_sentry.init_sentry("backend")
+        self.assertEqual(sentry_sdk.get_global_scope()._tags["component"], "worker")
+
 
 class BeforeSendTests(unittest.TestCase):
     def test_request_details_and_ip_are_dropped(self):
@@ -93,6 +106,16 @@ class BeforeSendTests(unittest.TestCase):
         self.assertNotIn("SECRET", repr(out))
         self.assertEqual(out["exception"]["values"][0]["value"],
                          "403 Client Error: Forbidden for url: https://wqdata.example/v1/data?[Filtered]")
+
+    def test_query_strings_in_relative_urls_are_filtered(self):
+        # requests' ConnectionError names the URL as a path after the host and port.
+        message = ("HTTPSConnectionPool(host='www.wqdatalive.com', port=443): Max retries exceeded with url: "
+                   "/api/v1/devices/123/parameters/data?apiKey=SECRET&from=2026-11-10&to=2026-11-11 "
+                   "(Caused by NameResolutionError(\"Failed to resolve 'www.wqdatalive.com'\"))")
+        out = well_sentry.before_send({"exception": {"values": [{"type": "ConnectionError", "value": message}]}})
+        value = out["exception"]["values"][0]["value"]
+        self.assertNotIn("SECRET", value)
+        self.assertIn("with url: /api/v1/devices/123/parameters/data?[Filtered] (Caused by", value)
 
     def test_http_breadcrumbs_lose_their_query(self):
         crumb = {"type": "http", "data": {"url": "https://wqdata.example/v1/data?apiKey=SECRET",
@@ -170,6 +193,36 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["tags"]["job"], "api_injection_job")
         self.assertEqual(events[0]["tags"]["component"], "backend")
+
+    def test_the_same_failure_is_sent_at_most_once_an_hour(self):
+        clock = [1000.0]
+        with mock.patch.object(well_sentry.time, "monotonic", lambda: clock[0]):
+            for _ in range(6):   # an hour of 10-minute runs failing the same way
+                well_sentry.capture_job_error(ConnectionError("LI-COR down"), source="LI-COR")
+                clock[0] += 600
+            well_sentry.capture_job_error(ConnectionError("WQData down"), source="WQData")   # another source
+            well_sentry.capture_job_error(ConnectionError("LI-COR down again"), source="LI-COR")  # an hour on
+        events = self.flush()
+        self.assertEqual([(e["tags"]["source"], e["exception"]["values"][-1]["value"]) for e in events],
+                         [("LI-COR", "LI-COR down"), ("WQData", "WQData down"), ("LI-COR", "LI-COR down again")])
+
+    def test_a_failed_subprocess_is_sent_with_its_exit_code_and_stderr(self):
+        error = subprocess.CalledProcessError(1, ["python", "scripts/upload_data.py", "--year", "2026"],
+                                              output="lots of output", stderr="x" * 5000 + "\nValueError: bad month")
+        well_sentry.capture_job_error(error)
+        context = self.flush()[0]["contexts"]["subprocess"]
+        self.assertEqual(context["command"], "python scripts/upload_data.py --year 2026")
+        self.assertEqual(context["exit_code"], 1)
+        self.assertTrue(context["stderr_tail"].endswith("ValueError: bad month"))
+        self.assertEqual(len(context["stderr_tail"]), well_sentry.STDERR_TAIL_CHARS)
+
+    def test_scheduler_subprocesses_run_without_the_dsn(self):
+        # So a crash in upload_data.py is reported once, by the scheduler, not also by the script itself.
+        from utils.jobs import run_bounded
+        code = "import os; print(repr(os.environ.get('SENTRY_DSN')))"
+        with mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}):
+            result = run_bounded([sys.executable, "-c", code], timeout=30)
+        self.assertEqual(result.stdout.strip(), "''")
 
 
 if __name__ == "__main__":

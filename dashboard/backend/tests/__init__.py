@@ -9,3 +9,9 @@ TEST_POSTGRES_URL) and are skipped without it."""
 import os
 
 os.environ["DATABASE_URL"] = "sqlite://"
+
+# Never report to Sentry from a test, even when run inside a container whose env has the real DSN
+# (docker compose exec backend python -m unittest ...): server.py starts reporting on import when SENTRY_DSN is set.
+# tests/test_sentry.py sets a fake DSN itself and sends to memory only.
+for _name in ("SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_COMPONENT"):
+    os.environ.pop(_name, None)

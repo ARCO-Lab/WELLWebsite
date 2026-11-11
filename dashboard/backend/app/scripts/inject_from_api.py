@@ -18,7 +18,6 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-import sentry_sdk
 from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert
 from zoneinfo import ZoneInfo
@@ -102,9 +101,7 @@ def inject_all_new_data():
                 db.session.rollback()
                 failed.append(name)
                 print(f"[ERROR] {name} ingestion failed: {e!r}")
-                with sentry_sdk.new_scope() as scope:   # a no-op unless the scheduler turned Sentry on
-                    scope.set_tag("source", name)
-                    capture_job_error(e)
+                capture_job_error(e, source=name)   # a no-op unless the scheduler turned Sentry on
         if failed:
             error = RuntimeError(f"ingestion failed for: {', '.join(failed)}")
             error.already_reported = True   # each failure above went to Sentry with its own traceback

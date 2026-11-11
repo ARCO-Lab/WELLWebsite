@@ -60,8 +60,15 @@ def run_bounded(cmd, timeout, grace=10):
     The command runs in its own process group (POSIX), so a child it spawned, e.g. download_data.py
     running inject_sampling.py, can't outlive it and keep writing after the scheduler thinks the run
     is over. The group gets SIGTERM first, then SIGKILL after `grace` seconds.
+
+    The command runs with SENTRY_DSN empty (empty, not unset, so load_dotenv can't fill it in from a .env), so
+    it never reports to Sentry itself: the scheduler reports a failed run once, with its exit code and the end of
+    its stderr (utils/sentry.capture_job_error). Otherwise a crash in, say, upload_data.py would arrive twice,
+    as its own traceback and as the scheduler's CalledProcessError.
     """
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    env = {**os.environ, "SENTRY_DSN": ""}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                            env=env)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

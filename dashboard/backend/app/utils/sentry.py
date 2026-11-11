@@ -7,21 +7,37 @@ is set (tests and local development leave it unset), so every function here is t
 Settings (from the environment, e.g. dashboard/backend/app/.env on the VM):
   SENTRY_DSN          where to send errors; unset or empty turns reporting off
   SENTRY_ENVIRONMENT  e.g. production (default: production)
+  SENTRY_COMPONENT    the process's `component` tag; docker-compose.yml sets it for worker and export_worker, so
+                      a script run by hand in one of those containers is tagged with it too
   GIT_SHA             optional release name, so an error can be matched to a commit
 """
 import os
 import re
+import subprocess
+import threading
+import time
 
 import sentry_sdk
 
-# A URL's query string, which can hold a vendor API key (WQData takes apiKey as a query parameter, so a
-# failed request's error message includes it).
-_QUERY = re.compile(r"(https?://[^\s?#'\"<>]+)\?[^\s#'\"<>]*")
+# The query string of a URL or a path, which can hold a vendor API key: WQData takes apiKey as a query
+# parameter, so a failed request's error message includes it, as a full URL (HTTPError) or as a path
+# ("Max retries exceeded with url: /devices/...?apiKey=...", ConnectionError).
+_QUERY = re.compile(r"((?:https?://|/)[^\s?#'\"<>]*)\?[^\s#'\"<>]*")
+
+# capture_job_error sends the same failure (job, source and error type) at most this often per process, so an
+# outage that fails every 10-minute run doesn't use up the free tier's monthly event quota.
+REPEAT_AFTER_S = 60 * 60
+_last_sent = {}
+_last_sent_lock = threading.Lock()
+
+# How much of a failed subprocess's stderr (usually its traceback) goes with the event.
+STDERR_TAIL_CHARS = 2000
 
 
 def init_sentry(component):
-    """Start reporting errors for this process, tagged with `component` (backend, worker or export_worker).
-    Returns True if reporting is on, False (and does nothing) when SENTRY_DSN isn't set.
+    """Start reporting errors for this process, tagged with SENTRY_COMPONENT if it is set, else `component`
+    (backend, worker or export_worker). Returns True if reporting is on, False (and does nothing) when
+    SENTRY_DSN isn't set.
 
     The first call in a process wins: the worker and the export worker import server.py (which calls this for
     the API), so they call it first, before those imports, and the later call keeps their component."""
@@ -42,14 +58,35 @@ def init_sentry(component):
         before_breadcrumb=before_breadcrumb,
     )
     # On the global scope, so every thread and request of this process carries it.
-    sentry_sdk.get_global_scope().set_tag("component", component)
+    sentry_sdk.get_global_scope().set_tag("component", os.getenv("SENTRY_COMPONENT", "").strip() or component)
     return True
 
 
-def capture_job_error(exc):
+def capture_job_error(exc, source=None):
     """Report an error that was caught and logged (so it would otherwise never reach Sentry), unless it was
-    already reported. No-op when reporting is off."""
-    if not getattr(exc, "already_reported", False):
+    already reported, or the same failure (this thread's job, `source` and the error type) was sent in the last
+    REPEAT_AFTER_S. A failed subprocess's exit code and the end of its stderr go with it. No-op when reporting
+    is off."""
+    if getattr(exc, "already_reported", False) or not sentry_sdk.is_initialized():
+        return
+    key = (threading.current_thread().name, source, type(exc).__name__)
+    now = time.monotonic()
+    with _last_sent_lock:
+        if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
+            return
+        _last_sent[key] = now
+    with sentry_sdk.new_scope() as scope:
+        if source:
+            scope.set_tag("source", source)
+        if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            stderr = exc.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+            scope.set_context("subprocess", {
+                "command": " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd),
+                "exit_code": getattr(exc, "returncode", None),
+                "stderr_tail": stderr[-STDERR_TAIL_CHARS:],
+            })
         sentry_sdk.capture_exception(exc)
 
 

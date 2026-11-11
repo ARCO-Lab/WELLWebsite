@@ -5,6 +5,8 @@ from config import Config  # loads .env, so SENTRY_DSN is set before init_sentry
 from utils.sentry import init_sentry
 
 # Report errors to Sentry when SENTRY_DSN is set (utils/sentry.py); before the app and its routes are created.
+# Tagged "backend" unless SENTRY_COMPONENT says otherwise (docker-compose.yml sets it for worker and export_worker,
+# whose scripts import this module).
 init_sentry("backend")
 
 from flask import Flask  # noqa: E402
