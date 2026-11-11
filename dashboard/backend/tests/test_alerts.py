@@ -553,6 +553,32 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertTrue(self.sent[3][1].startswith("[WELL] Back again: Weather station 22051538 Rain silent"),
                         self.sent[3][1])
 
+    def test_a_reopened_incident_keeps_its_flap_damping(self):
+        """Cleared without any run seeing it absent first (missed runs), then back: the old stretch of presence
+        mustn't count as steady, so the flap count, and with it the longer clear time, stays."""
+        at, emails_at = self.at, self.emails_at
+        self.down(at(8))
+        emails_at(at(8), at(11))
+        self.record("WQData", now=at(11, 5))
+        emails_at(at(11, 10), at(11, 40))                                              # recovered
+        self.down(at(11, 50))
+        emails_at(at(11, 50), at(12, 20))                                              # back again: flaps 1
+        for hour in range(13, 19):   # present without a break until 18:10: steady, flaps reset
+            emails_at(at(hour, 10))
+        self.down(at(18, 40))
+        emails_at(at(18, 40))
+        from db.models import AlertIncident
+        incident = AlertIncident.query.one()
+        incident.flaps = 2   # as if it had flapped again since
+        self.db.session.commit()
+        self.record("WQData", now=at(18, 45))
+        # No run sees it gone (the worker was down) until 00:50, when it has been gone over 6 h: recovered.
+        self.assertEqual(emails_at(at(0, 50, days=1)), ["sent"])
+        self.down(at(1, 0, days=1))                                                    # back within 6 h
+        self.assertEqual(emails_at(at(1, 0, days=1)), [None])
+        incident = AlertIncident.query.one()
+        self.assertEqual((incident.resolved_at, incident.flaps), (None, 2))   # reopened, damping kept
+
     def test_flap_window_settings(self):
         from utils.alerts import clear_window
         settings = settings_from_env({"ALERT_FLAP_CLEAR_MINUTES": "120"})

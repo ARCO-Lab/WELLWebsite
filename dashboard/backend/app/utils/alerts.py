@@ -430,7 +430,7 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
             result.open_new.append((condition, parent))
             continue
         result.update.append((incident, condition))
-        if (incident.flaps and incident.present_since is not None
+        if (incident.flaps and id(incident) not in reopened and incident.present_since is not None
                 and now - aware(incident.present_since) >= settings.reopen_within):
             result.steady.append(incident)   # steady for hours: its real recovery is reported after the usual delay
         if incident.last_notified_at is None:

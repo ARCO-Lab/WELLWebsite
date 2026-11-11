@@ -138,6 +138,7 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         new_rows.append(row)
     for incident in actions.reopen:   # back soon after closing: the same incident again, not a new one
         incident.resolved_at, incident.close_reason = None, None
+        incident.present_since = now   # a fresh stretch of presence; its flap count stays
         if incident.recovery_notified_at is not None:   # the team was told it recovered: say so once it stays back
             incident.reopened_at = now
     for incident, condition in actions.update:   # keep the wording current (durations, failure counts)
@@ -149,9 +150,9 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
     for incident in actions.steady:
         incident.flaps = 0
     for incident in actions.resolve:
-        incident.resolved_at, incident.close_reason = now, "cleared"
+        incident.resolved_at, incident.close_reason, incident.present_since = now, "cleared", None
     for incident in actions.supersede:
-        incident.resolved_at, incident.close_reason = now, "superseded"
+        incident.resolved_at, incident.close_reason, incident.present_since = now, "superseded", None
     open_count = len(current) + len(actions.reopen) + len(new_rows) - len(actions.resolve) - len(actions.supersede)
     email = build_email(new, actions.remind, actions.recovered, open_count, now, settings, actions.back_again)
     summary = {"open": open_count, "new": len(new), "back_again": len(actions.back_again),
