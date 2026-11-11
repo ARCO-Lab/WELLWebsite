@@ -17,6 +17,7 @@ export { LADDER };
 export const RAW_S = LADDER[0]; // every sensor reports every 10 minutes
 export const TILE_BUCKETS = 360;
 export const POINTS_PER_PX = 1.5; // about this many buckets per pixel of plot width: detail without waste
+export const POINTS_PER_PX_PHONE = 1; // on phones, where each point costs more to draw
 export const GAP_FACTOR = 2.5; // neighbours further apart than this many buckets are drawn with a break between
 
 // Toronto's offset changes only on the hour, so it is cached per hour (formatting a date is slow, and charts convert
@@ -44,9 +45,9 @@ export function fromWall(wall: number): number {
 }
 
 /** The bucket for a chart showing `spanMs` on a plot `plotWidthPx` wide: the smallest on the ladder that gives
- *  about POINTS_PER_PX points per pixel or fewer (at least 150 points, at most 3,000). */
-export function bucketFor(spanMs: number, plotWidthPx: number): number {
-  const target = Math.min(3000, Math.max(150, (plotWidthPx || 600) * POINTS_PER_PX));
+ *  about `pointsPerPx` points per pixel or fewer (at least 150 points, at most 3,000). */
+export function bucketFor(spanMs: number, plotWidthPx: number, pointsPerPx = POINTS_PER_PX): number {
+  const target = Math.min(3000, Math.max(150, (plotWidthPx || 600) * pointsPerPx));
   for (const b of LADDER) if (spanMs / 1000 / b <= target) return b;
   return LADDER[LADDER.length - 1];
 }

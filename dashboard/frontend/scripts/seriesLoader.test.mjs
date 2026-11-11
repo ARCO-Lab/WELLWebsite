@@ -345,3 +345,79 @@ test("clampWindow keeps a window inside the extent and at least an hour wide", (
   assert.equal(tiny.end, now);
   assert.equal(OVERVIEW_BUCKET, 86400);
 });
+
+test("controller: a slow gesture sends nothing until it ends, however long its frames take", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const c = new ChartController("logger-1", [A, B], twoDays, extent, loader, syncFrame, 30);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const n0 = srv.calls.length;
+  c.beginGesture();
+  // A drag on a slow phone: moves 100 ms apart (longer than the debounce), across a year, for about a second
+  for (let i = 0; i < 10; i++) {
+    c.pan(-3, "slider");
+    await sleep(100);
+  }
+  assert.equal(srv.calls.length, n0); // held
+  c.endGesture();
+  await sleep(60);
+  assert.ok(srv.calls.length - n0 >= 1 && srv.calls.length - n0 <= 2, `${srv.calls.length - n0} requests`);
+  await srv.settle();
+  c.dispose();
+});
+
+test("controller: a gesture longer than the max wait fetches only the window it is on", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const c = new ChartController("logger-1", [A], twoDays, extent, loader, syncFrame, 30);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const n0 = srv.calls.length;
+  c.beginGesture();
+  c.setWindow({ start: Date.parse("2026-03-01T05:00:00Z"), end: Date.parse("2026-03-03T05:00:00Z") }, "slider");
+  for (let i = 0; i < 9; i++) { // 1.8 s of small moves
+    c.pan(0.01, "slider");
+    await sleep(200);
+  }
+  const during = srv.calls.slice(n0);
+  assert.equal(during.length, 1); // one max-wait fetch, for the window's tiles only (no history, no padding)
+  assert.equal(during[0].bucketS, 600);
+  assert.ok(during[0].last - during[0].first <= 1);
+  c.endGesture();
+  await srv.settle();
+  c.dispose();
+});
+
+test("controller: a gesture whose end was lost ends by itself", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const c = new ChartController("logger-1", [A], twoDays, extent, loader, syncFrame, 30);
+  c.activate();
+  c.beginGesture();
+  c.pan(-1, "drag");
+  assert.equal(c.inGesture, true);
+  await sleep(3200 + 1600); // idle past GESTURE_IDLE_MS, checked at the next max-wait
+  assert.equal(c.inGesture, false);
+  c.dispose();
+});
+
+test("loader: wishes made together within the batch window go in one request", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 20);
+  loader.want("logger-1", [A], 600, [7], 0, () => {});
+  loader.want("logger-2", [B], 600, [7], 0, () => {});
+  loader.want("rain", [C], 600, [7], 0, () => {});
+  assert.equal(srv.calls.length, 0);
+  await sleep(40);
+  assert.equal(srv.calls.length, 1);
+  assert.deepEqual(srv.calls[0].keys, [A, B, C]);
+  await srv.settle();
+});
+
+test("bucketFor: about one point per pixel on phones", () => {
+  assert.equal(bucketFor(3 * D, 300), 600); // 432 points at 1.5 per px (450)
+  assert.equal(bucketFor(3 * D, 300, 1), 1800); // over 300 at 1 per px: 30-min buckets (144)
+});

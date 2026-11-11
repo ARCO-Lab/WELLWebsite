@@ -96,6 +96,7 @@ const ChartSlider: React.FC<Props> = ({ controller, sparkKey, color, label }) =>
         controller.setWindow({ start: t - half, end: t + half }, "slider");
       }
       drag = { mode: mode ?? "move", x0: e.clientX, w0: { ...controller.window }, width: box.width };
+      controller.beginGesture(); // no requests until the drag ends (lib/chartController)
     };
     const move = (e: PointerEvent) => {
       if (!drag) return;
@@ -106,12 +107,18 @@ const ChartSlider: React.FC<Props> = ({ controller, sparkKey, color, label }) =>
       else if (drag.mode === "l") controller.setWindow({ start: Math.min(w0.start + dt, w0.end - MIN_RANGE_MS), end: w0.end }, "slider", "end");
       else controller.setWindow({ start: w0.start, end: Math.max(w0.end + dt, w0.start + MIN_RANGE_MS) }, "slider", "start");
     };
-    const up = () => { drag = null; };
+    const up = () => {
+      if (!drag) return;
+      drag = null;
+      controller.endGesture();
+    };
     el.addEventListener("pointerdown", down);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+    el.addEventListener("lostpointercapture", up);
     return () => {
+      el.removeEventListener("lostpointercapture", up);
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);

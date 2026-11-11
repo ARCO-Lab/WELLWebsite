@@ -16,7 +16,10 @@
 // - drag pans; Shift + drag selects a span to zoom to.
 // - touch: one finger scrolls the page (a tap shows the tooltip); two fingers pinch to zoom and move to pan.
 // - keyboard, once the chart has focus: ← → pan, + − zoom, 0 resets.
-// Redraws happen at most once per frame; data is asked for once the window has been still for a moment.
+// The chart redraws at a pace its own redraw cost allows (lib/chartController), once per turn for new data and the
+// window together. During a gesture the min-max bands are hidden (they double the cost of a redraw) and requests
+// wait for its end. Screen readers get the chart's description and, from the toolbar, the window once it settles,
+// rather than a description of every point (pointDescriptionEnabledThreshold), which made each redraw twice as slow.
 
 import React, { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import Highcharts from 'highcharts';
@@ -28,7 +31,7 @@ import ChartToolbar from '@/components/graphs/ChartToolbar';
 import ChartSlider from '@/components/graphs/ChartSlider';
 import { useChartWindow } from '@/hooks/useChartWindow';
 import type { ChartController, ChartSnapshot, ComposedData } from '@/lib/chartController';
-import { RAW_S } from '@/lib/seriesTiles';
+import { POINTS_PER_PX, POINTS_PER_PX_PHONE, RAW_S } from '@/lib/seriesTiles';
 import { MIN_RANGE_MS, TIME_ZONE, bucketSpanLabel, shortBucket, valueDecimals, type PointInfo } from '@/utils/chartWindow';
 import { UNITS, aggOf, compassLabel, measurementColor, seriesNote, seriesType, type Agg } from '@/utils/chartStyle';
 
@@ -44,6 +47,7 @@ export interface MetricChartProps {
 
 const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
+const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
 
 // What a series is, for the tooltip and legend.
 interface SeriesInfo { measurement: string; unit: string; agg: Agg; note?: string }
@@ -163,6 +167,9 @@ function buildOptions(props: MetricChartProps, keys: string[], controller: Chart
     accessibility: {
       description: `${title}. Use the buttons above the chart, or the arrow, plus and minus keys, to move and zoom.`,
       keyboardNavigation: { enabled: false }, // the chart's own keys (see above) move and zoom it
+      // No hidden description per point: the chart is described as a whole, and the toolbar announces its window
+      series: { pointDescriptionEnabledThreshold: 1 },
+      point: { describeNull: false },
     },
     legend: {
       enabled: shown.length > 1 || shown.some((s) => (s.custom as SeriesInfo).note),
@@ -224,12 +231,15 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   const windowEmpty = useChartValue(controller, (s) => s.windowEmpty && s.shownBucket !== null && !s.loading);
   const noData = useChartValue(controller, (s) => s.hasData === false);
 
-  // Data and window into the chart
+  // Data and window into the chart: data is set without drawing, and the paced redraw (onRedraw, right after) draws
+  // it and the window in one go.
   useEffect(() => {
     const chart = chartRef.current?.chart;
     if (!chart) return;
     let pointRange = 0;
+    let dirty = false;
     const apply = (d: ComposedData) => {
+      dirty = true;
       chart.tooltip?.hide(0); // it would describe points that are no longer there
       for (const key of keys) {
         const s = chart.get(key) as Highcharts.Series | undefined;
@@ -258,21 +268,47 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         }
       }
       pointRange = (d.shownBucket ?? RAW_S) * 1000;
-      chart.redraw(false);
     };
     const place = (w: { start: number; end: number }) => {
       const axis = chart.xAxis[0];
       if (Math.abs((axis.min ?? 0) - w.start) > 1 || Math.abs((axis.max ?? 0) - w.end) > 1) {
         chart.tooltip?.hide(0);
-        axis.setExtremes(w.start, w.end, true, false);
+        axis.setExtremes(w.start, w.end, false, false);
+        dirty = true;
+      }
+      if (dirty) {
+        dirty = false;
+        chart.redraw(false);
+      }
+    };
+    // The bands go during a gesture and come back, in one redraw, when it ends (hidden-by-default series stay hidden)
+    const bands = (show: boolean) => {
+      for (const s of chart.series) {
+        if (s.type !== 'arearange') continue;
+        const line = chart.get(String(s.options.id).replace(/#band$/, '')) as Highcharts.Series | undefined;
+        const want = show && (line?.visible ?? true);
+        if (s.visible !== want) {
+          s.setVisible(want, false);
+          dirty = true;
+        }
       }
     };
     apply(controller.lastData);
     place(controller.window);
     const offData = controller.onData(apply);
-    const offFrame = controller.onFrame(place);
-    return () => { offData(); offFrame(); };
+    const offRedraw = controller.onRedraw(place);
+    const offGesture = controller.onGesture((active) => bands(!active));
+    return () => { offData(); offRedraw(); offGesture(); };
   }, [controller, keys, options]);
+
+  // About one point per pixel on phones (each costs more to draw there), 1.5 elsewhere
+  useEffect(() => {
+    const coarse = window.matchMedia?.('(pointer: coarse)');
+    const set = () => controller.setDensity(coarse?.matches || window.innerWidth < 640 ? POINTS_PER_PX_PHONE : POINTS_PER_PX);
+    set();
+    window.addEventListener('resize', set);
+    return () => window.removeEventListener('resize', set);
+  }, [controller]);
 
   // Charts off screen load after the ones on screen
   useEffect(() => {
@@ -290,6 +326,12 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     const chart = () => chartRef.current?.chart;
     let active = false; // clicked: the plain wheel zooms until the pointer leaves
     let hintTimer = 0;
+    let wheelEnd = 0;
+    const wheelGesture = () => { // a burst of wheel events is one gesture: it ends when they pause
+      controller.beginGesture();
+      window.clearTimeout(wheelEnd);
+      wheelEnd = window.setTimeout(() => controller.endGesture(), WHEEL_GESTURE_END_MS);
+    };
     const showHint = () => {
       hintRef.current?.classList.add('opacity-100');
       window.clearTimeout(hintTimer);
@@ -317,6 +359,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const w = controller.window;
       if (sideways && !ctrl) {
         e.preventDefault();
+        wheelGesture();
         const delta = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
         controller.pan(delta / Math.max(c.plotWidth, 1), 'wheel');
         return;
@@ -326,6 +369,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         return;
       }
       e.preventDefault();
+      wheelGesture();
       const factor = Math.min(2, Math.max(0.5, Math.pow(ZOOM_PER_WHEEL_PX, e.deltaY * unit)));
       const at = Math.min(Math.max(timeAt(e.clientX), w.start), w.end);
       controller.zoom(factor, at, 'wheel');
@@ -348,6 +392,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         drag.moved = true;
         el.setPointerCapture(e.pointerId);
         c.tooltip?.hide(0);
+        if (drag.mode === 'pan') controller.beginGesture();
       }
       if (drag.mode === 'pan') {
         const dt = (-dx / Math.max(c.plotWidth, 1)) * (drag.w0.end - drag.w0.start);
@@ -370,6 +415,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       if (selectRef.current) selectRef.current.style.display = 'none';
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       drag = null;
+      controller.endGesture();
     };
     const onLeave = () => { if (!drag) active = false; };
 
@@ -385,6 +431,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const w = controller.window;
       pinch = { d0: d, t0: timeAt(cx), span0: w.end - w.start };
       chart()?.tooltip?.hide(0);
+      controller.beginGesture();
     };
     const onTouchMove = (e: TouchEvent) => {
       if (!pinch || e.touches.length !== 2) return;
@@ -397,7 +444,12 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const start = pinch.t0 - share * span;
       controller.setWindow({ start, end: start + span }, 'pinch');
     };
-    const onTouchEnd = (e: TouchEvent) => { if (e.touches.length < 2) pinch = null; };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2 && pinch) {
+        pinch = null;
+        controller.endGesture();
+      }
+    };
 
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -432,6 +484,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     el.addEventListener('keydown', onKey);
     return () => {
       window.clearTimeout(hintTimer);
+      window.clearTimeout(wheelEnd);
+      controller.endGesture();
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('pointermove', onMove);

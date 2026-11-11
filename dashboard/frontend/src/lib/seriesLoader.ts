@@ -7,6 +7,8 @@
 // - neighbouring missing tiles go in one request (up to MAX_BATCH), and charts that want the same tiles at the same
 //   bucket share one request for all their series;
 // - at most MAX_IN_FLIGHT requests at a time; the rest wait in a queue, the visible charts' first;
+// - wishes are collected for BATCH_MS before anything is sent, so charts that appear together (a card of 8) send
+//   one request for their shared tiles instead of the first chart's going out alone;
 // - a chart's new wish replaces its old one: queued requests no chart wants any more are dropped before they are
 //   sent. A request already sent can't be taken back (the backend runs it anyway), so it finishes and is cached;
 // - a failed request caches nothing, so asking again retries it.
@@ -20,6 +22,7 @@ export const MAX_ENTRIES = 3000;
 export const MAX_IN_FLIGHT = 2;
 export const MAX_BATCH = 8; // tiles per request: 8 x 360 = 2,880 buckets, under the API's 4,000
 export const MAX_KEYS = 40; // series per request (the API's MAX_FILTERS)
+export const BATCH_MS = 30;
 
 export interface TileRequest { keys: string[]; bucketS: number; first: number; last: number }
 export type FetchTiles = (req: TileRequest) => Promise<ApiSeries[]>;
@@ -63,11 +66,14 @@ export class SeriesLoader {
   private fetchTiles: FetchTiles;
   private maxEntries: number;
   private maxInFlight: number;
+  private batchMs: number;
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(fetchTiles: FetchTiles, maxEntries = MAX_ENTRIES, maxInFlight = MAX_IN_FLIGHT) {
+  constructor(fetchTiles: FetchTiles, maxEntries = MAX_ENTRIES, maxInFlight = MAX_IN_FLIGHT, batchMs = 0) {
     this.fetchTiles = fetchTiles;
     this.maxEntries = maxEntries;
     this.maxInFlight = maxInFlight;
+    this.batchMs = batchMs;
   }
 
   /** `owner` (one chart's one need, e.g. "logger-1:detail") wants these series at this bucket for these tiles. This
@@ -111,7 +117,8 @@ export class SeriesLoader {
       run.push(i);
     }
     flush();
-    this.pump();
+    if (!this.batchMs) this.pump();
+    else this.batchTimer ??= setTimeout(() => { this.batchTimer = null; this.pump(); }, this.batchMs);
   }
 
   /** The owner wants nothing any more (its chart went away). */
@@ -326,6 +333,6 @@ export async function fetchFromApi(req: TileRequest): Promise<ApiSeries[]> {
 let pageLoader: SeriesLoader | null = null;
 /** The one loader every chart on the page shares. */
 export function seriesLoader(): SeriesLoader {
-  pageLoader ??= new SeriesLoader(fetchFromApi);
+  pageLoader ??= new SeriesLoader(fetchFromApi, MAX_ENTRIES, MAX_IN_FLIGHT, BATCH_MS);
   return pageLoader;
 }

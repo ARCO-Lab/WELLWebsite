@@ -57,7 +57,9 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
   const w = snap.window, ext = snap.extent, def = controller.defaultWindow;
   const atDefault = Math.abs(w.start - def.start) < 60_000 && Math.abs(w.end - def.end) < 60_000;
   const Heading = headingLevel;
-  const status = snap.error ? snap.error.message : snap.loading ? `Loading ${title} data…` : "";
+  // Announced once the window comes to rest, not on every frame of a drag
+  const status = snap.error ? `${title}: ${snap.error.message}`
+    : `${title}: ${windowLabel(snap.settled, ext.end)}, ${resolutionLabel(snap.wantedBucket, kind)}`;
   return (
     <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
       <Heading className="text-sm font-semibold text-gray-900">{title}</Heading>

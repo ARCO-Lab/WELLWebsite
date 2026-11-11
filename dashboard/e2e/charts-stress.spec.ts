@@ -3,7 +3,8 @@
 // for SLOW_MS, like a busy production server), so requests that pile up would show.
 //
 // Runs with the rest of the e2e suite (playwright.config.ts), in one browser zone only: what it checks doesn't depend
-// on the zone. A longer soak (random zooming and panning, with the JS heap checked) runs when STRESS_MINUTES is set:
+// on the zone. Performance budgets (at the end) check a slow phone too, with Chrome's CPU throttling. A longer soak
+// (random zooming and panning, with the JS heap checked) runs when STRESS_MINUTES is set:
 //   STRESS_MINUTES=5 npx playwright test charts-stress --project=toronto
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -204,5 +205,113 @@ test.describe("charts under stress", () => {
     expect(net.peak).toBeLessThanOrEqual(2);
     expect(last).toBeLessThan(Math.max(first * 2, first + 60)); // the tile cache is bounded, so the heap levels off
     expect(errors).toEqual([]);
+  });
+});
+
+// ---- Performance budgets: smooth enough on a slow phone, not only on a fast desktop ----
+// CPU throttling (Chrome DevTools' "4x slowdown") stands in for a low-end phone. The measures:
+// - long tasks: main-thread work over 50 ms (PerformanceObserver "longtask"), which delays input and frames;
+// - frame times: gaps between animation frames while a gesture runs.
+
+async function cpu(page: Page, rate: number) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate });
+  return cdp;
+}
+
+/** Start recording long tasks and frame gaps in the page; the returned function stops and reports them. */
+async function record(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __perf: { long: number[]; frames: number[]; on: boolean } };
+    w.__perf = { long: [], frames: [], on: true };
+    new PerformanceObserver((list) => {
+      if (w.__perf.on) for (const e of list.getEntries()) w.__perf.long.push(e.duration);
+    }).observe({ type: "longtask", buffered: false });
+    let last = performance.now();
+    const tick = (t: number) => {
+      if (!w.__perf.on) return;
+      w.__perf.frames.push(t - last);
+      last = t;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  return async () => page.evaluate(() => {
+    const w = window as unknown as { __perf: { long: number[]; frames: number[]; on: boolean } };
+    w.__perf.on = false;
+    const frames = [...w.__perf.frames].sort((a, b) => a - b);
+    return {
+      longTotal: w.__perf.long.reduce((a, b) => a + b, 0),
+      longCount: w.__perf.long.length,
+      p95: frames[Math.floor(frames.length * 0.95)] ?? 0,
+      frames: frames.length,
+    };
+  });
+}
+
+test.describe("chart performance budgets", () => {
+  test.beforeEach(({}, testInfo) => {
+    test.skip(testInfo.project.name !== "toronto", "the same in every zone");
+  });
+
+  test("80 Ctrl+wheel events at full speed: under 500 ms of long tasks", async ({ page }) => {
+    await open(page);
+    const logger = chart(page, "logger-2577531");
+    await at(logger, 0.5);
+    const stop = await record(page);
+    await ctrlWheelBurst(logger, 0.6, 60, 80);
+    await page.waitForTimeout(500);
+    const m = await stop();
+    console.log(`[perf] wheel burst, 1x: long tasks ${m.longCount} totalling ${m.longTotal.toFixed(0)} ms, frame p95 ${m.p95.toFixed(0)} ms`);
+    expect(m.longTotal).toBeLessThan(500);
+  });
+
+  test("a slider drag at 4x CPU sends at most 2 requests", async ({ page }) => {
+    const { net } = await open(page);
+    const logger = chart(page, "logger-2577531");
+    // Zoom in first, so the drag crosses many tiles
+    await ctrlWheelBurst(logger, 0.5, -60, 30);
+    await settled(page, net);
+    await cpu(page, 4);
+    const n0 = net.requests.length;
+    const handle = logger.getByTestId("chart-slider-window");
+    await handle.scrollIntoViewIfNeeded();
+    const box = (await handle.boundingBox())!;
+    const x0 = box.x + box.width / 2, y = box.y + box.height / 2;
+    const stop = await record(page);
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    for (let i = 0; i < 120; i++) {
+      await page.mouse.move(x0 - i * 2, y);
+      await page.waitForTimeout(16);
+    }
+    await page.mouse.up();
+    const m = await stop();
+    await settled(page, net);
+    console.log(`[perf] slider drag, 4x: ${net.requests.length - n0} requests, frame p95 ${m.p95.toFixed(0)} ms, long tasks ${m.longCount}`);
+    expect(net.requests.length - n0).toBeLessThanOrEqual(2);
+  });
+
+  test.describe("on a phone", () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+
+    test("a two-finger pinch at 4x CPU keeps frames under 120 ms (p95)", async ({ page }) => {
+      await open(page);
+      const logger = chart(page, "logger-2577531");
+      const p = await at(logger, 0.5, 0.35);
+      const cdp = await cpu(page, 4);
+      const touch = (type: string, spread: number) => cdp.send("Input.dispatchTouchEvent", {
+        type,
+        touchPoints: type === "touchEnd" ? [] : [{ x: p.x - spread, y: p.y, id: 1 }, { x: p.x + spread, y: p.y, id: 2 }],
+      });
+      const stop = await record(page);
+      await touch("touchStart", 30);
+      for (let i = 0; i < 40; i++) { await touch("touchMove", 30 + i * 3); await page.waitForTimeout(16); } // pinch out: zoom in
+      for (let i = 0; i < 40; i++) { await touch("touchMove", 150 - i * 3); await page.waitForTimeout(16); } // and back
+      await touch("touchEnd", 0);
+      const m = await stop();
+      console.log(`[perf] pinch, 4x: frame p95 ${m.p95.toFixed(0)} ms over ${m.frames} frames, long tasks ${m.longCount} totalling ${m.longTotal.toFixed(0)} ms`);
+      expect(m.p95).toBeLessThan(120);
+    });
   });
 });

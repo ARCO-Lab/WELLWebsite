@@ -3,19 +3,27 @@
 // or Highcharts here (hooks/useChartWindow.ts and components/graphs/highcharts/MetricChart.tsx wire it up), so
 // scripts/seriesLoader.test.mjs can drive it with plain Node.
 //
-// Moving the window (wheel, drag, slider, keys, buttons) is drawn at once, at most once per frame, from the tiles
-// already cached: coarse data where nothing finer is loaded yet, so the chart is never blank. Only once the window
-// has stayed put for DEBOUNCE_MS does the chart ask for the tiles its new window needs, so a burst of 80 wheel
-// events or a slider drag ends in one request, not 80.
+// Moving the window (wheel, drag, slider, keys, buttons) is drawn from the tiles already cached: coarse data where
+// nothing finer is loaded yet, so the chart is never blank. Cheap things (the slider's window, the dates above the
+// chart) follow every frame; the chart itself is redrawn at a pace set by what its last redraw cost (a redraw takes
+// 10-30 ms on a desktop but 100-500 ms on a slow phone, so redrawing every frame there would freeze the page).
+//
+// Requests wait until the window has settled. A gesture (a drag, a pinch, a burst of wheel events; see
+// beginGesture) holds them until it ends, however slow its frames are, except that a gesture longer than
+// MAX_WAIT_MS fetches the window it is on, every MAX_WAIT_MS. Single steps (keys, buttons) wait DEBOUNCE_MS. So a
+// burst of 80 wheel events or a slider drag ends in one request, not 80.
 
 import { MIN_RANGE_MS, type Range } from "../utils/chartWindow.ts";
 import type { SeriesLoader, SeriesMeta } from "./seriesLoader.ts";
 import {
   LADDER, bucketFor, coarsestIn, composeSeries, segmentsFor, typicalFor, tilesFor, type ComposedPoint, type Segment,
-  type TileSeries, type Typical,
+  POINTS_PER_PX, type TileSeries, type Typical,
 } from "./seriesTiles.ts";
 
 export const DEBOUNCE_MS = 250;
+export const MAX_WAIT_MS = 1500; // a gesture this long fetches the tiles of the window it is on, without waiting for its end
+export const GESTURE_IDLE_MS = 3000; // a gesture with no movement for this long is taken as ended (a lost pointerup)
+export const PACE = 1.5; // the next chart redraw starts this many times the last one's cost after it ended
 export const PAD_FRACTION = 0.5; // tiles for half a window on each side are fetched too, after the window's own
 // The bucket every chart's overview (the slider's line, and what shows before finer tiles arrive) is drawn at: the
 // whole history in two daily tiles, the same for every chart, so all charts share them.
@@ -32,6 +40,7 @@ export interface ChartSnapshot {
   error: Error | null;
   hasData: boolean | null; // whether any of the chart's series has a reading at all (null: don't know yet)
   windowEmpty: boolean; // nothing drawn inside the window
+  settled: Range; // the window as of the last time it came to rest (for screen readers: announced once, not per frame)
 }
 
 /** Whether any point with a value lies in [w.start, w.end); points are in time order. */
@@ -57,6 +66,8 @@ const defaultFrame: Scheduler = (cb) => {
   else setTimeout(cb, 16);
 };
 
+const now = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
 export function clampWindow(w: Range, extent: Range, keep: "center" | "start" | "end" = "center"): Range {
   const total = extent.end - extent.start;
   const span = Math.min(Math.max(w.end - w.start, MIN_RANGE_MS), total);
@@ -77,8 +88,18 @@ export class ChartController {
   private snap: ChartSnapshot;
   private frameQueued = false;
   private debounce: ReturnType<typeof setTimeout> | null = null;
+  private maxWait: ReturnType<typeof setTimeout> | null = null;
+  private gestureActive = false;
+  private lastMove = 0;
+  private density = POINTS_PER_PX;
+  private settledWin: Range;
+  private paceQueued = false;
+  private lastCost = 0;
+  private lastEnd = 0;
   private listeners = new Set<() => void>();
   private frameListeners = new Set<(w: Range) => void>();
+  private redrawListeners = new Set<(w: Range) => void>();
+  private gestureListeners = new Set<(active: boolean) => void>();
   private dataListeners = new Set<(d: ComposedData) => void>();
   private windowListeners = new Set<(w: Range, reason: WindowReason) => void>();
   private typicals = new Map<string, { size: number; value: Typical }>();
@@ -107,7 +128,8 @@ export class ChartController {
     this.ext = extent;
     this.defaultWin = clampWindow(defaultWindow, extent);
     this.win = this.defaultWin;
-    this.wantB = bucketFor(this.win.end - this.win.start, this.width);
+    this.settledWin = this.win;
+    this.wantB = bucketFor(this.win.end - this.win.start, this.width, this.density);
     this.snap = this.makeSnapshot();
   }
 
@@ -124,12 +146,24 @@ export class ChartController {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
   };
-  /** Called once per frame in which the window moved, with the window to draw. */
+  /** Called once per frame in which the window moved, with the window: for cheap updates (the slider's window). */
   onFrame(cb: (w: Range) => void): () => void {
     this.frameListeners.add(cb);
     return () => this.frameListeners.delete(cb);
   }
-  /** Called with new points whenever what is drawn changes (tiles arrived, or a finer bucket is wanted). */
+  /** Called when the chart should redraw, at a pace its own cost allows, with the window to show. Data listeners run
+   *  just before, in the same turn, so one redraw covers both. */
+  onRedraw(cb: (w: Range) => void): () => void {
+    this.redrawListeners.add(cb);
+    return () => this.redrawListeners.delete(cb);
+  }
+  /** Called when a gesture starts (true) and ends (false). */
+  onGesture(cb: (active: boolean) => void): () => void {
+    this.gestureListeners.add(cb);
+    return () => this.gestureListeners.delete(cb);
+  }
+  /** Called with new points whenever what is drawn changes (tiles arrived, or a finer bucket is wanted); with
+   *  setData(..., false) style updates in mind: the redraw comes from onRedraw right after. */
   onData(cb: (d: ComposedData) => void): () => void {
     this.dataListeners.add(cb);
     return () => this.dataListeners.delete(cb);
@@ -147,9 +181,48 @@ export class ChartController {
     const next = clampWindow(w, this.ext, keep);
     if (next.start === this.win.start && next.end === this.win.end) return;
     this.win = next;
+    this.lastMove = now();
     for (const cb of this.windowListeners) cb(next, reason);
     this.scheduleFrame();
+    if (!this.gestureActive) this.requestSoon(true);
+  }
+
+  /** A continuous gesture starts (pointer or touch down, the first of a burst of wheel events): no requests until
+   *  endGesture, apart from the window's own tiles every MAX_WAIT_MS if it goes on that long. */
+  beginGesture(): void {
+    if (this.gestureActive) return;
+    this.gestureActive = true;
+    this.lastMove = now();
+    if (this.debounce) clearTimeout(this.debounce);
+    this.debounce = null;
+    this.armMaxWait();
+    for (const cb of this.gestureListeners) cb(true);
+  }
+
+  endGesture(): void {
+    if (!this.gestureActive) return;
+    this.gestureActive = false;
+    if (this.maxWait) clearTimeout(this.maxWait);
+    this.maxWait = null;
     this.requestSoon(true);
+    for (const cb of this.gestureListeners) cb(false);
+    this.schedulePaced();
+  }
+
+  get inGesture(): boolean { return this.gestureActive; }
+
+  private armMaxWait(): void {
+    if (this.maxWait) clearTimeout(this.maxWait);
+    this.maxWait = setTimeout(() => {
+      this.maxWait = null;
+      if (!this.gestureActive) return;
+      if (now() - this.lastMove >= GESTURE_IDLE_MS) { // nothing has moved for a while: its end was lost
+        this.endGesture();
+        return;
+      }
+      this.request(true);
+      this.armMaxWait();
+    }, MAX_WAIT_MS);
   }
 
   // Ask once things have been still for debounceMs. `restart`: a new change, so wait again from now.
@@ -204,7 +277,14 @@ export class ChartController {
   setPlotWidth(px: number): void {
     if (!(px > 0) || px === this.width) return;
     this.width = px;
-    if (bucketFor(this.win.end - this.win.start, px) !== this.wantB) this.requestSoon(false);
+    if (!this.gestureActive && bucketFor(this.win.end - this.win.start, px, this.density) !== this.wantB) this.requestSoon(false);
+  }
+
+  /** Points per pixel of plot width to aim for (about 1 on phones, where every point costs more to draw). */
+  setDensity(pointsPerPx: number): void {
+    if (!(pointsPerPx > 0) || pointsPerPx === this.density) return;
+    this.density = pointsPerPx;
+    this.requestSoon(false);
   }
 
   /** Charts off screen ask for their tiles after the ones on screen. */
@@ -223,6 +303,9 @@ export class ChartController {
     this.disposed = true;
     if (this.debounce) clearTimeout(this.debounce);
     this.debounce = null;
+    if (this.maxWait) clearTimeout(this.maxWait);
+    this.maxWait = null;
+    this.gestureActive = false;
     for (const part of ["overview", "window", "around"]) this.loader.release(this.owner(part));
   }
 
@@ -242,28 +325,36 @@ export class ChartController {
 
   private owner(part: string): string { return `${this.id}:${part}`; }
 
-  /** Ask the loader for the overview tiles, the window's tiles and (after those) the tiles around it. */
-  request(): void {
+  /** Ask the loader for the overview tiles, the window's tiles and (after those) the tiles around it; with
+   *  `windowOnly` (the middle of a long gesture), only the window's. */
+  request(windowOnly = false): void {
     if (this.disposed) return;
     const w = this.win, span = w.end - w.start;
-    this.wantB = bucketFor(span, this.width);
-    const changed = () => this.dataChanged();
+    this.wantB = bucketFor(span, this.width, this.density);
     const keys = this.keys;
     const near = this.visible ? 0 : 2;
-    this.loader.want(this.owner("overview"), keys, OVERVIEW_BUCKET, tilesFor(this.ext, OVERVIEW_BUCKET), near + 1, changed);
     const fine = this.wantB < OVERVIEW_BUCKET;
     const inWindow = fine ? tilesFor(w, this.wantB) : [];
-    this.loader.want(this.owner("window"), keys, this.wantB, inWindow, near, changed);
+    this.loader.want(this.owner("window"), keys, this.wantB, inWindow, near, () => this.dataChanged(true));
+    if (windowOnly) {
+      this.updateSnapshot();
+      return;
+    }
+    this.settledWin = w;
+    const changed = () => this.dataChanged(false);
+    this.loader.want(this.owner("overview"), keys, OVERVIEW_BUCKET, tilesFor(this.ext, OVERVIEW_BUCKET), near + 1, changed);
     const around = fine
       ? tilesFor({ start: Math.max(this.ext.start, w.start - span * PAD_FRACTION), end: Math.min(this.ext.end, w.end + span * PAD_FRACTION) }, this.wantB)
           .filter((i) => !inWindow.includes(i))
       : [];
     this.loader.want(this.owner("around"), keys, this.wantB, around, near + 2, changed);
-    this.dataChanged();
+    this.dataChanged(true);
   }
 
-  private dataChanged(): void {
-    this.compose();
+  // Tiles arrived. The window's own are drawn at the next paced redraw; others (the history, the tiles around) are
+  // left for the end of a gesture, so arriving data doesn't add redraws to a slow drag.
+  private dataChanged(forWindow: boolean): void {
+    if (forWindow || !this.gestureActive) this.schedulePaced();
     this.updateSnapshot();
   }
 
@@ -303,7 +394,7 @@ export class ChartController {
     const levels: { bucketS: number; tiles: number[] }[] = [];
     // Down to what the window needs now, not what was last asked for: finer tiles already cached are drawn while
     // the window is still moving, before it settles and asks.
-    const finest = bucketFor(span, this.width);
+    const finest = bucketFor(span, this.width, this.density);
     for (let n = LADDER.length - 1; n >= 0; n--) {
       const b = LADDER[n];
       if (b < finest) break;
@@ -345,6 +436,7 @@ export class ChartController {
       error,
       hasData,
       windowEmpty: ![...this.lastData.series.values()].some((pts) => hasPointIn(pts, this.win)),
+      settled: this.settledWin,
     };
   }
 
@@ -353,11 +445,12 @@ export class ChartController {
     const s = this.snap;
     if (s.window === next.window && s.extent === next.extent && s.shownBucket === next.shownBucket
       && s.wantedBucket === next.wantedBucket && s.loading === next.loading && s.error === next.error
-      && s.hasData === next.hasData && s.windowEmpty === next.windowEmpty) return;
+      && s.hasData === next.hasData && s.windowEmpty === next.windowEmpty && s.settled === next.settled) return;
     this.snap = next;
     for (const cb of this.listeners) cb();
   }
 
+  // Every frame the window moved in: the cheap listeners, and a paced redraw
   private scheduleFrame(): void {
     if (this.frameQueued) return;
     this.frameQueued = true;
@@ -365,8 +458,31 @@ export class ChartController {
       this.frameQueued = false;
       if (this.disposed) return;
       for (const cb of this.frameListeners) cb(this.win);
-      this.compose(); // finer tiles already cached for where the window went
       this.updateSnapshot();
+      this.schedulePaced();
     });
+  }
+
+  // The chart's redraw: not before PACE times the last one's cost has passed since it ended, so a slow device spends
+  // most of its time handling input rather than redrawing (the chart catches up a few times a second instead of
+  // freezing).
+  private schedulePaced(): void {
+    if (this.paceQueued || this.disposed) return;
+    this.paceQueued = true;
+    const go = () => this.frame(() => this.runPaced());
+    const wait = this.lastEnd + this.lastCost * PACE - now();
+    if (wait > 4) setTimeout(go, wait);
+    else go();
+  }
+
+  private runPaced(): void {
+    this.paceQueued = false;
+    if (this.disposed) return;
+    const t = now();
+    this.compose(); // finer tiles already cached for where the window went, and tiles that arrived
+    for (const cb of this.redrawListeners) cb(this.win);
+    this.updateSnapshot();
+    this.lastEnd = now();
+    this.lastCost = this.lastEnd - t;
   }
 }
