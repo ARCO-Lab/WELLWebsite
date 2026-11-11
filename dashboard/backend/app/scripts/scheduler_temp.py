@@ -1,10 +1,12 @@
 # This script runs the worker's scheduled jobs: vendor API ingestion every 10 minutes, the weekly
 # Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
-# month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily).
+# month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily),
+# followed by the same month's upload to SharePoint when SHAREPOINT_* is set (scripts/sharepoint_upload.py), with
+# its own record of months, so either copy can fail and be retried without the other.
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
-# pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload and digest
-# (utils/heartbeat.py). After every ingestion run it checks for sensor and vendor problems and emails new ones
-# (scripts/check_alerts.py).
+# pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload (Borealis and
+# SharePoint each have their own) and digest (utils/heartbeat.py). After every ingestion run it checks for
+# sensor and vendor problems and emails new ones (scripts/check_alerts.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
 # When SENTRY_DSN is set, every failure it logs is also reported to Sentry, tagged with the job (utils/sentry.py).
@@ -33,6 +35,7 @@ from utils.jobs import (  # noqa: E402
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
 )
 from utils.heartbeat import ping_heartbeat  # noqa: E402
+from utils import sharepoint  # noqa: E402
 import check_alerts  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
@@ -46,6 +49,9 @@ uploaded_months_path = "logs/uploaded_months.json"
 # The first month the scheduler uploads; earlier months are never sent (they went up, or didn't, before
 # uploads were recorded). Override with BOREALIS_UPLOAD_FIRST_MONTH=YYYY-MM.
 UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
+# The same for the SharePoint copy, which has its own record. Override with SHAREPOINT_UPLOAD_FIRST_MONTH=YYYY-MM.
+sharepoint_uploaded_months_path = "logs/sharepoint_uploaded_months.json"
+SHAREPOINT_FIRST_MONTH = os.getenv("SHAREPOINT_UPLOAD_FIRST_MONTH", UPLOAD_FIRST_MONTH)
 
 # Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
 # (the container's clock).
@@ -164,33 +170,44 @@ def run_download_data():
         capture_job_error(e)
         return None
 
-def run_upload_data(year, month):
-    """Run upload_data.py for one month. True only if it exited 0 and reported the file as uploaded."""
+def run_upload_script(script, year, month):
+    """Run an upload script (scripts/<script>) for one month. True only if it exited 0 and reported the file as
+    uploaded."""
     try:
-        cmd = [sys.executable, "scripts/upload_data.py", "--year", str(year), "--month", str(month)]
+        cmd = [sys.executable, f"scripts/{script}", "--year", str(year), "--month", str(month)]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
         result = run_bounded(cmd, UPLOAD_TIMEOUT_S)
-        timestamped_print_upload(f"upload_data.py stdout: {result.stdout}")
+        timestamped_print_upload(f"{script} stdout: {result.stdout}")
         if result.stderr:
-            timestamped_print_upload(f"upload_data.py stderr: {result.stderr}")
+            timestamped_print_upload(f"{script} stderr: {result.stderr}")
         if "Successfully uploaded" not in result.stdout:
-            timestamped_print_upload("[ERROR] upload_data.py finished but didn't report an upload")
+            timestamped_print_upload(f"[ERROR] {script} finished but didn't report an upload")
             return False
-        timestamped_print_upload("Success: upload_data.py completed")
+        timestamped_print_upload(f"Success: {script} completed")
         return True
     except subprocess.TimeoutExpired as e:
-        timestamped_print_upload(f"[ERROR] upload_data.py was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_upload(f"[ERROR] {script} was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
         capture_job_error(e)
-        timestamped_print_upload(f"upload_data.py stdout so far: {e.stdout}")
+        timestamped_print_upload(f"{script} stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
-        timestamped_print_upload(f"[ERROR] upload_data.py failed with exit code {e.returncode}: {e}")
+        timestamped_print_upload(f"[ERROR] {script} failed with exit code {e.returncode}: {e}")
         capture_job_error(e)
-        timestamped_print_upload(f"upload_data.py stdout: {e.stdout}")
-        timestamped_print_upload(f"upload_data.py stderr: {e.stderr}")
+        timestamped_print_upload(f"{script} stdout: {e.stdout}")
+        timestamped_print_upload(f"{script} stderr: {e.stderr}")
     except Exception as e:
-        timestamped_print_upload(f"[ERROR] Unexpected error running upload_data.py: {e}")
+        timestamped_print_upload(f"[ERROR] Unexpected error running {script}: {e}")
         capture_job_error(e)
     return False
+
+
+def run_upload_data(year, month):
+    """Upload one month to Borealis (scripts/upload_data.py)."""
+    return run_upload_script("upload_data.py", year, month)
+
+
+def run_sharepoint_upload(year, month):
+    """Upload one month to SharePoint (scripts/sharepoint_upload.py)."""
+    return run_upload_script("sharepoint_upload.py", year, month)
 
 def download_job():
     """Weekly job: download and import any new Borealis sampling files."""
@@ -200,41 +217,69 @@ def download_job():
     ping_heartbeat("download", "success" if ok else "fail")
     timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
-def upload_job(year, month):
-    """Upload one month's sensor data to Borealis. True if it succeeded."""
-    timestamped_print_upload(f"========== UPLOAD JOB STARTED ({month_key(year, month)}) ==========")
-    ok = run_upload_data(year, month)
-    timestamped_print_upload(f"========== UPLOAD JOB {'COMPLETED' if ok else 'FAILED'} ==========")
+def upload_job(year, month, target="Borealis", run=None):
+    """Upload one month's sensor data to `target` with `run` (default run_upload_data). True if it succeeded."""
+    run = run or run_upload_data
+    timestamped_print_upload(f"========== {target.upper()} UPLOAD JOB STARTED ({month_key(year, month)}) ==========")
+    ok = run(year, month)
+    timestamped_print_upload(f"========== {target.upper()} UPLOAD JOB {'COMPLETED' if ok else 'FAILED'} ==========")
     return ok
 
-def monthly_upload_check():
-    """Runs every hour and acts only at 02:00 Toronto time. It uploads, oldest first, each month from
-    UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
-    goes up. So a missed slot (the worker was down) or a failed upload is retried the next day, a month that
-    went up is never sent again, and errors are logged once a day, not every hour."""
-    now = datetime.now(SITE_TZ)
-    if now.hour != UPLOAD_HOUR:
-        return
+
+def upload_due_months(now, target, record_path, first_month_text, first_month_setting, run, heartbeat):
+    """Upload, oldest first, each month from `first_month_text` on that has ended and isn't recorded in
+    `record_path`, and record each one that goes up. Pings the `heartbeat` check once if anything was due."""
     try:
-        first_month = parse_month_key(UPLOAD_FIRST_MONTH)
-        uploaded = load_uploaded_months(uploaded_months_path)
+        first_month = parse_month_key(first_month_text)
+        uploaded = load_uploaded_months(record_path)
     except Exception as e:
-        timestamped_print_upload(f"[ERROR] Not uploading: {type(e).__name__}: {e} "
-                                 f"(check BOREALIS_UPLOAD_FIRST_MONTH and {uploaded_months_path})")
+        timestamped_print_upload(f"[ERROR] Not uploading to {target}: {type(e).__name__}: {e} "
+                                 f"(check {first_month_setting} and {record_path})")
         capture_job_error(e)
-        ping_heartbeat("upload", "fail")
+        ping_heartbeat(heartbeat, "fail")
         return
     due = months_due_for_upload(now, uploaded, first_month)
     failed = 0
     for year, month in due:
-        if upload_job(year, month):
-            record_uploaded_month(uploaded_months_path, year, month)
-            timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {uploaded_months_path}")
+        if upload_job(year, month, target, run):
+            record_uploaded_month(record_path, year, month)
+            timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {record_path}")
         else:
             failed += 1
-            timestamped_print_upload(f"{month_key(year, month)} was not uploaded; trying again tomorrow at 02:00")
+            timestamped_print_upload(f"{month_key(year, month)} was not uploaded to {target}; "
+                                     f"trying again tomorrow at 02:00")
     if due:   # the upload check expects one ping a month, so days with nothing to upload don't ping
-        ping_heartbeat("upload", "fail" if failed else "success")
+        ping_heartbeat(heartbeat, "fail" if failed else "success")
+
+
+def sharepoint_upload_check(now):
+    """The SharePoint copy of each month, after the Borealis one. Does nothing while no SHAREPOINT_* setting is
+    set; with some but not all, logs which are missing and reports a failure (once a day, at 02:00)."""
+    state, missing = sharepoint.status()
+    if state == "off":
+        return
+    if state == "incomplete":
+        error = RuntimeError(f"SharePoint settings incomplete: {', '.join(missing)} not set")
+        timestamped_print_upload(f"[ERROR] Not uploading to SharePoint: {error}")
+        capture_job_error(error)
+        ping_heartbeat("sharepoint", "fail")
+        return
+    upload_due_months(now, "SharePoint", sharepoint_uploaded_months_path, SHAREPOINT_FIRST_MONTH,
+                      "SHAREPOINT_UPLOAD_FIRST_MONTH", run_sharepoint_upload, "sharepoint")
+
+
+def monthly_upload_check():
+    """Runs every hour and acts only at 02:00 Toronto time. It uploads to Borealis, oldest first, each month from
+    UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
+    goes up; then does the same for SharePoint (sharepoint_upload_check). So a missed slot (the worker was down) or
+    a failed upload is retried the next day, a month that went up is never sent again, and errors are logged once
+    a day, not every hour."""
+    now = datetime.now(SITE_TZ)
+    if now.hour != UPLOAD_HOUR:
+        return
+    upload_due_months(now, "Borealis", uploaded_months_path, UPLOAD_FIRST_MONTH, "BOREALIS_UPLOAD_FIRST_MONTH",
+                      run_upload_data, "upload")
+    sharepoint_upload_check(now)
 
 def digest_hour():
     """DIGEST_HOUR as an hour 0-23 other than 1 and 2 (the DST hours). ValueError otherwise."""
@@ -343,7 +388,8 @@ if __name__ == "__main__":
     scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
 
     print("Schedule: API injection every 10 minutes, each followed by the alert check; Borealis download Sundays 00:00; "
-          "Borealis upload at 02:00 Toronto time of each ended month not yet uploaded; "
+          "Borealis upload (then SharePoint, if configured) at 02:00 Toronto time of each ended month not yet "
+          "uploaded; "
           f"daily digest at {DIGEST_HOUR}:00 Toronto time.")
     timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
                                "run `python scripts/download_data.py` by hand to fetch now.")
@@ -352,6 +398,12 @@ if __name__ == "__main__":
                              "is uploaded (so last month goes up on the 1st, and a failed month is retried daily). "
                              "Nothing runs at startup; run `python scripts/upload_data.py --year Y --month M` by hand "
                              "to upload a month.")
+    sharepoint_state, sharepoint_missing = sharepoint.status()
+    timestamped_print_upload({
+        "off": "SharePoint copy: off (no SHAREPOINT_* settings).",
+        "on": f"SharePoint copy: on, after Borealis, each month from {SHAREPOINT_FIRST_MONTH} not recorded in "
+              f"{sharepoint_uploaded_months_path}.",
+    }.get(sharepoint_state, f"[ERROR] SharePoint copy: settings incomplete, {', '.join(sharepoint_missing)} not set."))
 
     # Catch up on vendor data right away after a restart; the Borealis jobs wait for their slots.
     api_run()
