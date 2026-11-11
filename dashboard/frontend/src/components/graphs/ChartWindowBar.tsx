@@ -15,11 +15,12 @@ import {
 
 const ChartNavigator = dynamic(() => import("@/components/graphs/ChartNavigator"), { ssr: false });
 
-const PRESETS: { label: string; aria: string; days: number | "all" }[] = [
-  { label: "1 day", aria: "Show the last day", days: 1 },
-  { label: "1 week", aria: "Show the last week", days: 7 },
-  { label: "1 month", aria: "Show the last 30 days", days: 30 },
-  { label: "All", aria: "Show all the data, since the sensors were installed", days: "all" },
+// The visible text is the button's accessible name; the title says what it does.
+const PRESETS: { label: string; title: string; days: number | "all" }[] = [
+  { label: "1 day", title: "Show 1 day, ending where this view ends", days: 1 },
+  { label: "1 week", title: "Show 1 week, ending where this view ends", days: 7 },
+  { label: "1 month", title: "Show 30 days, ending where this view ends", days: 30 },
+  { label: "All", title: "Show all the data, since the sensors were installed", days: "all" },
 ];
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -132,7 +133,7 @@ const ChartWindowBar: React.FC<Props> = ({ inModal = false, group = "weather" })
                 ? range.start <= dataStart() && !zoomed
                 : Math.abs(width - p.days * DAY_MS) < 60_000 && Math.abs(w.end - target.end) < 60_000;
               return (
-                <button key={p.label} type="button" aria-label={p.aria} aria-pressed={pressed}
+                <button key={p.label} type="button" title={p.title} aria-pressed={pressed}
                   className={`${buttonClass} aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary`}
                   onClick={() => showWindow(target)}>
                   {p.label}

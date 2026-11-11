@@ -138,17 +138,18 @@ const WeatherGraph = ({
                 // not the window's, decides: three cards side by side are each narrow)
                 <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @5xl:grid-cols-3">
                   {panels.map((p) => (
-                    <MetricChart
-                      key={p.title}
-                      title={p.title}
-                      groupType="Weather"
-                      measurements={p.measurements}
-                      height={modalOpen ? 300 : 240}
-                      modalOpen={modalOpen}
-                      showYAxis
-                      showErrorBanner={false}
-                      showBadge={false}
-                    />
+                    <div key={p.id} data-testid={`chart-weather-${p.id}`}>
+                      <MetricChart
+                        title={p.title}
+                        groupType="Weather"
+                        measurements={p.measurements}
+                        height={modalOpen ? 300 : 240}
+                        modalOpen={modalOpen}
+                        showYAxis
+                        showErrorBanner={false}
+                        showBadge={false}
+                      />
+                    </div>
                   ))}
                 </div>
               )}

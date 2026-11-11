@@ -62,27 +62,30 @@ export function compassLabel(deg: number): string {
 }
 
 // The weather station's small charts, one per unit, in this order. Each lists the measurements it can show.
-export const WEATHER_PANELS: { title: string; measurements: string[] }[] = [
-  { title: "Temperature (°C)", measurements: ["Air Temperature", "Dew Point", "Soil Temperature"] },
-  { title: "Relative humidity (%)", measurements: ["Relative Humidity"] },
-  { title: "Pressure (mbar)", measurements: ["Pressure"] },
-  { title: "Rain (mm)", measurements: ["Rain"] },
-  { title: "Wind speed (m/s)", measurements: ["Wind Speed", "Gust Speed"] },
-  { title: "Wind direction", measurements: ["Wind Direction"] },
-  { title: "Solar radiation (W/m²)", measurements: ["Solar Radiation"] },
-  { title: "Soil water content (m³/m³)", measurements: ["Water Content"] },
+// `id` is stable (tests find a chart by data-testid="chart-weather-<id>"); titles may change.
+export const WEATHER_PANELS: { id: string; title: string; measurements: string[] }[] = [
+  { id: "temperature", title: "Temperature (°C)", measurements: ["Air Temperature", "Dew Point", "Soil Temperature"] },
+  { id: "humidity", title: "Relative humidity (%)", measurements: ["Relative Humidity"] },
+  { id: "pressure", title: "Pressure (mbar)", measurements: ["Pressure"] },
+  { id: "rain", title: "Rain (mm)", measurements: ["Rain"] },
+  { id: "wind-speed", title: "Wind speed (m/s)", measurements: ["Wind Speed", "Gust Speed"] },
+  { id: "wind-direction", title: "Wind direction", measurements: ["Wind Direction"] },
+  { id: "solar-radiation", title: "Solar radiation (W/m²)", measurements: ["Solar Radiation"] },
+  { id: "soil-water", title: "Soil water content (m³/m³)", measurements: ["Water Content"] },
 ];
+
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /** The small charts for the selected weather measurements: each panel with what is selected of it, in the panels'
  *  order. A selected measurement no panel knows gets a chart of its own once the data has it (`available`: the
  *  weather measurements in the data), so filter labels that aren't measurements ("All Weather") never do. */
 export function weatherPanels(
   selected: string[], available: ReadonlySet<string> = new Set(),
-): { title: string; measurements: string[] }[] {
+): { id: string; title: string; measurements: string[] }[] {
   const known = new Set(WEATHER_PANELS.flatMap((p) => p.measurements));
   const panels = WEATHER_PANELS
-    .map((p) => ({ title: p.title, measurements: p.measurements.filter((m) => selected.includes(m)) }))
+    .map((p) => ({ id: p.id, title: p.title, measurements: p.measurements.filter((m) => selected.includes(m)) }))
     .filter((p) => p.measurements.length > 0);
-  for (const m of selected) if (!known.has(m) && available.has(m)) panels.push({ title: m, measurements: [m] });
+  for (const m of selected) if (!known.has(m) && available.has(m)) panels.push({ id: slug(m), title: m, measurements: [m] });
   return panels;
 }

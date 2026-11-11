@@ -13,9 +13,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const params = new URLSearchParams();
   if (typeof start === "string") params.append("start", start);
   if (typeof end === "string") params.append("end", end);
-  for (const s of ([] as string[]).concat(speed ?? [])) if (SPEEDS.has(s)) params.append("speed", s);
+  const speeds = ([] as string[]).concat(speed ?? []);
+  for (const s of speeds) params.append("speed", s);
 
-  if (!params.get("start") || !params.get("end")) {
+  if (!params.get("start") || !params.get("end") || speeds.some((s) => !SPEEDS.has(s))) {
     return res.status(400).json({ error: "Missing or invalid query parameters" });
   }
 

@@ -207,6 +207,7 @@ test("weather: one small chart per unit, in a fixed order", () => {
   const panels = weatherPanels(["Wind Speed", "Rain", "Air Temperature", "Gust Speed", "Soil Temperature", "Mystery",
     "All Weather"], new Set(["Mystery", "Rain"]));
   assert.deepEqual(panels.map((p) => p.title), ["Temperature (°C)", "Rain (mm)", "Wind speed (m/s)", "Mystery"]);
+  assert.deepEqual(panels.map((p) => p.id), ["temperature", "rain", "wind-speed", "mystery"]); // stable test ids
   assert.deepEqual(panels[0].measurements, ["Air Temperature", "Soil Temperature"]);
   assert.deepEqual(panels[2].measurements, ["Wind Speed", "Gust Speed"]);
   assert.deepEqual(weatherPanels([]), []);

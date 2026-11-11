@@ -12,7 +12,7 @@
 // - showWindow: a window that may reach outside the picked days (the range buttons, a shared link) moves the
 //   picked days to cover it, then zooms to it.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Lru, clampToNow, detailRange, normalizeWindow, pickBucket, pickedDaysRange, planWindow, type Range,
 } from "@/utils/chartWindow";
@@ -93,7 +93,7 @@ const GROUP_KEYS = ["weather", "quality", "gauges"] as const;
 export const UNREACHABLE = "Couldn't reach the data service. Please check your connection and try again.";
 
 /** The error to show for a failed request. The backend's own message is shown for a request it refused (4xx: e.g.
- *  a range it can't serve), since it says what to change; a server failure (5xx) shows a plain message instead of
+ *  a range it can't serve) or gave up on (504: too long to compute), since it says what to change; a server failure (5xx) shows a plain message instead of
  *  whatever the server said, which is logged to the console (and so reaches Sentry's breadcrumbs). */
 export async function errorFrom(res: Response, what = "chart data"): Promise<Error> {
   // A 404 here most likely means the data service is an older version, without this route
@@ -106,7 +106,9 @@ export async function errorFrom(res: Response, what = "chart data"): Promise<Err
   try {
     const body = await res.json();
     detail = body?.error ?? null;
-    if (detail && res.status >= 400 && res.status < 500 && res.status !== 404) message = String(detail);
+    // 504 is the backend's own "that range took too long; pick a shorter one", which the user can act on too
+    const actionable = (res.status >= 400 && res.status < 500 && res.status !== 404) || res.status === 504;
+    if (detail && actionable) message = String(detail);
   } catch {
     // keep the generic message
   }
@@ -162,10 +164,22 @@ export default function useChartSeries(
   setViewWindow: (w: Range | null) => void,
   setDays: (startDay: Date, endDay: Date, viewWindow: Range | null) => void,
 ): Omit<ChartView, "wind"> {
-  const range = useMemo(
-    () => (startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), Date.now()) : null),
-    [startDate, endDate]
-  );
+  // The hour now: the picked days end at the next whole hour (clampToNow), so a page left open moves that end on
+  // as the hours pass (the newest hour then loads on the next overview, e.g. after Reset).
+  const [hour, setHour] = useState(() => Math.floor(Date.now() / 3_600_000));
+  useEffect(() => {
+    const id = window.setInterval(() => setHour(Math.floor(Date.now() / 3_600_000)), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const rangeRef = useRef<Range | null>(null);
+  const range = useMemo(() => {
+    const r = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), hour * 3_600_000 + 1) : null;
+    // The same object while the values stay the same (past days don't change on the hour), so nothing re-runs
+    const prev = rangeRef.current;
+    if (r && prev && r.start === prev.start && r.end === prev.end) return prev;
+    rangeRef.current = r;
+    return r;
+  }, [startDate, endDate, hour]);
   const groups = GROUP_KEYS.filter((g) => activeGroups[g]).join(",");
 
   const cache = useRef(new Lru<LoadedSeries>(CACHE_ENTRIES));
@@ -318,7 +332,8 @@ export default function useChartSeries(
       return;
     }
     const plan = planWindow(w, Date.now());
-    setDays(plan.startDay, plan.endDay, plan.viewWindow);
+    // New days rebuild every chart: let React keep the page responsive meanwhile (e.g. to the next button press)
+    startTransition(() => setDays(plan.startDay, plan.endDay, plan.viewWindow));
   }, [range, zoomTo, setDays]);
 
   // Detail counts only while zoomed and when it belongs to the groups and days picked now; while a new range
