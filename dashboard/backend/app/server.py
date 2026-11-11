@@ -6,12 +6,17 @@ from flask_cors import CORS
 from api.routes import register_routes
 from api.routes.health import register_health_routes
 from db.database import db
+from db.models import check_schema
 from config import Config
 
 def create_app():
     # Create and configure the Flask app
     app = Flask(__name__)
     app.config.from_object(Config)
+    # Before serving anything: this code reads recorded_at as instants, so it must not run on the pre-0002
+    # schema, where it would show every reading time 4-5 hours off. Raises (the process doesn't start) if so.
+    check_schema(app.config.get("SQLALCHEMY_DATABASE_URI"), app.config.get("SQLALCHEMY_ENGINE_OPTIONS"),
+                 log=app.logger.warning)
     db.init_app(app)
     CORS(app)
     register_routes(app)

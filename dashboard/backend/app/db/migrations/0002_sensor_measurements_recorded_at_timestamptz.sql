@@ -29,7 +29,8 @@
 -- fail rather than wait if something still holds the table.
 --
 -- A database created after this change (db/init_db.py) already has timestamptz, so this does nothing there:
--- converting a timestamptz column with this USING expression would shift it.
+-- converting a timestamptz column with this USING expression would shift it. Any other type (or no such column)
+-- stops it with an error, changing nothing.
 --
 -- Rollback: db/migrations/down/0002_sensor_measurements_recorded_at_timestamptz.sql (its comments say how).
 SET LOCAL lock_timeout = '10s';
@@ -37,10 +38,16 @@ SET LOCAL lock_timeout = '10s';
 DO $$
 DECLARE
     skipped bigint;
+    kind text;
 BEGIN
-    IF (SELECT data_type FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = 'sensor_measurements'
-          AND column_name = 'recorded_at') = 'timestamp without time zone' THEN
+    -- The table the unqualified name resolves to (as the ALTER below), found through the search_path.
+    SELECT a.atttypid::regtype::text INTO kind FROM pg_attribute a
+    WHERE a.attrelid = to_regclass('sensor_measurements') AND a.attname = 'recorded_at' AND NOT a.attisdropped;
+    IF kind IS DISTINCT FROM 'timestamp without time zone' AND kind IS DISTINCT FROM 'timestamp with time zone' THEN
+        RAISE EXCEPTION 'sensor_measurements.recorded_at is %, expected timestamp or timestamptz; nothing was changed',
+            coalesce(kind, 'missing (no such table or column)');
+    END IF;
+    IF kind = 'timestamp without time zone' THEN
         LOCK TABLE sensor_measurements IN ACCESS EXCLUSIVE MODE;
         -- A wall time that doesn't survive the round trip to an instant and back is in a skipped hour.
         SELECT count(*) INTO skipped FROM sensor_measurements

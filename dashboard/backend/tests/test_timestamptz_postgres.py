@@ -11,7 +11,7 @@ import os
 import pathlib
 import sys
 import unittest
-from unittest import mock
+import unittest.mock
 
 from sqlalchemy import create_engine, text
 
@@ -201,6 +201,18 @@ class MigrationTests(PostgresFixture):
         saved = self.rows("SELECT value, recorded_at FROM sensor_measurements_dst_rollback")
         self.assertEqual(saved, [(99.0, instant("2026-11-01 06:30"))])
         self.assertNotIn(VERSION, [r[0] for r in self.rows("SELECT version FROM schema_migrations")])
+        # A second run is a no-op: the column is already naive, nothing more is moved or deleted.
+        with self.engine.begin() as c:
+            c.exec_driver_sql(DOWN.read_text(encoding="utf-8"), execution_options={"no_parameters": True})
+        self.assertEqual({i: t.isoformat(sep=" ") for i, t in self.stored().items()}, before)
+        self.assertEqual(self.rows("SELECT count(*) FROM sensor_measurements_dst_rollback"), [(1,)])
+
+    def test_refuses_an_unexpected_column_type(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("ALTER TABLE sensor_measurements ALTER COLUMN recorded_at TYPE date")
+        with self.assertRaisesRegex(Exception, "recorded_at is date, expected timestamp or timestamptz"):
+            self.run_migrations()
+        self.assertNotIn(VERSION, [r[0] for r in self.rows("SELECT version FROM schema_migrations")])
 
 
 @unittest.skipUnless(URL, "set TEST_POSTGRES_URL to a disposable PostgreSQL")
@@ -215,13 +227,31 @@ class ApiOnPostgresTests(PostgresFixture):
 
     def app(self):
         from config import Config
-        with mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", URL), \
-             mock.patch.object(Config, "SQLALCHEMY_ENGINE_OPTIONS", {"connect_args": {"options": self.options}},
+        with unittest.mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", URL), \
+             unittest.mock.patch.object(Config, "SQLALCHEMY_ENGINE_OPTIONS", {"connect_args": {"options": self.options}},
                                create=True):
             from server import create_app
             app = create_app()
         self.apps.append(app)   # its engine is disposed before the schema is dropped
         return app
+
+    def test_the_new_code_refuses_to_start_on_the_old_schema(self):
+        # Started before the migration, it would read every naive time as UTC: 4-5 hours off. It must not start.
+        from db.models import OldSchemaError
+        with self.assertRaisesRegex(OldSchemaError, "still timestamp without time zone.*run scripts/migrate.py"):
+            self.app()
+        self.run_migrations()
+        self.assertEqual(self.app().test_client().get("/api/latest").status_code, 200)
+
+    def test_a_naive_value_from_postgresql_raises_instead_of_being_read_as_utc(self):
+        # If the old schema is reached anyway (the check found the database unreachable at start), reads fail loudly.
+        from db.models import Instant, OldSchemaError
+        query = text("SELECT recorded_at FROM sensor_measurements LIMIT 1").columns(recorded_at=Instant)
+        with self.engine.connect() as c, self.assertRaisesRegex(OldSchemaError, "run scripts/migrate.py"):
+            c.execute(query).all()
+        self.run_migrations()
+        with self.engine.connect() as c:
+            self.assertEqual(c.execute(query).scalar().tzinfo, UTC)
 
     def test_api_strings_are_unchanged_and_the_range_is_real_time(self):
         # What the old code returned: the naive column's isoformat().
