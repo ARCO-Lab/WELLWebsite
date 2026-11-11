@@ -6,6 +6,20 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
 from datetime import datetime, timedelta, timezone
 
+class LicorReplyError(ValueError):
+    """A LI-COR reply that isn't the usual {"data": [...]}: an error or a changed format, never "no data"."""
+
+
+def page_records(body):
+    """(records, capped) from a LI-COR reply. A reply without a "data" list raises LicorReplyError instead of
+    reading as an empty page, so an error body that comes back with HTTP 200, or a changed format, fails the run
+    (and is reported) rather than looking like a quiet period with no readings."""
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        keys = sorted(body)[:10] if isinstance(body, dict) else type(body).__name__
+        raise LicorReplyError(f"LI-COR reply has no 'data' list (got {keys})")
+    return body["data"], bool(body.get("max_results"))
+
+
 class WeatherService:
     def __init__(self, api_url, api_token, logger_ids):
         # Initialize with API URL, token, and logger IDs
@@ -43,8 +57,7 @@ class WeatherService:
                 break
             time.sleep(10 * (attempt + 1))
         response.raise_for_status()
-        body = response.json()
-        return body.get("data", []), bool(body.get("max_results"))
+        return page_records(response.json())
 
     def get_weather_data(self, start_time=None, end_time=None):
         # Fetch weather data from the API, optionally for a time range
