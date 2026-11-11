@@ -5,6 +5,8 @@ volumes:
 networks:
   front:
   internal_api:
+  # Only wordpress and ops (welldash²) join it, so welldash² can check WordPress without joining front, where MySQL is.
+  wp_probe:
 
 services:
   # --- WordPress + MySQL as you had ---
@@ -34,6 +36,7 @@ services:
     restart: always
     networks:
       - front
+      - wp_probe   # so welldash² can check it
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
@@ -191,12 +194,13 @@ services:
       # 0.0.0.0 publishes it on every address the VM has.
       - "${OPS_BIND:-0.0.0.0}:${OPS_PORT:-8090}:8090"
     extra_hosts:
-      - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself; WordPress is checked on its port 8080
+      - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself
     depends_on:
       - dashboard
     restart: unless-stopped
     networks:
-      - internal_api   # to check the dashboard and the backend (not front, which WordPress shares with MySQL)
+      - internal_api   # to check the dashboard and the backend
+      - wp_probe       # to check WordPress (not front, which WordPress shares with MySQL)
     volumes:
       # Log sizes on the System page, and deploy.log if deploy.sh writes it here (README). Read-only.
       - ./dashboard/backend/app/logs:/ops/logs:ro

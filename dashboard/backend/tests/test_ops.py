@@ -260,7 +260,7 @@ class ProbeAndHelperTests(unittest.TestCase):
         self.assertEqual([t[0] for t in targets], ["dashboard", "api", "wordpress"])
         self.assertEqual(targets[1][1], "http://backend:5000/api/latest")
         self.assertEqual(targets[1][2], {"X-Welldash2-Probe": "1"})   # kept out of the traffic counts
-        self.assertEqual(targets[2][1], "http://host.docker.internal:8080/")
+        self.assertEqual(targets[2][1], "http://wordpress/")
         self.assertEqual(targets[2][2]["Host"], "well.mcmaster.ca")
         none = load_settings({**ENV, "OPS_PROBE_DASHBOARD_URL": "", "OPS_PROBE_API_URL": "",
                               "OPS_PROBE_WORDPRESS_URL": ""})

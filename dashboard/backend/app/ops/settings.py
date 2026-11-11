@@ -59,8 +59,8 @@ class Settings:
     probe_interval_s: int = 60
     probe_dashboard_url: str = "http://dashboard:8081/"
     probe_api_url: str = "http://backend:5000/api/latest"
-    # WordPress through the VM's published port, so welldash² needn't join the network WordPress shares with MySQL
-    probe_wordpress_url: str = "http://host.docker.internal:8080/"
+    # On the wp_probe network (docker-compose.yml), which only WordPress and welldash² join
+    probe_wordpress_url: str = "http://wordpress/"
     probe_wordpress_host: str = "well.mcmaster.ca"
     logs_dir: str = "/ops/logs"
     github_repo: str = "ARCO-Lab/WELLWebsite"

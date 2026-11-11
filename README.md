@@ -220,7 +220,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
 - pulls `main`;
 - rebuilds only the services whose files changed:
   - `dashboard/frontend/` → `dashboard`;
-  - `dashboard/backend/` → `backend`, `worker`, `export_worker`, and `ops` (welldash²) when it is running;
+  - `dashboard/backend/` → `backend`, `worker`, `export_worker`, and `ops` (welldash²) when it is running. A minute later `ops` is checked like the workers, but a failing `ops` is only logged ("welldash² needs a look"): it isn't public, so it never rolls the site back;
   - `docker-compose.yml` → everything;
   - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress` container is recreated, since Apache and PHP read them only at start;
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's live once pulled.
@@ -464,7 +464,7 @@ ALERT_EMAILS=someone@mcmaster.ca,someone-else@mcmaster.ca
 welldash² ("WELLdashSquared") is a small, read-only dashboard for whoever runs the site. It is reachable **only on McMaster's network or the McMaster VPN**, at **http://well.cas.mcmaster.ca:8090** (the port is `OPS_PORT`), and asks for one shared password; there is no user name. It has five pages:
 
 - **Overview**: whether the dashboard (with its data API and database) and the WordPress site answer right now; data freshness per group (the `/health/data` rules); open and recently cleared email alerts; the vendor APIs' latest call outcome; CI of `main` (GitHub Actions); recent deploys (from `deploy.log`, see below); and, when their read-only keys are set, unresolved Sentry issues of the last 24 h and the Healthchecks.io job heartbeats.
-- **Uptime**: availability over 24 h, 7 and 30 days, response time, and every stretch of downtime in the last 30 days. welldash² itself checks the dashboard's home page, the data API's `/api/latest` (which reads the database) and the WordPress home page (through port 8080) once a minute, from inside the VM. These checks aren't counted as traffic.
+- **Uptime**: availability over 24 h, 7 and 30 days, response time, and every stretch of downtime in the last 30 days. welldash² itself checks the dashboard's home page, the data API's `/api/latest` (which reads the database) and the WordPress home page once a minute, from inside the VM (WordPress over a small network of its own, `wp_probe`, so welldash² never shares a network with MySQL). These checks aren't counted as traffic.
 - **Traffic**: the data API's requests, server and client errors, p95 response time, data sent, busiest minute and CSV downloads, per hour or day and per route; plus the export jobs (by status, rows written, run times, failures, the queue now). The backend counts its requests per minute by route pattern, method and status class (`utils/traffic.py`); no IP addresses, query strings or browser details are recorded. The daily digest has a "Traffic yesterday" summary from the same numbers.
 - **System**: database version and size, the largest tables, applied migrations, and the size of each log file in `dashboard/backend/app/logs`. Container states and disk space aren't shown: they would need the Docker socket, which gives full control of the VM.
 - **Visitors**: page-view counts from [GoatCounter](https://www.goatcounter.com) when it is set up (below); otherwise "not configured".

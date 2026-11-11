@@ -204,37 +204,54 @@ site_ok() {
   if [ "$code" != 200 ]; then PROBLEM="WordPress home answered $code"; return 1; fi
 }
 
-# The rebuilt background workers serve no page (nor is welldash² checked by page: its port may be bound to the campus
-# address only), and compose restarts them when they crash (Docker even reports a restarting container as Running),
-# so a single "is it running" sample proves nothing. Instead: note each rebuilt worker's container and restart count
-# right after the rebuild...
-WORKERS=()
+# The rebuilt background workers serve no page, and compose restarts them when they crash (Docker even reports a
+# restarting container as Running), so a single "is it running" sample proves nothing. Instead: note each rebuilt
+# worker's container and restart count right after the rebuild...
+WORKERS=() OPS_WATCH=""
+container_state() { # <service>: "<service>:<container id>:<restart count>"
+  local id
+  id=$("$DOCKER" compose ps -q "$1" 2>/dev/null | head -1 || true)
+  echo "$1:$id:$("$DOCKER" inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || echo '?')"
+}
 note_workers() {
-  local s id
+  local s
   WORKERS=()
-  for s in worker export_worker ops; do
-    # welldash² (ops) is checked only when it was rebuilt by name: under ALL it may be off (its compose profile)
-    if [ "$s" = ops ]; then [[ " ${SERVICES[*]-} " == *" ops "* ]] || continue
-    else [[ " ${SERVICES[*]-} " == *" $s "* || " ${SERVICES[*]-} " == *" ALL "* ]] || continue; fi
-    id=$("$DOCKER" compose ps -q "$s" 2>/dev/null | head -1 || true)
-    WORKERS+=("$s:$id:$("$DOCKER" inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || echo '?')")
+  for s in worker export_worker; do
+    [[ " ${SERVICES[*]-} " == *" $s "* || " ${SERVICES[*]-} " == *" ALL "* ]] || continue
+    WORKERS+=("$(container_state "$s")")
   done
+  # welldash² (ops) is watched the same way when it was rebuilt by name, but only reported (ops_report): it isn't
+  # public, so it never rolls the site back, even if it was already failing before the deploy.
+  OPS_WATCH=""
+  if [[ " ${SERVICES[*]-} " == *" ops "* ]]; then OPS_WATCH=$(container_state ops); fi
 }
 # ...then, a minute after the rebuild, require each to be the same container, running, and not restarted since
-workers_ok() {
-  local w s id count now
-  [ ${#WORKERS[@]} -eq 0 ] && return 0
-  now=$(( $(date +%s) - REBUILT_AT ))
+wait_after_rebuild() {
+  local now=$(( $(date +%s) - REBUILT_AT ))
   if [ "$now" -lt "${DEPLOY_WORKER_WAIT:-60}" ]; then sleep $(( ${DEPLOY_WORKER_WAIT:-60} - now )); fi
-  for w in "${WORKERS[@]}"; do
-    IFS=: read -r s id count <<<"$w"
-    if [ -z "$id" ]; then PROBLEM="no $s container after the rebuild"; return 1; fi
-    now=$("$DOCKER" inspect -f '{{.State.Status}} {{.RestartCount}}' "$id" 2>/dev/null || echo "gone")
-    if [ "$now" != "running $count" ]; then
-      PROBLEM="the $s container didn't stay up (status and restart count: '$now', right after the rebuild: restart count $count)"
-      return 1
-    fi
-  done
+}
+stayed_up() { # "<service>:<id>:<count>" from container_state; returns 0, or sets PROBLEM and returns 1
+  local s id count now
+  IFS=: read -r s id count <<<"$1"
+  if [ -z "$id" ]; then PROBLEM="no $s container after the rebuild"; return 1; fi
+  now=$("$DOCKER" inspect -f '{{.State.Status}} {{.RestartCount}}' "$id" 2>/dev/null || echo "gone")
+  if [ "$now" != "running $count" ]; then
+    PROBLEM="the $s container didn't stay up (status and restart count: '$now', right after the rebuild: restart count $count)"
+    return 1
+  fi
+}
+workers_ok() {
+  local w
+  [ ${#WORKERS[@]} -eq 0 ] && return 0
+  wait_after_rebuild
+  for w in "${WORKERS[@]}"; do stayed_up "$w" || return 1; done
+}
+ops_report() {
+  [ -n "$OPS_WATCH" ] || return 0
+  wait_after_rebuild
+  if ! stayed_up "$OPS_WATCH"; then
+    log "welldash² needs a look: $PROBLEM. The public site is fine and the deploy is kept; see docker compose logs ops"
+  fi
 }
 
 rebuild_and_check() {  # returns 0, or sets PROBLEM and returns 1
@@ -264,6 +281,7 @@ fi
 log "deploying $summary"
 if rebuild_and_check; then
   log "deployed $(git rev-parse --short HEAD); healthy"
+  ops_report
   clear_state
   rm -f "$ROLLED_BACK" 2>/dev/null || true
   ping_health ""

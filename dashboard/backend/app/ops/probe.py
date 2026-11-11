@@ -1,8 +1,8 @@
 """welldash²'s uptime checks and housekeeping, run by a background thread of the ops service.
 
 Once a minute (OPS_PROBE_INTERVAL_S) it requests the dashboard's home page, the backend's /api/latest (which reads
-the database), and the WordPress home page (through the VM's published port 8080, with the public host name, as
-deploy.sh does), and records each answer's status and time in uptime_probes. The API check carries a header that
+the database), and the WordPress home page (on the wp_probe network, with the public host name, as deploy.sh
+does), and records each answer's status and time in uptime_probes. The API check carries a header that
 keeps it out of the traffic counts (utils/traffic.py, PROBE_HEADER). Once a day it deletes rows
 older than OPS_RETENTION_DAYS (90) from uptime_probes and request_metrics. These are welldash²'s only writes.
 """

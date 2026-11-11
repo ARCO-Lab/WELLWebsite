@@ -118,7 +118,7 @@ check "backend change, welldash² running: rebuilt with the backend, and checked
 
 sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
 OPS_RUNNING=1 BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=ops deploy
-check "welldash² crash-looping after a backend change: rolls back" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "ops container didn'"'"'t stay up" && said "healthy again"'
+check "welldash² crash-looping after a backend change: reported, but the deploy is kept" 'rc 0 && head_is_remote && said "welldash² needs a look" && said "ops container didn'"'"'t stay up" && ! said "rolling back"'
 
 sync_vm; change dashboard/backend/app/x.py; ci pending success; deploy --auto
 check "--auto, CI still running: waits, changes nothing" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && [ ! -s "$T/out" ]'
