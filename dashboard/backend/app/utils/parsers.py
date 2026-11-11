@@ -34,6 +34,19 @@ LOGGER_CONFIG = {
 }
 
 
+def reading_value(raw):
+    """A vendor reading as a finite float, or None when it can't be stored: missing (None or absent), not a
+    number ("N/A", ""), a boolean, or NaN/infinity (Python's json reads a bare NaN or Infinity). Such readings
+    are skipped rather than stored as 0, and one of them no longer fails a whole ingestion run."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def parse_weather_entry(entry, logger_id):
     # Parse a single weather data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn")
@@ -41,12 +54,15 @@ def parse_weather_entry(entry, logger_id):
     # Skip battery sensors
     if sensor_sn and sensor_sn.endswith("-B"):
         return None
+    value = reading_value(entry.get("value"))
+    if value is None:
+        return None
 
     return SensorMeasurement(
         station_id=logger_id,
         group_type="Weather",
         measurement_type=weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type")),
-        value=float(entry.get("value", 0)),
+        value=value,
         unit=entry.get("unit", ""),
         recorded_at=datetime.fromisoformat(entry.get("timestamp"))
     )
@@ -70,7 +86,9 @@ def parse_logger_entry(entry):
 
     config = LOGGER_CONFIG[base_sn]
     station_id = config["station_id"]
-    h = float(entry.get("value", 0))
+    h = reading_value(entry.get("value"))
+    if h is None:
+        return None
     recorded_at = datetime.fromisoformat(entry.get("timestamp"))
 
     if metric_suffix == '1':
@@ -93,9 +111,8 @@ def parse_quality_entry(entry, station_id):
         param_id = reading["parameterId"]
         if param_id not in QUALITY_PARAM_ID_MAP:
             continue
-        try:
-            value = float(reading["value"])
-        except (ValueError, TypeError):
+        value = reading_value(reading.get("value"))
+        if value is None:
             continue
         results.append(SensorMeasurement(
             station_id=station_id,

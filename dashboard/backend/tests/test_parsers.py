@@ -100,5 +100,43 @@ class LicorRows(unittest.TestCase):
         self.assertEqual(len(parsers.licor_rows(self.records, {"Weather"}, STATION, tz)), 2)
 
 
+class BadValues(unittest.TestCase):
+    """A reading without a usable number is skipped: never stored as 0 or NaN, and never fails the whole run."""
+    bad = (None, "", "N/A", "abc", float("nan"), float("inf"), float("-inf"), "NaN", True, [], {})
+
+    def test_reading_value(self):
+        for raw in self.bad:
+            self.assertIsNone(parsers.reading_value(raw), repr(raw))
+        self.assertEqual([parsers.reading_value(v) for v in (0, 0.0, "4.5", -1, " 2 ")], [0.0, 0.0, 4.5, -1.0, 2.0])
+
+    def test_weather_and_logger_skip_bad_values(self):
+        for raw in self.bad:
+            self.assertIsNone(parsers.parse_weather_entry(licor("21948438-1", raw), STATION), repr(raw))
+            self.assertIsNone(parsers.parse_logger_entry(licor("22168653-1", raw, kind="Sensor Depth", unit="m")), repr(raw))
+            self.assertIsNone(parsers.parse_logger_entry(licor("22168653-3", raw, kind="Water Temperature")), repr(raw))
+
+    def test_missing_value_is_skipped_not_zero(self):
+        entry = licor("21948438-1", 1.0)
+        del entry["value"]
+        self.assertIsNone(parsers.parse_weather_entry(entry, STATION))
+
+    def test_zero_is_kept(self):
+        self.assertEqual(parsers.parse_weather_entry(licor("22154091-1", 0, kind="Solar Radiation"), STATION).value, 0.0)
+
+    def test_one_bad_record_keeps_the_rest(self):
+        records = [licor("21948438-1", None), licor("22154270-1", 9.1), licor("22168653-3", float("nan")),
+                   licor("22168654-3", 4.4, kind="Water Temperature")]
+        rows = parsers.licor_rows(records, {"Weather", "Logger"}, STATION, UTC)
+        self.assertEqual(sorted((k[0], k[1]) for k in rows),
+                         [("22051538", "Soil Temperature"), ("2577532", "Water Temperature")])
+
+    def test_quality_skips_bad_and_missing_values(self):
+        entry = {"timestamp": "2026-11-09 02:00:00", "values": [
+            {"parameterId": 125001, "value": None}, {"parameterId": 125002, "value": "NaN"},
+            {"parameterId": 125004}, {"parameterId": 125008, "value": "1.5"}]}
+        rows = parsers.parse_quality_entry(entry, "4501")
+        self.assertEqual([(r.measurement_type, r.value) for r in rows], [("Turbidity", 1.5)])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,7 +67,7 @@ def check_licor(body):
             continue
         try:
             datetime.fromisoformat(r.get("timestamp"))
-            float(r.get("value"))   # ingestion would store a missing value as 0
+            float(r.get("value"))   # ingestion skips a reading without a number; a missing one here means the shape changed
         except (TypeError, ValueError):
             raise ShapeError(f"record {i} has a missing or unreadable timestamp or value")
         if r["sensor_sn"].startswith(LOGGER_PREFIX):
