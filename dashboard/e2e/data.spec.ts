@@ -17,10 +17,11 @@ const ROWS: Row[] = EXPECTED.rows;
 const NOW = new Date(EXPECTED.browser_now_utc);
 const LOGGER_NAMES: Record<string, string> = { "2577531": "Logger 1" };
 
-// The picked days (Oct 31 and Nov 1, the default) as the dashboard must ask for them: Toronto midnight to the
-// last millisecond before the next Toronto midnight. Nov 1 is 25 hours long.
+// The picked days (Oct 31 and Nov 1, the default) as the charts must ask for them: from Toronto midnight, to no
+// later than the last millisecond before the next Toronto midnight (Nov 1 is 25 hours long). The charts may stop
+// earlier, at "now", but never before it.
 const RANGE_START = "2026-10-31T04:00:00.000Z";
-const RANGE_END = "2026-11-02T04:59:59.999Z";
+const RANGE_END_LATEST = "2026-11-02T04:59:59.999Z";
 
 const key = (r: Pick<Row, "group_type" | "station_id" | "measurement_type" | "unit" | "recorded_at">) =>
   `${r.group_type} | ${r.station_id} | ${r.measurement_type} | ${r.unit} | ${r.recorded_at}`;
@@ -128,7 +129,9 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     const response = await seriesResponse;
     const url = new URL(response.url());
     expect(url.searchParams.get("start")).toBe(RANGE_START);
-    expect(url.searchParams.get("end")).toBe(RANGE_END);
+    const end = Date.parse(url.searchParams.get("end") ?? "");
+    expect(end).toBeLessThanOrEqual(Date.parse(RANGE_END_LATEST));
+    expect(end).toBeGreaterThanOrEqual(NOW.getTime());
     const body = await response.json();
     expect(body.aggregated).toBe(false); // 10-minute buckets: one point per reading
     const points = new Map<string, number>();
@@ -141,22 +144,35 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     expectSameValues(points, expectedValues(), 1e-4); // the API rounds to 4 decimals
   });
 
-  await test.step("the weather chart's tooltip shows Toronto time", async () => {
-    const chart = page.locator(".highcharts-container").filter({ hasText: "Weather Data" });
-    const plot = chart.locator(".highcharts-plot-background");
-    await expect(plot).toBeVisible();
+  await test.step("the air temperature tooltip shows Toronto time", async () => {
     await expect(page.getByText("Loading data…")).toHaveCount(0);
-    await plot.scrollIntoViewIfNeeded(); // the mouse can only point at what is on screen
-    const box = (await plot.boundingBox())!;
-    // The x-axis spans exactly the picked days; point at 07:40Z, the newest air temperature (3.55 °C).
-    const start = Date.parse(RANGE_START), end = Date.parse(RANGE_END) + 1;
-    const x = box.x + (box.width * (Date.parse("2026-11-01T07:40:00Z") - start)) / (end - start);
-    await page.mouse.move(box.x + 5, box.y + box.height / 2);
-    await page.mouse.move(x, box.y + box.height / 2, { steps: 5 });
+    // Noon in Toronto on Oct 31 (16:00Z, 9.5 °C): its neighbours are hours away, so the tooltip can't snap to
+    // another point. A chart in the browser's zone would say 01:00 Nov 1 in Tokyo, 16:00 in London.
+    // Highcharts places the point, so this doesn't depend on chart titles, layout or the x-axis range.
+    const at = Date.parse("2026-10-31T16:00:00Z");
+    const where = async () => page.evaluate((x) => {
+      type HPoint = { x: number; plotX?: number; plotY?: number };
+      type HChart = { container: HTMLElement; plotLeft: number; plotTop: number;
+        series: { name: string; points: HPoint[] }[] };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      if (!H) throw new Error("Highcharts isn't on window._Highcharts (its UMD build puts it there)");
+      for (const chart of H.charts) {
+        const point = chart?.series.find((s) => s.name.startsWith("Air Temperature"))?.points.find((p) => p.x === x);
+        if (!chart || point?.plotX === undefined || point.plotY === undefined) continue;
+        chart.container.scrollIntoView({ block: "center" });
+        const box = chart.container.getBoundingClientRect();
+        return { x: box.left + chart.plotLeft + point.plotX, y: box.top + chart.plotTop + point.plotY };
+      }
+      return null;
+    }, at);
+    await expect.poll(where, { message: "the 16:00Z air temperature point is drawn" }).not.toBeNull();
+    const point = (await where())!;
+    await page.mouse.move(point.x - 40, point.y);
+    await page.mouse.move(point.x, point.y, { steps: 5 });
     const tooltip = page.locator(".highcharts-tooltip", { hasText: "Air Temperature" });
-    await expect(tooltip).toContainText("3.55");
-    await expect(tooltip).toContainText(/Nov 1\b/);
-    await expect(tooltip).toContainText(/\b0?2:40\b/);
+    await expect(tooltip).toContainText("9.50");
+    await expect(tooltip).toContainText(/Oct 31/);
+    await expect(tooltip).toContainText(/12:00/);
   });
 
   await test.step("Latest Data shows the newest readings, in Toronto time", async () => {
