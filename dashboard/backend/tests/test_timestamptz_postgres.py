@@ -49,7 +49,6 @@ FIXTURE = [
     ("2026-11-01 01:50", "2026-11-01 05:50"),
     ("2026-11-01 02:00", "2026-11-01 07:00"),   # after the change (EST)
     ("2026-03-08 01:50", "2026-03-08 06:50"),   # the spring-forward night: 01:50 EST
-    ("2026-03-08 02:30", "2026-03-08 07:30"),   # in the skipped hour (none in production): read as EST, 03:30 EDT
     ("2026-03-08 03:00", "2026-03-08 07:00"),   # 03:00 EDT, ten minutes after 01:50 EST
 ]
 
@@ -165,6 +164,20 @@ class MigrationTests(PostgresFixture):
                             "ORDER BY recorded_at")
         self.assertEqual(at_0130, [(instant("2026-11-01 05:30"), 4.0), (instant("2026-11-01 06:30"), 103.0)])
 
+    def test_refuses_a_time_in_the_skipped_spring_hour_and_changes_nothing(self):
+        # 02:30 on 2026-03-08 never happened in Toronto. Converted, it would read as 03:30 EDT and could collide with a
+        # real 03:30 reading, so the migration stops first.
+        with self.engine.begin() as c:
+            c.execute(text("INSERT INTO sensor_measurements (station_id, group_type, measurement_type, value, unit, "
+                           "recorded_at) VALUES ('22051538', 'Weather', 'Air Temperature', 50, '°C', :t)"),
+                      {"t": dt.datetime(2026, 3, 8, 2, 30)})
+        before = self.stored()
+        with self.assertRaisesRegex(Exception, "1 sensor_measurements rows have a recorded_at in an hour skipped"):
+            self.run_migrations()
+        self.assertEqual(self.column_type(), "timestamp without time zone")
+        self.assertEqual(self.stored(), before)
+        self.assertNotIn(VERSION, [r[0] for r in self.rows("SELECT version FROM schema_migrations")])
+
     def test_does_nothing_on_a_table_that_is_already_timestamptz(self):
         # A database made by db/init_db.py after this change: running the USING expression there would shift it.
         self.run_migrations()
@@ -184,9 +197,6 @@ class MigrationTests(PostgresFixture):
         with self.engine.begin() as c:   # as psql -1 runs it: one transaction
             c.exec_driver_sql(DOWN.read_text(encoding="utf-8"), execution_options={"no_parameters": True})
         self.assertEqual(self.column_type(), "timestamp without time zone")
-        # Every time comes back as it was, except the one in the skipped spring hour, which never existed on the
-        # wall clock: it comes back as the wall time of its instant (02:30 EST = 03:30 EDT). Production has none.
-        before[8] = "2026-03-08 03:30:00"
         self.assertEqual({i: t.isoformat(sep=" ") for i, t in self.stored().items()}, before)
         saved = self.rows("SELECT value, recorded_at FROM sensor_measurements_dst_rollback")
         self.assertEqual(saved, [(99.0, instant("2026-11-01 06:30"))])

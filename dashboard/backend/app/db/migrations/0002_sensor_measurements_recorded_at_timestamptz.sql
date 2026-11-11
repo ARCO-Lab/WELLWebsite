@@ -13,19 +13,20 @@
 --    pick the SECOND hour: PostgreSQL gives an ambiguous time the offset in force just after the change (EST).
 --    So each value is converted twice, as itself and as an hour earlier plus that hour, and the earlier instant
 --    is kept. The two agree for every time except the repeated hour, where the second one is the EDT reading.
---  * The skipped hour (02:00-02:59 on the spring-forward night) can't hold a reading, and production has none.
---    Should one exist, PostgreSQL reads it with the offset before the change (02:30 -> 07:30 UTC = 03:30 EDT),
---    and so does LEAST here.
+--  * The skipped hour (02:00-02:59 on the spring-forward night) never appeared on the wall clock, so no reading
+--    can have been stored there, and production has none. A row there would be bad data, and converting it
+--    could collide with a real reading an hour later, so the migration refuses to run while one exists and
+--    names how many; nothing is changed then. (PostgreSQL would read 02:30 as 07:30 UTC, i.e. 03:30 EDT.)
 -- The site zone is named, so the result doesn't depend on the database's TimeZone setting.
 --
 -- The unique constraint and the indexes on recorded_at (the constraint's index and
 -- ix_sensor_measurements_group_type_recorded_at from 0001) are rebuilt by the ALTER and keep their names.
 --
 -- Locking: ALTER ... TYPE rewrites the table and its indexes under an ACCESS EXCLUSIVE lock: nothing can read
--- or write sensor_measurements until it commits. Measured on a copy of production's size (1.45 M rows, 150 MB
--- table, PostgreSQL 13): see the pull request; it is seconds, not minutes. Stop the worker and the backend first
--- (the deploy steps say how), so nothing queues behind the lock; lock_timeout makes the migration fail rather
--- than wait if something still holds the table.
+-- or write sensor_measurements until it commits. On a copy of production's size (1.45 M rows, PostgreSQL 13 on
+-- the production VM) the whole migration took about 10 seconds; see the pull request. Stop the worker and the
+-- backend first (the deploy steps say how), so nothing queues behind the lock; lock_timeout makes the migration
+-- fail rather than wait if something still holds the table.
 --
 -- A database created after this change (db/init_db.py) already has timestamptz, so this does nothing there:
 -- converting a timestamptz column with this USING expression would shift it.
@@ -34,10 +35,22 @@
 SET LOCAL lock_timeout = '10s';
 
 DO $$
+DECLARE
+    skipped bigint;
 BEGIN
     IF (SELECT data_type FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'sensor_measurements'
           AND column_name = 'recorded_at') = 'timestamp without time zone' THEN
+        LOCK TABLE sensor_measurements IN ACCESS EXCLUSIVE MODE;
+        -- A wall time that doesn't survive the round trip to an instant and back is in a skipped hour.
+        SELECT count(*) INTO skipped FROM sensor_measurements
+        WHERE (recorded_at AT TIME ZONE 'America/Toronto') AT TIME ZONE 'America/Toronto' <> recorded_at;
+        IF skipped > 0 THEN
+            RAISE EXCEPTION '% sensor_measurements rows have a recorded_at in an hour skipped when clocks sprang '
+                'forward (a wall time that never existed in America/Toronto); nothing was changed. Find them with: '
+                'SELECT * FROM sensor_measurements WHERE (recorded_at AT TIME ZONE ''America/Toronto'') '
+                'AT TIME ZONE ''America/Toronto'' <> recorded_at;', skipped;
+        END IF;
         ALTER TABLE sensor_measurements
             ALTER COLUMN recorded_at TYPE timestamptz
             USING LEAST(recorded_at AT TIME ZONE 'America/Toronto',
