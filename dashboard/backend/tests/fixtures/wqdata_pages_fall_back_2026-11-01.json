@@ -1,0 +1,24 @@
+[
+  {
+    "data": [
+      {"timestamp": "2026-11-01 04:00:00", "values": [{"parameterId": 125001, "value": "9.1"}, {"parameterId": 125006, "value": "10.2"}]},
+      {"timestamp": "2026-11-01 05:30:00", "values": [{"parameterId": 125001, "value": "9.0"}, {"parameterId": 125006, "value": "10.3"}]},
+      {"timestamp": "2026-11-01 06:30:00", "values": [{"parameterId": 125001, "value": "8.9"}]}
+    ],
+    "info": {"more": false, "count": 5, "total": 12, "lastDataPointTimestamp": "2026-11-01 06:30:00"}
+  },
+  {
+    "data": [
+      {"timestamp": "2026-11-01 06:30:00", "values": [{"parameterId": 125001, "value": "8.9"}, {"parameterId": 125006, "value": "10.4"}]},
+      {"timestamp": "2026-11-01 12:00:00", "values": [{"parameterId": 125001, "value": "8.7"}, {"parameterId": 125006, "value": "10.6"}, {"parameterId": 115219, "value": "12.1"}, {"parameterId": 125002, "value": "N/A"}]}
+    ],
+    "info": {"more": true, "count": 6, "total": 9, "lastDataPointTimestamp": "2026-11-01 12:00:00"}
+  },
+  {
+    "data": [
+      {"timestamp": "2026-11-01 12:00:00", "values": [{"parameterId": 125001, "value": "8.7"}, {"parameterId": 125006, "value": "10.6"}]},
+      {"timestamp": "2026-11-02 04:50:00", "values": [{"parameterId": 125001, "value": "8.4"}]}
+    ],
+    "info": {"more": false, "count": 3, "total": 3, "lastDataPointTimestamp": "2026-11-02 04:50:00"}
+  }
+]
