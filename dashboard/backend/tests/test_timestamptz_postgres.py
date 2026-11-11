@@ -209,8 +209,8 @@ class MigrationTests(PostgresFixture):
 
     def test_refuses_an_unexpected_column_type(self):
         with self.engine.begin() as c:
-            c.exec_driver_sql("ALTER TABLE sensor_measurements ALTER COLUMN recorded_at TYPE date")
-        with self.assertRaisesRegex(Exception, "recorded_at is date, expected timestamp or timestamptz"):
+            c.exec_driver_sql("ALTER TABLE sensor_measurements ALTER COLUMN recorded_at TYPE text")
+        with self.assertRaisesRegex(Exception, "recorded_at is text, expected timestamp or timestamptz"):
             self.run_migrations()
         self.assertNotIn(VERSION, [r[0] for r in self.rows("SELECT version FROM schema_migrations")])
 
