@@ -184,6 +184,9 @@ class MigrationTests(PostgresFixture):
         with self.engine.begin() as c:   # as psql -1 runs it: one transaction
             c.exec_driver_sql(DOWN.read_text(encoding="utf-8"), execution_options={"no_parameters": True})
         self.assertEqual(self.column_type(), "timestamp without time zone")
+        # Every time comes back as it was, except the one in the skipped spring hour, which never existed on the
+        # wall clock: it comes back as the wall time of its instant (02:30 EST = 03:30 EDT). Production has none.
+        before[8] = "2026-03-08 03:30:00"
         self.assertEqual({i: t.isoformat(sep=" ") for i, t in self.stored().items()}, before)
         saved = self.rows("SELECT value, recorded_at FROM sensor_measurements_dst_rollback")
         self.assertEqual(saved, [(99.0, instant("2026-11-01 06:30"))])
