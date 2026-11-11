@@ -74,3 +74,10 @@ home/wp-content/upgrade/
 # WordPress config and secrets (Docker creates from env vars)
 home/wp-config.php
 home/wp-config-docker.php
+# Runtime and local junk that the re-include above would otherwise expose. No release file under
+# home/ matches these today (checked with git ls-files); if a future release ships one, narrow the rule.
+# WP_DEBUG_LOG writes home/wp-content/debug.log, which must never be committed.
+home/**/*.log
+home/**/.env*
+home/**/node_modules/
+home/**/.DS_Store
