@@ -1,5 +1,8 @@
 # This script downloads and processes new sampling data files from the Borealis Dataverse API.
 # It tracks processed files, downloads unprocessed ones, and invokes inject_sampling.py to import data.
+# Only the dataset's published version is read: a file uploaded but not yet published (still in the draft) is
+# imported on the first run after a curator publishes it, and the log says when a draft is waiting. Restricted
+# files are skipped, so reading needs no token; BOREALIS_API_TOKEN is sent when it is set (an invalid one fails the run).
 # A file that fails validation is recorded as refused (logs/processed.json, by Dataverse file id), its problems are
 # logged once, and it isn't retried: a corrected upload gets a new id. A run that refused or failed to import a file
 # reports OUTPUT: REJECTED_<n>_FILES or FAILED_<n>_FILES and exits 1, so the scheduler reports it as a failure.
@@ -24,13 +27,14 @@ import subprocess
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 from utils.sampling_csv import INVALID_FILE_EXIT
+from utils.borealis import Dataverse, DataverseError, base_url, is_demo, published_files
 
 load_dotenv()
 
-# Environment variables
-BOREALIS_URL = Config.DEMO_BOREALIS_URL
+# Environment variables (config.py: the BOREALIS_* names, or the older DEMO_* ones)
+BOREALIS_URL = Config.BOREALIS_URL
 BOREALIS_API_TOKEN = Config.BOREALIS_API_TOKEN
-BOREALIS_AW_PERSISTENT_ID = Config.DEMO_BOREALIS_AW_PERSISTENT_ID
+BOREALIS_AW_PERSISTENT_ID = Config.BOREALIS_SAMPLING_PERSISTENT_ID
 
 
 # Persistent state file to track all processed files
@@ -100,40 +104,31 @@ def parse_filename_date(filename):
         print(f"DEBUG: Failed to parse date from suffix: {suffix}. Falling back to create_date.")
         return None
 
-def get_files_from_dataset(list_files=False):
-    """Fetch all files from dataset matching WELLAncasterWatershed_, excluding SAMPLE."""
+def get_files_from_dataset(list_files=False, client=None):
+    """Fetch all files from the dataset's published version matching WELLAncasterWatershed_, excluding SAMPLE."""
     print(f"DEBUG: Fetching dataset with persistent ID: {BOREALIS_AW_PERSISTENT_ID}")
-    
-    if not all([BOREALIS_URL, BOREALIS_API_TOKEN, BOREALIS_AW_PERSISTENT_ID]):
-        missing = [k for k, v in {
-            "DEMO_BOREALIS_URL": BOREALIS_URL,
-            "BOREALIS_API_TOKEN": BOREALIS_API_TOKEN,
-            "BOREALIS_AW_PERSISTENT_ID": BOREALIS_AW_PERSISTENT_ID
-        }.items() if not v]
+
+    missing = [k for k, v in {"BOREALIS_URL": BOREALIS_URL,
+                              "BOREALIS_SAMPLING_PERSISTENT_ID": BOREALIS_AW_PERSISTENT_ID}.items() if not v]
+    if missing:
         print(f"ERROR: Missing environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing environment variables: {', '.join(missing)}")
-    
+    if is_demo(base_url(BOREALIS_URL)) != is_demo(persistent_id=BOREALIS_AW_PERSISTENT_ID):
+        message = (f"BOREALIS_URL is {base_url(BOREALIS_URL)} but the dataset {BOREALIS_AW_PERSISTENT_ID} is on the "
+                   f"{'production' if is_demo(base_url(BOREALIS_URL)) else 'demo'} server: set "
+                   f"BOREALIS_SAMPLING_PERSISTENT_ID to the sampling dataset's id on {base_url(BOREALIS_URL)}")
+        print(f"ERROR: {message}")
+        raise ValueError(message)
+    if not BOREALIS_API_TOKEN:
+        print("DEBUG: BOREALIS_API_TOKEN is not set; reading the dataset as a guest (public files only)")
+
     try:
-        headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
-        params = {"persistentId": BOREALIS_AW_PERSISTENT_ID}
-        print(f"DEBUG: Sending request to {BOREALIS_URL}/api/datasets/:persistentId")
-        response = requests.get(f"{BOREALIS_URL}/api/datasets/:persistentId", params=params, headers=headers, timeout=(10, 120))
-        print(f"DEBUG: Response status: {response.status_code}")
-        print(f"DEBUG: Response URL: {response.url}")
-        response.raise_for_status()
-        
-        data = response.json()["data"]
-        latest_version = data["latestVersion"]
-        
-        if latest_version["versionState"] != "RELEASED":
-            print(f"DEBUG: Dataset version state is {latest_version['versionState']}, not RELEASED.")
-            return []
-        
-        files = latest_version["files"]
+        client = client or Dataverse(BOREALIS_URL, BOREALIS_API_TOKEN)
+        files = published_files(client, BOREALIS_AW_PERSISTENT_ID)
         if not files:
-            print("DEBUG: No files in the dataset.")
+            print("DEBUG: No files in the dataset's published version.")
             return []
-        
+
         # Filter for .xlsx, .tab (how Dataverse lists an ingested table) or .csv files, excluding SAMPLE
         target_files = []
         for f in files:
@@ -170,10 +165,8 @@ def get_files_from_dataset(list_files=False):
         print(f"DEBUG: Found {len(target_files)} matching files")
         return target_files
         
-    except requests.exceptions.HTTPError as e:
-        print(f"ERROR: HTTP error: {e}")
-        if e.response:
-            print(f"DEBUG: Response content: {e.response.text}")
+    except DataverseError as e:
+        print(f"ERROR: {e}")
         raise
     except Exception as e:
         print(f"ERROR: Error fetching dataset: {e}")
@@ -184,17 +177,20 @@ def download_file_to_memory(file_id, filename):
     print(f"DEBUG: Downloading file ID {file_id} to memory (original format)")
     
     try:
-        headers = {"X-Dataverse-key": BOREALIS_API_TOKEN}
+        headers = {"X-Dataverse-key": BOREALIS_API_TOKEN} if BOREALIS_API_TOKEN else {}
         params = {"format": "original"}
-        response = requests.get(f"{BOREALIS_URL}/api/access/datafile/{file_id}", headers=headers, params=params, timeout=(10, 600))
+        response = requests.get(f"{base_url(BOREALIS_URL)}/api/access/datafile/{file_id}", headers=headers,
+                                params=params, timeout=(10, 600))
         response.raise_for_status()
         
         file_buffer = io.BytesIO(response.content)
         print("DEBUG: Downloaded to memory")
         return file_buffer
     except requests.exceptions.HTTPError as e:
-        if e.response and e.response.status_code == 403:
-            print("ERROR: Access denied to file. Check API token permissions.")
+        status = e.response.status_code if e.response is not None else None
+        if status in (401, 403):
+            print(f"ERROR: Access denied to file {file_id} (HTTP {status}). Check BOREALIS_API_TOKEN (unset it to read "
+                  f"as a guest) and that the file is published and not restricted.")
         raise
     except Exception as e:
         print(f"ERROR: downloading file: {e}")
@@ -311,7 +307,7 @@ def main():
     print("DEBUG: Starting process...")
     print(f"DEBUG: BOREALIS_URL: {BOREALIS_URL}")
     print(f"DEBUG: BOREALIS_API_TOKEN: {'***' if BOREALIS_API_TOKEN else 'Not set'}")
-    print(f"DEBUG: BOREALIS_AW_PERSISTENT_ID: {BOREALIS_AW_PERSISTENT_ID}")
+    print(f"DEBUG: BOREALIS_SAMPLING_PERSISTENT_ID: {BOREALIS_AW_PERSISTENT_ID}")
 
     try:
         state = load_state()

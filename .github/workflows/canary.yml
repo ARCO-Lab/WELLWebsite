@@ -24,11 +24,11 @@ jobs:
     outputs:
       report: ${{ steps.report.outputs.report }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -56,6 +56,10 @@ jobs:
           WQ_API_URL: ${{ secrets.WQ_API_URL }}
           WQ_API_KEY: ${{ secrets.WQ_API_KEY }}
           WQ_DEVICE_ID: ${{ secrets.WQ_DEVICE_ID }}
+          # The BOREALIS_* names win; the DEMO_* ones are read when those secrets aren't set (config.py).
+          BOREALIS_URL: ${{ secrets.BOREALIS_URL }}
+          BOREALIS_UPLOAD_PERSISTENT_ID: ${{ secrets.BOREALIS_UPLOAD_PERSISTENT_ID }}
+          BOREALIS_SAMPLING_PERSISTENT_ID: ${{ secrets.BOREALIS_SAMPLING_PERSISTENT_ID }}
           DEMO_BOREALIS_URL: ${{ secrets.DEMO_BOREALIS_URL }}
           BOREALIS_API_TOKEN: ${{ secrets.BOREALIS_API_TOKEN }}
           DEMO_BOREALIS_AW_PERSISTENT_ID: ${{ secrets.DEMO_BOREALIS_AW_PERSISTENT_ID }}
@@ -83,7 +87,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts

@@ -98,6 +98,16 @@ if (well_should_force_https_urls()) {
 }
 
 /**
+ * Version string for a theme CSS/JS file: its modification time. WordPress adds it to the URL
+ * (?ver=...), so an edited file gets a new URL and browsers can cache each URL for a long time
+ * (see wordpress/zz-performance.conf). Falls back to '1.0' if the file is missing.
+ */
+function well_asset_version($relative_path) {
+    $mtime = @filemtime(get_template_directory() . $relative_path);
+    return $mtime ? (string) $mtime : '1.0';
+}
+
+/**
  * This function is the proper WordPress way to load all of our theme's
  * CSS stylesheets and JavaScript files.
  */
@@ -126,25 +136,19 @@ function well_theme_enqueue_assets() {
             'well-' . $file, // A unique name for each stylesheet, e.g., 'well-theme'
             get_template_directory_uri() . '/css/' . $file . '.css',
             ['well-google-fonts'], // Dependency
-            '1.0'
+            well_asset_version('/css/' . $file . '.css')
         );
     }
 
-    // 3. Enqueue McMaster header styles
-    wp_enqueue_style(
-        'well-mcmaster-header',
-        get_template_directory_uri() . '/css/mcmaster-header.css',
-        ['well-google-fonts'],
-        '1.0'
-    );
-
     // --- JAVASCRIPT (.js files) ---
 
-    // 4. Enqueue all the theme's JS files from the /js/ folder.
+    // 3. Enqueue all the theme's JS files from the /js/ folder.
     // We list 'jquery' as a dependency since many old themes use it.
+    // js/video_slider.js is not loaded: it is for YouTube hero videos this site doesn't have, and
+    // it loaded the YouTube player API on every page before stopping with an error.
     $js_files = [
         'popper.min', 'theme.min', 'ekko-lightbox.min', 'header_footer',
-        'hfcopy', 'mcmaster', 'countdown-timer', 'video_slider',
+        'hfcopy', 'mcmaster', 'countdown-timer',
         'wp-form-name-fields', 'comm100-wrapper'
     ];
 
@@ -153,19 +157,10 @@ function well_theme_enqueue_assets() {
             'well-' . str_replace('.min', '', $file), // A unique name for each script, e.g., 'well-popper'
             get_template_directory_uri() . '/js/' . $file . '.js',
             ['jquery'], // Dependency
-            '1.0',
+            well_asset_version('/js/' . $file . '.js'),
             true // Load the script in the footer
         );
     }
-
-    // 5. Enqueue McMaster header JavaScript
-    wp_enqueue_script(
-        'well-mcmaster-header-js',
-        get_template_directory_uri() . '/js/mcmaster-header.js',
-        ['jquery'],
-        '1.0',
-        true
-    );
 }
 
 // This is the WordPress "hook" that tells WordPress to run our function at the right time.
@@ -217,6 +212,66 @@ function well_enqueue_flickity_assets() {
     );
 }
 add_action('wp_enqueue_scripts', 'well_enqueue_flickity_assets');
+
+/**
+ * Open the connections to Google Fonts early. The Poppins stylesheet comes from fonts.googleapis.com
+ * and its font files from fonts.gstatic.com; without this the browser finds the second host only
+ * after the first stylesheet has downloaded.
+ */
+function well_resource_hints($urls, $relation_type) {
+    if ('preconnect' === $relation_type) {
+        $urls[] = 'https://fonts.googleapis.com';
+        $urls[] = array('href' => 'https://fonts.gstatic.com', 'crossorigin');
+    }
+    return $urls;
+}
+add_filter('wp_resource_hints', 'well_resource_hints', 10, 2);
+
+/**
+ * Print an <img> for a photo the theme ships pre-sized in img/media/ as <name>-<width>.webp
+ * (made from the originals in wp-content/uploads by wordpress/theme-images.mjs).
+ *
+ * The templates used to link the uploaded originals directly: camera photos up to 4032 px and
+ * 13 MB, shown at 300-1300 px. With srcset and sizes the browser downloads only the copy its
+ * screen needs; width and height let it reserve the space before the image arrives.
+ *
+ * $widths: the copies that exist, e.g. array(414, 720, 1080); array() for a single <name>.webp.
+ * $size:   the largest copy's width and height in pixels, e.g. array(1080, 463).
+ * $attrs:  other attributes (alt, class, sizes, loading, fetchpriority, ...).
+ */
+function well_media_img($name, $widths, $size, $attrs = array()) {
+    $base = get_template_directory_uri() . '/img/media/' . $name;
+    if (empty($widths)) {
+        $src = $base . '.webp';
+    } else {
+        $srcset = array();
+        foreach ($widths as $w) {
+            $srcset[] = esc_url($base . '-' . $w . '.webp') . ' ' . (int) $w . 'w';
+        }
+        $attrs = array('srcset' => implode(', ', $srcset)) + $attrs;
+        // Browsers that ignore srcset get a middle size.
+        $src = $base . '-' . $widths[(int) floor((count($widths) - 1) / 2)] . '.webp';
+    }
+
+    $attrs = array(
+        'src'      => $src,
+        'width'    => (int) $size[0],
+        'height'   => (int) $size[1],
+        'decoding' => 'async',
+    ) + $attrs;
+
+    $html = '<img';
+    foreach ($attrs as $key => $value) {
+        if ('src' === $key) {
+            $html .= ' src="' . esc_url($value) . '"';
+        } elseif ('srcset' === $key) {
+            $html .= ' srcset="' . esc_attr($value) . '"';
+        } else {
+            $html .= ' ' . $key . '="' . esc_attr($value) . '"';
+        }
+    }
+    echo $html . '>';
+}
 
 /**
  * Add McMaster navigation menu items (as used in the original site)

@@ -1,0 +1,9 @@
+{
+  "data": [
+    {"timestamp": "2026-10-31 16:00:00", "values": [{"parameterId": 125001, "value": "9.4"}, {"parameterId": 125006, "value": "10.1"}, {"parameterId": 125002, "value": "512.3"}]},
+    {"timestamp": "2026-11-01 05:10:00", "values": [{"parameterId": 125001, "value": "9.0"}, {"parameterId": 125006, "value": "10.3"}, {"parameterId": 125002, "value": "N/A"}]},
+    {"timestamp": "2026-11-01 06:10:00", "values": [{"parameterId": 125001, "value": "8.95"}, {"parameterId": 125006, "value": "10.35"}]},
+    {"timestamp": "2026-11-01 07:10:00", "values": [{"parameterId": 125001, "value": "8.9"}, {"parameterId": 125006, "value": "10.4"}, {"parameterId": 115219, "value": "12.1"}]},
+    {"timestamp": "2026-11-01 07:50:00", "values": [{"parameterId": 125001, "value": "8.85"}]}
+  ]
+}

@@ -93,8 +93,7 @@ def main(argv=None) -> int:
 
     with app.app_context():
         engine = db.engine
-        with engine.connect() as c:
-            tz = ZoneInfo(c.execute(text("show timezone")).scalar())
+        tz = ZoneInfo("America/Toronto")   # recorded_at is site wall-clock time, whatever the database's TimeZone
         end = dt.datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
         start = end - dt.timedelta(days=args.days)
         print(f"{'Checking' if args.check else 'Backfilling'} {','.join(sorted(args.groups))} from {start:%Y-%m-%d %H:%M} UTC "

@@ -139,18 +139,27 @@ def fmt_age(minutes):
     return f"{minutes / 1440:.1f} days"
 
 
-def build_digest(day, freshness, groups, findings, wqdata):
+def build_digest(day, freshness, groups, findings, wqdata, incidents=None):
     """(subject, body) of the digest.
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
     last 24 h of the live series. findings: anomaly strings. wqdata: {"error"} or {"power_min", "power_max", "power_readings",
-    "last_point", "last_point_age_minutes", optional "note"} or None when skipped.
+    "last_point", "last_point_age_minutes", optional "note"} or None when skipped. incidents: the open email alerts
+    (utils/alert_state.alerts_report()["open"]), {"error": ...} if they couldn't be read, or None to leave them out.
     """
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
     problems = len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
     subject = f"WELL daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
     lines = [f"WELL dashboard daily digest for the 24 h before {freshness['checked_at']} (site time)", ""]
+
+    if incidents is not None:
+        lines.append("Open alerts (each was emailed when it began):")
+        if isinstance(incidents, dict):
+            lines.append(f"  could not be read: {incidents.get('error')}")
+        else:
+            lines += [f"  - {i['title']} (since {i['started_at'][:16].replace('T', ' ')})" for i in incidents] or ["  none"]
+        lines.append("")
 
     lines.append("Stale series (newest reading older than its limit):")
     lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {s['newest']} "

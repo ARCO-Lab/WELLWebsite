@@ -1,8 +1,8 @@
 # This file defines the /api/data route for retrieving raw sensor measurements for the dashboard's charts.
 # A range with more readings than the charts can handle is refused with a 413 instead of being loaded.
-# Gunicorn runs 3 sync workers and a worker can't notice that the browser left: once a request passes the
-# count, its worker stays busy until the query and jsonify finish (or until gunicorn's 30 s timeout kills it),
-# even if nobody is waiting for the answer. The row cap is what bounds that time.
+# A request can't notice that the browser left: once it passes the count, its gunicorn thread stays busy until
+# the query and jsonify finish, even if nobody is waiting for the answer. The row cap bounds that time, along
+# with DB_STATEMENT_TIMEOUT_MS (config.py), which cancels any one query that runs too long.
 
 import logging
 import os
@@ -38,11 +38,7 @@ def parse_max_rows(value):
 MAX_ROWS = parse_max_rows(os.getenv("DATA_MAX_ROWS"))
 
 
-# AI ANALYSIS DISABLED: `latest_summaries` was filled by a per-request background thread that summarized the
-# returned rows with pandas (scripts/downsample.py) for the AI routes. Nothing reads it while those routes are
-# off, so commit 5b501eb deleted the thread (not commented out). The parameter stays so the route
-# registration is unchanged.
-def register_data_route(app, latest_summaries):
+def register_data_route(app):
     @app.route("/api/data", methods=["GET"])
     def get_filtered_data():
         # Parse query parameters

@@ -10,6 +10,7 @@
 # Never prints URLs, tokens, keys or response bodies: WQData takes its key in the query string, and requests'
 # error text includes the full URL, so errors are reported as exception type and HTTP status only.
 
+import math
 import sys
 import pathlib
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ import requests
 
 from config import Config
 from api.services.quality import describe_request_error
+from utils.borealis import base_url
 
 WINDOW = timedelta(hours=6)    # recent enough to be cheap, long enough that a slow upload still shows data
 TIMEOUT = (10, 60)
@@ -30,6 +32,15 @@ FMT = "%Y-%m-%d %H:%M:%S"
 LOGGER_PREFIX = "2216865"                                                    # parsers.LOGGER_PREFIX
 LOGGER_SERIALS = {"22168653", "22168654", "22168655", "22168656", "22168657"}  # parsers.LOGGER_CONFIG keys
 WQ_PARAMETER_IDS = {125001, 125002, 125004, 125005, 125006, 125007, 125008, 125009}  # parsers.QUALITY_PARAM_ID_MAP
+WEATHER_UNITS = {                                                            # parsers.WEATHER_UNITS
+    "Air Temperature": "°C", "Soil Temperature": "°C", "Dew Point": "°C", "Relative Humidity": "%",
+    "Pressure": "mbar", "Rain": "mm", "Solar Radiation": "W/m²", "Water Content": "m³/m³",
+    "Wind Speed": "m/s", "Gust Speed": "m/s", "Wind Direction": "°",
+}
+LOGGER_UNITS = {"1": "m", "3": "°C"}                                         # parsers.LOGGER_UNITS
+UNIT_ALIASES = {"m": {"meters", "meter", "metres", "metre"}}                 # parsers.UNIT_ALIASES
+WEATHER_SENSOR_NAMES = {"21948438-1": "Air Temperature", "21948438-2": "Relative Humidity",  # utils/sensor_names.py
+                        "22154270-1": "Soil Temperature"}
 
 
 class ShapeError(Exception):
@@ -49,15 +60,44 @@ def licor_record_used(sensor_sn):
     return True
 
 
+def has_number(value):
+    """Whether ingestion (parsers.reading_value) stores this value: a finite number, not a boolean."""
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def expected_unit(record):
+    """The unit ingestion requires for this record (parsers.unit_mismatch), or None when it doesn't check one."""
+    sensor_sn = record["sensor_sn"]
+    if sensor_sn.startswith(LOGGER_PREFIX):
+        return LOGGER_UNITS.get(sensor_sn.partition("-")[2])
+    return WEATHER_UNITS.get(WEATHER_SENSOR_NAMES.get(sensor_sn, record.get("sensor_measurement_type")))
+
+
+def same_unit(unit, expected):
+    """Whether LI-COR's unit names the expected one, as ingestion judges it (parsers.same_unit)."""
+    if not isinstance(unit, str):
+        return False
+    unit = unit.strip()
+    return unit == expected or unit.casefold() in UNIT_ALIASES.get(expected, ())
+
+
 def check_licor(body):
     # inject_from_api.py reads body["data"], and per record sensor_sn; for the records it doesn't skip, it also
-    # parses timestamp (ISO 8601) and value (a number), so those are only required there.
+    # parses timestamp (ISO 8601), value and unit. Ingestion skips a reading without a number, so a few of those
+    # are only counted; the check fails when none of the records has one. A sensor in another unit than
+    # ingestion expects fails it, since ingestion skips that sensor's readings until the unit table is updated.
     if not isinstance(body, dict) or not isinstance(body.get("data"), list):
         raise ShapeError("no 'data' list")
     records = body["data"]
     if not records:
         raise ShapeError(f"no records in the last {WINDOW.total_seconds() / 3600:g} h")
-    weather = loggers = 0
+    weather = loggers = no_number = 0
+    wrong_units = set()
     for i, r in enumerate(records):
         if not isinstance(r, dict):
             raise ShapeError(f"record {i} isn't an object")
@@ -67,16 +107,27 @@ def check_licor(body):
             continue
         try:
             datetime.fromisoformat(r.get("timestamp"))
-            float(r.get("value"))   # ingestion would store a missing value as 0
         except (TypeError, ValueError):
-            raise ShapeError(f"record {i} has a missing or unreadable timestamp or value")
+            raise ShapeError(f"record {i} has a missing or unreadable timestamp")
+        expected = expected_unit(r)
+        unit = r.get("unit")
+        if expected is not None and not same_unit(unit, expected):
+            wrong_units.add(f"{r['sensor_sn']} reports {unit!r}, not {expected!r}")
+        if not has_number(r.get("value")):
+            no_number += 1
+            continue
         if r["sensor_sn"].startswith(LOGGER_PREFIX):
             loggers += 1
         else:
             weather += 1
+    if wrong_units:
+        raise ShapeError("unexpected units, so ingestion skips these sensors: " + "; ".join(sorted(wrong_units)))
     if not weather + loggers:
+        if no_number:
+            raise ShapeError(f"none of the {no_number} records ingestion reads has a number as its value")
         raise ShapeError("only records ingestion skips (battery or unknown logger channels)")
-    return f"{len(records)} records ({weather} weather, {loggers} water-level logger read by ingestion)"
+    summary = f"{len(records)} records ({weather} weather, {loggers} water-level logger read by ingestion)"
+    return summary + (f", {no_number} without a number (skipped)" if no_number else "")
 
 
 def check_wqdata(body):
@@ -159,15 +210,20 @@ def probe_wqdata(now):
 
 
 def probe_borealis(now):
-    if gone := missing("DEMO_BOREALIS_URL", "BOREALIS_API_TOKEN",
-                       "DEMO_BOREALIS_AW_PERSISTENT_ID", "DEMO_BOREALIS_WC_PERSISTENT_ID"):
+    if gone := missing("BOREALIS_URL", "BOREALIS_API_TOKEN",
+                       "BOREALIS_SAMPLING_PERSISTENT_ID", "BOREALIS_UPLOAD_PERSISTENT_ID"):
         return None, f"not configured: {', '.join(gone)}"
     # Both datasets: downloads read the first, uploads add files to the second, so the token must work on each.
+    # BOREALIS_URL may be a collection page (https://borealisdata.ca/dataverse/WELL); the API is at the server root.
+    try:
+        server = base_url(Config.BOREALIS_URL)
+    except ValueError:
+        return None, "not configured: BOREALIS_URL isn't a URL such as https://borealisdata.ca"
     summaries, status = [], None
-    for label, pid in (("download dataset", Config.DEMO_BOREALIS_AW_PERSISTENT_ID),
-                       ("upload dataset", Config.DEMO_BOREALIS_WC_PERSISTENT_ID)):
+    for label, pid in (("download dataset", Config.BOREALIS_SAMPLING_PERSISTENT_ID),
+                       ("upload dataset", Config.BOREALIS_UPLOAD_PERSISTENT_ID)):
         try:
-            status, body = get_json(f"{Config.DEMO_BOREALIS_URL}/api/datasets/:persistentId",
+            status, body = get_json(f"{server}/api/datasets/:persistentId",
                                     params={"persistentId": pid},
                                     headers={"X-Dataverse-key": Config.BOREALIS_API_TOKEN})
             summaries.append(f"{label} {check_borealis(body)}")

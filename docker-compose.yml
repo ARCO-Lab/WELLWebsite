@@ -31,6 +31,8 @@ services:
       - ./home:/var/www/html
       - ./wordpress/php-hardening.ini:/usr/local/etc/php/conf.d/zz-hardening.ini:ro
       - ./wordpress/apache-hardening.conf:/etc/apache2/conf-enabled/zz-hardening.conf:ro
+      # Browser caching and compression for the site (wordpress/zz-performance.conf explains each rule).
+      - ./wordpress/zz-performance.conf:/etc/apache2/conf-enabled/zz-performance.conf:ro
     ports:
       - "8080:80"
     restart: always
@@ -63,6 +65,12 @@ services:
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       EXPORTS_DIR: ${EXPORTS_DIR:-/app/app/exports}
+      # PostgreSQL cancels any API query that runs longer than this, and the API answers 504 (config.py).
+      # API only: worker and export_worker don't set it, so ingestion, backfills and exports have no limit.
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-25000}
+      # Short-lived cache of /api/series answers (utils/response_cache.py), in a Redis database of its own
+      # (0 and 1 are the export queue's). Set to an empty value to turn it off.
+      API_CACHE_REDIS_URL: ${API_CACHE_REDIS_URL-redis://redis:6379/2}
     expose:
       - "${BACKEND_PORT}"              # internal-only
     extra_hosts:
@@ -108,7 +116,8 @@ services:
     build:
       context: ./dashboard/backend
     # -B runs the beat scheduler inside this (single) worker, for the hourly cleanup of expired exports.
-    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--loglevel=info"]
+    # Two exports at a time at most (the default is one per CPU), so large exports can't take the VM's memory.
+    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--concurrency=2", "--loglevel=info"]
     env_file:
       - ./dashboard/backend/app/.env
     environment:
@@ -143,6 +152,10 @@ services:
       # Runtime (Node/SSR or API routes) can also use these:
       FLASK_API_URL: ${BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+      # The reverse proxies whose X-Forwarded-For is believed (comma-separated addresses, as this container sees
+      # them connect); see src/lib/clientIp.ts. 130.113.68.30 is haproxy.cas.mcmaster.ca, which welldash points at.
+      # Unset means that default; set but empty (TRUSTED_PROXY_IPS=) means no proxy is trusted.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS-130.113.68.30}
     depends_on:
       backend:
         condition: service_started

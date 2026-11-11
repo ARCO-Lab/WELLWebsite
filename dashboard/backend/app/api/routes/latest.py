@@ -58,8 +58,11 @@ def query_latest_per_series():
     ]
 
 
-# routes/__init__.py still passes a latest_metrics_cache; it is accepted and ignored, because nothing reads it.
-def register_latest_route(app, latest_metrics_cache=None):
+def register_latest_route(app):
     @app.route("/api/latest", methods=["GET"])
     def get_latest_metrics():
-        return jsonify(query_latest_per_series())
+        response = jsonify(query_latest_per_series())
+        # The same for everyone, and readings arrive every 10 minutes: browsers may reuse it for up to a minute.
+        # Nothing on the server caches it, so it is never more than a minute behind the database.
+        response.headers["Cache-Control"] = "public, max-age=60"
+        return response
