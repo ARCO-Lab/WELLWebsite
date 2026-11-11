@@ -4,7 +4,8 @@
 # How a run works:
 #  - Each group (Weather, Logger, Quality) continues from its newest stored reading minus an hour, so
 #    readings that arrive late are still picked up and a short outage catches up by itself. A run
-#    never looks back more than 14 days; older gaps are filled by scripts/licor_backfill.py.
+#    never looks back more than 14 days; older gaps are filled by scripts/licor_backfill.py (LI-COR)
+#    and scripts/wqdata_backfill.py (WQData).
 #  - LI-COR (the weather station and the water-level loggers) is read once for both groups, in windows
 #    of at most 7 days, splitting any window LI-COR truncates (it caps responses at 100,000 records;
 #    see utils/fetching.py). Longer requests used to lose whole sensors silently.
