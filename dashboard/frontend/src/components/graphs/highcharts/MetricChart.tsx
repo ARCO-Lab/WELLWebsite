@@ -6,8 +6,8 @@
 // Averaged buckets are drawn at their middle; the tooltip names the span they cover and the resolution
 // ("Oct 1, 2026 18:00–24:00 · 6-h mean"), with the smallest and largest reading in it. Points the line alone
 // wouldn't show get a marker: a filled dot for a reading with no neighbour on either side (between two gaps), a
-// hollow one for a bucket holding under half its usual readings (an outage starts or ends in it), whose average
-// is less reliable.
+// hollow one for a bucket holding under half the readings that series usually has there (an outage starts or ends
+// in it; see typicalCounts in utils/chartWindow), whose average is less reliable.
 //
 // Zoom is shared: every chart shows the page's one view window (ChartView.viewWindow). Dragging across a chart
 // (or pinching on a touch screen) asks for a new window instead of zooming this chart alone, and the window bar
@@ -90,7 +90,13 @@ function tooltipText(this: Highcharts.Point): string {
     if (aggregated && info.agg === 'mean' && c.lo !== null && c.hi !== null && c.lo !== c.hi) {
       line += ` ${muted(`(${fmt(c.lo, info.unit)}–${fmt(c.hi, info.unit)})`)}`;
     }
-    if (c.partial && c.n !== null) line += ` ${muted(`· only ${c.n} of ${c.bucketS / 600} readings`)}`;
+    if (c.partial && c.n !== null && c.typical !== null) {
+      line += ` ${muted(`· fewer readings than usual: ${c.n} (usually ${c.typical})`)}`;
+    }
+    // Near where finer detail meets the overview, a point can stand for another span than the header's: say which.
+    if (c.start !== first.start || c.bucketS !== first.bucketS) {
+      line += ` ${muted(`· ${bucketSpanLabel(c.start, c.bucketS)}, ${shortBucket(c.bucketS)}`)}`;
+    }
     return line;
   }).filter(Boolean);
   const span = `${bucketSpanLabel(first.start, first.bucketS)} · ${shortBucket(first.bucketS)} ${kind}`;

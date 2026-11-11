@@ -126,7 +126,8 @@ export interface PointInfo {
   lo: number | null; // smallest and largest reading in it (null when unknown or meaningless)
   hi: number | null;
   n: number | null; // readings in it (null when the backend doesn't say)
-  partial: boolean; // fewer than half the readings a full bucket has
+  typical: number | null; // readings this series usually has in a bucket at this time of day (see typicalCounts)
+  partial: boolean; // fewer than half the typical readings
   isolated: boolean; // no neighbour on either side, so a line alone wouldn't show it
 }
 
@@ -143,10 +144,44 @@ const num = (a: ArrayLike<number | null> | undefined, i: number): number | null 
   return v === undefined || v === null || Number.isNaN(v) ? null : v;
 };
 
-/** Whether a bucket holding `n` readings is less than half full (sensors report every 10 minutes). Raw readings
- *  and buckets whose count is unknown are never partial. */
-export function isPartial(n: number | null, bucketS: number): boolean {
-  return n !== null && bucketS > RAW_S && n < bucketS / RAW_S / 2;
+// Medians of fewer buckets than this are too noisy to judge a bucket by.
+export const MIN_PHASE_SAMPLE = 5;
+export const MIN_SERIES_SAMPLE = 8;
+const DAY_MS = 86_400_000;
+
+const median = (v: number[]): number | null => {
+  if (!v.length) return null;
+  v.sort((a, b) => a - b);
+  return v[Math.floor(v.length / 2)];
+};
+
+/** How many readings a series usually has per bucket, learned from its own counts rather than assumed from a
+ *  10-minute cadence: the water quality sonde, for one, is silent every night, so a full day holds about 55
+ *  readings, not 144, and the 18:00–24:00 bucket only one or two. The median count of the buckets that start at
+ *  the same time of day (UTC, so the two daylight-saving halves of the year are separate times, each with plenty
+ *  of buckets), falling back to the median of all buckets, and null when there are too few to say. */
+export function typicalCounts(s: SeriesValues | undefined): (t: number) => number | null {
+  const byPhase = new Map<number, number[]>();
+  const all: number[] = [];
+  for (let i = 0; s?.n && i < s.t.length; i++) {
+    const n = num(s.n, i);
+    if (n === null || n <= 0) continue;
+    const phase = ((s.t[i] % DAY_MS) + DAY_MS) % DAY_MS;
+    let list = byPhase.get(phase);
+    if (!list) byPhase.set(phase, (list = []));
+    list.push(n);
+    all.push(n);
+  }
+  const overall = all.length >= MIN_SERIES_SAMPLE ? median(all) : null;
+  const phases = new Map<number, number | null>();
+  for (const [phase, list] of byPhase) phases.set(phase, list.length >= MIN_PHASE_SAMPLE ? median(list) : overall);
+  return (t) => phases.get(((t % DAY_MS) + DAY_MS) % DAY_MS) ?? overall;
+}
+
+/** Whether a bucket holding `n` readings has fewer than half of what is `typical` for it (an outage starts or ends
+ *  in it). Raw readings, and buckets whose count or typical count is unknown, are never partial. */
+export function isPartial(n: number | null, bucketS: number, typical: number | null): boolean {
+  return n !== null && typical !== null && bucketS > RAW_S && n < typical / 2;
 }
 
 /** Points for one series: overview points outside the detail range and detail points inside it, so a pan or
@@ -159,12 +194,16 @@ export function composePoints(
   overviewBucketS: number,
   detail?: { values: SeriesValues | undefined; bucketS: number; range: Range },
 ): ChartPoint[] {
-  const pts: { t: number; v: number | null; bS: number; lo: number | null; hi: number | null; n: number | null }[] = [];
+  type Raw = { t: number; v: number | null; bS: number; lo: number | null; hi: number | null; n: number | null;
+    typical: number | null };
+  const pts: Raw[] = [];
   const ob = overviewBucketS * 1000;
   const push = (s: SeriesValues | undefined, bS: number, keep: (t: number) => boolean) => {
     if (!s) return;
+    const typical = typicalCounts(s); // from all of this response's buckets, not only the ones kept
     for (let i = 0; i < s.t.length; i++) if (keep(s.t[i])) {
-      pts.push({ t: s.t[i], v: num(s.avg, i), bS, lo: num(s.min, i), hi: num(s.max, i), n: num(s.n, i) });
+      pts.push({ t: s.t[i], v: num(s.avg, i), bS, lo: num(s.min, i), hi: num(s.max, i), n: num(s.n, i),
+        typical: typical(s.t[i]) });
     }
   };
   if (!detail) {
@@ -187,7 +226,8 @@ export function composePoints(
     out.push({
       x: p.bS > RAW_S ? p.t + b / 2 : p.t,
       y: p.v,
-      custom: { start: p.t, bucketS: p.bS, lo: p.lo, hi: p.hi, n: p.n, partial: isPartial(p.n, p.bS), isolated: false },
+      custom: { start: p.t, bucketS: p.bS, lo: p.lo, hi: p.hi, n: p.n, typical: p.typical,
+        partial: isPartial(p.n, p.bS, p.typical), isolated: false },
     });
   }
   for (let i = 0; i < out.length; i++) {
