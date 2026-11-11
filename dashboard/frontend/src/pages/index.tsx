@@ -383,7 +383,7 @@ export default function Dashboard() {
                                 onOpen={() => openModal(
                                   React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
                                   "recent",
-                                  comp.key as any, // 'weather', 'quality', or 'gauges'
+                                  comp.key as "weather" | "quality" | "gauges",
                                   subFilters[comp.key as string] || []
                                 )}
                                 className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
