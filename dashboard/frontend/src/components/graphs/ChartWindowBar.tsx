@@ -68,7 +68,7 @@ const ChartWindowBar: React.FC = () => {
         // Clicks here must not open the chart card's larger view
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ◀ label ▶ stay on one row; on phones the zoom buttons wrap below them */}
+        {/* ◀ label ▶ stay on one row; on phones the zoom buttons (icons only there; each has an aria-label) go below */}
         <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
           <BarButton label="Show earlier" title="Earlier" className="shrink-0" off={w.start <= range.start}
             onPress={() => zoomTo(shiftWindow(w, range, -1))}>
@@ -86,19 +86,19 @@ const ChartWindowBar: React.FC = () => {
           </BarButton>
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
-          <BarButton label="Zoom in: show half as much time" off={w.end - w.start <= 3600 * 1000}
+          <BarButton label="Zoom in: show half as much time" title="Zoom in" off={w.end - w.start <= 3600 * 1000}
             onPress={() => zoomTo(zoomInWindow(w, range))}>
             <ZoomIn aria-hidden className="h-4 w-4" />
-            Zoom in
+            <span className="hidden sm:inline">Zoom in</span>
           </BarButton>
-          <BarButton label="Zoom out: show twice as much time" off={!zoomed}
+          <BarButton label="Zoom out: show twice as much time" title="Zoom out" off={!zoomed}
             onPress={() => zoomTo(zoomOutWindow(w, range))}>
             <ZoomOut aria-hidden className="h-4 w-4" />
-            Zoom out
+            <span className="hidden sm:inline">Zoom out</span>
           </BarButton>
-          <BarButton label="Reset zoom: show all the picked days" off={!zoomed} onPress={() => zoomTo(null)}>
+          <BarButton label="Reset zoom: show all the picked days" title="Reset" off={!zoomed} onPress={() => zoomTo(null)}>
             <RotateCcw aria-hidden className="h-4 w-4" />
-            Reset
+            <span className="hidden sm:inline">Reset</span>
           </BarButton>
         </div>
         {view.detailError && (
