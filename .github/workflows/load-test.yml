@@ -133,6 +133,11 @@ jobs:
             -e K6_WEB_DASHBOARD=true -e K6_WEB_DASHBOARD_EXPORT=/out/report.html \
             grafana/k6:1.8.2 run --quiet /scripts/page-load.js || status=$?
           kill "$sampler" || true
+          # Which processes hold PostgreSQL connections when the run ends (containers' processes show on the host).
+          sudo ss -Htnp state established '( dport = :5432 )' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort | uniq -c |
+            while read -r n pid; do
+              echo "| $n | $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-90) |"
+            done > "$OUT/pg-connections.md" || true
           exit "$status"
 
       - name: Job summary
@@ -149,6 +154,11 @@ jobs:
               "${CLASS_VUS}_steady:$((class_start + RAMP_S)):$((class_start + RAMP_S + CLASS_HOLD_S))" \
               "${PEAK_VUS}_steady:$((peak_start + RAMP_S)):$((peak_start + RAMP_S + PEAK_HOLD_S))" \
               2>/dev/null || echo "No resource samples."
+            echo
+            echo "PostgreSQL connections open when k6 finished, by process:"
+            echo
+            echo "| Connections | Process |"; echo "|---:|---|"
+            cat "$OUT/pg-connections.md" 2>/dev/null
             echo
             echo "Seeded: $(docker exec lt-postgres psql -U postgres -d well -tAc "SELECT to_char(count(*), 'FM9,999,999,999') || ' readings, ' || min(recorded_at)::date || ' to ' || max(recorded_at)::date FROM sensor_measurements" 2>/dev/null)." \
               "Runner: $(nproc) CPUs. Backend CPU limit: ${BACKEND_CPUS:-none}."
