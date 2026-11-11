@@ -2,6 +2,7 @@
 // It manages loading, error, and caching state, and only fetches data when dates and at least one creek are selected.
 
 import { useEffect, useState, useRef } from "react";
+import { siteDayBounds } from "@/utils/siteTime";
 
 export interface SampledData {
   site_id: string;
@@ -43,15 +44,12 @@ const useSampledData = (
       setLoading(true);
       setError(null);
 
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
+      // The picked days in Toronto time, wherever the viewer is
+      const { start, end } = siteDayBounds(startDate, endDate);
 
       const params = new URLSearchParams();
-      params.append("start", start.toISOString());
-      params.append("end", end.toISOString());
+      params.append("start", start);
+      params.append("end", end);
 
       Object.entries(activeCreeks).forEach(([creek, isSelected]) => {
         if (isSelected) {
@@ -59,7 +57,7 @@ const useSampledData = (
         }
       });
 
-      const key = `${start.toISOString()}|${end.toISOString()}|${JSON.stringify(activeCreeks)}`;
+      const key = `${start}|${end}|${JSON.stringify(activeCreeks)}`;
       if (cache.current.has(key)) {
         setData(cache.current.get(key)!);
         setLoading(false);
