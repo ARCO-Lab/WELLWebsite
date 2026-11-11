@@ -49,7 +49,7 @@ as traffic.</p>
     <tbody>
     {% for i in incidents.incidents %}
     <tr>
-      <td>{{ i.target }}</td>
+      <td>{{ target_labels.get(i.target, i.target) }}</td>
       <td>{{ i.start | site_time }}</td>
       <td>{% if i.end %}{{ i.end | site_time }}{% else %}<span class="badge bad">still down</span>{% endif %}</td>
       <td>{{ i.minutes }} min</td>
