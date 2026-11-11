@@ -4,6 +4,7 @@
 import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
+from utils.fetching import BadVendorResponse
 from datetime import datetime, timedelta, timezone
 
 class WeatherService:
@@ -28,7 +29,8 @@ class WeatherService:
 
         Unlike get_weather_data this returns every sensor (weather and loggers), reports the cap
         ("max_results": true at 100,000 records) instead of hiding it, retries briefly on rate limits and
-        server errors, and raises on any other HTTP error so a failed fetch can't look like "no data".
+        server errors, and raises on any other HTTP error, or a reply without a "data" list (BadVendorResponse), so a
+        failed fetch can't look like "no data".
         Use utils.fetching.fetch_range to read longer periods.
         """
         fmt = "%Y-%m-%d %H:%M:%S"
@@ -44,7 +46,10 @@ class WeatherService:
             time.sleep(10 * (attempt + 1))
         response.raise_for_status()
         body = response.json()
-        return body.get("data", []), bool(body.get("max_results"))
+        # A reply without "data" isn't "no readings": count it as a failed call, so the outage is seen.
+        if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+            raise BadVendorResponse("LI-COR replied without a data list")
+        return body["data"], bool(body.get("max_results"))
 
     def get_weather_data(self, start_time=None, end_time=None):
         # Fetch weather data from the API, optionally for a time range
