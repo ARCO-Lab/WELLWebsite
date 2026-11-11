@@ -4,7 +4,7 @@
 import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 
 def describe_request_error(e):

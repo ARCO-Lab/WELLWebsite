@@ -1,0 +1,21 @@
+{
+  "max_results": false,
+  "data": [
+    {"logger_sn": "22051538", "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 05:00:00Z", "unit": "°C", "value": 4.1},
+    {"logger_sn": "22051538", "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 05:50:00Z", "unit": "°C", "value": 4.0},
+    {"logger_sn": "22051538", "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 05:50:00Z", "unit": "°C", "value": 4.0},
+    {"logger_sn": "22051538", "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 06:00:00Z", "unit": "°C", "value": 3.9},
+    {"logger_sn": "22051538", "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 06:50:00Z", "unit": "°C", "value": 3.8},
+    {"logger_sn": "22051538", "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 07:00:00Z", "unit": "°C", "value": 3.7},
+    {"logger_sn": "22051538", "sensor_sn": "21948438-2", "sensor_measurement_type": "RH", "timestamp": "2026-11-01 05:00:00Z", "unit": "%", "value": 91.5},
+    {"logger_sn": "22051538", "sensor_sn": "22154270-1", "sensor_measurement_type": "Temperature", "timestamp": "2026-11-01 05:00:00Z", "unit": "°C", "value": 8.2},
+    {"logger_sn": "22051538", "sensor_sn": "22154091-1", "sensor_measurement_type": "Solar Radiation", "timestamp": "2026-11-01 05:00:00Z", "unit": "W/m²", "value": 0.6},
+    {"logger_sn": "22051538", "sensor_sn": "22051538-B", "sensor_measurement_type": "Battery", "timestamp": "2026-11-01 05:00:00Z", "unit": "V", "value": 12.9},
+    {"logger_sn": "22051538", "sensor_sn": "22168653-1", "sensor_measurement_type": "Sensor Depth", "timestamp": "2026-11-01 05:00:00Z", "unit": "m", "value": 0.412},
+    {"logger_sn": "22051538", "sensor_sn": "22168653-1", "sensor_measurement_type": "Sensor Depth", "timestamp": "2026-11-01 06:00:00Z", "unit": "m", "value": 0.418},
+    {"logger_sn": "22051538", "sensor_sn": "22168653-2", "sensor_measurement_type": "Differential Pressure", "timestamp": "2026-11-01 05:00:00Z", "unit": "kPa", "value": 4.04},
+    {"logger_sn": "22051538", "sensor_sn": "22168653-3", "sensor_measurement_type": "Water Temperature", "timestamp": "2026-11-01 05:00:00Z", "unit": "°C", "value": 7.31},
+    {"logger_sn": "22051538", "sensor_sn": "22168653-B", "sensor_measurement_type": "Battery", "timestamp": "2026-11-01 05:00:00Z", "unit": "V", "value": 3.6},
+    {"logger_sn": "22051538", "sensor_sn": "22168657-4", "sensor_measurement_type": "Barometric Pressure", "timestamp": "2026-11-01 05:00:00Z", "unit": "kPa", "value": 100.9}
+  ]
+}

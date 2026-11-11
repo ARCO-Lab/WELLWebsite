@@ -26,11 +26,13 @@ const WeatherMetrics = ({
   activeKeys,
   metrics: weatherData = [],
   loading = false,
+  inModal = false,
 }: {
   activeKeys: string[];
   activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
   metrics?: any[];
   loading?: boolean;
+  inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }) => {
   const rows: MetricRow[] = metricMap
     .filter(({ label }) => activeKeys.includes(label))
@@ -40,7 +42,7 @@ const WeatherMetrics = ({
       format: metric.key === "Wind Direction" ? windDirection : undefined,
     }));
 
-  return <MetricGroup title="Weather Metrics" sections={[{ key: "weather", rows }]} loading={loading} />;
+  return <MetricGroup title="Weather Metrics" sections={[{ key: "weather", rows }]} loading={loading} layout={inModal ? "wrap" : "ticker"} />;
 };
 
 export default WeatherMetrics;

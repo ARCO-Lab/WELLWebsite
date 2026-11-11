@@ -10,6 +10,7 @@ init_sentry("backend")
 from flask import Flask  # noqa: E402
 from flask_cors import CORS  # noqa: E402
 from api.routes import register_routes  # noqa: E402
+from api.routes.health import register_health_routes  # noqa: E402
 from db.database import db  # noqa: E402
 
 def create_app():
@@ -23,6 +24,9 @@ def create_app():
     @app.route('/health')
     def health():
         return {"status": "ok", "message": "Backend is running"}, 200
+
+    # Registered next to /health rather than in api/routes, since it is a health check, not data API.
+    register_health_routes(app)
 
     return app
 

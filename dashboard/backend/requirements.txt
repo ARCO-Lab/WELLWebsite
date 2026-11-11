@@ -1,7 +1,7 @@
 # Exact versions of everything installed in the backend image that ran in production (built 2026-03-27).
 # They're pinned because an unpinned rebuild on 2026-11-10 pulled SQLAlchemy 2.1, whose default PostgreSQL
 # driver (psycopg 3) isn't installed, and the worker crashed on start. To upgrade, change a version here on
-# purpose, rebuild, and run the tests (from dashboard/backend: python -m unittest discover -s tests).
+# purpose, rebuild, and run the tests (from dashboard/backend: python -m unittest discover -s tests -t .).
 #
 # Packages the code uses directly: celery, dotenv, Flask, flask-cors, Flask-SQLAlchemy, gunicorn, openai,
 # openpyxl, pandas, psycopg2, pyDataverse, python-dotenv, redis, requests, Routes, schedule, sentry-sdk.

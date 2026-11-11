@@ -1,5 +1,5 @@
 """Tests for scripts/wqdata_backfill.py (no network, no database).
-Run from dashboard/backend: python -m unittest discover -s tests"""
+Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import pathlib
 import sys

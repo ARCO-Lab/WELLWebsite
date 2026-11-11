@@ -1,5 +1,5 @@
 """WQData fetching (api/services/quality.py): paging that doesn't trust info.more alone, and failures logged
-without the API key. Run from dashboard/backend: python -m unittest discover -s tests"""
+without the API key. Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import contextlib
 import io
 import pathlib
