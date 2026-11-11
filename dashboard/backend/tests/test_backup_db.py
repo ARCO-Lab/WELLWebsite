@@ -14,12 +14,14 @@ import sys
 import tempfile
 import types
 import unittest
-import unittest.mock as mock
+import unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "scripts"))
 from utils import backup  # noqa: E402
+
+mock = unittest.mock
 
 LISTING = """;
 ; Archive created at 2026-11-11 03:15:02 EST
@@ -230,8 +232,8 @@ class ScriptTests(unittest.TestCase):
         out, err = self.start("--no-prune").communicate(timeout=60)
         self.assertIn("Backup written", out, err)
         names = os.listdir(self.dir)
-        self.assertFalse(set(leftovers) & set(names))
-        self.assertTrue(set(others) <= set(names))
+        self.assertEqual(set(leftovers) & set(names), set())
+        self.assertLessEqual(set(others), set(names))
         self.assertEqual(self.passfiles(), ["pgpass-recent"])   # its own file is gone too
 
     def test_sigterm_cleans_up_the_partial_dump_and_the_password_file(self):
