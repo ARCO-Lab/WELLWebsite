@@ -71,3 +71,6 @@ home/wp-config-docker.php
 wordpress_backup.sql
 # Local snapshot of the VM (not tracked)
 well-vm/
+
+# Nightly database dumps (scripts/backup_db.py), bind-mounted into the worker
+/backups/

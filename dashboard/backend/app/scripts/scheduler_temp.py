@@ -5,7 +5,8 @@
 # its own record of months, so either copy can fail and be retried without the other.
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
 # pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload (Borealis and
-# SharePoint each have their own) and digest (utils/heartbeat.py). After every ingestion run it checks for
+# SharePoint each have their own) and digest (utils/heartbeat.py). Every night at 03:15 Toronto time it backs up
+# the database with pg_dump (scripts/backup_db.py) and pings the backup check. After every ingestion run it checks for
 # sensor and vendor problems and emails new ones (scripts/check_alerts.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
@@ -43,6 +44,7 @@ download_log_file_path = "logs/download_injections.log"
 upload_log_file_path = "logs/db_uploads.log"
 digest_log_file_path = "logs/daily_digest.log"
 alerts_log_file_path = "logs/alerts.log"
+backup_log_file_path = "logs/backup.log"
 # Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
 # on the host), so it survives restarts and rebuilds.
 uploaded_months_path = "logs/uploaded_months.json"
@@ -63,6 +65,11 @@ DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
 UPLOAD_TIMEOUT_S = 2 * 60 * 60
 LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
+BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds pg_dump to 90 min and each check to 30 min itself
+
+# The nightly backup runs at BACKUP_HOUR:15 Toronto time: after the 02:00 uploads, before the working day, and an
+# hour that happens exactly once on DST change days (02:00 is skipped or repeated, 03:00 never is).
+BACKUP_HOUR = 3
 
 # The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
 # logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
@@ -115,6 +122,15 @@ def timestamped_print_digest(*args, **kwargs):
 def timestamped_print_alerts(*args, **kwargs):
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
     with open(alerts_log_file_path, "a") as f:
+        builtins._original_print(timestamp, *args, file=f, **kwargs)
+        f.flush()
+    if LOG_TO_STDOUT:
+        builtins._original_print(timestamp, *args, **kwargs)
+
+# Override print for the nightly backup
+def timestamped_print_backup(*args, **kwargs):
+    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+    with open(backup_log_file_path, "a") as f:
         builtins._original_print(timestamp, *args, file=f, **kwargs)
         f.flush()
     if LOG_TO_STDOUT:
@@ -321,6 +337,42 @@ def daily_digest_check():
         ok = False
     ping_heartbeat("digest", "success" if ok else "fail")
 
+def nightly_backup_check(log=None, run=None):
+    """Runs every hour at :15 and acts only at BACKUP_HOUR Toronto time: backs up the database
+    (scripts/backup_db.py: pg_dump, a check of the dump, then retention), logs its output and pings the backup
+    check, /fail if it failed. Returns True/False when it ran, None outside its hour."""
+    log = log or timestamped_print_backup
+    run = run or run_bounded
+    if datetime.now(SITE_TZ).hour != BACKUP_HOUR:
+        return None
+    cmd = [sys.executable, "scripts/backup_db.py"]
+    log("========== DATABASE BACKUP STARTED ==========")
+    ping_heartbeat("backup", "start")
+    try:
+        result = run(cmd, BACKUP_TIMEOUT_S)
+        log(f"backup_db.py stdout: {result.stdout}")
+        if result.stderr:
+            log(f"backup_db.py stderr: {result.stderr}")
+        ok = True
+    except subprocess.TimeoutExpired as e:
+        log(f"[ERROR] backup_db.py was stopped after {BACKUP_TIMEOUT_S // 60} min without finishing")
+        capture_job_error(e)
+        log(f"backup_db.py stdout so far: {e.stdout}")
+        ok = False
+    except subprocess.CalledProcessError as e:
+        log(f"[ERROR] backup_db.py failed with exit code {e.returncode}")
+        capture_job_error(e)
+        log(f"backup_db.py stdout: {e.stdout}")
+        log(f"backup_db.py stderr: {e.stderr}")
+        ok = False
+    except Exception as e:
+        log(f"[ERROR] Unexpected error running backup_db.py: {e}")
+        capture_job_error(e)
+        ok = False
+    ping_heartbeat("backup", "success" if ok else "fail")
+    log(f"========== DATABASE BACKUP {'COMPLETED' if ok else 'FAILED'} ==========")
+    return ok
+
 def api_injection_job():
     """Every 10 minutes: fetch new vendor API data and store it, ping the ingestion heartbeat (success, or /fail
     when either vendor failed: inject_all_new_data raises then), then run the alert check."""
@@ -380,17 +432,20 @@ if __name__ == "__main__":
     download_run = run_in_background(download_job, log=timestamped_print_download)
     upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload)
     digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest)
+    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup)
 
     scheduler = schedule.Scheduler()
     scheduler.every(10).minutes.do(api_run)
     scheduler.every().sunday.at("00:00").do(download_run)
     scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
     scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
+    scheduler.every().hour.at(":15").do(backup_run)  # acts only at 03:15 Toronto time (nightly_backup_check)
 
     print("Schedule: API injection every 10 minutes, each followed by the alert check; Borealis download Sundays 00:00; "
           "Borealis upload (then SharePoint, if configured) at 02:00 Toronto time of each ended month not yet "
           "uploaded; "
-          f"daily digest at {DIGEST_HOUR}:00 Toronto time.")
+          f"daily digest at {DIGEST_HOUR}:00 Toronto time; database backup at {BACKUP_HOUR:02d}:15 Toronto time "
+          f"(logs/backup.log).")
     timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
                                "run `python scripts/download_data.py` by hand to fetch now.")
     timestamped_print_upload("Upload scheduler ready: at 02:00 Toronto time, each month from "

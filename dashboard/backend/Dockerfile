@@ -9,6 +9,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# pg_dump and pg_restore for the nightly database backup (scripts/backup_db.py), in the server's major version (13
+# on the VM): Debian's own client is newer, and a newer pg_dump writes archives that pg_restore 13 can't read. They
+# come from the PostgreSQL project's apt repository and live in /usr/lib/postgresql/13/bin. Change the version
+# here, and DEFAULT_PG_BIN_DIR in utils/backup.py, when the server is upgraded.
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+       https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && . /etc/os-release \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-13 \
+    && rm -rf /var/lib/apt/lists/* \
+    && /usr/lib/postgresql/13/bin/pg_dump --version
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -46,6 +46,7 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 - Indexes on station identifiers, parameters, and timestamps for fast queries
 - Downsampling jobs materialize reduced-resolution series for commonly requested windows
 - Staging area supports CSV/Excel imports; logs area persists operational logs
+- Nightly `pg_dump` backups on the VM, 7 daily + 8 weekly kept ([Database backups](#database-backups))
 
 ### WordPress Home Page
 - Custom PHP template under `wp-content/themes/well`
@@ -101,6 +102,43 @@ Using it:
 - **Run it by hand**: Actions → API canary → Run workflow. On the VM, once the image includes the script: `docker compose exec worker python scripts/api_canary.py`.
 - **When a key is rotated**, update the matching repository secret (Settings → Secrets and variables → Actions) as well as `dashboard/backend/app/.env` on the VM, then run the canary by hand. The secrets are `HOBOLINK_API_URL`, `HOBOLINK_API_TOKEN`, `HOBOLINK_LOGGERS`, `WQ_API_URL`, `WQ_API_KEY`, `WQ_DEVICE_ID`, `BOREALIS_URL`, `BOREALIS_API_TOKEN`, `BOREALIS_SAMPLING_PERSISTENT_ID` and `BOREALIS_UPLOAD_PERSISTENT_ID` (or the older `DEMO_BOREALIS_URL`, `DEMO_BOREALIS_AW_PERSISTENT_ID` and `DEMO_BOREALIS_WC_PERSISTENT_ID`). The Borealis token and the WQData key are both due for rotation.
 - **Tests**: `dashboard/backend/tests/test_api_canary.py` (no network). The canary keeps copies of a few constants from `utils/parsers.py` so the workflow needs only `requests`; CI runs the tests that check those copies still match on every pull request, with the rest of the backend tests (by hand, from `dashboard/backend`: `python -m unittest discover -s tests -t .`). The issue logic is tested by `.github/scripts/test_canary_issue.sh` against a stub `gh` (`bash .github/scripts/test_canary_issue.sh`; CI runs it with the deploy script test).
+
+## Database backups
+
+The PostgreSQL database (on the VM host, outside Docker) is the only complete copy of the data, and some of it can't be fetched again: LI-COR serves at most one year of history. So the worker backs it up every night.
+
+- **When**: 03:15 Toronto time, every night (`scripts/backup_db.py`, run by the scheduler; its output goes to `logs/backup.log`). It pings `HEALTHCHECK_URL_BACKUP` when it starts and again when it ends (`/fail` if it failed), and a failure is reported to Sentry.
+- **What**: `pg_dump -Fc` (PostgreSQL's compressed custom format) of the database in `DATABASE_URL`, made as the app role with `pg_dump` 13, the server's version (the backend image installs `postgresql-client-13` from the PostgreSQL apt repository). The password reaches `pg_dump` through a temporary 0600 password file, never its command line.
+- **Where**: `~/WELLWebsite/backups/welldb-YYYYmmdd-HHMM.dump` on the VM (`/app/backups` in the worker; the folder is gitignored). The files are readable by root only (the container runs as root, and the job sets `umask 077`), so use `sudo` on the host.
+- **Checked**: each dump is written as a hidden `.partial` file, then read back with `pg_restore --list` (it must list data for `sensor_measurements` and `sampling_measurements`, `BACKUP_EXPECT_TABLES`) and in full, and only then renamed. A failed run leaves no file that looks like a backup.
+- **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`) stays. The job refuses to start if a dump the size of the last one would leave less than `BACKUP_MIN_FREE_MB` (default 2048) free, since the database shares the disk.
+
+**Not included: `export_jobs` and `data_fixes`.** These two tables belong to the `postgres` role, and the app role can't read them, so `pg_dump` as the app role leaves them out (`BACKUP_EXCLUDE_TABLES`, default `export_jobs,data_fixes`). `export_jobs` only tracks download requests, which expire anyway; `data_fixes` records which dated one-off fixes in `db/migrations/` have run, so none runs twice. To back them up too, either dump them as `postgres` on the host now and then:
+
+```bash
+sudo -u postgres pg_dump -Fc -t export_jobs -t data_fixes -f /tmp/well-postgres-tables.dump <database>
+```
+
+or let the app role read them (as `postgres`: `GRANT SELECT ON export_jobs, data_fixes TO <app role>;`, plus any sequence they own) and set `BACKUP_EXCLUDE_TABLES=` (empty) in `dashboard/backend/app/.env`.
+
+**Run a backup by hand** (e.g. before a migration): `docker compose exec worker python scripts/backup_db.py --no-prune`. `--prune-only` applies retention without dumping.
+
+**Restore drill** (optional; once a month is plenty): `docker compose exec worker python scripts/restore_check.py` restores the newest dump (or `--file /app/backups/<name>`) into a throwaway database, `welldb_restore_check`, compares each table's row count with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing from the restore or restored empty fails the drill. Creating a database needs the `CREATEDB` privilege: grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set `RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the throwaway database. Without either, the drill stops with a message saying so.
+
+**Restoring for real.** Restore into a new, empty database, check it, then point the app at it:
+
+```bash
+cd ~/WELLWebsite
+docker compose stop worker export_worker                       # nothing writes while you switch over
+sudo -u postgres createdb -O <app role> welldb_restored
+sudo cat backups/welldb-YYYYmmdd-HHMM.dump | sudo -u postgres pg_restore --no-owner --role=<app role> --exit-on-error -d welldb_restored
+# then change the database name in BACKEND_DATABASE_URL (~/WELLWebsite/.env) to welldb_restored, and:
+docker compose up -d backend worker export_worker
+```
+
+The next ingestion runs continue from the newest reading in the restored database, within their look-back limit; fill a longer gap with `scripts/licor_backfill.py` and `scripts/wqdata_backfill.py` (LI-COR only as far back as its one-year limit).
+
+**Off-VM copies.** These dumps sit on the VM's own disk, so they protect against mistakes (a bad migration or fix, deleted rows), not against losing the VM. The monthly CSVs on Borealis and SharePoint ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) hold the sensor readings off the VM. Borealis is public, so dumps never go there; once SharePoint access exists, copying a weekly dump to that private library is the next step. Until then, copy one off by hand now and then, e.g. `ssh well 'sudo cat ~/WELLWebsite/backups/<name>.dump' > <name>.dump`, and keep it somewhere private.
 
 ## Off-VM copies: Borealis and SharePoint
 
@@ -212,6 +250,7 @@ Cron orchestrates all scheduled tasks:
 - **Historical backfills**: Retroactive data imports
 - **Downsampling**: Bucket-based reduced-resolution series for chart performance
 - **Exports**: Monthly CSV uploads to Borealis and SharePoint (see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint))
+- **Backups**: Nightly database dump at 03:15 Toronto time (see [Database backups](#database-backups))
 - **Health checks**: Readiness endpoints for external monitors
 
 ### Deploying
@@ -395,7 +434,7 @@ Four simple pieces, all optional and all off until configured. On the VM their s
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
-| `HEALTHCHECK_URL_BACKUP` | Reserved for the database backup job on the host, which is outside the containers: end it with `curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL_BACKUP"`. |
+| `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check ([Database backups](#database-backups)). |
 
 To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough), create one check per job, and copy each check's ping URL into the matching variable:
 - **WELL ingestion**: Simple schedule, period 10 minutes, grace 30 minutes.
@@ -403,7 +442,7 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 - **WELL SharePoint copy**, once SharePoint is set up: the same schedule and grace.
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
 - **WELL alerts**: Simple schedule, period 10 minutes, grace 30 minutes.
-- **WELL backup**, if the backup job pings it: its own schedule, grace about an hour.
+- **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
 
@@ -474,7 +513,7 @@ New tables are created by `db.create_all()` (`dashboard/backend/app/db/init_db.p
 ```bash
 cd ~/WELLWebsite
 ./git_pull.sh && docker compose up -d --build --no-deps backend   # the migration files are baked into the image
-pg_dump "<database url>" -Fc -f ~/welldb-$(date +%F).dump        # a backup first, kept outside the repo
+docker compose exec worker python scripts/backup_db.py --no-prune   # a backup first (see Database backups)
 docker compose exec backend python scripts/migrate.py --status   # what has run and what is pending
 docker compose exec backend python scripts/migrate.py --dry-run  # the SQL that would run
 docker compose exec backend python scripts/migrate.py            # apply
@@ -542,7 +581,7 @@ The platform should publish a simple privacy notice covering both the dashboard 
 Nginx terminates TLS and routes by host/path to either the dashboard container or WordPress. The frontend encodes filter state in URL query params. The API exposes versioned REST paths for stations, parameters, metrics, aggregate, download, ai, and health.
 
 **How are backups automated?**
-Each month the worker exports the month's sensor data as CSV and uploads it to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint).
+Every night at 03:15 Toronto time the worker dumps the whole database with `pg_dump` (except two tables the app role can't read), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
 
 **How does the AI analysis feature work safely?**
 The API aggregates and downsamples the series first, then sends a bounded prompt with metadata to OpenAI. Responses are rendered in the UI and can be exported.
