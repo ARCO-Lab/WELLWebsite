@@ -1,0 +1,49 @@
+# Once a day, checks that LI-COR, WQData and Borealis still accept our credentials and answer in the shape
+# ingestion reads (dashboard/backend/app/scripts/api_canary.py; one small request per source). A failed run
+# sends GitHub's usual "workflow run failed" notification, so a rejected or expired key is noticed the day it
+# happens. See the README's "API canary" section.
+name: API canary
+
+on:
+  schedule:
+    - cron: "17 11 * * *"   # 11:17 UTC daily; an odd minute avoids GitHub's busy top-of-the-hour queue
+  workflow_dispatch: {}      # run by hand from the Actions tab (e.g. right after rotating a key)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Only what the canary imports, at the versions in requirements.txt (the full set needs PostgreSQL headers).
+      - name: Install requests and python-dotenv
+        run: pip install "requests==2.33.0" "python-dotenv==1.2.2"
+
+      - name: Check each vendor API
+        working-directory: dashboard/backend
+        run: python app/scripts/api_canary.py
+        env:
+          HOBOLINK_API_URL: ${{ secrets.HOBOLINK_API_URL }}
+          HOBOLINK_API_TOKEN: ${{ secrets.HOBOLINK_API_TOKEN }}
+          HOBOLINK_LOGGERS: ${{ secrets.HOBOLINK_LOGGERS }}
+          WQ_API_URL: ${{ secrets.WQ_API_URL }}
+          WQ_API_KEY: ${{ secrets.WQ_API_KEY }}
+          WQ_DEVICE_ID: ${{ secrets.WQ_DEVICE_ID }}
+          DEMO_BOREALIS_URL: ${{ secrets.DEMO_BOREALIS_URL }}
+          BOREALIS_API_TOKEN: ${{ secrets.BOREALIS_API_TOKEN }}
+          DEMO_BOREALIS_AW_PERSISTENT_ID: ${{ secrets.DEMO_BOREALIS_AW_PERSISTENT_ID }}
+          DEMO_BOREALIS_WC_PERSISTENT_ID: ${{ secrets.DEMO_BOREALIS_WC_PERSISTENT_ID }}
