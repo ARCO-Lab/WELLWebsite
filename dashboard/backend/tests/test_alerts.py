@@ -450,7 +450,8 @@ class PostgresTests(unittest.TestCase):
             conn.exec_driver_sql("TRUNCATE alert_incidents, vendor_status, sensor_measurements")
 
     def ingest_with(self, licor, wqdata):
-        """Run the real inject_all_new_data with the vendors' HTTP replies mocked."""
+        """Run the real inject_all_new_data with the vendors' HTTP replies mocked. Both services call the same
+        requests.get, so one mock answers each by its URL."""
         ingest = self.ingest
         services = {"weather_service": weather.WeatherService("https://licor.test", "token", WEATHER),
                     "quality_service": quality.QualityService("https://wq.test", "SECRET", WQ)}
