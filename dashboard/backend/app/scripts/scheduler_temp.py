@@ -65,7 +65,7 @@ DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
 UPLOAD_TIMEOUT_S = 2 * 60 * 60
 LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
-BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds pg_dump to 90 min and each check to 30 min itself
+BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds its own steps to 80 + 10 + 15 min (DUMP_TIMEOUT_S etc.)
 
 # The nightly backup runs at BACKUP_HOUR:15 Toronto time: after the 02:00 uploads, before the working day, and an
 # hour that happens exactly once on DST change days (02:00 is skipped or repeated, 03:00 never is).

@@ -377,13 +377,19 @@ class RoundTrip(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(directory, dumps[0])).st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(os.stat(directory).st_mode), 0o700)
             self.assertIn("Checked: 3 tables with data", done.stdout)
+            # By default the tables (and the sequence) this role can't read are left out, and named in a warning
+            warning = [line for line in done.stderr.splitlines() if line.startswith("WARNING:")]
+            self.assertEqual(len(warning), 1, done.stderr)
+            for name in ("public.data_fixes", "public.export_jobs", "public.export_jobs_id_seq"):
+                self.assertIn(name, warning[0])
 
             # The restore drill, as a superuser (the owner role has no CREATEDB), comparing with the live counts
             drill = self.run_script("restore_check.py", "--dir", directory, "--database", self.RESTORED, "--keep",
                                     RESTORE_CHECK_DATABASE_URL=os.environ["TEST_POSTGRES_URL"])
             self.assertEqual(drill.returncode, 0, drill.stdout + drill.stderr)
             self.assertIn("Restore check passed", drill.stdout)
-            self.assertIn("public.export_jobs", drill.stdout)   # listed as excluded on purpose, not a failure
+            self.assertIn("public.export_jobs", drill.stdout)   # listed as left out (unreadable), not a failure
+            self.assertIn("can't read it", drill.stdout)
             for table in ("sensor_measurements", "sampling_measurements", "schema_migrations"):
                 self.assertEqual(self.rows(self.RESTORED, table), self.rows(self.SOURCE, table), table)
             self.assertEqual(len(self.rows(self.RESTORED, "sensor_measurements")), 500)
@@ -396,12 +402,53 @@ class RoundTrip(unittest.TestCase):
             self.assertIn("permission denied", failed.stderr)
             self.assertEqual(sorted(n for n in os.listdir(directory) if n != ".backup.lock"), dumps)
 
+    def listing(self, path):
+        return subprocess.run([backup.pg_tool("pg_restore"), "--list", path], capture_output=True, text=True,
+                              check=True).stdout
+
+    def test_a_role_that_reads_everything_dumps_everything_without_a_warning(self):
+        superuser = self.admin_url.set(database=self.SOURCE).render_as_string(hide_password=False)
+        with tempfile.TemporaryDirectory() as directory:
+            done = self.run_script("backup_db.py", "--dir", directory, DATABASE_URL=superuser)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn("WARNING", done.stderr)
+            self.assertIn("every table", done.stdout)
+            dump = os.path.join(directory, backup.dumps_in(os.listdir(directory))[0][1])
+            tables = {table for _, table in backup.table_data_entries(self.listing(dump))}
+            self.assertLessEqual({"export_jobs", "data_fixes", "sensor_measurements"}, tables)
+
+    def test_an_explicit_list_overrides_auto(self):
+        with tempfile.TemporaryDirectory() as directory:
+            done = self.run_script("backup_db.py", "--dir", directory, BACKUP_EXCLUDE_TABLES="export_jobs,data_fixes")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn("WARNING", done.stderr)   # left out on purpose: nothing to warn about
+
     def test_restore_check_without_createdb_explains(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(self.run_script("backup_db.py", "--dir", directory, BACKUP_MIN_FREE_MB="0").returncode, 0)
             drill = self.run_script("restore_check.py", "--dir", directory, "--database", self.RESTORED)
             self.assertEqual(drill.returncode, 1)
             self.assertIn("CREATEDB", drill.stderr)
+
+
+class ExclusionSettingTests(unittest.TestCase):
+    def test_unset_or_auto_means_auto_and_a_list_or_empty_is_explicit(self):
+        self.assertEqual(backup.exclusion_setting({}), backup.AUTO_EXCLUDE)
+        self.assertEqual(backup.exclusion_setting({"BACKUP_EXCLUDE_TABLES": " Auto "}), backup.AUTO_EXCLUDE)
+        self.assertEqual(backup.exclusion_setting({"BACKUP_EXCLUDE_TABLES": ""}), [])
+        self.assertEqual(backup.exclusion_setting({"BACKUP_EXCLUDE_TABLES": "export_jobs, data_fixes"}),
+                         ["export_jobs", "data_fixes"])
+
+    def test_the_drill_accepts_a_missing_table_only_when_it_was_meant_to_be_missing(self):
+        import restore_check
+        restored = {("public", "sensor_measurements"): 5}
+        live = {("public", "sensor_measurements"): 6, ("public", "export_jobs"): restore_check.UNREADABLE,
+                ("public", "alert_incidents"): 2}
+        lines, problems = restore_check.compare(restored, live, backup.AUTO_EXCLUDE)
+        self.assertEqual(problems, ["public.alert_incidents is missing from the backup"])
+        self.assertTrue(any("can't read it" in line for line in lines), lines)
+        _, problems = restore_check.compare(restored, live, ["alert_incidents"])
+        self.assertEqual(problems, ["public.export_jobs is missing from the backup"])
 
 
 if __name__ == "__main__":

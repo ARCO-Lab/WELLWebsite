@@ -29,10 +29,11 @@ PASSFILE_PREFIX = "pgpass-"
 PASSFILE_MAX_AGE_S = 60 * 60
 DUMP_TIME_FORMAT = "%Y%m%d-%H%M"
 
-# Tables the app role can't read: they are owned by the postgres role, and pg_dump locks every table it dumps,
-# so a dump as the app role that includes them fails. Set BACKUP_EXCLUDE_TABLES to an empty value (and run as
-# a role that can read them, e.g. postgres) to include them.
-DEFAULT_EXCLUDE_TABLES = "export_jobs,data_fixes"
+# Which tables to leave out (BACKUP_EXCLUDE_TABLES, read by exclusion_setting). "auto" (the default) leaves out
+# only those the connecting role can't read, since pg_dump locks and reads every table it dumps and would fail on
+# them; a role that can read everything (on the VM the app connects as postgres) dumps everything. A comma-separated
+# list, or an empty value (exclude nothing), overrides it.
+AUTO_EXCLUDE = "auto"
 # Tables a dump must hold data for, or it counts as failed.
 DEFAULT_EXPECT_TABLES = "sensor_measurements,sampling_measurements"
 
@@ -174,6 +175,44 @@ JOIN pg_namespace nt ON nt.oid = t.relnamespace
 WHERE s.relkind = 'S' AND (t.relname = ANY(%(tables)s) OR nt.nspname || '.' || t.relname = ANY(%(tables)s))
 ORDER BY 1, 2
 """
+
+
+# Tables (plain and partitioned) and sequences outside the system schemas that the connecting role may not read.
+# pg_dump reads both (a sequence's last value too), so each would make the dump fail.
+UNREADABLE_SQL = """
+SELECT n.nspname, c.relname, c.relkind
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p', 'S')
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+  AND NOT CASE WHEN c.relkind = 'S' THEN has_sequence_privilege(c.oid, 'SELECT')
+               ELSE has_table_privilege(c.oid, 'SELECT') END
+ORDER BY 1, 2
+"""
+
+
+def exclusion_setting(env=None):
+    """BACKUP_EXCLUDE_TABLES as a list of names, or AUTO_EXCLUDE when it is unset or "auto"."""
+    env = os.environ if env is None else env
+    raw = env.get("BACKUP_EXCLUDE_TABLES")
+    if raw is None or raw.strip().lower() == AUTO_EXCLUDE:
+        return AUTO_EXCLUDE
+    return csv_setting(raw)
+
+
+def unreadable_relations(settings):
+    """(tables, sequences) the role in `settings` can't read, each as schema.name. Reads only the catalogs."""
+    import psycopg2
+    conn = psycopg2.connect(**psycopg2_kwargs(settings))
+    try:
+        with conn.cursor() as cur:
+            cur.execute(UNREADABLE_SQL)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    tables = [f"{schema}.{name}" for schema, name, kind in rows if kind != "S"]
+    sequences = [f"{schema}.{name}" for schema, name, kind in rows if kind == "S"]
+    return tables, sequences
 
 
 def quoted_pattern(schema, name):

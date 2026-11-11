@@ -137,44 +137,40 @@ Using it:
 The PostgreSQL database (on the VM host, outside Docker) is the only complete copy of the data, and some of it can't be fetched again: LI-COR serves at most one year of history. So the worker backs it up every night.
 
 - **When**: 03:15 Toronto time, every night (`scripts/backup_db.py`, run by the scheduler; its output goes to `logs/backup.log`). It pings `HEALTHCHECK_URL_BACKUP` when it starts and again when it ends (`/fail` if it failed), and a failure is reported to Sentry.
-- **What**: `pg_dump -Fc` (PostgreSQL's compressed custom format) of the database in `DATABASE_URL`, made as the app role with `pg_dump` 13, the server's version (the backend image installs `postgresql-client-13` from the PostgreSQL apt repository). The password reaches `pg_dump` through a temporary 0600 password file, never its command line.
+- **What**: `pg_dump -Fc` (PostgreSQL's compressed custom format) of every table the role in `DATABASE_URL` can read (on the VM that is `postgres`, so the whole database), made with `pg_dump` 13, the server's version (the backend image installs `postgresql-client-13` from the PostgreSQL apt repository). The password reaches `pg_dump` through a temporary 0600 password file, never its command line.
 - **Where**: `~/WELLWebsite/backups/welldb-YYYYmmdd-HHMM.dump` on the VM (`/app/backups` in the worker; the folder is gitignored). The files are readable by root only (the container runs as root, and the job sets `umask 077`), so use `sudo` on the host.
 - **Checked**: each dump is written as a hidden `.partial` file, then read back with `pg_restore --list` (it must list data for `sensor_measurements` and `sampling_measurements`, `BACKUP_EXPECT_TABLES`) and in full, and only then renamed. A failed run leaves no file that looks like a backup, and the next run deletes an unfinished one left by a run that was killed. Each step has its own time limit (dump 80 min, checks 10 and 15 min), within the scheduler's 2 h for the whole run. Only one backup runs at a time (a lock file, `.backup.lock`). If deleting old dumps fails after a good backup, the run still counts as a success and logs a `WARNING:` line, which also goes to Sentry as a warning.
 - **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`) stays. The job refuses to start if a dump the size of the last one would leave less than `BACKUP_MIN_FREE_MB` (default 2048) free, since the database shares the disk.
 
-**Not included: `export_jobs` and `data_fixes`.** These two tables belong to the `postgres` role, and the app role can't read them, so `pg_dump` as the app role leaves them out (`BACKUP_EXCLUDE_TABLES`, default `export_jobs,data_fixes`). `export_jobs` only tracks download requests, which expire anyway; `data_fixes` records which dated one-off fixes in `db/migrations/` have run, so none runs twice. To back them up too, either dump them as `postgres` on the host now and then:
-
-```bash
-sudo -u postgres pg_dump -Fc -t export_jobs -t data_fixes -f /tmp/well-postgres-tables.dump <database>
-```
-
-or let the app role read them (as `postgres`: `GRANT SELECT ON export_jobs, data_fixes TO <app role>;`, plus any sequence they own) and set `BACKUP_EXCLUDE_TABLES=` (empty) in `dashboard/backend/app/.env`.
+**Tables the role can't read are left out, and named.** `pg_dump` locks and reads every table it dumps, so by default (`BACKUP_EXCLUDE_TABLES` unset or `auto`) the job leaves out any table or sequence the connecting role can't read, and prints a `WARNING:` line naming them (in `logs/backup.log`, and sent to Sentry as a warning); the backup still counts as a success. On the VM the app connects as `postgres`, which reads everything, so nothing is left out. With a more limited role, tables created by migrations or by hand as `postgres` (`schema_migrations`, `vendor_status`, `alert_incidents`, `export_jobs`, `data_fixes`, `request_metrics`, `uptime_probes`) would be named. Grant that role `SELECT` on them (and on any sequence they own), or dump them now and then as `postgres` on the host, e.g. `sudo -u postgres pg_dump -Fc -t export_jobs -t data_fixes -f /tmp/well-postgres-tables.dump <database>`. Setting `BACKUP_EXCLUDE_TABLES` to a comma-separated list leaves out exactly those, with no warning; an empty value leaves out nothing, and the dump then fails if anything is unreadable.
 
 **Run a backup by hand** (e.g. before a migration): `docker compose exec worker python scripts/backup_db.py --no-prune`. `--prune-only` applies retention without dumping.
 
-**Restore drill** (optional; once a month is plenty): `docker compose exec worker python scripts/restore_check.py` restores the newest dump (or `--file /app/backups/<name>`) into a throwaway database, `welldb_restore_check` (another name given with `--database` must start with that, since the drill drops it first), compares each table's row count with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing from the restore or restored empty fails the drill. Creating a database needs the `CREATEDB` privilege: grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set `RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
+**Restore drill** (optional; once a month is plenty): `docker compose exec worker python scripts/restore_check.py` restores the newest dump (or `--file /app/backups/<name>`) into a throwaway database, `welldb_restore_check` (another name given with `--database` must start with that, since the drill drops it first), compares each table's row count with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing from the restore or restored empty fails the drill, unless it was left out on purpose (`BACKUP_EXCLUDE_TABLES`) or because the role can't read it. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role on the VM) has; for another role, grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set `RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
 
-**Restoring for real.** Restore into a new, empty database, put back the two tables the dump leaves out, then point the app at it:
+**Restoring for real.** Restore into a new, empty database, put back anything the dump left out, then point the app at it. `<app role>` is the role in `BACKEND_DATABASE_URL` (`postgres` on the VM).
 
 ```bash
 cd ~/WELLWebsite
 docker compose stop worker export_worker      # nothing writes while you switch over
 sudo -u postgres createdb -O <app role> welldb_restored
 sudo cat backups/welldb-YYYYmmdd-HHMM.dump | sudo -u postgres pg_restore --no-owner --role=<app role> --exit-on-error -d welldb_restored
+```
 
-# export_jobs and data_fixes aren't in the dump. If you kept a dump of them made as postgres (see above), restore it:
-sudo cat /path/to/well-postgres-tables.dump | sudo -u postgres pg_restore --exit-on-error -d welldb_restored
-# If not, recreate data_fixes with a row for each dated fix that had run, so none of them can run a second time
-# (each fix's name is in the INSERT INTO data_fixes line of its file in dashboard/backend/app/db/migrations/; so far
-# that is only the 2026-11-10 one). Without this row, running 2026-11-10_swap_air_soil_temperature.sql again would
-# swap air and soil temperature back.
+The next steps matter only if that night's `logs/backup.log` has a `WARNING:` line saying tables were left out. On the VM the app connects as `postgres`, so normally nothing was. If `data_fixes` was left out and you kept a dump of it made as `postgres` (see above), restore that: `sudo cat /path/to/well-postgres-tables.dump | sudo -u postgres pg_restore --exit-on-error -d welldb_restored`. If not, recreate it with a row for each dated fix that had run, so none can run a second time; without its row, running `2026-11-10_swap_air_soil_temperature.sql` again would swap air and soil temperature back. Each fix's name is in the `INSERT INTO data_fixes` line of its file in `dashboard/backend/app/db/migrations/`; so far that is only the 2026-11-10 one. These statements are safe to run even if the table came back with the dump:
+
+```bash
 sudo -u postgres psql -d welldb_restored -v ON_ERROR_STOP=1 \
-  -c "CREATE TABLE data_fixes (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" \
-  -c "INSERT INTO data_fixes (name) VALUES ('2026-11-10 swap air and soil temperature')"
+  -c "CREATE TABLE IF NOT EXISTS data_fixes (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" \
+  -c "INSERT INTO data_fixes (name) VALUES ('2026-11-10 swap air and soil temperature') ON CONFLICT (name) DO NOTHING"
+```
 
-# Point the app at the new database: in ~/WELLWebsite/.env, change the database name in BACKEND_DATABASE_URL to
-# welldb_restored. Then create the app's tables that are still missing (export_jobs, unless it was restored above);
-# db/init_db.py runs create_all(), which creates missing tables only and never changes existing ones.
+Then switch over:
+
+```bash
+# In ~/WELLWebsite/.env, change the database name in BACKEND_DATABASE_URL to welldb_restored. Then create any of the
+# app's tables still missing (e.g. export_jobs, if it was left out): db/init_db.py runs create_all(), which creates
+# missing tables only and never changes existing ones, so it is harmless when nothing is missing.
 docker compose run --rm --no-deps backend python db/init_db.py
 # Recreate the containers so they read the new URL. Until then the backend keeps serving the old database.
 docker compose up -d backend worker export_worker
@@ -744,7 +740,7 @@ The platform should publish a simple privacy notice covering both the dashboard 
 `welldash.mcmaster.ca` and `well.mcmaster.ca` both point at McMaster's reverse proxy, which terminates TLS and forwards to the VM: the dashboard container on port 8081, WordPress on port 8080. The browser calls the dashboard's own API routes (`/api/...`), which pass the request to the Flask backend on the internal Docker network. The API routes are listed under [Backend](#backend); none are versioned.
 
 **How are backups automated?**
-Every night at 03:15 Toronto time the worker dumps the whole database with `pg_dump` (except two tables the app role can't read), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
+Every night at 03:15 Toronto time the worker dumps the database with `pg_dump` (every table its role can read, which on the VM is all of them; any left out are named in a warning), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
 
 **What keeps the dashboard responsive with large datasets?**
 `/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.

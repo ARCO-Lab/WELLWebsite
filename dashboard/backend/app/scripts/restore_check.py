@@ -5,14 +5,16 @@
 #   docker compose exec worker python scripts/restore_check.py
 #   docker compose exec worker python scripts/restore_check.py --file /app/backups/welldb-20261111-0315.dump
 #
-# Creating a database needs the CREATEDB privilege, which the app role may not have. Then either grant it once
-# (as postgres: ALTER ROLE welluser CREATEDB;) or set RESTORE_CHECK_DATABASE_URL to a URL for a role that has it
-# (e.g. postgres); that role creates, restores into and drops the throwaway database, and the live counts are
-# still read with DATABASE_URL, in a read-only session.
+# Creating a database needs the CREATEDB privilege. On the VM the app connects as postgres, which has it. A role
+# without it can be granted it once (as postgres: ALTER ROLE <role> CREATEDB;), or RESTORE_CHECK_DATABASE_URL can
+# point at a role that has it; that role creates, restores into and drops the throwaway database, and the live
+# counts are still read with DATABASE_URL, in a read-only session.
 #
 # The live database keeps changing (new readings every 10 minutes), so counts that grew since the dump are
 # expected and reported, not failures. It fails (exit 1) if the restore fails, a table the live database has is
-# missing from the restore (except BACKUP_EXCLUDE_TABLES), or a table restored empty while the live one has rows.
+# missing from the restore, or a table restored empty while the live one has rows. A missing table isn't a failure
+# when BACKUP_EXCLUDE_TABLES lists it, or (by default, "auto") when the role can't read it, which is why the
+# backup left it out.
 #
 # The throwaway database is dropped first if it exists (left by an interrupted drill), so its name must start with
 # welldb_restore_check. The restore takes about as much disk as the live database: the drill refuses to start
@@ -33,7 +35,7 @@ import psycopg2  # noqa: E402
 from psycopg2 import sql  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    DEFAULT_EXCLUDE_TABLES, csv_setting, dumps_in, human_size, libpq_env, parse_database_url, pg_tool, psycopg2_kwargs,
+    AUTO_EXCLUDE, dumps_in, exclusion_setting, human_size, libpq_env, parse_database_url, pg_tool, psycopg2_kwargs,
     run_tool, with_database,
 )
 
@@ -65,7 +67,7 @@ def latest_dump(directory):
 
 def row_counts(settings, read_only=False):
     """{(schema, table): rows} for the tables in the database `settings` points at; UNREADABLE for a table this role
-    may not read (export_jobs and data_fixes, for the app role)."""
+    may not read."""
     conn = psycopg2.connect(**psycopg2_kwargs(settings))
     try:
         if read_only:
@@ -117,14 +119,20 @@ def admin_execute(settings, statement):
 
 
 def compare(restored, live, excluded):
-    """Lines describing each table, and the problems that make the check fail."""
+    """Lines describing each table, and the problems that make the check fail. `excluded` is BACKUP_EXCLUDE_TABLES
+    (exclusion_setting): a list of tables left out on purpose, or AUTO_EXCLUDE, under which the backup leaves out
+    the tables its role can't read, so a table missing from the backup is expected when the live role can't read it
+    either (the drill reads the live counts with the same DATABASE_URL as the backup)."""
     lines, problems = [], []
-    excluded = set(excluded)
+    auto = excluded == AUTO_EXCLUDE
+    excluded = set() if auto else set(excluded)
     for key in sorted(set(restored) | set(live)):
         name = f"{key[0]}.{key[1]}"
         r, lv = restored.get(key), live.get(key)
         if r is None:
-            if key[1] in excluded or name in excluded:
+            if auto and lv == UNREADABLE:
+                lines.append(f"  {name:<40} not in the backup (this role can't read it; the backup log warned)")
+            elif key[1] in excluded or name in excluded:
                 lines.append(f"  {name:<40} not in the backup (excluded on purpose)")
             else:
                 lines.append(f"  {name:<40} MISSING from the backup (live: {lv})")
@@ -187,8 +195,7 @@ def main(argv=None):
         print("Restored. Counting rows (restored vs live)...")
         restored = row_counts(target)
         current = row_counts(live, read_only=True)
-        lines, problems = compare(restored, current, csv_setting(os.getenv("BACKUP_EXCLUDE_TABLES",
-                                                                             DEFAULT_EXCLUDE_TABLES)))
+        lines, problems = compare(restored, current, exclusion_setting())
         print("\n".join(lines))
         if problems:
             raise RestoreCheckError("; ".join(problems))

@@ -12,9 +12,10 @@
 #   BACKUP_DIR              where dumps go (default /app/backups, a bind mount of ./backups on the host)
 #   BACKUP_KEEP_DAILY       how many days keep their newest dump (default 7)
 #   BACKUP_KEEP_WEEKLY      how many ISO weeks keep their newest dump (default 8)
-#   BACKUP_EXCLUDE_TABLES   tables left out, with the sequences they own (default export_jobs,data_fixes: owned by
-#                           the postgres role, which the app role can't read); empty to dump everything, as a
-#                           role that can read it all
+#   BACKUP_EXCLUDE_TABLES   tables left out, with the sequences they own. Default "auto": every table the role can
+#                           read is dumped, and any it can't are left out and named in a WARNING: line (on the VM
+#                           the app connects as postgres, which reads everything). A comma-separated list leaves
+#                           out exactly those; an empty value leaves out nothing.
 #   BACKUP_EXPECT_TABLES    tables the dump must hold data for (default sensor_measurements,sampling_measurements)
 #   BACKUP_MIN_FREE_MB      free space to leave on the disk after a dump the size of the last one (default 2048):
 #                           the database usually shares the disk, and must never be the one to run out
@@ -24,8 +25,8 @@
 # written as .welldb-*.partial and renamed once it is complete and checked, so a failed run leaves no file that
 # looks like a backup; one left by a run that was killed is deleted by the next run. Only one run at a time: a run
 # holds a lock (.backup.lock in BACKUP_DIR) and another one refuses to start.
-# Exit code 0 means a checked dump was written (a failure of the retention step after it is printed as a WARNING:
-# line, as the backup itself is fine); 1 means it wasn't, and the reason is printed.
+# Exit code 0 means a checked dump was written (tables left out because the role can't read them, and a failure of
+# the retention step after it, are printed as WARNING: lines); 1 means it wasn't, and the reason is printed.
 
 import argparse
 import fcntl
@@ -43,9 +44,9 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 import psycopg2  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    DEFAULT_EXCLUDE_TABLES, DEFAULT_EXPECT_TABLES, csv_setting, dump_name, dumps_in, dumps_to_prune, human_size,
-    libpq_env, missing_tables, owned_sequences, parse_database_url, pg_tool, remove_stale_passfiles, run_tool,
-    stale_partials, table_data_entries,
+    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, csv_setting, dump_name, dumps_in, dumps_to_prune, exclusion_setting,
+    human_size, libpq_env, missing_tables, owned_sequences, parse_database_url, pg_tool, quoted_pattern,
+    remove_stale_passfiles, run_tool, stale_partials, table_data_entries, unreadable_relations,
 )
 
 SITE_TZ = ZoneInfo("America/Toronto")
@@ -151,9 +152,33 @@ def remove_leftovers(directory, log=print):
         log("Deleted temporary password files left by an earlier run that was stopped")
 
 
-def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=print):
-    """Dump the database into `directory` and check the dump. Returns the path of the new dump. The caller holds
-    the backup lock (take_lock)."""
+def warn_stderr(message):
+    print(f"WARNING: {message}", file=sys.stderr)
+
+
+def exclusions(settings, exclude, warn=warn_stderr):
+    """(tables left out, pg_dump --exclude-table patterns) for `exclude`: a list of tables, or AUTO_EXCLUDE for
+    those the role can't read. With AUTO_EXCLUDE, any such table or sequence is named in a warning (the scheduler
+    sends WARNING: lines to Sentry), since the backup is then incomplete."""
+    if exclude == AUTO_EXCLUDE:
+        tables, sequences = unreadable_relations(settings)
+        left_out = tables + sequences
+        if left_out:
+            warn(f"the database role can't read {', '.join(left_out)}, so the backup leaves "
+                 f"{'it' if len(left_out) == 1 else 'them'} out. To back up everything, grant it SELECT or connect "
+                 f"as a role that can read everything (or list them in BACKUP_EXCLUDE_TABLES to leave them out on "
+                 f"purpose).")
+        patterns = [quoted_pattern(*name.split(".", 1)) for name in left_out]
+        exclude = tables
+    else:
+        patterns = list(exclude)
+    patterns += [p for p in owned_sequences(settings, exclude) if p not in patterns]
+    return exclude, patterns
+
+
+def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=print, warn=warn_stderr):
+    """Dump the database into `directory` and check the dump. Returns the path of the new dump. `exclude` is a list
+    of tables or AUTO_EXCLUDE (see exclusions). The caller holds the backup lock (take_lock)."""
     remove_leftovers(directory, log)
     existing = dumps_in(os.listdir(directory))
     previous_size = os.path.getsize(os.path.join(directory, existing[0][1])) if existing else 0
@@ -165,12 +190,12 @@ def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=p
     cmd = [pg_tool("pg_dump"), "--format=custom", "--no-password", "--lock-wait-timeout=300000",
            f"--file={partial}"]
     try:
-        sequences = owned_sequences(settings, exclude)
+        exclude, patterns = exclusions(settings, exclude, warn)
     except psycopg2.Error as e:
-        raise BackupError(f"could not connect to look up the excluded tables' sequences: {str(e).strip()}")
-    cmd += [f"--exclude-table={pattern}" for pattern in [*exclude, *sequences]]
+        raise BackupError(f"could not connect to look up which tables to leave out: {str(e).strip()}")
+    cmd += [f"--exclude-table={pattern}" for pattern in patterns]
     log(f"Dumping database {settings['database']} on {settings.get('host') or 'the local socket'} to {final.name}"
-        + (f", without {', '.join(exclude)} and their sequences" if exclude else ""))
+        + (f", without {', '.join(exclude)} and their sequences" if exclude else ", every table"))
     try:
         with libpq_env(settings) as env:
             try:
@@ -187,8 +212,10 @@ def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=p
 
 
 def stop_on_sigterm(signum, frame):
-    """SIGTERM (the scheduler's limit, or docker stop) ends the run through SystemExit, so the cleanup in back_up
-    and libpq_env still runs: the unfinished dump and the password file are deleted, and pg_dump is stopped."""
+    """SIGTERM (the scheduler stopping a run that passed its time limit) ends the run through SystemExit, so the
+    cleanup in back_up and libpq_env still runs: the unfinished dump and the password file are deleted, and pg_dump
+    is stopped. `docker stop` doesn't reach this process (the scheduler starts it in a session of its own), so the
+    container stopping kills it outright; the next run then deletes what it left behind (remove_leftovers)."""
     raise SystemExit(128 + signum)
 
 
@@ -216,7 +243,7 @@ def run(args, keep_daily, keep_weekly):
     try:
         if not args.prune_only:
             settings = parse_database_url(os.getenv("DATABASE_URL", "").strip())
-            exclude = csv_setting(os.getenv("BACKUP_EXCLUDE_TABLES", DEFAULT_EXCLUDE_TABLES))
+            exclude = exclusion_setting()
             expected = csv_setting(os.getenv("BACKUP_EXPECT_TABLES", DEFAULT_EXPECT_TABLES))
             back_up(args.dir, settings, exclude, expected, int_setting("BACKUP_MIN_FREE_MB", 2048))
     except (BackupError, ValueError, RuntimeError, OSError) as e:
