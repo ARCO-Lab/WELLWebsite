@@ -158,6 +158,40 @@ class CleanupTests(unittest.TestCase):
         with frozen_clock(FALL_BACK_DONE + dt.timedelta(minutes=61)):
             self.assertEqual(client.get("/api/exports/jobs/dst/download").status_code, 410)
 
+    def fail_job(self, job_id, exc):
+        """Runs generate_export_job with write_export_csv raising `exc`, and returns the job afterwards."""
+        from tasks import exports as export_tasks
+        payload = {"domain": "sampling", "start": "2026-11-01T00:00:00", "end": "2026-11-02T00:00:00"}
+        self.db.session.add(self.ExportJob(id=job_id, status="queued", domain="sampling", payload=payload,
+                                           estimated_rows=1))
+        self.db.session.commit()
+        fail = mock.patch.object(export_tasks, "write_export_csv", side_effect=exc)
+        with fail, mock.patch.object(export_tasks, "create_app", return_value=self.app):
+            with self.assertRaises(type(exc)):
+                export_tasks.generate_export_job(job_id)
+        self.db.session.expire_all()
+        return self.get(job_id)
+
+    def test_a_failed_job_hides_the_internal_error_from_the_page(self):
+        from tasks.exports import EXPORT_FAILED_MESSAGE
+        leak = RuntimeError("(psycopg2.OperationalError) SELECT * FROM measurements WHERE site_id = %(p)s "
+                            "(Background on this error at: https://sqlalche.me/e/20/e3q8) /app/app/db/x.py")
+        job = self.fail_job("leaky", leak)
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error_message, EXPORT_FAILED_MESSAGE)
+        r = self.app.test_client().get("/api/exports/jobs/leaky")
+        self.assertNotIn("SELECT", r.get_data(as_text=True))
+        self.assertNotIn("sqlalche.me", r.get_data(as_text=True))
+
+    def test_a_failed_job_keeps_a_validation_message(self):
+        job = self.fail_job("invalid", ValueError("start must be before end"))
+        self.assertEqual(job.error_message, "start must be before end")
+
+    def test_a_failed_job_hides_a_value_error_subclass(self):
+        from tasks.exports import EXPORT_FAILED_MESSAGE
+        job = self.fail_job("decode", UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"))
+        self.assertEqual(job.error_message, EXPORT_FAILED_MESSAGE)
+
     def test_a_failed_export_deletes_the_file_it_wrote(self):
         from tasks import exports as export_tasks
         payload = {"domain": "sampling", "start": "2026-11-01T00:00:00", "end": "2026-11-02T00:00:00"}

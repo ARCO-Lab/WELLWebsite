@@ -15,8 +15,9 @@ interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   children: React.ReactNode;
-  // 1. Add 'sampling' to the allowed types
-  type: "weather" | "logger" | "quality" | "sampling";
+  header?: React.ReactNode; // shown above the content, e.g. the charts' window bar
+  // "gauges" and "logger" both mean the water logger graphs (titled "Logger")
+  type: "weather" | "logger" | "gauges" | "quality" | "sampling";
   subtypes?: string[];
   analysisType: "recent" | "alltime";
   data: any;
@@ -24,7 +25,7 @@ interface ModalProps {
   setWeatherTab?: (tab: "graph" | "windrose") => void;
 }
 
-const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes, analysisType, weatherTab, setWeatherTab }) => {
+const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, header, type, subtypes, analysisType, weatherTab, setWeatherTab }) => {
   useEffect(() => {
     // Close modal on Escape key press
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -42,11 +43,12 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, type, subtypes
         <DialogHeader className="shrink-0 pr-10">
           <DialogTitle className="text-2xl font-poppins font-bold text-primary flex items-center justify-between">
             {/* Show group type and context in modal title */}
-            {`${type === "gauges" /* Error Necessary */ ? "Logger" : type.charAt(0).toUpperCase() + type.slice(1)} ${analysisType === "recent" ? "Metrics" : "Graph"}`}
+            {`${type === "gauges" ? "Logger" : type.charAt(0).toUpperCase() + type.slice(1)} ${analysisType === "recent" ? "Metrics" : "Graph"}`}
           </DialogTitle>
         </DialogHeader>
         
         <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1">
+          {header}
           {/* Main content: inject modal props if children is a valid React element */}
           {React.isValidElement(children)
             ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })

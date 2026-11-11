@@ -1,95 +1,55 @@
 # WELL Data Upload Instructions for Dataverse
 
 ## Overview
-This document provides instructions for uploading data to the Dataverse repository for the WELL (Water Environment Learning Laboratory) project. **Please follow these instructions exactly** to ensure your data can be automatically processed by our system.
+This document explains how to upload creek sampling data to the WELL (Watershed and Ecosystems Living Lab) dataset
+on Dataverse (Borealis) so that the dashboard imports it automatically.
 
-## File Format Requirements
+## File format
 
-### ⚠️ CRITICAL: Use the Sample File as Your Template
-**You MUST use the exact same format as `WELLAncasterWatershed_SAMPLE.xlsx`**
+**Use the standard sampling CSV format: [docs/sampling-csv-format.md](../../../../docs/sampling-csv-format.md).**
+Start from the template, `dashboard/backend/app/sampling_template.csv`, which the dashboard also offers as
+"CSV template" on its Ancaster Watershed tab. In short: UTF-8 CSV, one reading per row, columns `date` (YYYY-MM-DD),
+optional `time` (24-hour HH:MM, local time), `site`, `parameter`, `value`, `unit`, plus optional
+`below_detection`, `qc_flag`, `sampler`, `method` and `notes`.
 
-- **Download the sample file**: `WELLAncasterWatershed_SAMPLE.xlsx` from the Dataverse repository
-- **Copy this file** and modify it with your data
-- **Do NOT create a new file from scratch** - always start with the sample file
-- **Do NOT change the structure, column headers, or formatting** of the sample file
+Every file is checked in full before anything is imported. If any row has a problem (an unknown site, a date such as
+`01/02/2026` that could be read two ways, a unit that doesn't match the parameter, a repeated reading...), **nothing
+from that file is imported**, and the import log lists each problem with its row number. Check a file yourself before
+uploading it:
 
-### File Format Specifications
+```sh
+cd dashboard/backend/app
+python scripts/check_sampling_csv.py WELLAncasterWatershed_May2026.csv
+```
 
-1. **File Extension**: Must be `.xlsx` (Excel format)
-   - ❌ NOT `.xls`, `.csv`, `.txt`, or any other format
-   - ✅ Only `.xlsx` files will be processed
+Excel files (`.xlsx`) in the older one-row-per-visit layout are still accepted and go through the same checks; see
+the format page.
 
-2. **Naming Convention**: `WELLAncasterWatershed_[description].xlsx`
-   - **Required prefix**: `WELLAncasterWatershed_`
-   - **Description**: Replace `[description]` with a meaningful identifier
-   - **Examples**:
-     - ✅ `WELLAncasterWatershed_January2024.xlsx`
-     - ✅ `WELLAncasterWatershed_WinterSampling.xlsx`
-     - ✅ `WELLAncasterWatershed_Site1_Q1.xlsx`
-     - ❌ `lancaster_data.xlsx` (missing required prefix)
-     - ❌ `WELLData_Jan.xlsx` (incorrect prefix)
+## Naming convention
 
-## Step-by-Step Upload Process
+`WELLAncasterWatershed_[description].csv` (or `.xlsx`)
+- **Required prefix**: `WELLAncasterWatershed_`
+- **Description**: a meaningful identifier, e.g. `WELLAncasterWatershed_May2026.csv`,
+  `WELLAncasterWatershed_Site1_Q1.csv`
+- Files without the prefix (e.g. `lancaster_data.csv`) and `WELLAncasterWatershed_SAMPLE.*` are ignored.
 
-### 1. Prepare Your Data File
-1. Download `WELLAncasterWatershed_SAMPLE.xlsx` from the Dataverse
-2. **Make a copy** of this file (do not edit the original sample)
-3. Rename your copy following the naming convention: `WELLAncasterWatershed_[YourDescription].xlsx`
-4. Replace the sample data with your actual data
-5. **Keep all column headers, formatting, and structure exactly as shown in the sample**
-
-### 2. Data Entry Guidelines
-- **Do not add, remove, or rename columns**
-- **Do not change the order of columns**
-- **Follow the data format shown in the sample file**
-- **Use the same units and formatting as the sample**
-- **Leave cells blank if data is not available** (do not use "N/A", "NULL", etc.)
-
-### 3. Upload to Dataverse
-1. Log into the Dataverse repository
-2. Navigate to the WELL dataset
-3. Upload your `.xlsx` file
-4. Verify the filename follows the `WELLAncasterWatershed_[description].xlsx` convention
-
-## Important Reminders
-
-### ✅ DO:
-- Use `WELLAncasterWatershed_SAMPLE.xlsx` as your starting template
-- Copy the sample file and modify it
-- Keep the `.xlsx` format
-- Follow the exact naming convention
-- Preserve all column headers and structure
-- Use meaningful descriptions in filenames
-
-### ❌ DON'T:
-- Create files from scratch
-- Change column headers or structure
-- Use any format other than `.xlsx`
-- Use incorrect naming conventions
-- Modify the sample file directly
+## Upload
+1. Log into the Dataverse repository and open the WELL dataset.
+2. Upload the file (Dataverse may show a CSV as `.tab` after upload; that's expected, the original is what's
+   imported).
+3. Check that the filename follows the naming convention.
 
 ## Troubleshooting
 
-**Q: My file isn't being processed automatically**
-- Check that your filename starts with `WELLAncasterWatershed_`
-- Verify the file extension is `.xlsx`
-- Ensure you used the sample file as your template
+**My file wasn't imported.** It was refused: the import log lists its problems with their row numbers (the first 50,
+then the total), once. A refused file isn't tried again, so fix the rows and upload the corrected file as a new file;
+it is imported on the next weekly run. Running `scripts/check_sampling_csv.py` on the file lists every problem.
 
-**Q: I need to add new types of measurements**
-- Contact the WELL team before adding new columns
-- The system expects the exact format from the sample file
+**I need a new site or parameter.** Contact the WELL dashboard team first: the dashboard needs to know where a site is
+and how to show a parameter, and until then rows with it are rejected.
 
-**Q: Can I upload multiple files at once?**
-- Yes, but each file must follow the naming convention individually
-- Each file should contain a complete dataset for a specific time period or sampling event
+**I uploaded a corrected value.** Readings already stored are never overwritten automatically. The import log reports
+the difference and the SQL to remove the old reading; after that, importing the file again stores the new value.
 
-## Contact Information
-
-If you have questions about the upload format or encounter issues:
-- Review the sample file: `WELLAncasterWatershed_SAMPLE.xlsx`
-- Contact the WELL project team for assistance
-- Check that you're following ALL requirements in this README
-
----
-
-**Remember: When in doubt, always refer back to the sample file `WELLAncasterWatershed_SAMPLE.xlsx` and copy its exact format!**
+**Can I upload multiple files at once?** Yes. Each file is checked and imported on its own, and re-importing a file
+(or one that overlaps another) never stores a reading twice.

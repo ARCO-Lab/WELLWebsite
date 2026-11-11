@@ -1,5 +1,6 @@
 // This file defines the LoggerGraph component for rendering time series charts for selected water loggers.
-// It groups logger data by station and displays a MetricChart for each selected logger.
+// It displays a MetricChart for each selected logger (its station's series, from the page via useChartView), with
+// one error message and one resolution badge for all of them.
 
 // ADD RATING CURVE FOR OTHER METRIC THAT JUST TAKES FROM WSE WHEN AVAILABLE
 
@@ -7,6 +8,8 @@
 import React, { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SENSOR_FILTER_CONFIG } from '@/components/config/filters';
+import { useChartView } from '@/hooks/useChartSeries';
+import { resolutionBadge } from '@/utils/chartWindow';
 
 const MetricChart = dynamic(() => import('./highcharts/MetricChart'), {
   ssr: false,
@@ -14,23 +17,15 @@ const MetricChart = dynamic(() => import('./highcharts/MetricChart'), {
 
 interface Props {
   subFilters: string[];
-  startDate: Date | null;
-  endDate: Date | null;
   modalOpen?: boolean; // set by the modal (cloneElement), not by the page
-  data: any[];
-  loading?: boolean;
-  error?: Error | null;
 }
 
 const LoggerGraph = ({
   subFilters,
-  startDate,
-  endDate,
   modalOpen = false,
-  data,
-  loading = false,
-  error = null,
 }: Props) => {
+  const { error, loading, shownBucketS, shownAggregated } = useChartView();
+  const badge = resolutionBadge(shownBucketS, shownAggregated, false);
   // 1. Determine which loggers and metrics are selected, adapted from CreekGraph.tsx
   const { metrics, selectedLoggers } = useMemo(() => {
     // Ensure subFilters is an array before proceeding
@@ -68,17 +63,6 @@ const LoggerGraph = ({
     return { metrics: selectedMetrics, selectedLoggers: selectedLoggers };
   }, [subFilters]);
 
-  // 2. Group the raw data by station_id for efficient filtering
-  const dataByStation = useMemo(() => {
-    if (!data || !data.length) return {};
-    return data.reduce((acc, curr) => {
-      const stationId = String(curr.station_id);
-      if (!acc[stationId]) acc[stationId] = [];
-      acc[stationId].push(curr);
-      return acc;
-    }, {} as Record<string, any[]>);
-  }, [data]);
-
   // Helper function to determine the grid layout based on the number of items.
   const getGridClass = (count: number) => {
     switch (count) {
@@ -99,11 +83,15 @@ const LoggerGraph = ({
 
   return (
     <div className="p-4 bg-white rounded shadow">
-      <h3 className="font-bold text-lg mb-2">Water Loggers</h3>
+      <h3 className="mb-2 flex flex-wrap items-baseline gap-x-3 text-lg font-bold">
+        Water Loggers
+        {badge && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-normal text-gray-600">{badge}</span>}
+      </h3>
 
-      {/* One message for all the logger charts: inside each narrow chart it ran far past the card */}
+      {/* One message for all the logger charts (inside each narrow chart it ran far past the card); screen readers
+          hear it once, from the window bar's live region */}
       {error && !loading && (
-        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700" role="alert">
+        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700" aria-hidden="true">
           {error.message}
         </div>
       )}
@@ -113,7 +101,6 @@ const LoggerGraph = ({
         {selectedLoggers.sort().map((stationId, index) => {
           const siteConfig = SENSOR_FILTER_CONFIG.gauges.sites;
           const loggerName = siteConfig[stationId as keyof typeof siteConfig] || `Logger ${stationId}`;
-          const loggerData = dataByStation[stationId] || [];
           const loggerCount = selectedLoggers.length;
           let legendIndex;
 
@@ -127,15 +114,13 @@ const LoggerGraph = ({
           return (
             <div key={stationId}>
               <MetricChart
-                activeGroup={loggerName} // Error necessary
-                subFilters={metrics}
+                title={`${loggerName} Data`}
+                groupType="Logger"
+                stationId={stationId}
+                measurements={metrics}
                 height={300}
-                startDate={startDate}
-                endDate={endDate}
-                data={loggerData}
-                loading={loading}
-                error={error}
                 showErrorBanner={false}
+                showBadge={false}
                 modalOpen={modalOpen}
                 showLegend={modalOpen ? true : index === legendIndex}
               />

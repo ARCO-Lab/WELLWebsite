@@ -1,8 +1,8 @@
 // This file defines the Download component for exporting filtered sensor or sampling data as a CSV file.
 // It builds the CSV structure based on active filters, groups, and selected metrics/sites.
 
-import React, { useState } from "react";
-import { Download as DownloadIcon } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Download as DownloadIcon, X } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import {
   SENSOR_FILTER_CONFIG,
@@ -10,6 +10,43 @@ import {
   CREEK_ID_MAP,
   SAMPLING_METRICS,
 } from "@/components/config/filters";
+
+// An error whose message was written for the user; any other error is shown as a generic message.
+class ExportError extends Error {}
+
+// fetch() itself failed: the request got no reply (offline, DNS failure, connection reset).
+class NetworkError extends ExportError {
+  constructor() {
+    super("Could not reach the server. Check your connection.");
+  }
+}
+
+// Shown for a queued export that failed on the server. The job's own error_message isn't shown: the server
+// keeps only safe text there, but this way nothing internal can reach the page whatever the backend stores.
+const JOB_FAILED_MESSAGE = "The server couldn't build this export. Please try again later.";
+const RETRYABLE_STATUSES = [502, 503, 504];
+const POLL_RETRY_DELAYS_S = [2, 4, 8, 16]; // waits before each retry of a status check that failed
+const POLL_MAX_MINUTES = 30; // stop waiting on a job after this long (Try again resumes it)
+
+const sleep = (seconds: number) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+
+// fetch(), with the errors fetch() itself throws turned into a NetworkError.
+async function request(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch {
+    throw new NetworkError();
+  }
+}
+
+// The JSON body of a successful reply. A proxy or server error page can arrive with a 200 too.
+async function readJson(res: Response) {
+  try {
+    return await res.json();
+  } catch {
+    throw new ExportError("The server sent an unexpected reply.");
+  }
+}
 
 // The message for a failed API reply: the JSON body's `error` if there is one, otherwise the fallback and status.
 // The proxies pass the backend's reply through, so an unexpected failure can be an HTML page instead of JSON.
@@ -77,6 +114,29 @@ const Download: React.FC<DownloadProps> = ({
 }) => {
   const [isExporting, setIsExporting] = useState(false);
   const [statusText, setStatusText] = useState<string>("");
+  // The last export's failure, shown under the button until it is dismissed or a new export starts. It is not hidden
+  // on a timer: exports can take a while, and someone who looked away would never learn why no file arrived.
+  const [errorText, setErrorText] = useState<string>("");
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  // The queued export still being waited on, kept so Try again can resume it instead of queueing a duplicate.
+  const resumeJobRef = useRef<{ jobId: string; pollIntervalSeconds: number; selectionKey: string } | null>(null);
+
+  // Changes whenever the filters or dates change. (The parent passes new objects on every render, so the props
+  // themselves can't be compared.)
+  const selectionKey = JSON.stringify([
+    isSampling,
+    activeGroups,
+    subFilters,
+    activeCreeks,
+    samplingSubFilters,
+    startDate?.getTime() ?? null,
+    endDate?.getTime() ?? null,
+  ]);
+
+  // An error about the previous selection no longer applies once the selection changes.
+  useEffect(() => {
+    setErrorText("");
+  }, [selectionKey]);
 
   const getFileName = () => {
     if (isSampling) {
@@ -104,7 +164,7 @@ const Download: React.FC<DownloadProps> = ({
 
   const buildExportPayload = () => {
     if (!startDate || !endDate) {
-      throw new Error("Start and end date are required");
+      throw new ExportError("Start and end date are required");
     }
 
     const start = new Date(startDate);
@@ -226,10 +286,15 @@ const Download: React.FC<DownloadProps> = ({
 
   const triggerDownload = async (response: Response, fallbackFileName: string) => {
     if (!response.ok) {
-      throw new Error(await readError(response, "Failed to download export"));
+      throw new ExportError(await readError(response, "Failed to download export"));
     }
 
-    const blob = await response.blob();
+    let blob: Blob;
+    try {
+      blob = await response.blob();
+    } catch {
+      throw new NetworkError(); // the connection dropped while the file was arriving
+    }
     const disposition = response.headers.get("content-disposition") || "";
     const fileNameMatch = disposition.match(/filename="?([^";]+)"?/i);
     const fileName = fileNameMatch?.[1] || fallbackFileName;
@@ -244,14 +309,40 @@ const Download: React.FC<DownloadProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  // Waits for a queued export to finish. A status check that gets no reply or a 502/503/504 (the server
+  // restarting or briefly overloaded) is retried with growing waits, since the job keeps running meanwhile;
+  // a 404 or a failed/expired job is final.
   const pollUntilReady = async (jobId: string, pollIntervalSeconds: number) => {
+    const deadline = Date.now() + POLL_MAX_MINUTES * 60_000;
+    let retries = 0;
     for (;;) {
-      const statusRes = await fetch(`/api/exports/jobs/${encodeURIComponent(jobId)}`);
-      if (!statusRes.ok) {
-        throw new Error("Failed to poll export job status");
+      if (Date.now() > deadline) {
+        throw new ExportError("The export is taking longer than expected. Press Try again to keep waiting for it.");
       }
 
-      const status = await statusRes.json();
+      let statusRes: Response | null = null;
+      try {
+        statusRes = await request(`/api/exports/jobs/${encodeURIComponent(jobId)}`);
+      } catch (error) {
+        if (!(error instanceof NetworkError)) throw error;
+      }
+      if (!statusRes || RETRYABLE_STATUSES.includes(statusRes.status)) {
+        if (retries >= POLL_RETRY_DELAYS_S.length) {
+          throw statusRes
+            ? new ExportError(await readError(statusRes, "Failed to check the export's progress"))
+            : new NetworkError();
+        }
+        setStatusText("Reconnecting");
+        await sleep(POLL_RETRY_DELAYS_S[retries++]);
+        continue;
+      }
+      if (!statusRes.ok) {
+        if (statusRes.status === 404) resumeJobRef.current = null;
+        throw new ExportError(await readError(statusRes, "Failed to check the export's progress"));
+      }
+      retries = 0;
+
+      const status = await readJson(statusRes);
       const progress = typeof status.progress_pct === "number" ? status.progress_pct.toFixed(1) : "0.0";
       setStatusText(`Preparing export (${status.status}${status.status === "running" ? ` ${progress}%` : ""})`);
 
@@ -259,85 +350,103 @@ const Download: React.FC<DownloadProps> = ({
         return;
       }
       if (status.status === "failed") {
-        throw new Error(status.error_message || "Export failed");
+        resumeJobRef.current = null;
+        throw new ExportError(JOB_FAILED_MESSAGE);
       }
       if (status.status === "expired") {
-        throw new Error("Export expired before download");
+        resumeJobRef.current = null;
+        throw new ExportError("Export expired before download");
       }
 
-      await new Promise((resolve) => setTimeout(resolve, Math.max(1, pollIntervalSeconds) * 1000));
+      await sleep(Math.max(1, pollIntervalSeconds));
     }
   };
 
   const handleDownload = async () => {
+    if (isExporting) return; // the button stays focusable while busy, so guard against a second export
     try {
       setIsExporting(true);
-      setStatusText("Estimating export size");
-      console.log("[Download] Starting export...");
+      setErrorText("");
 
-      const payload = buildExportPayload();
-      console.log("[Download] Payload:", payload);
+      // A queued export whose progress checks failed is picked up again rather than queued twice,
+      // as long as the filters and dates haven't changed since.
+      let job = resumeJobRef.current?.selectionKey === selectionKey ? resumeJobRef.current : null;
 
-      console.log("[Download] Calling /api/exports/estimate...");
-      const estimateRes = await fetch("/api/exports/estimate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      console.log("[Download] Estimate response status:", estimateRes.status);
+      if (job) {
+        setStatusText("Checking on the export");
+      } else {
+        setStatusText("Estimating export size");
+        console.log("[Download] Starting export...");
 
-      if (!estimateRes.ok) {
-        throw new Error(await readError(estimateRes, "Failed to estimate export size"));
-      }
+        const payload = buildExportPayload();
+        console.log("[Download] Payload:", payload);
 
-      const estimate = await estimateRes.json();
-      console.log("[Download] Estimate result:", estimate);
-      const recommendedMode = estimate.recommended_mode || "async";
-
-      if (recommendedMode === "sync") {
-        setStatusText("Generating file");
-        console.log("[Download] Using SYNC mode");
-        const syncRes = await fetch("/api/exports/sync", {
+        const estimateRes = await request("/api/exports/estimate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        console.log("[Download] Sync response status:", syncRes.status);
-        await triggerDownload(syncRes, getFileName());
-        setStatusText("");
-        return;
+        console.log("[Download] Estimate response status:", estimateRes.status);
+
+        if (!estimateRes.ok) {
+          throw new ExportError(await readError(estimateRes, "Failed to estimate export size"));
+        }
+
+        const estimate = await readJson(estimateRes);
+        console.log("[Download] Estimate result:", estimate);
+        const recommendedMode = estimate.recommended_mode || "async";
+
+        if (recommendedMode === "sync") {
+          setStatusText("Generating file");
+          console.log("[Download] Using SYNC mode");
+          const syncRes = await request("/api/exports/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          console.log("[Download] Sync response status:", syncRes.status);
+          await triggerDownload(syncRes, getFileName());
+          return;
+        }
+
+        console.log("[Download] Using ASYNC mode");
+        setStatusText("Queueing export job");
+        const createJobRes = await request("/api/exports/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        console.log("[Download] Create job response status:", createJobRes.status);
+
+        if (!createJobRes.ok) {
+          throw new ExportError(await readError(createJobRes, "Failed to queue export job"));
+        }
+
+        const created = await readJson(createJobRes);
+        console.log("[Download] Job created:", created);
+        job = {
+          jobId: String(created.job_id),
+          pollIntervalSeconds: Number(created.poll_interval_seconds || 3),
+          selectionKey,
+        };
+        resumeJobRef.current = job;
       }
 
-      console.log("[Download] Using ASYNC mode");
-      setStatusText("Queueing export job");
-      const createJobRes = await fetch("/api/exports/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      console.log("[Download] Create job response status:", createJobRes.status);
-
-      if (!createJobRes.ok) {
-        throw new Error(await readError(createJobRes, "Failed to queue export job"));
-      }
-
-      const created = await createJobRes.json();
-      console.log("[Download] Job created:", created);
-      const jobId = created.job_id as string;
-      const pollInterval = Number(created.poll_interval_seconds || 3);
-      await pollUntilReady(jobId, pollInterval);
+      await pollUntilReady(job.jobId, job.pollIntervalSeconds);
 
       setStatusText("Downloading file");
-      const downloadRes = await fetch(`/api/exports/jobs/${encodeURIComponent(jobId)}/download`);
+      const downloadRes = await request(`/api/exports/jobs/${encodeURIComponent(job.jobId)}/download`);
+      // 404/410: the job or its file is gone (expired or cleaned up), so Try again must start a new export.
+      if (downloadRes.status === 404 || downloadRes.status === 410) resumeJobRef.current = null;
       await triggerDownload(downloadRes, getFileName());
-      setStatusText("");
-    } catch (error: any) {
+      resumeJobRef.current = null;
+    } catch (error) {
       console.error("[Download] ERROR:", error);
-      console.error("[Download] Error message:", error?.message);
-      setStatusText(error?.message || "Download failed");
-      window.setTimeout(() => setStatusText(""), 6000);
+      // Only messages written for the user are shown; anything else (a bug, an odd reply) gets a plain one.
+      setErrorText(error instanceof ExportError ? error.message : "Something went wrong. Please try again.");
     } finally {
       setIsExporting(false);
+      setStatusText("");
     }
   };
 
@@ -357,15 +466,58 @@ const Download: React.FC<DownloadProps> = ({
       }
     })();
 
+  // Moves focus back to the Download button when the alert (and the control in it that had focus) goes away.
+  const focusButton = () => buttonRef.current?.focus();
+
   return (
-    <Button
-      onClick={handleDownload}
-      disabled={!hasActiveData || isExporting}
-      className="btn-mcmaster-primary w-full"
-    >
-      <DownloadIcon className="h-4 w-4 mr-2" />
-      {isExporting ? statusText || "Preparing export" : "Download Data"}
-    </Button>
+    <div className="space-y-2">
+      {/* Busy is aria-disabled rather than disabled: a disabled button can't hold focus, and Try again moves focus here */}
+      <Button
+        ref={buttonRef}
+        onClick={handleDownload}
+        disabled={!hasActiveData}
+        aria-disabled={isExporting || undefined}
+        aria-busy={isExporting || undefined}
+        className="btn-mcmaster-primary w-full aria-disabled:pointer-events-none aria-disabled:opacity-50"
+      >
+        <DownloadIcon className="h-4 w-4 mr-2" />
+        {isExporting ? statusText || "Preparing export" : "Download Data"}
+      </Button>
+      {errorText && !isExporting && (
+        <div
+          className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+        >
+          <div className="min-w-0 flex-1 break-words">
+            <p className="font-medium">Download failed</p>
+            <p>{errorText}</p>
+            {hasActiveData && (
+              <button
+                type="button"
+                onClick={() => {
+                  focusButton();
+                  handleDownload();
+                }}
+                className="mt-1 font-medium underline underline-offset-2 hover:text-red-900"
+              >
+                Try again
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setErrorText("");
+              focusButton();
+            }}
+            aria-label="Dismiss error"
+            className="-m-1 shrink-0 rounded p-1 hover:bg-red-100 hover:text-red-900"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 };
 

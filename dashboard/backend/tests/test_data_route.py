@@ -1,10 +1,12 @@
 """Tests for the /api/data route, run against an in-memory SQLite database. Run from dashboard/backend:
 python -m unittest discover -s tests -t ."""
 import datetime as dt
+import importlib
 import os
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real database
@@ -13,6 +15,7 @@ from config import Config  # noqa: E402
 from server import create_app  # noqa: E402
 from db.database import db  # noqa: E402
 from db.models import SensorMeasurement  # noqa: E402
+from api.routes import data as data_route  # noqa: E402
 
 # Config reads DATABASE_URL once, when first imported: if another test module imported it first (with its own
 # placeholder URL), the line above came too late. Point the app at SQLite either way.
@@ -42,12 +45,12 @@ class DataRouteTests(unittest.TestCase):
     def tearDownClass(cls):
         db.drop_all()
         cls.ctx.pop()
-        os.environ.pop("DATA_MAX_ROWS", None)
 
     def get(self, start, end, groups, limit):
-        os.environ["DATA_MAX_ROWS"] = str(limit)
+        # The limit is read once at import; patch the parsed value for this request only
         query = "&".join([f"start={start.isoformat()}", f"end={end.isoformat()}"] + [f"group_type={g}" for g in groups])
-        return self.client.get(f"/api/data?{query}")
+        with mock.patch.object(data_route, "MAX_ROWS", limit):
+            return self.client.get(f"/api/data?{query}")
 
     def test_over_the_limit_is_refused_with_413_and_counts(self):
         r = self.get(T0, T0 + dt.timedelta(hours=2), ["Weather"], limit=5)
@@ -124,6 +127,34 @@ class FallBackNightTests(unittest.TestCase):
         # as before the change; an ambiguous wall time means its first occurrence
         rows = self.get("2026-11-01T00:00:00", "2026-11-01T01:00:00")
         self.assertEqual([r["value"] for r in rows], list(range(7)))
+
+
+class MaxRowsSettingTests(unittest.TestCase):
+    """DATA_MAX_ROWS is parsed once at import; a bad value falls back to the default instead of failing requests."""
+
+    def test_unset_or_empty_uses_the_default_quietly(self):
+        for value in (None, "", "   "):
+            with self.subTest(value=value):
+                self.assertEqual(data_route.parse_max_rows(value), data_route.DEFAULT_MAX_ROWS)
+
+    def test_non_numeric_zero_or_negative_falls_back_with_a_warning(self):
+        for value in ("300k", "abc", "1.5", "0", "-5"):
+            with self.subTest(value=value):
+                with self.assertLogs(data_route.log, level="WARNING") as logs:
+                    self.assertEqual(data_route.parse_max_rows(value), data_route.DEFAULT_MAX_ROWS)
+                self.assertIn("DATA_MAX_ROWS", logs.output[0])
+
+    def test_a_positive_whole_number_is_used(self):
+        self.assertEqual(data_route.parse_max_rows("1000"), 1000)
+        self.assertEqual(data_route.parse_max_rows(" 50000 "), 50000)
+
+    def test_a_bad_value_at_import_does_not_break_the_module(self):
+        try:
+            with mock.patch.dict(os.environ, {"DATA_MAX_ROWS": "300k"}), self.assertLogs(data_route.log, "WARNING"):
+                importlib.reload(data_route)
+            self.assertEqual(data_route.MAX_ROWS, data_route.DEFAULT_MAX_ROWS)
+        finally:
+            importlib.reload(data_route)  # patch.dict has restored os.environ by now
 
 
 if __name__ == "__main__":

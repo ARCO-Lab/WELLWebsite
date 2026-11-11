@@ -1,7 +1,8 @@
 # Once a day, checks that LI-COR, WQData and Borealis still accept our credentials and answer in the shape
 # ingestion reads (dashboard/backend/app/scripts/api_canary.py; one small request per source). A failed run
-# sends GitHub's usual "workflow run failed" notification, so a rejected or expired key is noticed the day it
-# happens. See the README's "API canary" section.
+# opens (or comments on) an "API canary failing" issue, and the next passing run closes it, so a rejected or
+# expired key is noticed the day it happens even when nobody gets GitHub's "workflow run failed" email.
+# See the README's "API canary" section.
 name: API canary
 
 on:
@@ -20,12 +21,14 @@ jobs:
   canary:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      report: ${{ steps.report.outputs.report }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -38,8 +41,15 @@ jobs:
 
       - name: Check each vendor API
         working-directory: dashboard/backend
-        run: python app/scripts/api_canary.py
+        # `shell: bash` is what adds -o pipefail (a step with no shell runs as plain `bash -e`), so the step fails
+        # when the canary does, not only when tee does. test_canary_issue.sh checks it stays. The step's own
+        # timeout, under the job's, makes a hung request fail this step instead of the whole job, so the next
+        # step still keeps the lines printed so far.
+        shell: bash
+        timeout-minutes: 8
+        run: python app/scripts/api_canary.py | tee "$RUNNER_TEMP/canary.txt"
         env:
+          PYTHONUNBUFFERED: "1"   # each line reaches the file as it is printed, so a timeout keeps the ones before it
           HOBOLINK_API_URL: ${{ secrets.HOBOLINK_API_URL }}
           HOBOLINK_API_TOKEN: ${{ secrets.HOBOLINK_API_TOKEN }}
           HOBOLINK_LOGGERS: ${{ secrets.HOBOLINK_LOGGERS }}
@@ -50,3 +60,41 @@ jobs:
           BOREALIS_API_TOKEN: ${{ secrets.BOREALIS_API_TOKEN }}
           DEMO_BOREALIS_AW_PERSISTENT_ID: ${{ secrets.DEMO_BOREALIS_AW_PERSISTENT_ID }}
           DEMO_BOREALIS_WC_PERSISTENT_ID: ${{ secrets.DEMO_BOREALIS_WC_PERSISTENT_ID }}
+
+      # Only the canary's OK/FAIL lines leave this job, for the issue below.
+      - name: Keep the result lines for the issue
+        id: report
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "report<<CANARY_REPORT_EOF"
+            grep -E '^(OK|FAIL) ' "$RUNNER_TEMP/canary.txt" 2>/dev/null || true
+            echo "CANARY_REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # A separate job, so the token that can write issues never shares a runner with the vendor secrets.
+  # Any result but success (a failed probe, a failed install, a timeout) counts as a failure.
+  issue:
+    needs: canary
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Open, update or close the "API canary failing" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OUTCOME: ${{ needs.canary.result }}
+          REPORT: ${{ needs.canary.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '%s\n' "$REPORT" > "$RUNNER_TEMP/canary.txt"
+          bash .github/scripts/canary_issue.sh "$OUTCOME" "$RUNNER_TEMP/canary.txt" "$RUN_URL"

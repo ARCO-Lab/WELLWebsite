@@ -1,0 +1,74 @@
+# Dependabot version updates: once a week, a few pull requests that bump the dashboard's dependencies, each checked
+# by CI like any other pull request. Minor and patch bumps are grouped into one pull request per ecosystem; major
+# bumps come one per pull request, so each breaking change is reviewed on its own.
+#
+# Only the dashboard and the CI workflows are covered. WordPress core and plugins under home/ are updated through
+# WordPress itself, not here, so no entry points at home/ (the package.json and composer.json files in there are
+# the plugin vendors' own build manifests and are never installed on the server).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /dashboard/frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 3
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    assignees: [lukhsaankumar]
+
+  # requirements.txt pins every package, dependencies of dependencies included, so each bump is explicit.
+  - package-ecosystem: pip
+    directory: /dashboard/backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 3
+    groups:
+      pip-minor-and-patch:
+        update-types: [minor, patch]
+    assignees: [lukhsaankumar]
+
+  # Base images of the two images built on the server.
+  - package-ecosystem: docker
+    directories:
+      - /dashboard/backend
+      - /dashboard/frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 3
+    groups:
+      docker-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # A new Python minor (3.11 to 3.12 and on) can break the pinned packages, so it is done by hand together
+      # with requirements.txt rather than slipped into the grouped pull request.
+      - dependency-name: python
+        update-types: ["version-update:semver-minor"]
+      # Odd Node majors are never LTS; only move between LTS lines (22, 24, ...). Docker uses Bundler syntax.
+      - dependency-name: node
+        versions: ["~> 23.0", "~> 25.0"]
+    assignees: [lukhsaankumar]
+
+  # Actions used in .github/workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+    assignees: [lukhsaankumar]

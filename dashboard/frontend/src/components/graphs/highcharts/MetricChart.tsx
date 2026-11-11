@@ -1,194 +1,232 @@
-// This file defines the MetricChart component for rendering time series sensor data using Highcharts.
-// It supports multiple Y-axes for different units, dynamic series, and custom styling.
+// This file defines the MetricChart component: one West Campus sensor chart (a group, or one water logger),
+// drawn with Highcharts from the series /api/series returns (see hooks/useChartSeries). It has one Y-axis per unit.
+//
+// Zoom is shared: every chart shows the page's one view window (ChartView.viewWindow). Dragging across a chart
+// (or pinching on a touch screen) asks for a new window instead of zooming this chart alone, and the window bar
+// above the charts moves, widens or resets it. The mouse wheel and one-finger touch still scroll the page.
+//
+// Options are applied to the chart in three separate steps, so each change redraws only what it touches: data
+// (series and axes), layout (height, legend, title) and the window (x-axis extremes).
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
 // Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
 import 'highcharts/modules/accessibility';
-
-interface SensorData {
-  measurement_type: string;
-  unit: string;
-  recorded_at: string | Date;
-  value: number;
-}
+import { seriesKey, useChartView } from '@/hooks/useChartSeries';
+import { MIN_RANGE_MS, TIME_ZONE, composePoints, resolutionBadge, type Range } from '@/utils/chartWindow';
 
 interface MetricChartProps {
-  activeGroup: 'gauges' | 'weather' | 'quality';
-  subFilters: string[];
+  title: string;
+  groupType: 'Weather' | 'Quality' | 'Logger';
+  stationId?: string; // only this station's series (the water loggers)
+  measurements: string[]; // measurement_type values to show
   height?: number;
-  startDate: Date | null;
-  endDate: Date | null;
-  data: SensorData[];
-  loading: boolean;
-  error: Error | null;
   modalOpen?: boolean;
   showLegend?: boolean;
-  // Small multiples (the logger charts) show one error message for the group instead of one each.
+  // Small multiples (the logger charts) show one error message and one resolution badge for the group instead.
   showErrorBanner?: boolean;
+  showBadge?: boolean;
 }
 
 const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
+const FONT = 'Poppins, Arial, sans-serif';
 
 const MetricChart: React.FC<MetricChartProps> = ({
-  activeGroup,
-  subFilters,
+  title,
+  groupType,
+  stationId,
+  measurements,
   height = 500,
-  startDate,
-  endDate,
-  data,
-  loading,
-  error,
-  modalOpen= false,
+  modalOpen = false,
   showLegend = true,
   showErrorBanner = true,
+  showBadge = true,
 }) => {
+  const view = useChartView();
   const chartRef = useRef<HighchartsReact.RefObject>(null);
-  // Until the first data arrives: no Highcharts placeholder title ("Chart title") or credits link.
-  const [chartOptions, setChartOptions] = useState<any>({ title: { text: undefined }, credits: { enabled: false } });
   const [resolvedHeight, setResolvedHeight] = useState(height);
 
   useEffect(() => {
     const resolveHeight = () => {
-      if (typeof window === 'undefined') {
-        setResolvedHeight(height);
-        return;
-      }
-
       if (modalOpen) {
         setResolvedHeight(height);
         return;
       }
-
       const viewportWidth = window.innerWidth;
-      if (viewportWidth < 480) {
-        setResolvedHeight(Math.min(height, 280));
-      } else if (viewportWidth < 768) {
-        setResolvedHeight(Math.min(height, 340));
-      } else if (viewportWidth < 1024) {
-        setResolvedHeight(Math.min(height, 420));
-      } else {
-        setResolvedHeight(height);
-      }
+      if (viewportWidth < 480) setResolvedHeight(Math.min(height, 280));
+      else if (viewportWidth < 768) setResolvedHeight(Math.min(height, 340));
+      else if (viewportWidth < 1024) setResolvedHeight(Math.min(height, 420));
+      else setResolvedHeight(height);
     };
-
     resolveHeight();
     window.addEventListener('resize', resolveHeight);
     return () => window.removeEventListener('resize', resolveHeight);
   }, [height, modalOpen]);
 
-  useEffect(() => {
-    if (!data || loading) return;
+  // The chart's event handlers are bound once, so they reach the latest zoomTo through a ref.
+  const zoomRef = useRef(view.zoomTo);
+  zoomRef.current = view.zoomTo;
+  // A pinch in progress: only this chart follows the fingers; the shared window is set once, when they lift.
+  const pinchRef = useRef<Range | null>(null);
+  const layoutRef = useRef({ modalOpen, showLegend });
+  layoutRef.current = { modalOpen, showLegend };
 
-    // Build chart options and series from data and subFilters
-    const seriesMap: Map<string, { name: string; unit: string; data: [number, number][] }> = new Map();
-    const unitMap: Map<string, number> = new Map(); // To track the index of each unique unit
-
-    data.forEach((item) => {
-      if (subFilters.includes(item.measurement_type)) {
-        const key = `${item.measurement_type}_${item.unit}`;
-        if (!seriesMap.has(key)) {
-          seriesMap.set(key, {
-            name: `${item.measurement_type} (${item.unit})`,
-            unit: item.unit,
-            data: [],
-          });
-        }
-        const series = seriesMap.get(key)!;
-        const timestamp = new Date(item.recorded_at).getTime() - (new Date(item.recorded_at).getTimezoneOffset() * 60 * 1000);
-        series.data.push([timestamp, item.value]);
-
-        // Check if the unit is already in the unitMap
-        if (!unitMap.has(item.unit)) {
-          unitMap.set(item.unit, unitMap.size); // Assign a unique index for this unit
-        }
-      }
-    });
-
-    const series = Array.from(seriesMap.values()).map((s) => ({
-      type: 'line' as const,
-      name: s.name,
-      data: s.data.sort((a, b) => a[0] - b[0]),
-      color: graphColors[unitMap.get(s.unit)! % graphColors.length],
-      yAxis: unitMap.get(s.unit), // Associate each series with its corresponding Y-axis
-    }));
-
-    const yAxes = Array.from(unitMap.keys()).map((unit, index) => ({
-      title: {
-        text: null,
-      },
-      labels: {
-        format: `{value} ${unit}`, // Append the unit to the label
-      },
-      opposite: index % 2 === 1,
-      visible: modalOpen, // make visible on modal open
-    }));
-
-    setChartOptions({
+  // Created once; everything that changes later goes through chart.update / setExtremes below.
+  const [initialOptions] = useState<Highcharts.Options>(() => {
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    return {
+      time: { timezone: TIME_ZONE },
       chart: {
-        zoomType: 'x',
         height: resolvedHeight,
-        style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
+        animation: !reducedMotion,
+        style: { fontFamily: FONT },
+        // Drag (mouse) and pinch (touch) pick a range; the selection handler turns it into the shared window.
+        zooming: { type: 'x', pinchType: 'x', resetButton: { theme: { style: { display: 'none' } } } },
+        events: {
+          selection(e) {
+            if (e.resetSelection) zoomRef.current(null);
+            else if (e.xAxis?.[0]) zoomRef.current({ start: e.xAxis[0].min, end: e.xAxis[0].max });
+            return false; // don't zoom this chart on its own: the window comes back as xAxis min/max
+          },
+        },
       },
-      title: {
-        text: `${activeGroup.charAt(0).toUpperCase() + activeGroup.slice(1)} Data`,
-        style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "16px", color: "#333" }, // <-- Add this
-      },
-      credits: {
-        enabled: false,
-      },
-      legend: {
-        enabled: showLegend && series.length > 1,
-        itemStyle: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
-      },
-      tooltip: {
-        shared: true,
-        followPointer: true,
-        valueDecimals: 2,
-        style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
-      },
+      title: { text: title, style: { fontFamily: FONT, fontSize: '16px', color: '#333' } },
+      subtitle: { text: undefined, style: { fontFamily: FONT, fontSize: '11px', color: '#4b5563' } },
+      credits: { enabled: false },
+      legend: { enabled: false, itemStyle: { fontFamily: FONT } },
+      tooltip: { shared: true, followPointer: true, valueDecimals: 2, style: { fontFamily: FONT } },
+      plotOptions: { series: { animation: !reducedMotion, connectNulls: false } },
       xAxis: {
         type: 'datetime',
-        title: {
-          text: null,
-          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "12px" }, // <-- Add this
-        },
-        labels: {
-          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "10px" }, // <-- Add this
+        minRange: MIN_RANGE_MS,
+        title: { text: null },
+        labels: { style: { fontFamily: FONT, fontSize: '10px' } },
+        events: {
+          // A pinch sets this chart's extremes with a trigger ('touchmove', on every move: kept until the
+          // fingers lift, so the other charts don't redraw each frame). Programmatic changes (the window, data
+          // updates) have no trigger and are ignored, so charts never feed back into each other.
+          afterSetExtremes(e) {
+            if (e.trigger === 'touchmove') pinchRef.current = { start: e.min, end: e.max };
+            else if (e.trigger) zoomRef.current({ start: e.min, end: e.max });
+          },
         },
       },
-      yAxis: yAxes.map((axis, index) => ({
-        ...axis,
-        title: {
-          ...axis.title,
-          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "12px" }, // <-- Add this
-        },
-        labels: {
-          ...axis.labels,
-          style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "10px" }, // <-- Add this
-        },
-      })),
-      series,
+      yAxis: [],
+      series: [],
+    };
+  });
+
+  // Data: this chart's series, overview outside the detail range and detail inside it.
+  const { series, yAxes, hasData, hasTotals } = useMemo(() => {
+    const ov = view.overview;
+    if (!ov) return { series: [], yAxes: [], hasData: false, hasTotals: false };
+    const unitIndex = new Map<string, number>();
+    const picked = ov.series.filter((s) => s.group_type === groupType
+      && (stationId === undefined || String(s.station_id) === stationId)
+      && measurements.includes(s.measurement_type));
+    const detail = view.detail;
+    const built = picked.map((s) => {
+      if (!unitIndex.has(s.unit)) unitIndex.set(s.unit, unitIndex.size);
+      const key = seriesKey(s);
+      const points = composePoints(s, ov.bucketS, detail
+        ? { values: detail.byKey.get(key), bucketS: detail.bucketS, range: detail.range }
+        : undefined);
+      return {
+        id: key,
+        type: 'line' as const,
+        name: `${s.measurement_type} (${s.unit})`,
+        data: points,
+        color: graphColors[unitIndex.get(s.unit)! % graphColors.length],
+        yAxis: unitIndex.get(s.unit)!,
+      };
     });
-  }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
+    const axes = Array.from(unitIndex.keys()).map((unit, index) => ({
+      title: { text: undefined },
+      labels: { format: `{value} ${unit}`, style: { fontFamily: FONT, fontSize: '10px' } },
+      opposite: index % 2 === 1,
+    }));
+    return {
+      series: built,
+      yAxes: axes,
+      hasData: built.some((s) => s.data.length > 0),
+      hasTotals: picked.some((s) => s.agg === 'sum'),
+    };
+  }, [view.overview, view.detail, groupType, stationId, measurements]);
 
-  const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
-    && chartOptions.series.every((s: { data?: unknown[] }) => !s.data?.length);
+  useEffect(() => {
+    const chart = chartRef.current?.chart;
+    if (!chart) return;
+    const { modalOpen: open, showLegend: legend } = layoutRef.current;
+    chart.update({
+      yAxis: yAxes.map((a) => ({ ...a, visible: open })),
+      series,
+      legend: { enabled: legend && series.length > 1 },
+    }, true, true, false); // one-to-one: series and axes that went away are removed; no animation on updates
+  }, [series, yAxes]);
 
+  // Layout: never touches the data.
+  useEffect(() => {
+    const chart = chartRef.current?.chart;
+    if (!chart) return;
+    chart.update({
+      chart: { height: resolvedHeight },
+      title: { text: title },
+      legend: { enabled: showLegend && chart.series.length > 1 },
+    }, false, false, false);
+    chart.yAxis.forEach((axis) => axis.update({ visible: modalOpen }, false));
+    chart.redraw(false);
+  }, [resolvedHeight, title, showLegend, modalOpen]);
+
+  // The window: the shared view, or the whole picked range.
+  const win: Range | null = view.viewWindow ?? view.range;
+  const winRef = useRef(win);
+  winRef.current = win;
+  useEffect(() => {
+    const axis = chartRef.current?.chart?.xAxis[0];
+    // Not while this chart is being pinched: new data arriving mid-pinch would snap it back to the old window.
+    // The pinch ends by setting the window, which runs this again.
+    if (!axis || !win || pinchRef.current) return;
+    axis.setExtremes(win.start, win.end, true, false); // no trigger: afterSetExtremes ignores it
+  }, [win, series]);
+
+  const isEmpty = !view.loading && !view.error && view.overview !== null && !hasData;
+
+  // The resolution badge ("12-hour averages") as the chart's subtitle, so it never covers the title.
+  const badge = showBadge ? resolutionBadge(view.shownBucketS, view.shownAggregated, hasTotals) : null;
+  useEffect(() => {
+    chartRef.current?.chart?.setSubtitle({ text: badge ?? '' });
+  }, [badge]);
+
+  // A drag that zooms ends in a click; the card around the chart (ExpandableCard) ignores clicks that moved, so it
+  // doesn't open the larger view. A pinch commits the shared window once the fingers lift.
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (pinchRef.current && e.touches.length < 2) {
+      zoomRef.current(pinchRef.current);
+      pinchRef.current = null;
+      // If the window didn't change (e.g. pinched out past the picked days, which stays unzoomed), nothing re-runs
+      // the window effect: put this chart back on the window once React has rendered.
+      requestAnimationFrame(() => {
+        const w = winRef.current;
+        if (w) chartRef.current?.chart?.xAxis[0]?.setExtremes(w.start, w.end, true, false);
+      });
+    }
+  };
   return (
-    <div className="relative">
+    <div className="relative" onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
       <HighchartsReact
         highcharts={Highcharts}
-        options={chartOptions}
+        options={initialOptions}
+        allowChartUpdate={false}
         ref={chartRef}
         containerProps={{ style: { height: `${resolvedHeight}px` } }}
       />
-      {/* While a new range loads, the previous chart stays visible under a spinner */}
-      {loading && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center rounded bg-white/70" role="status" aria-live="polite">
+      {/* While a new range loads, the previous chart stays visible under a spinner. It is announced once for all
+          charts (ChartWindowBar), not by each chart. */}
+      {view.loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center rounded bg-white/70" aria-hidden="true">
           <div className="flex items-center gap-2 text-sm text-gray-700">
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" aria-hidden="true" />
+            <span className="h-4 w-4 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
             Loading data…
           </div>
         </div>
@@ -199,10 +237,10 @@ const MetricChart: React.FC<MetricChartProps> = ({
           <p className="rounded-md bg-white/90 px-3 py-1.5 text-sm text-muted">No readings in this period</p>
         </div>
       )}
-      {/* e.g. "This range has 1,451,713 readings, more than …": the API explains what to do instead */}
-      {error && !loading && showErrorBanner && (
-        <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" role="alert">
-          {error.message}
+      {/* Announced once for all charts by the window bar's live region, so hidden from screen readers here */}
+      {view.error && !view.loading && showErrorBanner && (
+        <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" aria-hidden="true">
+          {view.error.message}
         </div>
       )}
     </div>

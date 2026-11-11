@@ -2,9 +2,11 @@
 # Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
 # month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily).
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
-# pings a Healthchecks.io check after each ingestion run, monthly upload and digest (utils/heartbeat.py).
+# pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload and digest
+# (utils/heartbeat.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
+# When SENTRY_DSN is set, every failure it logs is also reported to Sentry, tagged with the job (utils/sentry.py).
 
 import schedule
 import time
@@ -15,9 +17,16 @@ import os
 import pathlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from inject_from_api import inject_all_new_data
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+from utils.sentry import init_sentry, capture_job_error  # noqa: E402
+
+# Report errors to Sentry when SENTRY_DSN is set (utils/sentry.py). First, so they are tagged worker:
+# inject_from_api imports server.py, which would otherwise start reporting as the API.
+if __name__ == "__main__":
+    init_sentry("worker")
+
+from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
@@ -108,12 +117,22 @@ def run_download_data():
         return status
     except subprocess.TimeoutExpired as e:
         timestamped_print_download(f"[ERROR] download_data.py was stopped after {DOWNLOAD_TIMEOUT_S // 60} min without finishing")
+        capture_job_error(e)
         timestamped_print_download(f"download_data.py stdout so far: {e.stdout}")
         return None
     except subprocess.CalledProcessError as e:
-        timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
+        status = download_status(e.stdout)
         timestamped_print_download(f"download_data.py stdout: {e.stdout}")
-        timestamped_print_download(f"download_data.py stderr: {e.stderr}")
+        if e.stderr:
+            timestamped_print_download(f"download_data.py stderr: {e.stderr}")
+        if status and status.startswith(("REJECTED_", "FAILED_")):
+            # It ran to the end but refused (invalid) or couldn't import some files; the dataset itself is fine
+            timestamped_print_download(f"[ERROR] download_data.py finished with status {status}: see the problems "
+                                       f"listed above. A refused file is imported once a corrected file is uploaded.")
+            capture_job_error(e)
+            return status
+        timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
+        capture_job_error(e)
         # Run --list-files to debug dataset issues
         try:
             list_cmd = [sys.executable, "scripts/download_data.py", "--list-files"]
@@ -130,6 +149,7 @@ def run_download_data():
         return None
     except Exception as e:
         timestamped_print_download(f"[ERROR] Unexpected error running download_data.py: {e}")
+        capture_job_error(e)
         return None
 
 def run_upload_data(year, month):
@@ -148,19 +168,24 @@ def run_upload_data(year, month):
         return True
     except subprocess.TimeoutExpired as e:
         timestamped_print_upload(f"[ERROR] upload_data.py was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
+        capture_job_error(e)
         timestamped_print_upload(f"upload_data.py stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
         timestamped_print_upload(f"[ERROR] upload_data.py failed with exit code {e.returncode}: {e}")
+        capture_job_error(e)
         timestamped_print_upload(f"upload_data.py stdout: {e.stdout}")
         timestamped_print_upload(f"upload_data.py stderr: {e.stderr}")
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Unexpected error running upload_data.py: {e}")
+        capture_job_error(e)
     return False
 
 def download_job():
     """Weekly job: download and import any new Borealis sampling files."""
     timestamped_print_download("========== DOWNLOAD JOB STARTED ==========")
-    run_download_data()
+    status = run_download_data()
+    ok = status is not None and not status.startswith(("REJECTED_", "FAILED_"))
+    ping_heartbeat("download", "success" if ok else "fail")
     timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
 def upload_job(year, month):
@@ -184,6 +209,7 @@ def monthly_upload_check():
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Not uploading: {type(e).__name__}: {e} "
                                  f"(check BOREALIS_UPLOAD_FIRST_MONTH and {uploaded_months_path})")
+        capture_job_error(e)
         ping_heartbeat("upload", "fail")
         return
     due = months_due_for_upload(now, uploaded, first_month)
@@ -213,6 +239,7 @@ def daily_digest_check():
     except ValueError as e:
         if datetime.now(SITE_TZ).hour == 0:   # once a day, not every hour
             timestamped_print_digest(f"[ERROR] No daily digest: {e}")
+            capture_job_error(e)
         return
     if datetime.now(SITE_TZ).hour != hour:
         return
@@ -226,10 +253,12 @@ def daily_digest_check():
         ok = True
     except subprocess.TimeoutExpired as e:
         timestamped_print_digest(f"[ERROR] daily_digest.py was stopped after {DIGEST_TIMEOUT_S // 60} min without finishing")
+        capture_job_error(e)
         timestamped_print_digest(f"daily_digest.py stdout so far: {e.stdout}")
         ok = False
     except subprocess.CalledProcessError as e:
         timestamped_print_digest(f"[ERROR] daily_digest.py failed with exit code {e.returncode}")
+        capture_job_error(e)
         timestamped_print_digest(f"daily_digest.py stdout: {e.stdout}")
         timestamped_print_digest(f"daily_digest.py stderr: {e.stderr}")
         ok = False
@@ -250,6 +279,7 @@ def api_injection_job():
         import traceback
         print(f"[ERROR] Full traceback: {traceback.format_exc()}")
         print("========== API INJECTION ERROR END ==========")
+        capture_job_error(e)   # LI-COR and WQData failures are reported in inject_all_new_data itself
         ping_heartbeat("ingestion", "fail")
         return
     ping_heartbeat("ingestion", "success")

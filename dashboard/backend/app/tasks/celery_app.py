@@ -1,5 +1,12 @@
-from celery import Celery
-from config import Config
+from config import Config  # loads .env, so SENTRY_DSN is set before init_sentry reads it
+from utils.sentry import init_sentry
+
+# Report errors to Sentry when SENTRY_DSN is set (utils/sentry.py). The export worker (`celery -A
+# tasks.celery_app...`) imports this module first, so its errors are tagged export_worker; in the API, which
+# also imports it, server.py has already started reporting and this call does nothing.
+init_sentry("export_worker")
+
+from celery import Celery  # noqa: E402
 
 
 def create_celery_app() -> Celery:

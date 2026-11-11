@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Starts while the image builds. The network is --internal: the test containers reach this database and
       # nothing else, so no test can call a vendor API.
@@ -87,15 +87,22 @@ jobs:
       run:
         working-directory: dashboard/frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: dashboard/frontend/package-lock.json
 
       - run: npm ci
+
+      # Type errors fail the PR. next build checks types and lint too, but this reports every error at once.
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests (chart zoom helpers)
+        run: npm test
 
       - run: npm run build
 
@@ -107,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pyflakes rules only (F): undefined names, unused imports and variables, and the like. No style rules.
       - name: ruff (pyflakes rules) on the backend
@@ -132,7 +139,6 @@ jobs:
           BACKEND_PORT=5000
           BACKEND_INTERNAL_URL=http://backend:5000
           NEXT_PUBLIC_FLASK_API_URL=http://localhost:5000
-          NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=placeholder
           WORKER_LOG_TO_STDOUT=1
           EOF
           docker compose config -q
@@ -142,7 +148,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: deploy.sh in a sandbox (fake remote, stub docker and curl)
         run: bash .github/scripts/test_deploy.sh
+
+      - name: canary_issue.sh against a stub gh
+        run: bash .github/scripts/test_canary_issue.sh

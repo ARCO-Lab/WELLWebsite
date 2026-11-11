@@ -4,7 +4,7 @@
 # purpose, rebuild, and run the tests (from dashboard/backend: python -m unittest discover -s tests -t .).
 #
 # Packages the code uses directly: celery, dotenv, Flask, flask-cors, Flask-SQLAlchemy, gunicorn, openai,
-# openpyxl, pandas, psycopg2, pyDataverse, python-dotenv, redis, requests, Routes, schedule.
+# openpyxl, pandas, psycopg2, pyDataverse, python-dotenv, redis, requests, Routes, schedule, sentry-sdk.
 # Everything else below is a dependency of those.
 amqp==5.3.1
 annotated-types==0.7.0
@@ -48,7 +48,7 @@ psycopg2==2.9.11
 pydantic==2.12.5
 pydantic_core==2.41.5
 pyDataverse==0.3.5
-python-dateutil==2.9.0.post0
+python-dateutil==4.0.0
 python-dotenv==1.2.2
 redis==7.4.0
 referencing==0.37.0
@@ -57,13 +57,14 @@ requests==2.33.0
 Routes==2.5.1
 rpds-py==0.30.0
 schedule==1.2.2
+sentry-sdk[flask,celery]==2.74.0
 six==1.17.0
 sniffio==1.3.1
 SQLAlchemy==2.0.48
 tqdm==4.67.3
 typing-inspection==0.4.2
 typing_extensions==4.15.0
-tzdata==2025.3
+tzdata==2026.6
 tzlocal==5.3.1
 urllib3==2.8.0
 vine==5.1.0

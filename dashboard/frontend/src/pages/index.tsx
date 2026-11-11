@@ -1,13 +1,16 @@
 // This file defines the main dashboard page for the WELL project, including sensor and sampling tabs, filters, graphs, metrics, map, and AI analysis.
 // It manages all dashboard state, handles modal logic, and coordinates data fetching and UI layout.
+// The West Campus charts share one data source and one zoom window (useChartSeries, provided as ChartViewContext).
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
+import type MapComponent from "@/components/map/Map";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import FilterPanel from "@/components/filters/FilterPanel";
-import WeatherGraph from "@/components/graphs/WeatherGraph";
+import WeatherGraph, { canShowWindRose } from "@/components/graphs/WeatherGraph";
+import ChartWindowBar from "@/components/graphs/ChartWindowBar";
 import LoggerGraph from "@/components/graphs/LoggerGraph";
 import QualityGraph from "@/components/graphs/QualityGraph";
 import CreekGraph from "@/components/graphs/CreekGraph";
@@ -25,6 +28,8 @@ import StickyPanel from "@/components/StickyPanel";
 // AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
 // import AIAnalysis from "@/components/AIAnalysis";
 import useFilteredData from "@/hooks/useFilteredData";
+import useChartSeries, { ChartViewContext } from "@/hooks/useChartSeries";
+import type { Range } from "@/utils/chartWindow";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
@@ -32,8 +37,14 @@ import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG } from "@/components/confi
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 type ActiveFilters = { [key: string]: string[] };
+type SensorGroup = "weather" | "quality" | "gauges";
 
-const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
+// The wind rose's raw readings are weather-only; nothing is fetched while it isn't shown.
+const WEATHER_ONLY = { gauges: false, weather: true, quality: false };
+const NO_GROUPS = { gauges: false, weather: false, quality: false };
+
+// next/dynamic drops the map's generic props (sensor groups or creeks); keep them so both setters type-check.
+const Map = dynamic(() => import("@/components/map/Map"), { ssr: false }) as typeof MapComponent;
 
 export default function Dashboard() {
 
@@ -131,7 +142,20 @@ export default function Dashboard() {
   const [previousActiveCount, setPreviousActiveCount] = useState(0);
   const [previousActiveCreekCount, setPreviousActiveCreekCount] = useState(0);
 
-  const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
+  // The one zoom window every sensor chart shows (null: all the picked days). New days start unzoomed.
+  const [viewWindow, setViewWindow] = useState<Range | null>(null);
+  const changeStartDate = useCallback((d: Date | null) => { setStartDate(d); setViewWindow(null); }, []);
+  const changeEndDate = useCallback((d: Date | null) => { setEndDate(d); setViewWindow(null); }, []);
+
+  // Raw readings, only for the wind rose and only while it is shown, capped by /api/data's row limit.
+  // TODO: a /api/windrose endpoint that bins direction and speed in the database, so this needs no raw rows.
+  const windShown = activeGroups.weather && weatherTab === "windrose" && canShowWindRose(subFilters.weather);
+  const { data: windData, loading: windLoading, error: windError } = useFilteredData(
+    windShown ? WEATHER_ONLY : NO_GROUPS, startDate, endDate
+  );
+  const wind = useMemo(() => ({ data: windData, loading: windLoading, error: windError }), [windData, windLoading, windError]);
+
+  const chartView = useChartSeries(activeGroups, startDate, endDate, viewWindow, setViewWindow, wind);
   const { metrics: latestMetrics, loading: latestLoading } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
@@ -144,10 +168,6 @@ export default function Dashboard() {
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
     
-  const cachedSamplingMetrics = {
-    creeks: <CreekMetrics key="creeks" subFilters={samplingSubFilters} /* Error necessary */ metrics={recentSamples} loading={recentSamplesLoading} />
-  };
-  
 
   const samplingMetricComponents = Object.entries(activeCreeks)
     .filter(([, isActive]) => isActive)
@@ -216,11 +236,11 @@ export default function Dashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} loading={loading} error={error} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
-    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} loading={loading} error={error} />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} subFilters={normalizedSubFilters} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} subFilters={normalizedSubFilters} />,
     // modalOpen is only for the copy the modal renders (it injects it); passing it here redrew every
     // on-page logger chart whenever any modal opened
-    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} loading={loading} error={error} />,
+    gauges: <LoggerGraph key="gauges" subFilters={subFilters.gauges} />,
   };
   
   const graphComponents = [];
@@ -249,38 +269,39 @@ export default function Dashboard() {
     return "grid-cols-1";
   };
 
-  const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
-  const [modalData, setModalData] = useState<any>(null);
-  const [modalType, setModalType] = useState<"weather" | "logger" | "quality" | "sampling">("weather");
-  const [modalSubtypes, setModalSubtypes] = useState<string[]>([]);
-
-
+  // The modal remembers only what it shows (a group or creek, and metrics or graphs). Its content is built from the
+  // live components on every render, so it follows loading, new data, errors and the zoom window. (Storing the
+  // element itself froze its props when it was opened: a chart opened while loading stayed on "Loading data…".)
+  const [modalSpec, setModalSpec] = useState<{
+    key: string; // weather / quality / gauges, or a creek
+    type: "weather" | "logger" | "gauges" | "quality" | "sampling";
+  } | null>(null);
 
   const openModal = (
-    content: React.ReactNode, 
+    key: string,
     analysisType: "recent" | "alltime",
-    type: "weather" | "logger" | "quality" | "sampling",
-    subtypes: string[] = []
+    type: "weather" | "logger" | "gauges" | "quality" | "sampling",
   ) => {
-    setModalContent(content);
     setAnalysisType(analysisType);
-    setModalType(type);
-    setModalSubtypes(subtypes);
-    
-    // Set the correct data source based on the type
-    if (type === 'sampling') {
-      setModalData(analysisType === 'recent' ? recentSamples : samplingData);
-    } else {
-      setModalData(analysisType === 'recent' ? latestMetrics : data);
-    }
-
+    setModalSpec({ key, type });
     setIsModalOpen(true);
   };
 
   const closeModal = () => {
-    setModalContent(null);
+    setModalSpec(null);
     setIsModalOpen(false);
   };
+
+  const modalIsSampling = modalSpec?.type === "sampling";
+  const modalContent = !modalSpec ? null
+    : modalIsSampling
+      ? (analysisType === "recent" ? samplingMetricComponents : samplingGraphComponents).find((c) => c.key === modalSpec.key) ?? null
+      : (analysisType === "recent" ? cachedMetrics : cachedGraphs)[modalSpec.key as SensorGroup] ?? null;
+  const modalSubtypes = !modalSpec ? [] : (modalIsSampling ? samplingSubFilters : subFilters)[modalSpec.key] || [];
+  const modalData = modalIsSampling
+    ? (analysisType === "recent" ? recentSamples : samplingData)
+    : (analysisType === "recent" ? latestMetrics : chartView.overview);
+  const modalType = modalSpec?.type ?? "weather";
 
   // Names for the "open in a larger view" buttons.
   const groupNames: Record<string, string> = { gauges: "water logger", weather: "weather", quality: "water quality" };
@@ -293,6 +314,7 @@ export default function Dashboard() {
 
       {/* Header is hidden in iframe mode */}
       {!inIframe && <Header />}
+      <ChartViewContext.Provider value={chartView}>
       <main className="min-h-screen bg-background text-foreground">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
@@ -320,7 +342,6 @@ export default function Dashboard() {
                       <Information id={1} />
                     </h2>
                     <div className="space-y-4">
-                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={activeGroups}
@@ -343,8 +364,8 @@ export default function Dashboard() {
                       <Calendar
                         startDate={startDate}
                         endDate={endDate}
-                        onStartChange={setStartDate}
-                        onEndChange={setEndDate}
+                        onStartChange={changeStartDate}
+                        onEndChange={changeEndDate}
                       />
                       <div className="mt-6 space-y-2">
                         <Download
@@ -356,7 +377,7 @@ export default function Dashboard() {
                           }}
                           startDate={startDate}
                           endDate={endDate}
-                          data={data}
+                          data={[] /* unused for sensors: the backend builds exports */}
                           isSampling={false}
                         />
                       </div>
@@ -385,12 +406,7 @@ export default function Dashboard() {
                               <ExpandableCard
                                 key={comp.key as string}
                                 label={`the latest ${groupNames[comp.key as string] ?? ""} readings`}
-                                onOpen={() => openModal(
-                                  React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
-                                  "recent",
-                                  comp.key as any, // 'weather', 'quality', or 'gauges'
-                                  subFilters[comp.key as string] || []
-                                )}
+                                onOpen={() => openModal(comp.key as string, "recent", comp.key as "weather" | "quality" | "gauges")}
                                 className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
@@ -432,6 +448,7 @@ export default function Dashboard() {
                       <Information id={4} />
                     </h2>
                     
+                    {activeCount > 0 && <ChartWindowBar />}
                     {(() => {
                       // --- START: NEW DYNAMIC LAYOUT LOGIC ---
 
@@ -463,7 +480,7 @@ export default function Dashboard() {
                             {loggerGraph && (
                               <ExpandableCard
                                 label="the water logger graphs"
-                                onOpen={() => openModal(loggerGraph, "alltime", "logger", subFilters.gauges || [])}
+                                onOpen={() => openModal("gauges", "alltime", "logger")}
                                 className="p-4 animate-fade-in-up"
                               >
                                 {loggerGraph}
@@ -476,7 +493,7 @@ export default function Dashboard() {
                                   <ExpandableCard
                                     key={comp.key}
                                     label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                    onOpen={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                    onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
                                     className="p-4 animate-fade-in-up"
                                   >
                                     {comp}
@@ -497,7 +514,7 @@ export default function Dashboard() {
                               <ExpandableCard
                                 key={comp.key}
                                 label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                onOpen={() => openModal(comp, "alltime", comp.key as any, subFilters[comp.key as string] || [])}
+                                onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
                                 className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 150}ms` }}
                               >
@@ -548,7 +565,6 @@ export default function Dashboard() {
                       <Information id={6} />
                     </h2>
                     <div className="space-y-4">
-                       {/* Errors necessary */}
                       <FilterPanel
                         activeTab={activeTab}
                         activeGroups={{}}  // Empty object for sampling mode
@@ -581,6 +597,13 @@ export default function Dashboard() {
                         data={samplingData}
                         isSampling={true}
                       />
+                      {/* For researchers adding sampling files: the standard format, with example rows */}
+                      <p className="pt-1 text-center text-sm text-muted">
+                        Adding sampling data?{" "}
+                        <a href="/api/sampling-template" download className="whitespace-nowrap font-medium text-primary underline underline-offset-2 hover:opacity-80">
+                          CSV template
+                        </a>
+                      </p>
                       </div>
                     </div>
                   </StickyPanel>
@@ -608,12 +631,7 @@ export default function Dashboard() {
                               <ExpandableCard
                                 key={comp.key as string}
                                 label="the latest samples"
-                                onOpen={() => openModal(
-                                  React.cloneElement(comp, { metrics: recentSamples, loading: recentSamplesLoading }),
-                                  "recent",
-                                  "sampling",
-                                  comp.props.subFilters
-                                )}
+                                onOpen={() => openModal(comp.key as string, "recent", "sampling")}
                                 className={`rounded-lg p-3 pr-9 ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
@@ -635,7 +653,7 @@ export default function Dashboard() {
                         <div className="min-h-0 flex-1">
                           <Map
                             activeGroups={activeCreeks}
-                            setActiveGroups={() => {}} // No-op to satisfy type, since Map expects sensor groups setter
+                            setActiveGroups={setActiveCreeks}
                             subFilters={samplingSubFilters}
                             setSubFilters={setSamplingSubFilters}
                             open={open}
@@ -661,7 +679,7 @@ export default function Dashboard() {
                         <ExpandableCard
                           key={key}
                           label={`the ${SAMPLING_FILTER_CONFIG[comp.props.creekKey as keyof typeof SAMPLING_FILTER_CONFIG]?.label ?? "creek"} graphs`}
-                          onOpen={() => openModal(comp, "alltime", "sampling", comp.props.subFilters)}
+                          onOpen={() => openModal(String(comp.key), "alltime", "sampling")}
                           className="p-4 animate-fade-in-up"
                         >
                           {comp}
@@ -730,12 +748,15 @@ export default function Dashboard() {
           type={modalType}
           subtypes={modalSubtypes}
           data={modalData}
+          header={modalSpec && !modalIsSampling && analysisType === "alltime" && !(modalSpec.key === "weather" && windShown)
+            ? <ChartWindowBar /> : null /* not over the wind rose, which shows all the picked days */}
           weatherTab={weatherTab}
           setWeatherTab={setWeatherTab}
         >
            {modalContent}
         </Modal>
       </main>
+      </ChartViewContext.Provider>
       {!inIframe && <Footer />}
     </>
   );
