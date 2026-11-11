@@ -10,6 +10,7 @@ import {
   CREEK_ID_MAP,
   SAMPLING_METRICS,
 } from "@/components/config/filters";
+import { pickedDaysRange } from "@/utils/chartWindow";
 
 // An error whose message was written for the user; any other error is shown as a generic message.
 class ExportError extends Error {}
@@ -98,9 +99,10 @@ const METRIC_NAME_MAP: Record<string, string> = {
   // Add more as needed
 };
 
-const formatDate = (date: Date) => {
-  return date.toISOString().split("T")[0].replace(/-/g, "");
-};
+// YYYYMMDD of a picked day. The date pickers hand over Dates whose own calendar day is the day picked, so read that
+// day, not the UTC one (toISOString gave the day before in Tokyo, where local midnight is still yesterday in UTC).
+const formatDate = (date: Date) =>
+  `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
 
 const Download: React.FC<DownloadProps> = ({
   activeGroups,
@@ -167,11 +169,11 @@ const Download: React.FC<DownloadProps> = ({
       throw new ExportError("Start and end date are required");
     }
 
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+    // The picked days in site time (Toronto midnight to the last millisecond of the last day), whatever the
+    // browser's time zone: local midnight in Tokyo or London is a different instant.
+    const days = pickedDaysRange(startDate, endDate);
+    const start = new Date(days.start);
+    const end = new Date(days.end - 1);
 
     if (isSampling) {
       const selectedCreeks = Object.entries(activeCreeks)

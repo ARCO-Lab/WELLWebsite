@@ -43,5 +43,19 @@ class ExportFilenames(unittest.TestCase):
         self.assertEqual(name, "WELLWestCampus_WaterQuality_20261109_20261109.csv")
 
 
+class ExportRangeIsSiteTime(unittest.TestCase):
+    """recorded_at is naive Toronto time, so the range the query compares it with must be too: an aware bound would
+    be compared in the database session's time zone (UTC), and the export would be 4-5 hours off."""
+
+    def test_aware_bounds_become_toronto_wall_clock(self):
+        filters = sensor("2026-10-31T04:00:00.000Z", "2026-11-02T04:59:59.999Z")
+        self.assertEqual(filters["start"], "2026-10-31T00:00:00")
+        self.assertEqual(filters["end"], "2026-11-01T23:59:59.999000")
+
+    def test_naive_bounds_are_kept(self):
+        filters = sampling("2026-11-09T00:00:00", "2026-11-09T23:59:59")
+        self.assertEqual((filters["start"], filters["end"]), ("2026-11-09T00:00:00", "2026-11-09T23:59:59"))
+
+
 if __name__ == "__main__":
     unittest.main()

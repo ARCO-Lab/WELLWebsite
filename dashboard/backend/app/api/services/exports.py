@@ -56,6 +56,10 @@ def normalize_export_payload(payload: Dict) -> Dict:
     if start_dt > end_dt:
         raise ValueError("start must be before end")
 
+    # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL would read it in
+    # the session's time zone (UTC on the VM), shifting the export by 4-5 hours, so aware times become local here.
+    start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+
     normalized = {
         "domain": domain,
         "start": start_dt.isoformat(),
@@ -97,6 +101,11 @@ def estimate_rows(payload: Dict) -> int:
     else:
         query = _sampling_query(filters)
     return int(query.count())
+
+
+def _site_naive(ts: datetime) -> datetime:
+    """An aware time as naive site (America/Toronto) wall-clock time; naive times are taken as site time already."""
+    return ts.astimezone(EST_TZ).replace(tzinfo=None) if ts.tzinfo is not None else ts
 
 
 def _local_date(value: str) -> str:
