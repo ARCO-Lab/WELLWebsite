@@ -179,7 +179,7 @@ rebuild() {
 }
 
 # The site's pages. Returns 0, or sets PROBLEM to what's wrong and returns 1. $1: how many times to try
-# /api/latest (5 s apart), the slowest to come back after a rebuild. The checks set PROBLEM rather than print it so
+# /api/latest and the WordPress home page (5 s apart), the slowest to come back after a rebuild or recreate. The checks set PROBLEM rather than print it so
 # they're called straight from `if`, where the ERR trap doesn't apply, not from a $(...) subshell.
 site_ok() {
   local code=000
@@ -191,7 +191,12 @@ site_ok() {
   if [ "$code" != 200 ]; then PROBLEM="dashboard /api/latest answered $code"; return 1; fi
   code=$("$CURL" -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:8081/ || true)
   if [ "$code" != 200 ]; then PROBLEM="dashboard home answered $code"; return 1; fi
-  code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
+  # Tried as often as /api/latest: a recreated wordpress container answers only once Apache has started
+  for _ in $(seq 1 "$1"); do
+    code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
+    [ "$code" = 200 ] && break
+    sleep "${DEPLOY_HEALTH_WAIT:-5}"
+  done
   if [ "$code" != 200 ]; then PROBLEM="WordPress home answered $code"; return 1; fi
 }
 
