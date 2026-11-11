@@ -4,6 +4,7 @@
 import React, { useState, useEffect } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
+import type MapComponent from "@/components/map/Map";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import FilterPanel from "@/components/filters/FilterPanel";
@@ -33,7 +34,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animation
 
 type ActiveFilters = { [key: string]: string[] };
 
-const Map = dynamic(() => import("@/components/map/Map"), { ssr: false });
+// next/dynamic drops the map's generic props (sensor groups or creeks); keep them so both setters type-check.
+const Map = dynamic(() => import("@/components/map/Map"), { ssr: false }) as typeof MapComponent;
 
 export default function Dashboard() {
 
@@ -635,7 +637,7 @@ export default function Dashboard() {
                         <div className="min-h-0 flex-1">
                           <Map
                             activeGroups={activeCreeks}
-                            setActiveGroups={() => {}} // No-op to satisfy type, since Map expects sensor groups setter
+                            setActiveGroups={setActiveCreeks}
                             subFilters={samplingSubFilters}
                             setSubFilters={setSamplingSubFilters}
                             open={open}

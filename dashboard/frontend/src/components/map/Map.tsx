@@ -2,10 +2,12 @@
 //
 // MapLibre GL with OpenFreeMap's vector tiles (OpenStreetMap data, no API key, no cookies); Satellite uses
 // Esri World Imagery. If the vector style can't be loaded, the map falls back to plain OpenStreetMap tiles.
-// Clicking a marker shows or hides that sensor/site on the dashboard, in sync with the Filters panel.
-// Hovering (or tapping) a marker shows a card with its details and a Google Maps link.
+// Clicking (or tapping) a marker shows or hides that sensor/site on the dashboard, in sync with the Filters panel,
+// and pins a card with its details, a Show/Hide button and a Google Maps link. Hovering or focusing a marker
+// previews the card. From the keyboard, Enter/Space on a marker opens the card and moves focus into it without
+// changing the data; the card's Show/Hide button does that, and Escape closes the card and returns to the marker.
 
-import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapGL, { Marker, Popup, NavigationControl, FullscreenControl, type MapRef } from "@vis.gl/react-maplibre";
 import type { StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -21,9 +23,11 @@ import styles from "./Map.module.css";
 
 // --- PROPS ---
 
-interface MapProps {
+// G is the shape of the on/off state for the marker groups: the sensor groups on the Sensors tab, the creeks
+// on the sampling tab.
+interface MapProps<G extends { [key: string]: boolean }> {
   activeGroups: { [key: string]: boolean };
-  setActiveGroups: React.Dispatch<React.SetStateAction<{ gauges: boolean; weather: boolean; quality: boolean }>>;
+  setActiveGroups: React.Dispatch<React.SetStateAction<G>>;
   subFilters: { [key: string]: string[] };
   setSubFilters: React.Dispatch<React.SetStateAction<{ [key: string]: string[] }>>;
   open: { [key: string]: boolean };
@@ -92,6 +96,8 @@ function metresBetween(a: Site, b: Site) {
   return Math.hypot(dx, dy);
 }
 
+const siteKey = (site: Site) => `${site.group}-${site.id}`;
+
 const googleMapsUrl = (site: Site) => `https://www.google.com/maps/search/?api=1&query=${site.lat},${site.lng}`;
 
 // Card offsets for every side MapLibre may open it on (it picks the side with room), including a marker's
@@ -110,18 +116,24 @@ const WORKER_URL = "/maplibre/maplibre-gl-worker.mjs";
 
 // --- COMPONENT ---
 
-const Map: FC<MapProps> = ({
+function Map<G extends { [key: string]: boolean }>({
   activeGroups, setActiveGroups, subFilters, setSubFilters, open, setOpen,
   chevronState, setChevronState, isSampling = false
-}) => {
+}: MapProps<G>) {
   const mapRef = useRef<MapRef>(null);
   const [satellite, setSatellite] = useState(false);
   const [vectorFailed, setVectorFailed] = useState(false);
   const styleLoaded = useRef(false);
 
-  // The card shown for a marker: on hover/focus it follows the pointer; a click pins it until the map is clicked.
-  const [card, setCard] = useState<{ site: Site; pinned: boolean } | null>(null);
+  // The card shown for a marker: on hover/focus it follows the pointer; a click (or Enter/Space) pins it until
+  // the map is clicked, it's closed or Escape is pressed. `focus` asks for focus to move into the card.
+  const [card, setCard] = useState<{ site: Site; pinned: boolean; focus?: boolean } | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const showHideRef = useRef<HTMLButtonElement | null>(null);
+  const markerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  // Set while focus goes back to a marker after its card closed, so that focus doesn't reopen the card.
+  const returningFocus = useRef(false);
 
   const sites: Site[] = isSampling ? SAMPLING_SITE_COORDINATES : SENSOR_STATION_COORDINATES;
   const containerId = isSampling ? "well-map-sampling" : "well-map-sensors";
@@ -166,11 +178,30 @@ const Map: FC<MapProps> = ({
 
   useEffect(() => () => cancelHide(), [cancelHide]);
 
+  // Closes the card; if focus was in it, focus goes back to its marker.
+  const closeCard = useCallback(() => {
+    const site = card?.site;
+    const focusWasInCard = !!cardRef.current?.contains(document.activeElement);
+    setCard(null);
+    if (site && focusWasInCard) {
+      returningFocus.current = true;
+      markerRefs.current[siteKey(site)]?.focus();
+      returningFocus.current = false;
+    }
+  }, [card]);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCard(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeCard(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [closeCard]);
+
+  // A card opened from the keyboard takes focus, on its Show/Hide button.
+  useEffect(() => {
+    if (!card?.focus) return;
+    const id = requestAnimationFrame(() => showHideRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [card]);
 
   // Business and transit points of interest only clutter a map of a creek; hide them.
   const tidyStyle = useCallback(() => {
@@ -199,7 +230,7 @@ const Map: FC<MapProps> = ({
     if (group === 'weather' || group === 'quality') {
       setChevronState(prev => ({ ...prev, [group]: !currentlyActive }));
       setOpen(prev => ({ ...prev, [group]: !currentlyActive }));
-      setActiveGroups(prev => ({ ...prev, [group]: !prev[group as 'weather' | 'quality'] }));
+      setActiveGroups(prev => ({ ...prev, [group]: !prev[group] }));
       setSubFilters(prev => ({
         ...prev,
         [group]: currentlyActive ? [] : [...SENSOR_FILTER_CONFIG[group as 'weather' | 'quality'].metrics],
@@ -238,10 +269,13 @@ const Map: FC<MapProps> = ({
         allItemsInGroup.forEach(item => currentSubs.delete(item));
       }
 
-      if (currentSubs.size === 0) {
+      // Hiding the group's last logger/site turns the whole group off (otherwise it would stay on with only
+      // metrics ticked, which shows every site, or none).
+      if (!currentSubs.has(allItemsLabel) && !allItemsInGroup.some(item => currentSubs.has(item))) {
         setActiveGroups(prevActive => ({ ...prevActive, [group]: false }));
         setChevronState(prevChevron => ({ ...prevChevron, [group]: false }));
         setOpen(prevOpen => ({ ...prevOpen, [group]: false }));
+        return { ...prev, [group]: [] };
       }
 
       return { ...prev, [group]: Array.from(currentSubs) };
@@ -256,10 +290,11 @@ const Map: FC<MapProps> = ({
   // The details card for a site: name, type and position, whether it's shown, Show/Hide and a Google Maps link.
   // `compact` (the phone panel) drops the status line: the Show/Hide label and the filled marker already say it.
   const siteCard = (site: Site, look: ReturnType<typeof lookOf>, active: boolean, compact = false) => (
-    <div className="relative text-left" onMouseEnter={cancelHide} onMouseLeave={scheduleHide}>
+    <div ref={cardRef} role="dialog" aria-label={site.label} className="relative text-left"
+      onMouseEnter={cancelHide} onMouseLeave={scheduleHide} onFocus={cancelHide}>
       <button
         type="button"
-        onClick={(e) => { e.stopPropagation(); setCard(null); }}
+        onClick={(e) => { e.stopPropagation(); closeCard(); }}
         className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         aria-label="Close"
       >
@@ -283,6 +318,7 @@ const Map: FC<MapProps> = ({
       </p>
       <div className="grid grid-cols-2 gap-2 border-t border-input-border p-2">
         <button
+          ref={showHideRef}
           type="button"
           onClick={(e) => { e.stopPropagation(); handleMarkerClick(site); setCard({ site, pinned: true }); }}
           className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md border border-input-border px-2 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -330,10 +366,16 @@ const Map: FC<MapProps> = ({
           }
         }}
         onStyleData={tidyStyle}
-        onError={() => {
-          // Only a failure to load the style itself (before the first load) switches to the fallback tiles;
-          // a missing tile later on isn't worth swapping the whole map for.
-          if (!styleLoaded.current && !satellite) setVectorFailed(true);
+        onError={(e) => {
+          // Only a failure to load the style itself switches to the fallback tiles: the style document, or a
+          // source's TileJSON while the style is still loading. A missing tile, sprite or font isn't worth
+          // swapping the whole map for.
+          if (styleLoaded.current || satellite) return;
+          const failed = e as typeof e & { sourceId?: string; tile?: unknown };
+          const url = (e.error as { url?: string } | undefined)?.url;
+          const styleFailed = url === STREETS_STYLE
+            || (!!failed.sourceId && !failed.tile && !e.target.isStyleLoaded());
+          if (styleFailed) setVectorFailed(true);
         }}
         onClick={() => setCard(null)}
         onTouchEnd={(e) => {
@@ -350,21 +392,32 @@ const Map: FC<MapProps> = ({
           const Icon = look.icon;
           const active = isActive(site);
           return (
-            <Marker key={`${site.group}-${site.id}`} longitude={site.lng} latitude={site.lat} offset={offsets[i]}
+            <Marker key={siteKey(site)} longitude={site.lng} latitude={site.lat} offset={offsets[i]}
               style={{ zIndex: cardSite === site ? 3 : active ? 2 : 1 }}>
               <button
+                ref={(el) => { markerRefs.current[siteKey(site)] = el; }}
                 type="button"
                 className={`${styles.marker} ${active ? styles.markerActive : ""}`}
                 style={{ ["--marker-color" as string]: look.color }}
-                aria-pressed={active}
-                aria-label={`${site.label} (${look.name}). ${active ? "Shown" : "Not shown"} on the dashboard; press to ${active ? "hide" : "show"} it.`}
+                aria-haspopup="dialog"
+                aria-expanded={!!card?.pinned && cardSite === site}
+                aria-label={`${site.label} (${look.name}). ${active ? "Shown" : "Not shown"} on the dashboard. Press for its details and a ${active ? "Hide" : "Show"} button.`}
                 onMouseEnter={() => { cancelHide(); setCard((c) => (c?.pinned ? c : { site, pinned: false })); }}
                 onMouseLeave={scheduleHide}
-                onFocus={() => { cancelHide(); setCard({ site, pinned: false }); }}
+                onFocus={() => {
+                  cancelHide();
+                  if (!returningFocus.current) setCard((c) => (c?.pinned ? c : { site, pinned: false }));
+                }}
                 onBlur={scheduleHide}
                 onClick={(e) => {
                   e.stopPropagation();
                   cancelHide();
+                  // A click from the keyboard (Enter/Space, detail 0) only opens the card and moves focus into
+                  // it; a mouse click or tap also shows or hides the data, as before.
+                  if (e.detail === 0) {
+                    setCard({ site, pinned: true, focus: true });
+                    return;
+                  }
                   handleMarkerClick(site);
                   setCard({ site, pinned: true });
                 }}
@@ -442,6 +495,6 @@ const Map: FC<MapProps> = ({
       </ul>
     </div>
   );
-};
+}
 
 export default Map;
