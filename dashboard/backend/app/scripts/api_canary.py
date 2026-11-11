@@ -20,6 +20,7 @@ import requests
 
 from config import Config
 from api.services.quality import describe_request_error
+from utils.borealis import base_url
 
 WINDOW = timedelta(hours=6)    # recent enough to be cheap, long enough that a slow upload still shows data
 TIMEOUT = (10, 60)
@@ -159,15 +160,20 @@ def probe_wqdata(now):
 
 
 def probe_borealis(now):
-    if gone := missing("DEMO_BOREALIS_URL", "BOREALIS_API_TOKEN",
-                       "DEMO_BOREALIS_AW_PERSISTENT_ID", "DEMO_BOREALIS_WC_PERSISTENT_ID"):
+    if gone := missing("BOREALIS_URL", "BOREALIS_API_TOKEN",
+                       "BOREALIS_SAMPLING_PERSISTENT_ID", "BOREALIS_UPLOAD_PERSISTENT_ID"):
         return None, f"not configured: {', '.join(gone)}"
     # Both datasets: downloads read the first, uploads add files to the second, so the token must work on each.
+    # BOREALIS_URL may be a collection page (https://borealisdata.ca/dataverse/WELL); the API is at the server root.
+    try:
+        server = base_url(Config.BOREALIS_URL)
+    except ValueError:
+        return None, "not configured: BOREALIS_URL isn't a URL such as https://borealisdata.ca"
     summaries, status = [], None
-    for label, pid in (("download dataset", Config.DEMO_BOREALIS_AW_PERSISTENT_ID),
-                       ("upload dataset", Config.DEMO_BOREALIS_WC_PERSISTENT_ID)):
+    for label, pid in (("download dataset", Config.BOREALIS_SAMPLING_PERSISTENT_ID),
+                       ("upload dataset", Config.BOREALIS_UPLOAD_PERSISTENT_ID)):
         try:
-            status, body = get_json(f"{Config.DEMO_BOREALIS_URL}/api/datasets/:persistentId",
+            status, body = get_json(f"{server}/api/datasets/:persistentId",
                                     params={"persistentId": pid},
                                     headers={"X-Dataverse-key": Config.BOREALIS_API_TOKEN})
             summaries.append(f"{label} {check_borealis(body)}")

@@ -150,8 +150,8 @@ class Response:
 
 ENV = {"HOBO_API_URL": "https://licor.invalid/v1/data", "HOBO_API_TOKEN": SECRET, "HOBO_LOGGERS": "21893775,x",
        "WQ_API_URL": "https://wq.invalid/api/v1", "WQ_API_KEY": SECRET, "WQ_DEVICE_ID": "42",
-       "DEMO_BOREALIS_URL": "https://borealis.invalid", "BOREALIS_API_TOKEN": SECRET,
-       "DEMO_BOREALIS_AW_PERSISTENT_ID": "doi:aw", "DEMO_BOREALIS_WC_PERSISTENT_ID": "doi:wc"}
+       "BOREALIS_URL": "https://borealis.invalid/dataverse/WELL", "BOREALIS_API_TOKEN": SECRET,
+       "BOREALIS_SAMPLING_PERSISTENT_ID": "doi:aw", "BOREALIS_UPLOAD_PERSISTENT_ID": "doi:wc"}
 
 
 class Run(unittest.TestCase):
