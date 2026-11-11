@@ -15,6 +15,7 @@
 
 from flask import jsonify, request
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from db.database import db
 from .series import local_naive, parse_iso
@@ -24,6 +25,7 @@ SECTORS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "
 SPEED_EDGES = [0.5, 2, 4, 6, 8, 10]
 SPEEDS = ("Wind Speed", "Gust Speed")
 STATEMENT_TIMEOUT = "15s"  # a range this query can't count in time gets a clear error instead of tying up the DB
+QUERY_CANCELED = "57014"  # PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout
 
 
 def speed_classes():
@@ -34,18 +36,19 @@ def speed_classes():
 
 
 # width_bucket(x, edges) is 0 below the first edge and len(edges) at or above the last: the speed class index.
-# The direction is first wrapped into [0, 360), so 360° and -10° count as N and NNW.
+# The direction is first wrapped into [0, 360), so 360° and -20° count as N and NNW. NaN and ±Infinity readings are
+# left out (numeric can't hold an infinity).
 SQL = text("""
 WITH dir AS (
   SELECT station_id, recorded_at, value AS deg
   FROM sensor_measurements
   WHERE group_type = 'Weather' AND measurement_type = 'Wind Direction'
-    AND recorded_at BETWEEN :s AND :e AND value IS NOT NULL AND value <> 'NaN'
+    AND recorded_at BETWEEN :s AND :e AND value IS NOT NULL AND value <> ALL ('{NaN,Infinity,-Infinity}'::float8[])
 ), spd AS (
   SELECT station_id, recorded_at, measurement_type, value AS ms
   FROM sensor_measurements
   WHERE group_type = 'Weather' AND measurement_type = ANY(:m)
-    AND recorded_at BETWEEN :s AND :e AND value IS NOT NULL AND value <> 'NaN' AND value >= 0
+    AND recorded_at BETWEEN :s AND :e AND value IS NOT NULL AND value <> ALL ('{NaN,Infinity,-Infinity}'::float8[]) AND value >= 0
 )
 SELECT spd.measurement_type,
        (floor((((dir.deg::numeric % 360) + 360) % 360 + 11.25) / 22.5)::int % 16) AS sector,
@@ -77,10 +80,11 @@ def register_windrose_route(app):
     def get_windrose():
         start, end = request.args.get("start"), request.args.get("end")
         asked = request.args.getlist("speed")
+        if not start or not end:
+            return jsonify({"error": "Missing required parameters: start and end"}), 400
+        if any(s not in SPEEDS for s in asked):
+            return jsonify({"error": "speed must be Wind Speed or Gust Speed"}), 400
         speeds = [s for s in SPEEDS if s in asked] if asked else list(SPEEDS)
-        if not start or not end or not speeds:
-            return jsonify({"error": "Missing required parameters: start, end (and speed, if given, must be "
-                                     "Wind Speed or Gust Speed)"}), 400
         try:
             start_in, end_in = parse_iso(start), parse_iso(end)
             start_dt, end_dt = local_naive(start_in), local_naive(end_in)
@@ -98,9 +102,9 @@ def register_windrose_route(app):
         db.session.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'"))
         try:
             rows = db.session.execute(SQL, {"s": start_dt, "e": end_dt, "m": speeds, "edges": SPEED_EDGES}).fetchall()
-        except Exception as error:  # noqa: BLE001 - only a cancelled (timed-out) statement gets its own answer
+        except OperationalError as error:
             db.session.rollback()
-            if "statement timeout" in str(error):
-                return jsonify({"error": "That range took too long to count. Please pick a shorter one."}), 503
+            if getattr(error.orig, "pgcode", None) == QUERY_CANCELED:
+                return jsonify({"error": "That range took too long to count. Please pick a shorter one."}), 504
             raise
         return jsonify({"sectors": SECTORS, "speed_classes": speed_classes(), "roses": tabulate(rows, speeds)})

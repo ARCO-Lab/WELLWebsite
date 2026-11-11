@@ -84,8 +84,13 @@ class WindroseSqlTests(unittest.TestCase):
             add("Wind Speed", when, speed)
             if gust is not None:
                 add("Gust Speed", when, gust)
-        # Not counted: a speed with no direction at that time, a negative speed, another day, another group
+        # Not counted: a speed with no direction at that time, a negative speed, another day, another group,
+        # NaN and infinite readings
         add("Wind Speed", t0 + dt.timedelta(minutes=5), 3.0)
+        for minutes, (deg, speed) in ((70, (float("inf"), 3.0)), (80, (float("-inf"), 3.0)), (90, (float("nan"), 3.0)),
+                                      (100, (90.0, float("inf"))), (110, (90.0, float("nan")))):
+            add("Wind Direction", t0 + dt.timedelta(minutes=minutes), deg)
+            add("Wind Speed", t0 + dt.timedelta(minutes=minutes), speed)
         add("Wind Direction", t0 + dt.timedelta(hours=2), 180.0)
         add("Wind Speed", t0 + dt.timedelta(hours=2), -1.0)
         add("Wind Direction", t0 + dt.timedelta(days=3), 180.0)
@@ -149,8 +154,23 @@ class WindroseSqlTests(unittest.TestCase):
                       "start=2026-11-02&end=2026-11-01",
                       "start=2026-11-01T06:10:00Z&end=2026-11-01T05:30:00Z",
                       "start=2026-11-01&end=2026-11-02&speed=Rain",
+                      "start=2026-11-01&end=2026-11-02&speed=Wind%20Speed&speed=Rain",  # one bad name is enough
                       "start=2026-11-01&end=2026-11-02&speed=x';DROP TABLE sensor_measurements;--"):
             self.assertEqual(self.client.get(f"/api/windrose?{query}").status_code, 400, query)
+
+
+    def test_a_query_that_runs_too_long_is_a_504(self):
+        from api.routes import windrose
+        from sqlalchemy import text
+        saved = windrose.SQL, windrose.STATEMENT_TIMEOUT
+        windrose.SQL, windrose.STATEMENT_TIMEOUT = text("SELECT pg_sleep(1)"), "50ms"
+        try:
+            r = self.client.get("/api/windrose?start=2026-11-01&end=2026-11-02")
+        finally:
+            windrose.SQL, windrose.STATEMENT_TIMEOUT = saved
+        self.assertEqual(r.status_code, 504)
+        self.assertIn("shorter", r.get_json()["error"])
+        self.rose("start=2026-11-01&end=2026-11-02")  # the session recovered
 
 
 if __name__ == "__main__":
