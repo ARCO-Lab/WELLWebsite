@@ -1,6 +1,5 @@
 # This file defines the /api/samples route for retrieving and filtering creek/point sampling data, and
 # /api/samples/template.csv, the template for sampling files.
-# (AI ANALYSIS DISABLED: it used to start a background summary of the result for the AI routes; see below.)
 
 import pathlib
 
@@ -19,7 +18,7 @@ CREEK_ID_MAP = {
     "spencer": "19755185"
 }
 
-def register_samples_route(app, latest_sampling_summaries):
+def register_samples_route(app):
     @app.route("/api/samples", methods=["GET"])
     def get_filtered_samples():
         # Parse query parameters for date range and selected creeks
@@ -62,9 +61,6 @@ def register_samples_route(app, latest_sampling_summaries):
             for r in query.order_by(SamplingMeasurement.recorded_at).all()
         ]
 
-        # AI ANALYSIS DISABLED: a per-request thread used to summarize `data` with pandas
-        # (scripts/downsample.summarize_sampling_data) into latest_sampling_summaries for the AI routes.
-        # Nothing reads it while those routes are off, so commit 5b501eb deleted it.
         return jsonify(data)
 
     @app.route("/api/samples/template.csv", methods=["GET"])

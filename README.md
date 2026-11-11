@@ -57,7 +57,6 @@ Every setting is listed in [docs/configuration.md](docs/configuration.md).
   - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement; `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
   - `/api/exports/estimate`, `/api/exports/sync`, `/api/exports/jobs`, `/api/exports/jobs/<id>` and `/api/exports/jobs/<id>/download`: CSV downloads
   - `/health` (the process is up; not passed through) and `/health/data` (data freshness, see Monitoring; the dashboard's `/api/health/data`)
-  - The AI analysis routes (`/api/analysis/*`) are switched off; see [AI Analysis](#ai-analysis)
 - `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL: about 2,000 points per series
   (raw 10-minute readings up to ~2 weeks, coarser buckets beyond; ranges longer than ~5.5 years are capped at daily
   buckets, so they get more). Times with an offset (`...Z`) are real instants, times without one are Toronto local
@@ -105,7 +104,6 @@ Without it, every container fails with "No route to host" after the next reboot,
 |---|---|
 | HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
 | WQData Live API | Automated ingestion & scheduled updates |
-| OpenAI API | AI analysis, currently disabled (see [AI Analysis](#ai-analysis)) |
 | Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 | SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
@@ -351,9 +349,7 @@ addresses* on as a second guard.
 
 ## AI Analysis
 
-> **Currently disabled.** The UI entry points and API routes are commented out, each marked `AI ANALYSIS DISABLED`. To turn the feature back on, search the code for that marker, uncomment those blocks, delete the four 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts`, and set `OPENAI_API_KEY`. Uncommenting alone is not enough: the background summaries the analysis routes read (`latest_summaries`, filled after each `/api/data` request, and `latest_sampling_summaries`, after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so that summary step has to be rebuilt too. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
-
-When it was on, an API endpoint aggregated and downsampled a series (`scripts/downsample.py`, used only by these routes) and sent a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend rendered the output inside an analysis modal and allowed exporting the narrative.
+Removed. The dashboard once had OpenAI-written summaries of the charts; it was switched off in PR #3 and its backend routes, Next.js proxies and the `openai` dependency were deleted later. The old code is in the git history (`git log --diff-filter=D -- dashboard/backend/app/api/routes/analysis`). A few commented-out UI blocks marked `AI ANALYSIS DISABLED` remain in the dashboard frontend until its next clean-up; uncommenting them has nothing left to call.
 
 ---
 
@@ -544,7 +540,7 @@ docker compose exec backend python scripts/migrate.py            # apply
 | Database | PostgreSQL 13 (VM host); MySQL 5.7 for WordPress |
 | Infrastructure | Docker Compose on a Linux VM, behind McMaster's reverse proxy |
 | CMS | WordPress (PHP, Bootstrap, Flickity) |
-| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured); OpenAI (AI analysis, disabled) |
+| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured) |
 | Monitoring | Sentry, Healthchecks.io, email digest and alerts, daily API canary (GitHub Actions) |
 | Deploy and CI | `deploy.sh` (by hand or from cron), GitHub Actions |
 
@@ -556,9 +552,9 @@ The WELL Environmental Data Platform and the associated WordPress site are inten
 
 - **Informational use only:** Data, charts, summaries, and downloadable files are provided for informational, educational, and research-support purposes and should not be treated as legal, regulatory, engineering, safety-critical, or emergency-response advice.
 - **No guarantee of uninterrupted service:** While the platform is designed for near real-time availability, uptime, data freshness, and feature availability are not guaranteed at all times because of scheduled maintenance, upstream API outages, network issues, or infrastructure failures.
-- **Data accuracy and completeness:** Sensor readings, derived metrics, AI-generated summaries, and exports may contain delays, gaps, approximations, processing errors, or third-party source inconsistencies. Users should independently validate important findings before relying on them.
+- **Data accuracy and completeness:** Sensor readings, derived metrics, and exports may contain delays, gaps, approximations, processing errors, or third-party source inconsistencies. Users should independently validate important findings before relying on them.
 - **Acceptable use:** Users must not misuse the dashboard, APIs, iframe integration, or WordPress site, including by attempting unauthorized access, bypassing rate limits, scraping protected content, interfering with service availability, or introducing malicious content.
-- **Third-party services:** The platform depends on external providers including HoboLink, WQData Live, OpenAI, Borealis, SharePoint, WordPress, and hosting/network services. Their availability and terms may affect platform behavior.
+- **Third-party services:** The platform depends on external providers including HoboLink, WQData Live, Borealis, SharePoint, WordPress, and hosting/network services. Their availability and terms may affect platform behavior.
 - **Intellectual property:** Project branding, code, visual assets, and original content remain subject to the rights and licenses defined by the WELL project, McMaster University, and any third-party licensors.
 - **Changes to the service:** Features, APIs, visualizations, exports, and access controls may be updated, restricted, or removed without notice as the platform evolves.
 
@@ -573,7 +569,7 @@ The platform should publish a simple privacy notice covering both the dashboard 
 - **Operational data collected:** The system may log request metadata such as IP address, timestamp, requested path, response status, browser/user-agent details, and application errors for security, troubleshooting, and performance monitoring.
 - **Analytics and observability:** Monitoring tools, logs, metrics, and alerts may be used to understand uptime, failures, and performance across Nginx, Flask, Next.js, WordPress, and PostgreSQL.
 - **User-submitted or uploaded files:** Research uploads such as CSV or Excel sampling files may contain user-supplied content and should be handled as institutional research data, with access limited to authorized project administrators.
-- **Third-party processing:** Data sent to third-party services, such as OpenAI for AI analysis or external APIs for ingestion/export workflows, is subject to those providers' terms and privacy practices.
+- **Third-party processing:** Data sent to third-party services, such as the external APIs used for ingestion and export workflows, is subject to those providers' terms and privacy practices.
 - **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content. If analytics or non-essential cookies are added later, a cookie notice/consent flow should be considered.
 - **Data retention:** Application logs, backups, exports, and uploaded files should follow a defined retention and deletion policy appropriate for operational, institutional, and research needs.
 - **Access and protection:** Secrets should be stored securely, admin access should be restricted, backups should be protected, and production systems should use TLS and least-privilege access controls.
@@ -589,9 +585,6 @@ The platform should publish a simple privacy notice covering both the dashboard 
 
 **How are backups automated?**
 Each month the worker exports the month's sensor data as CSV and uploads it to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint).
-
-**How did the AI analysis feature work?**
-It is switched off; see [AI Analysis](#ai-analysis). When it was on, the API aggregated and downsampled the series first, then sent a bounded prompt with metadata to OpenAI.
 
 **What keeps the dashboard responsive with large datasets?**
 `/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.

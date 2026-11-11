@@ -95,9 +95,9 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 
 | Variable | Meaning |
 |---|---|
-| `ALLOW_WIPE` | `1` lets a script that deletes every row of a table run (`inject_historical.py`, `clear_sampling_db.py`, `inject_sampling.py --full-reload`), e.g. `docker compose exec -e ALLOW_WIPE=1 worker python scripts/...`. Take a `pg_dump` first. |
+| `ALLOW_WIPE` | `1` lets a script that deletes every row of a table run (`clear_sampling_db.py`, `inject_sampling.py --full-reload`), e.g. `docker compose exec -e ALLOW_WIPE=1 worker python scripts/...`. Take a `pg_dump` first. |
 
-`OPENAI_API_KEY` is only needed if the disabled AI analysis is turned back on (see the README's "AI Analysis").
+`OPENAI_API_KEY` is no longer read by anything (the AI analysis was removed; see the README's "AI Analysis"). Delete it from `.env` if it is still there.
 
 ## Dashboard (Next.js)
 
