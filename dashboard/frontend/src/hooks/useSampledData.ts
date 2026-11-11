@@ -68,7 +68,17 @@ const useSampledData = (
 
       try {
         const res = await fetch(`/api/samples?${params.toString()}`);
-        if (!res.ok) throw new Error(`Failed to fetch sampled data: ${res.status}`);
+        if (!res.ok) {
+          // Show the API's own explanation when it gives one (e.g. an invalid date range).
+          let message = `Couldn't load sampling data (HTTP ${res.status}).`;
+          try {
+            const body = await res.json();
+            if (typeof body?.error === "string" && body.error) message = body.error;
+          } catch {
+            // Not JSON; keep the generic message.
+          }
+          throw new Error(message);
+        }
 
         const json = await res.json();
         cache.current.set(key, json);

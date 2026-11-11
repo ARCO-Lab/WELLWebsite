@@ -1,0 +1,80 @@
+# Checks every pull request and every push to main. Keep it fast and close to production:
+# the backend is tested inside the same Docker image the VM builds.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend image and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the backend image (as on the VM)
+        run: docker build -t well-backend:ci dashboard/backend
+
+      - name: Installed packages are consistent
+        run: docker run --rm well-backend:ci pip check
+
+      - name: Unit tests, inside the image
+        run: docker run --rm --network none -w /app well-backend:ci python -m unittest discover -s tests -v
+
+      - name: The app, worker, scheduler and export modules import, with psycopg2 as the database driver
+        run: |
+          env=(-e DATABASE_URL=postgresql://ci:ci@127.0.0.1:1/ci
+               -e HOBOLINK_API_URL=http://127.0.0.1:1 -e HOBOLINK_API_TOKEN=ci -e HOBOLINK_LOGGERS=1
+               -e WQ_API_URL=http://127.0.0.1:1 -e WQ_API_KEY=ci -e WQ_DEVICE_ID=1)
+          docker run --rm --network none -w /app/app "${env[@]}" well-backend:ci python -c "
+          from sqlalchemy import create_engine
+          assert create_engine('postgresql://u:p@h/db').dialect.driver == 'psycopg2', 'wrong PostgreSQL driver'
+          import server, scripts.inject_from_api, tasks.exports
+          print('ok:', len(list(server.app.url_map.iter_rules())), 'routes')
+          "
+          # The worker container runs scripts/scheduler_temp.py from scripts/ (its __main__ guard keeps this to an import)
+          docker run --rm --network none -w /app/app/scripts "${env[@]}" well-backend:ci \
+            python -c "import scheduler_temp; print('ok: scheduler imports')"
+
+  dashboard:
+    name: Dashboard build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: dashboard/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+  deploy-script:
+    name: Deploy script
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deploy.sh in a sandbox (fake remote, stub docker and curl)
+        run: bash .github/scripts/test_deploy.sh

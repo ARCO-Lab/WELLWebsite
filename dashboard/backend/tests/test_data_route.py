@@ -9,9 +9,14 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real database
 
+from config import Config  # noqa: E402
 from server import create_app  # noqa: E402
 from db.database import db  # noqa: E402
 from db.models import SensorMeasurement  # noqa: E402
+
+# Config reads DATABASE_URL once, when first imported: if another test module imported it first (with its own
+# placeholder URL), the line above came too late. Point the app at SQLite either way.
+Config.SQLALCHEMY_DATABASE_URI = "sqlite://"
 
 T0 = dt.datetime(2026, 11, 1, 0, 0)
 

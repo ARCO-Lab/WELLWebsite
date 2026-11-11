@@ -104,6 +104,51 @@ Cron orchestrates all scheduled tasks:
 - **Exports**: Nightly CSV exports to Borealis and SharePoint with checksum verification and logging
 - **Health checks**: Readiness endpoints for external monitors
 
+### Deploying
+
+The VM runs `main`. On the VM, `./deploy.sh`:
+- pulls `main`;
+- rebuilds only the services whose files changed:
+  - `dashboard/frontend/` → `dashboard`;
+  - `dashboard/backend/` → `backend`, `worker`, `export_worker`;
+  - `docker-compose.yml` → everything;
+  - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's live once pulled.
+- checks the site: `/api/latest`, the dashboard home page (both on port 8081) and the WordPress home page (port 8080). If `worker` or `export_worker` was rebuilt, it also checks a minute later that the container is still running and hasn't restarted (compose restarts crashing workers, so "running" alone proves nothing);
+- rolls back to the previous commit if any check fails.
+
+If the site is already unhealthy before a deploy, `--auto` doesn't deploy (so the new commit isn't blamed and rolled back); `./deploy.sh` by hand deploys anyway and doesn't roll back.
+
+Each run is logged in `deploy.log` (best effort: a log it can't write never stops a deploy halfway), and any failure, expected or not, logs a `FAILED:` line. Over 5 MB, `deploy.log` is moved to `deploy.log.1` and a new one started. `./deploy.sh --dry-run` only shows what would happen: no log, no pings, no state. It refuses to run over local edits to tracked files, so change the VM only through `main`.
+
+`./deploy.sh --auto` deploys a new commit on `main` only once all its CI checks have passed (`.github/workflows/ci.yml`). It holds changes that need a person, logging them and leaving them for you:
+- a new database migration;
+- `docker-compose.yml`;
+- a WordPress core update, which needs its database update run from wp-admin.
+
+Deploy those with `./deploy.sh`. `--auto` reports each problem once, not every 5 minutes: a held commit, failed CI, local edits, a non-fast-forward or a merge git refuses, a GitHub API error or unreadable reply, a fetch error, an already-unhealthy site, or any other command failing (keyed by its line). A commit that was deployed and rolled back isn't retried, whatever else fails in between; a newer commit on `main`, or `./deploy.sh` by hand, moves past it.
+
+#### Before adding the cron line
+
+Check these on the VM first; each is something `--auto` relies on:
+- The tracked tree is clean (`git status --porcelain --untracked-files=no` prints nothing) and `find home ! -user elankuml | head` prints nothing, so a pull can update every file.
+- The three health checks return 200 now:
+  ```
+  curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/api/latest
+  curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/
+  curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/
+  ```
+- `DASHBOARD_PORT` in `.env` is 8081 (the checks use that port).
+- Fetching works without an SSH agent, as it will from cron: `env -i HOME=$HOME PATH=/usr/bin:/bin git fetch origin main`.
+- Run `./deploy.sh` once by hand.
+
+Then add this to your crontab (`crontab -e`):
+
+```
+*/5 * * * * cd ~/WELLWebsite && DEPLOY_HEALTHCHECK_URL=https://hc-ping.com/<uuid> ./deploy.sh --auto >/dev/null 2>>deploy.log
+```
+
+`DEPLOY_HEALTHCHECK_URL` is optional. The script pings it on success (up to date, or deployed and healthy) and pings `<url>/fail` on a failure or a held commit. Runs that are waiting (CI still running, a problem already reported, another deploy in progress) don't ping. So set the Healthchecks period to 5 minutes and the grace time longer than CI takes (30 minutes is safe), or a slow CI run will look like an outage.
+
 ---
 
 ## AI Analysis
@@ -152,6 +197,30 @@ WQDATA_DEVICE_ID=your-device-id-here
 ```bash
 python upload_data.py --year 2023 --month 7
 ```
+
+---
+
+## Database migrations
+
+New tables are created by `db.create_all()` (`dashboard/backend/app/db/init_db.py`), which never changes a table that already exists. Changes to existing tables (an index, a new column) go in a numbered SQL file in `dashboard/backend/app/db/migrations/` (`0001_name.sql`, `0002_name.sql`, ...), applied with `scripts/migrate.py`. It runs the files that haven't run yet, in order, and records each in the `schema_migrations` table so none runs twice. Nothing applies them automatically; on the VM, run them by hand:
+
+```bash
+cd ~/WELLWebsite
+./git_pull.sh && docker compose up -d --build --no-deps backend   # the migration files are baked into the image
+pg_dump "<database url>" -Fc -f ~/welldb-$(date +%F).dump        # a backup first, kept outside the repo
+docker compose exec backend python scripts/migrate.py --status   # what has run and what is pending
+docker compose exec backend python scripts/migrate.py --dry-run  # the SQL that would run
+docker compose exec backend python scripts/migrate.py            # apply
+```
+
+- The first step is needed because `docker compose exec backend` only sees the files in the running image. Rebuilding restarts gunicorn, so the API returns errors for a few seconds.
+- Each file runs in one transaction, so a failed migration leaves nothing half-done. A file whose first line is `-- migrate: no-transaction` runs outside a transaction instead, as `CREATE INDEX CONCURRENTLY` requires; such a file holds one statement.
+- Indexes are built with `CONCURRENTLY`, which doesn't block reads or inserts, so the index build itself needs no downtime: the site and the ingestion keep running while it builds.
+- If a concurrent index build fails part way, PostgreSQL leaves an INVALID index behind. When that index is one the migration names, the runner refuses to record the migration, names the index and exits with an error: drop it with `DROP INDEX CONCURRENTLY <name>;` and run the migration again. Invalid indexes the migration doesn't name only get a warning.
+- A second run at the same time refuses to start ("another migrate.py run holds the lock", a PostgreSQL advisory lock) and exits with an error; run it again once the first has finished. It doesn't wait, because a waiting run would stall the first run's concurrent index build.
+- Never rename or renumber a file once it has been applied: the runner identifies migrations by file name and would run it again. Two files with the same number are refused.
+- Dated files such as `2026-11-10_swap_air_soil_temperature.sql` are one-off data fixes, run by hand with `psql` as their comments describe; the runner ignores them.
+- When a migration changes the schema, change `db/models.py` to match, so a fresh database built by `create_all()` gets the same result.
 
 ---
 
