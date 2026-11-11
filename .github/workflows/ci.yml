@@ -121,8 +121,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # UTC, like the VM's database. recorded_at is naive Toronto time, so a query that compares it with an aware
-      # time (read in the session's zone) returns rows 4-5 hours off, which the checks then catch.
+      # America/New_York on the VM; UTC here on purpose, so any dependence on the session zone fails. recorded_at is
+      # naive Toronto time, so code that writes it in the session's zone, or compares it with an aware time (which
+      # PostgreSQL reads in the session's zone), is 4-5 hours off here, and the checks catch it.
       - name: Start a throwaway PostgreSQL 13 in UTC
         run: |
           docker run -d --name e2e-postgres -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=e2e -e POSTGRES_DB=e2e \

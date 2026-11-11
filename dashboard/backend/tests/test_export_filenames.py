@@ -52,6 +52,13 @@ class ExportRangeIsSiteTime(unittest.TestCase):
         self.assertEqual(filters["start"], "2026-10-31T00:00:00")
         self.assertEqual(filters["end"], "2026-11-01T23:59:59.999000")
 
+    def test_mixed_aware_and_naive_bounds_are_compared_in_site_time(self):
+        # 03:00Z on Nov 10 is 22:00 on Nov 9 in Toronto, after the naive start; compared as given this raised TypeError
+        filters = sensor("2026-11-09T21:00:00", "2026-11-10T03:00:00Z")
+        self.assertEqual((filters["start"], filters["end"]), ("2026-11-09T21:00:00", "2026-11-09T22:00:00"))
+        with self.assertRaisesRegex(ValueError, "start must be before end"):
+            sensor("2026-11-09T23:00:00", "2026-11-10T03:00:00Z")
+
     def test_naive_bounds_are_kept(self):
         filters = sampling("2026-11-09T00:00:00", "2026-11-09T23:59:59")
         self.assertEqual((filters["start"], filters["end"]), ("2026-11-09T00:00:00", "2026-11-09T23:59:59"))

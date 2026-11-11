@@ -153,11 +153,13 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     const where = async () => page.evaluate((x) => {
       type HPoint = { x: number; plotX?: number; plotY?: number };
       type HChart = { container: HTMLElement; plotLeft: number; plotTop: number;
-        series: { name: string; points: HPoint[] }[] };
+        series: { name: string; type: string; points: HPoint[] }[] };
       const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
       if (!H) throw new Error("Highcharts isn't on window._Highcharts (its UMD build puts it there)");
       for (const chart of H.charts) {
-        const point = chart?.series.find((s) => s.name.startsWith("Air Temperature"))?.points.find((p) => p.x === x);
+        // The line, not a min-max band drawn with it
+        const line = chart?.series.find((s) => s.name === "Air Temperature (°C)" && s.type === "line");
+        const point = line?.points.find((p) => p.x === x);
         if (!chart || point?.plotX === undefined || point.plotY === undefined) continue;
         chart.container.scrollIntoView({ block: "center" });
         const box = chart.container.getBoundingClientRect();

@@ -33,6 +33,7 @@ updates:
     groups:
       e2e-npm:
         patterns: ["*"]
+        update-types: [minor, patch]
     assignees: [lukhsaankumar]
 
   # requirements.txt pins every package, dependencies of dependencies included, so each bump is explicit.

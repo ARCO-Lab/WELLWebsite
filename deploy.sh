@@ -34,7 +34,7 @@ REPO=${GITHUB_REPO:-ARCO-Lab/WELLWebsite}
 API=${GITHUB_API:-https://api.github.com}
 DOCKER=${DOCKER:-docker}
 CURL=${CURL:-curl}
-REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Deploy script")  # job names in .github/workflows/ci.yml
+REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Deploy script" "End-to-end data (vendors to browser)")  # job names in .github/workflows/ci.yml
 
 # Best effort: an unwritable deploy.log must never stop a deploy halfway (tee still prints the line either way)
 log() {

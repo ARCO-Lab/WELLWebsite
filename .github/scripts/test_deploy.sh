@@ -69,7 +69,7 @@ def run(name, c):
     return {"name": name, "status": "in_progress" if c == "pending" else "completed",
             "conclusion": None if c == "pending" else c}
 print(json.dumps({"check_runs": [run("Backend image and tests", sys.argv[1]), run("Dashboard build", sys.argv[2]),
-                                 run("Deploy script", "success")]}))
+                                 run("Deploy script", "success"), run("End-to-end data (vendors to browser)", "success")]}))
 EOF
 }
 change() { # commit and push edits to the given paths
