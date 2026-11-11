@@ -23,9 +23,10 @@
 -- ix_sensor_measurements_group_type_recorded_at from 0001) are rebuilt by the ALTER and keep their names.
 --
 -- Locking: ALTER ... TYPE rewrites the table and its indexes under an ACCESS EXCLUSIVE lock: nothing can read
--- or write sensor_measurements until it commits. On a table of production's size (1.46 M rows, 131 MB plus its three
--- indexes, PostgreSQL 13 on the production VM) it took 9.4 seconds, so expect 10-15 s. Stop the worker and the
--- backend first (the deploy steps say how), so nothing queues behind the lock; lock_timeout makes the migration
+-- or write sensor_measurements until it commits. On a table of 1.46 M rows (131 MB plus its three indexes,
+-- PostgreSQL 13 on the production VM) it took 9.4 seconds; it scales with the table, so at production's 2.4 M rows
+-- (November 2026) expect about 15-25 s. Stop the worker, the backend, the export worker and ops first (the deploy
+-- steps say how), so nothing queues behind the lock; lock_timeout makes the migration
 -- fail rather than wait if something still holds the table.
 --
 -- A database created after this change (db/init_db.py) already has timestamptz, so this does nothing there:
