@@ -222,6 +222,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
   - `dashboard/frontend/` → `dashboard`;
   - `dashboard/backend/` → `backend`, `worker`, `export_worker`;
   - `docker-compose.yml` → everything;
+  - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress` container is recreated, since Apache and PHP read them only at start;
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's live once pulled.
 - checks the site: `/api/latest`, the dashboard home page (both on port 8081) and the WordPress home page (port 8080). If `worker` or `export_worker` was rebuilt, it also checks a minute later that the container is still running and hasn't restarted (compose restarts crashing workers, so "running" alone proves nothing);
 - rolls back to the previous commit if any check fails.
