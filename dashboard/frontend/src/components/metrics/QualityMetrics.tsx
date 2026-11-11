@@ -21,11 +21,13 @@ const QualityMetrics = ({
   activeKeys,
   metrics: qualityData = [],
   loading = false,
+  inModal = false,
 }: {
   activeKeys: string[];
   activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
   metrics?: any[];
   loading?: boolean;
+  inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }) => {
   const rows: MetricRow[] = metricMap
     .filter(({ fullLabel }) => activeKeys.includes(fullLabel))
@@ -34,7 +36,7 @@ const QualityMetrics = ({
       reading: qualityData.find((d) => d.group_type === "Quality" && d.measurement_type === metric.key),
     }));
 
-  return <MetricGroup title="Water Quality Metrics" sections={[{ key: "quality", rows }]} loading={loading} />;
+  return <MetricGroup title="Water Quality Metrics" sections={[{ key: "quality", rows }]} loading={loading} layout={inModal ? "wrap" : "ticker"} />;
 };
 
 export default QualityMetrics;

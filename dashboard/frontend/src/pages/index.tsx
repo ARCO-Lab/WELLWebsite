@@ -21,6 +21,7 @@ import Download from "@/components/Download";
 import Modal from "@/components/Modal";
 import ExpandableCard from "@/components/ExpandableCard";
 import EmptyState from "@/components/EmptyState";
+import StickyPanel from "@/components/StickyPanel";
 // AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
 // import AIAnalysis from "@/components/AIAnalysis";
 import useFilteredData from "@/hooks/useFilteredData";
@@ -311,9 +312,9 @@ export default function Dashboard() {
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               <div className="col-span-full grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
                 
-                {/* Filters Sidebar: sticky on large screens, scrolling inside itself when taller than the window */}
+                {/* Filters Sidebar: always shown in full, and kept in view on large screens (StickyPanel) */}
                 <div className="lg:col-span-1">
-                  <div className="mcmaster-card h-fit p-6 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:overscroll-contain">
+                  <StickyPanel className="mcmaster-card h-fit p-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                       Filters
                       <Information id={1} />
@@ -360,7 +361,7 @@ export default function Dashboard() {
                         />
                       </div>
                     </div>
-                  </div>
+                  </StickyPanel>
                 </div>
 
                 {/* Main Content Area */}
@@ -369,9 +370,9 @@ export default function Dashboard() {
                   {/* Top Row: Latest Data + Map */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     
-                    {/* Latest Data: as tall as the map on large screens, scrolling inside itself */}
+                    {/* Latest Data: one scrolling strip per group */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex flex-col p-6 lg:h-[30rem]">
+                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Latest Data
                           <Information id={3} />
@@ -379,7 +380,7 @@ export default function Dashboard() {
                         {metricComponents.length === 0 ? (
                           <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its latest readings.</EmptyState>
                         ) : (
-                          <div className="-mr-2 min-h-0 flex-1 space-y-3 pr-2 lg:overflow-y-auto lg:overscroll-contain">
+                          <div className="min-w-0 space-y-3">
                             {metricComponents.map((comp, index) => (
                               <ExpandableCard
                                 key={comp.key as string}
@@ -539,9 +540,9 @@ export default function Dashboard() {
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               <div className="col-span-full grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
                 
-                {/* Filters Sidebar: sticky on large screens, scrolling inside itself when taller than the window */}
+                {/* Filters Sidebar: always shown in full, and kept in view on large screens (StickyPanel) */}
                 <div className="lg:col-span-1">
-                  <div className="mcmaster-card h-fit p-6 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:overscroll-contain">
+                  <StickyPanel className="mcmaster-card h-fit p-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                       Filters
                       <Information id={6} />
@@ -582,7 +583,7 @@ export default function Dashboard() {
                       />
                       </div>
                     </div>
-                  </div>
+                  </StickyPanel>
                 </div>
 
 
@@ -592,9 +593,9 @@ export default function Dashboard() {
                   {/* Top Row: Latest Data + Map */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6"> 
                     
-                    {/* Latest Data: as tall as the map on large screens, scrolling inside itself */}
+                    {/* Latest Data: one scrolling strip per group */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex flex-col p-6 lg:h-[30rem]">
+                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Latest Data
                           <Information id={8} />
@@ -602,7 +603,7 @@ export default function Dashboard() {
                         {samplingMetricComponents.length === 0 ? (
                           <EmptyState>Tick a creek under Filters, or click a site on the map, to see its latest samples.</EmptyState>
                         ) : (
-                          <div className="-mr-2 min-h-0 flex-1 space-y-3 pr-2 lg:overflow-y-auto lg:overscroll-contain">
+                          <div className="min-w-0 space-y-3">
                             {samplingMetricComponents.map((comp, index) => (
                               <ExpandableCard
                                 key={comp.key as string}
