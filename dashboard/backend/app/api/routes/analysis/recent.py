@@ -3,6 +3,7 @@
 
 from flask import request, jsonify
 import json
+from ..latest import query_latest_per_series
 
 # Embedded config for loggers
 LOGGER_CONFIG = {
@@ -27,9 +28,9 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
         if analysis_type not in ["weather", "logger", "quality"]:
             return jsonify({"error": "Invalid or missing type. Must be one of: weather, logger, quality."}), 400
 
-        # Use cached latest metrics as the data source
+        # Same newest-reading-per-series data that /api/latest returns (the shared cache is no longer filled)
         results = [
-            r for r in latest_metrics_cache["data"]
+            r for r in query_latest_per_series()
             if r["group_type"].lower() == analysis_type.lower()
         ]
 
@@ -57,7 +58,7 @@ def register_analysis_recent_route(app, latest_metrics_cache, client):
             
             # 4. Create context with friendly names
             station_names = [LOGGER_CONFIG['sites'].get(sid, sid) for sid in selected_stations]
-            station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."
+            station_context = f"The following data is for Water Logger(s): {', '.join(station_names)}."  # noqa: F841 (never added to the prompt below)
         
         elif subtypes:
             # Filter results for weather and quality types based on subtypes

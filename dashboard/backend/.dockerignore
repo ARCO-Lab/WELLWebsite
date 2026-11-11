@@ -33,8 +33,15 @@ Thumbs.db
 # Logs
 *.log
 
-# Environment files (keep only what Docker needs)
-.env.example
+# Secrets. The containers get these values from docker-compose (env_file and
+# environment), so the files must not be baked into the image, where anyone
+# with the image or a shell in the container could read them.
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
 
 # Test files
 .pytest_cache/

@@ -20,7 +20,10 @@ export default function useRecentSamples() {
   const fetchRecent = async () => {
     try {
       const res = await fetch("/api/recent");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      // Keep the last good values unless the reply is the expected list.
+      if (!Array.isArray(data)) throw new Error("Unexpected response");
       setSamples(data);
     } catch (err) {
       console.error("[ERROR] Failed to fetch recent samples:", err);
