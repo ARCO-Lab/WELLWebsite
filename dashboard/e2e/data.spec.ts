@@ -171,8 +171,8 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     await page.mouse.move(point.x, point.y, { steps: 5 });
     const tooltip = page.locator(".highcharts-tooltip", { hasText: "Air Temperature" });
     await expect(tooltip).toContainText("9.50");
-    await expect(tooltip).toContainText(/Oct 31/);
-    await expect(tooltip).toContainText(/12:00/);
+    await expect(tooltip).toContainText(/Oct 31\b/);
+    await expect(tooltip).toContainText(/\b12:00\b/);
   });
 
   await test.step("Latest Data shows the newest readings, in Toronto time", async () => {
