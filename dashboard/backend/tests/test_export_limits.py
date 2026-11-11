@@ -204,7 +204,7 @@ class WorkerSettingsTests(unittest.TestCase):
 class TaskTests(AppTestCase):
     def run_task(self, job_id, **patches):
         from tasks import exports as export_tasks
-        with unittest.mock.patch.object(export_tasks, "create_app", return_value=self.app):
+        with unittest.mock.patch.object(export_tasks, "worker_app", return_value=self.app):
             with unittest.mock.patch.object(export_tasks, "write_export_csv", **patches) as write:
                 try:
                     export_tasks.generate_export_job(job_id)
@@ -252,7 +252,7 @@ class TaskTests(AppTestCase):
             self.db.session.add(self.ExportJob(id="dbfail", status="queued", domain="sampling", payload={}))
             self.db.session.flush()  # a duplicate key: the session's transaction is now unusable
 
-        with unittest.mock.patch.object(export_tasks, "create_app", return_value=self.app):
+        with unittest.mock.patch.object(export_tasks, "worker_app", return_value=self.app):
             with unittest.mock.patch.object(export_tasks, "write_export_csv", side_effect=break_the_session):
                 with self.assertRaises(IntegrityError):
                     export_tasks.generate_export_job("dbfail")
@@ -374,7 +374,7 @@ class SpringForwardRouteAndCleanupTests(AppTestCase):
         with frozen_clock(dt.datetime(2026, 3, 8, 7, 1, tzinfo=dt.timezone.utc)):  # 03:01 EDT
             body = self.app.test_client().get("/api/exports/jobs/spring").get_json()
             from tasks.exports import cleanup_expired_artifacts
-            with unittest.mock.patch("tasks.exports.create_app", return_value=self.app):
+            with unittest.mock.patch("tasks.exports.worker_app", return_value=self.app):
                 cleanup_expired_artifacts()
         self.assertEqual(body["status"], "running")
         self.assertEqual(self.get("spring").status, "running")
@@ -392,7 +392,7 @@ class SpringForwardRouteAndCleanupTests(AppTestCase):
 class CleanupTests(AppTestCase):
     def run_cleanup(self):
         from tasks.exports import cleanup_expired_artifacts
-        with unittest.mock.patch("tasks.exports.create_app", return_value=self.app):
+        with unittest.mock.patch("tasks.exports.worker_app", return_value=self.app):
             cleanup_expired_artifacts()
         self.db.session.expire_all()
 

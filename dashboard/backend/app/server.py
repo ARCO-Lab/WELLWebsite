@@ -33,7 +33,8 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options(
-        app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"])
+        app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"],
+        app.config["DB_APPLICATION_NAME"])
     db.init_app(app)
     CORS(app)
     register_routes(app)
