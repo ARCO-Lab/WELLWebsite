@@ -110,6 +110,7 @@ class AlertIncident(db.Model):
     reopened_at = db.Column(db.DateTime(timezone=True))     # came back after its recovery was emailed
     back_again_at = db.Column(db.DateTime(timezone=True))   # when "back again" was last emailed
     flaps = db.Column(db.Integer, nullable=False, default=0)    # "back again" emails so far; lengthens the clear time
+    present_since = db.Column(db.DateTime(timezone=True))   # start of the current unbroken presence; NULL while gone
     recovery_notified_at = db.Column(db.DateTime(timezone=True))
 
     __table_args__ = (

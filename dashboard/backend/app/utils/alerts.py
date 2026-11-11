@@ -95,6 +95,8 @@ class Plan:
     notify_new: list = field(default_factory=list)    # open incidents never emailed (new rows: see open_new)
     remind: list = field(default_factory=list)        # emailed incidents due a reminder
     back_again: list = field(default_factory=list)    # back after an emailed recovery, and stayed back
+    absent: list = field(default_factory=list)        # open incidents whose condition is gone, not cleared yet
+    steady: list = field(default_factory=list)        # flapped before, now present ALERT_REOPEN_HOURS: undamp
     recovered: list = field(default_factory=list)     # emailed incidents that cleared, recovery not yet emailed
 
 
@@ -402,7 +404,8 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
     - Flap damping: once an incident has had a "back again", it has to be gone for longer before it clears again:
       ALERT_FLAP_CLEAR_MINUTES, doubled for each further "back again", up to FLAP_CLEAR_CAP (clear_window). So a
       flapping condition sends at most one "recovered" and one "back again" per window, and the last email about
-      a key is never wrong for longer than ALERT_CLEAR_MINUTES or the incident's current window.
+      a key is never wrong for longer than ALERT_CLEAR_MINUTES or the incident's current window. An incident that
+      then stays present without a break for ALERT_REOPEN_HOURS is steady again: its flap count resets.
     - Keys nest (site > station > sensor). When a coarser condition replaces finer open incidents, or finer
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
@@ -427,11 +430,15 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
             result.open_new.append((condition, parent))
             continue
         result.update.append((incident, condition))
+        if (incident.flaps and incident.present_since is not None
+                and now - aware(incident.present_since) >= settings.reopen_within):
+            result.steady.append(incident)   # steady for hours: its real recovery is reported after the usual delay
         if incident.last_notified_at is None:
             result.notify_new.append(incident)
-        elif (incident.reopened_at is not None and incident.recovery_notified_at is not None
-              and now - aware(incident.reopened_at) >= settings.clear_after):
-            result.back_again.append(incident)
+        elif (incident.reopened_at is not None or id(incident) in reopened) and incident.recovery_notified_at is not None:
+            # Back after an emailed recovery: the next email about it is "back again", never a reminder.
+            if incident.reopened_at is not None and now - aware(incident.reopened_at) >= settings.clear_after:
+                result.back_again.append(incident)
         elif now - aware(incident.last_notified_at) >= settings.reminder:
             result.remind.append(incident)
     for key, incident in open_by_key.items():
@@ -443,6 +450,8 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
             result.resolve.append(incident)
             if incident.last_notified_at is not None and incident.recovery_notified_at is None:
                 result.recovered.append(incident)
+        else:
+            result.absent.append(incident)
     result.recovered += [i for i in pending_recoveries
                          if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
@@ -517,7 +526,8 @@ def build_email(new, reminders, recovered, open_count, now, settings, back_again
     lines += [f"Open alerts now: {open_count}. You get one email per new problem, a reminder at most every "
               f"{duration(settings.reminder)} while it lasts, and one when it has been clear for "
               f"{duration(settings.clear_after)}. If it comes back within {duration(settings.reopen_within)}, you get "
-              f"a \"back again\" email, and from then on it has to stay clear for "
+              f"a \"back again\" email once it has stayed back {duration(settings.clear_after)}, and from then on it "
+              f"has to stay clear for "
               f"{duration(settings.flap_clear_after)} (doubling with each return, up to {duration(FLAP_CLEAR_CAP)}) "
               f"before it is reported recovered.",
               f"Dashboard: {base}/",

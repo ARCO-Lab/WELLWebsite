@@ -491,6 +491,68 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertEqual(self.kinds(), ["new", "recovered", "new"])
         self.assertEqual((len(self.incidents()), self.open_keys()), (2, ["vendor:WQData"]))
 
+    def test_a_reopened_incident_gets_back_again_not_a_reminder(self):
+        at, emails_at = self.at, self.emails_at
+        self.down(at(8))
+        self.assertEqual(emails_at(at(8), at(1, 50, days=1)), ["sent", None])         # new; no reminder yet
+        self.record("WQData", now=at(2, 0, days=1))
+        self.assertEqual(emails_at(at(2, 20, days=1)), ["sent"])                       # recovered
+        self.down(at(8, 10, days=1))   # within 6 h, but over 24 h since the last email: still "back again"
+        self.assertEqual(emails_at(at(8, 10, days=1), at(8, 30, days=1), at(8, 40, days=1)), [None, None, "sent"])
+        self.assertEqual(self.kinds(), ["new", "recovered", "back again"])
+
+    def test_steady_again_after_flapping(self):
+        at, emails_at = self.at, self.emails_at
+        self.down(at(8))
+        emails_at(at(8), at(11))
+        self.record("WQData", now=at(11, 5))
+        emails_at(at(11, 10), at(11, 40))                                              # recovered
+        self.down(at(11, 50))
+        emails_at(at(11, 50), at(12, 20))                                              # back again: damped
+        for hour in range(13, 19):   # down without a break until 18:10
+            emails_at(at(hour, 10))
+        self.record("WQData", now=at(18, 15))
+        # Steady for over 6 h, so the usual 30 min applies again: recovered at 18:40, not 21:10.
+        self.assertEqual(emails_at(at(18, 20), at(18, 30), at(18, 40)), [None, None, "sent"])
+        self.assertEqual(self.kinds(), ["new", "recovered", "back again", "recovered"])
+
+    def test_a_sensor_back_after_its_station_recovered_is_new(self):
+        env = {**SMTP, "ALERT_STALE_HOURS_WEATHER": "1"}
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=2))
+        self.add_readings("Weather", WEATHER, "Air Temperature", NOW - dt.timedelta(minutes=10))
+        self.record("LI-COR")
+        self.run_at(NOW, env=env)                                                       # 1: Rain
+        self.run_at(NOW + dt.timedelta(hours=1), env=env)                               # 2: the station
+        self.assertTrue(self.sent[1][1].startswith("[WELL] Weather station 22051538 silent"), self.sent[1][1])
+        for measurement in ("Rain", "Air Temperature"):
+            self.add_readings("Weather", WEATHER, measurement, NOW + dt.timedelta(hours=1, minutes=5), count=1)
+        self.run_at(NOW + dt.timedelta(hours=1, minutes=10), env=env)
+        self.run_at(NOW + dt.timedelta(hours=1, minutes=40), env=env)                   # 3: station recovered
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Recovered: Weather station 22051538 silent"))
+        self.add_readings("Weather", WEATHER, "Air Temperature", NOW + dt.timedelta(hours=2, minutes=55), count=1)
+        self.run_at(NOW + dt.timedelta(hours=3), env=env)    # 4: Rain alone again: new, not its superseded row
+        self.assertEqual(len(self.sent), 4)
+        self.assertTrue(self.sent[3][1].startswith("[WELL] Weather station 22051538 Rain silent"), self.sent[3][1])
+
+    def test_a_pending_back_again_survives_narrowing_to_a_key_closed_before(self):
+        env = {**SMTP, "ALERT_STALE_HOURS_WEATHER": "1"}
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=2))
+        self.add_readings("Weather", WEATHER, "Air Temperature", NOW - dt.timedelta(minutes=10))
+        self.record("LI-COR")
+        self.run_at(NOW, env=env)                                                       # 1: Rain
+        self.run_at(NOW + dt.timedelta(hours=1), env=env)                               # 2: the station
+        for measurement in ("Rain", "Air Temperature"):
+            self.add_readings("Weather", WEATHER, measurement, NOW + dt.timedelta(hours=1, minutes=5), count=1)
+        self.run_at(NOW + dt.timedelta(hours=1, minutes=10), env=env)
+        self.run_at(NOW + dt.timedelta(hours=1, minutes=40), env=env)                   # 3: station recovered
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=2, minutes=10), env=env)["email"])   # reopened
+        self.add_readings("Weather", WEATHER, "Air Temperature", NOW + dt.timedelta(hours=2, minutes=15), count=1)
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=2, minutes=20), env=env)["email"])   # narrowed
+        self.run_at(NOW + dt.timedelta(hours=2, minutes=40), env=env)                   # 4: back again, for Rain
+        self.assertEqual(len(self.sent), 4)
+        self.assertTrue(self.sent[3][1].startswith("[WELL] Back again: Weather station 22051538 Rain silent"),
+                        self.sent[3][1])
+
     def test_flap_window_settings(self):
         from utils.alerts import clear_window
         settings = settings_from_env({"ALERT_FLAP_CLEAR_MINUTES": "120"})

@@ -126,10 +126,10 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         row = AlertIncident(incident_key=condition.key, kind=condition.kind, title=condition.title,
                             detail=condition.detail,
                             started_at=condition.started_at.astimezone(timezone.utc),   # SQLite (tests) drops the offset
-                            opened_at=now, last_seen_at=now, notifications=0)
+                            opened_at=now, last_seen_at=now, present_since=now, notifications=0)
         if parent is not None and parent.last_notified_at is not None:
             # A finer incident split off one already emailed: it has been reported, so it isn't new.
-            # Its notification state too, so a pending "back again" (or a deferred recovery) still goes out.
+            # Its notification state too, so a pending "back again" still goes out and flap damping carries on.
             for name in ("last_notified_at", "notifications", "recovery_notified_at", "reopened_at", "back_again_at",
                          "flaps"):
                 setattr(row, name, getattr(parent, name))
@@ -142,6 +142,12 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
             incident.reopened_at = now
     for incident, condition in actions.update:   # keep the wording current (durations, failure counts)
         incident.title, incident.detail, incident.last_seen_at = condition.title, condition.detail, now
+        if incident.present_since is None:   # present again after a gap (or reopened)
+            incident.present_since = now
+    for incident in actions.absent:
+        incident.present_since = None
+    for incident in actions.steady:
+        incident.flaps = 0
     for incident in actions.resolve:
         incident.resolved_at, incident.close_reason = now, "cleared"
     for incident in actions.supersede:

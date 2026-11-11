@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS alert_incidents (
     reopened_at          timestamptz,
     back_again_at        timestamptz,
     flaps                integer NOT NULL DEFAULT 0,
+    present_since        timestamptz,
     recovery_notified_at timestamptz
 );
 
@@ -43,6 +44,7 @@ ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS close_reason varchar(16);
 ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS reopened_at timestamptz;
 ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS back_again_at timestamptz;
 ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS flaps integer NOT NULL DEFAULT 0;
+ALTER TABLE alert_incidents ADD COLUMN IF NOT EXISTS present_since timestamptz;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_alert_incidents_open_key ON alert_incidents (incident_key)
     WHERE resolved_at IS NULL;

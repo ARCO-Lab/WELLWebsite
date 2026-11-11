@@ -60,8 +60,9 @@ def pending_recoveries(since):
 
 
 def recently_closed(since):
-    """{incident_key: the newest incident closed since `since`}, for incidents whose condition comes back."""
-    rows = (AlertIncident.query.filter(AlertIncident.resolved_at >= since)
+    """{incident_key: the newest incident cleared since `since`}, for incidents whose condition comes back. Only
+    "cleared" ones: a superseded incident's problem was carried on by a coarser one, whose state is what counts."""
+    rows = (AlertIncident.query.filter(AlertIncident.resolved_at >= since, AlertIncident.close_reason == "cleared")
             .order_by(AlertIncident.resolved_at, AlertIncident.id).all())
     return {i.incident_key: i for i in rows}   # later rows win
 
