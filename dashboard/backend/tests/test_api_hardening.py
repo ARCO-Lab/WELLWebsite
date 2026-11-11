@@ -244,7 +244,27 @@ class ResponseCacheTests(TestCase):
             started = time.monotonic()
             with self.assertLogs(response_cache.log, "WARNING"):
                 self.assertIsNone(response_cache.get("k"))
-            self.assertLess(time.monotonic() - started, 2)
+            self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_hung_redis_costs_one_socket_timeout(self):
+        # A server that accepts connections but never answers: one 0.3 s read timeout, no retries.
+        import socket
+        hung = socket.socket()
+        hung.bind(("127.0.0.1", 0))
+        hung.listen(8)
+        self.addCleanup(hung.close)
+        with mock.patch.object(Config, "API_CACHE_REDIS_URL", f"redis://127.0.0.1:{hung.getsockname()[1]}/2"):
+            started = time.monotonic()
+            with self.assertLogs(response_cache.log, "WARNING"):
+                self.assertIsNone(response_cache.get("k"))
+            self.assertLess(time.monotonic() - started, 0.9)  # a retry would take at least 0.6 s
+
+    def test_the_client_never_retries(self):
+        with mock.patch.object(Config, "API_CACHE_REDIS_URL", "redis://127.0.0.1:1/2"):
+            client = response_cache._get_client()
+        retry = client.connection_pool.connection_kwargs["retry"]
+        self.assertEqual(retry.get_retries(), 0)
+        self.assertEqual(client.connection_pool.connection_kwargs.get("retry_on_error"), [])
 
 
 @skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the statement-timeout tests")

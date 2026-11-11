@@ -14,6 +14,8 @@ import threading
 import time
 
 import redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from config import Config
 
@@ -33,9 +35,10 @@ def _get_client():
         return None
     with _lock:
         if _client is None:
-            # Short timeouts: a cache that makes requests wait is worse than none.
+            # Short timeouts and no retries (redis-py retries 3 times by default in 7.x, 10 with backoff in
+            # 8.x): a cache that makes requests wait is worse than none.
             _client = redis.Redis.from_url(Config.API_CACHE_REDIS_URL, socket_connect_timeout=0.2,
-                                           socket_timeout=0.3)
+                                           socket_timeout=0.3, retry=Retry(NoBackoff(), 0), retry_on_error=[])
         return _client
 
 
