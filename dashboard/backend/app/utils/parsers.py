@@ -68,7 +68,7 @@ def reading_value(raw):
         return None
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: an integer too large for a float
         return None
     return value if math.isfinite(value) else None
 
@@ -178,7 +178,8 @@ def licor_rows(records, groups, weather_station, tz) -> dict:
     for (sensor_sn, unit, expected), count in sorted(wrong_units.items(), key=str):
         print(f"[ERROR] LI-COR sensor {sensor_sn} reports {unit!r}, not {expected!r}: skipped its {count} "
               f"record(s). Check the sensor, then update WEATHER_UNITS/LOGGER_UNITS in utils/parsers.py "
-              f"(and convert if needed).")
+              f"(and convert if needed), then run scripts/licor_backfill.py --days N for the skipped period: "
+              f"the 10-minute ingestion won't fetch it again, since the other sensors' readings move its start.")
     return rows
 
 

@@ -102,7 +102,7 @@ class LicorRows(unittest.TestCase):
 
 class BadValues(unittest.TestCase):
     """A reading without a usable number is skipped: never stored as 0 or NaN, and never fails the whole run."""
-    bad = (None, "", "N/A", "abc", float("nan"), float("inf"), float("-inf"), "NaN", True, [], {})
+    bad = (None, "", "N/A", "abc", float("nan"), float("inf"), float("-inf"), "NaN", True, [], {}, 10 ** 400)
 
     def test_reading_value(self):
         for raw in self.bad:
