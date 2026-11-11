@@ -10,6 +10,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 from sqlalchemy import create_engine, inspect, text
@@ -103,6 +104,13 @@ class Marker(unittest.TestCase):
         self.assertFalse(migrate.needs_autocommit("-- an index\n-- migrate: no-transaction\nSELECT 1"))
         self.assertFalse(migrate.needs_autocommit(""))
 
+    def test_an_index_counts_as_mentioned_only_as_a_whole_name(self):
+        self.assertTrue(migrate.mentions("CREATE INDEX CONCURRENTLY ix_a ON t (a)", "ix_a"))
+        self.assertTrue(migrate.mentions("CREATE INDEX CONCURRENTLY public.IX_A ON t (a)", "ix_a"))
+        self.assertTrue(migrate.mentions('CREATE INDEX CONCURRENTLY "ix_a" ON t (a)', "ix_a"))
+        self.assertFalse(migrate.mentions("CREATE INDEX CONCURRENTLY ix_a_b ON t (a)", "ix_a"))
+        self.assertFalse(migrate.mentions("CREATE INDEX CONCURRENTLY pix_a ON t (a)", "ix_a"))
+
 
 class RepoMigrations(unittest.TestCase):
     def test_repo_folder(self):
@@ -115,7 +123,7 @@ class RepoMigrations(unittest.TestCase):
 
 @unittest.skipUnless(os.getenv("MIGRATE_TEST_DATABASE_URL"), "set MIGRATE_TEST_DATABASE_URL to a disposable PostgreSQL")
 class PostgresRunner(Runner):
-    TABLES = "schema_migrations, t, t2"
+    TABLES = "schema_migrations, t, t2, x"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -128,7 +136,7 @@ class PostgresRunner(Runner):
         super().tearDown()
 
     def sql(self, statement):
-        """Run one statement outside a transaction; returns the rows of a SELECT."""
+        """Run one statement outside a transaction; returns the rows of a SELECT. Write % as %% (psycopg2)."""
         with self.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             result = conn.exec_driver_sql(statement)
             return result.fetchall() if result.returns_rows else None
@@ -185,21 +193,59 @@ class PostgresRunner(Runner):
         self.sql("TRUNCATE t; INSERT INTO t VALUES (1)")
         self.assertEqual(self.run_migrate(), ["0001_index"])
 
-    def test_a_second_run_waits_for_the_lock_and_then_finds_nothing_to_do(self):
+    def test_an_unrelated_invalid_index_only_warns(self):
+        self.sql("CREATE TABLE x (a int)")
+        self.sql("INSERT INTO x VALUES (1), (1)")
+        with self.assertRaises(Exception):
+            self.sql("CREATE UNIQUE INDEX CONCURRENTLY ix_x_a ON x (a)")   # leaves ix_x_a INVALID
+        self.sql("CREATE TABLE t (a int)")
+        self.write("0001_index.sql", "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY IF NOT EXISTS ix_t_a ON t (a)")
+        logs = []
+        self.assertEqual(migrate.migrate(self.engine, self.dir, log=logs.append), ["0001_index"])
+        self.assertTrue(any(line.startswith("[WARN]") and "ix_x_a" in line for line in logs), logs)
+        self.assertEqual(self.recorded(), ["0001_index"])
+
+    def test_a_second_run_refuses_while_another_holds_the_lock(self):
         self.sql("CREATE TABLE t (a int)")
         self.write("0001_index.sql", "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY ix_t_a ON t (a)")
         holder = self.engine.connect().execution_options(isolation_level="AUTOCOMMIT")
         holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": migrate.LOCK_KEY})
+        try:
+            with self.assertRaisesRegex(migrate.MigrationError, "another migrate.py run holds the lock"):
+                self.run_migrate()
+        finally:
+            holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": migrate.LOCK_KEY})
+            holder.close()
+        self.assertEqual(self.run_migrate(), ["0001_index"])
+
+    def test_a_second_run_during_a_concurrent_build_refuses_instead_of_hanging(self):
+        # An open REPEATABLE READ transaction keeps the first run's CREATE INDEX CONCURRENTLY waiting, so the
+        # second run starts while the first holds the lock mid-build. Waiting for the lock there would hang both.
+        self.sql("CREATE TABLE t (a int)")
+        self.write("0001_index.sql", "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY ix_t_a ON t (a)")
+        blocker = self.engine.connect().execution_options(isolation_level="REPEATABLE READ")
+        blocker.execute(text("SELECT count(*) FROM t"))   # takes the snapshot the build has to wait for
         results = []
-        run = threading.Thread(target=lambda: results.append(self.run_migrate()))
-        run.start()
-        run.join(1.5)
-        self.assertTrue(run.is_alive(), "migrate() ran while another session held the lock")
-        holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": migrate.LOCK_KEY})
-        holder.close()
-        run.join(30)
-        self.assertEqual(results, [["0001_index"]])   # the CONCURRENTLY build didn't wait on the lock connection
-        self.assertEqual(self.run_migrate(), [])
+        first = threading.Thread(target=lambda: results.append(self.run_migrate()))
+        first.start()
+        try:
+            for _ in range(100):   # until the first run is inside the build
+                if self.sql("SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid() "
+                            "AND query LIKE '%%CREATE INDEX CONCURRENTLY ix_t_a%%' AND wait_event IS NOT NULL"):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("the first run never started the build")
+            started = time.monotonic()
+            with self.assertRaisesRegex(migrate.MigrationError, "another migrate.py run holds the lock"):
+                self.run_migrate()
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertTrue(first.is_alive())
+        finally:
+            blocker.rollback()
+            blocker.close()
+            first.join(30)   # always, so a failure here can't leave the first run going into the next test
+        self.assertEqual(results, [["0001_index"]])
 
 
 if __name__ == "__main__":

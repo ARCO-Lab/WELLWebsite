@@ -59,7 +59,12 @@ def needs_autocommit(sql):
     return bool(lines) and lines[0].strip().lower() == NO_TRANSACTION
 
 
-def apply(engine, path):
+def mentions(sql, name):
+    """Whether the SQL names this index, bare or after a schema prefix (public.ix_a), as a whole word."""
+    return re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", sql, re.IGNORECASE) is not None
+
+
+def apply(engine, path, log=print):
     sql = read(path)
     record = text("INSERT INTO schema_migrations (version) VALUES (:version)")
     if not needs_autocommit(sql):
@@ -70,25 +75,32 @@ def apply(engine, path):
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         conn.exec_driver_sql(sql)
         # A CREATE INDEX CONCURRENTLY that failed earlier leaves an INVALID index, which IF NOT EXISTS then
-        # skips with only a notice. Don't record the migration as done while such an index exists.
+        # skips with only a notice. Don't record the migration as done while an index it names is invalid;
+        # other invalid indexes aren't this migration's doing, so they only get a warning.
         if engine.dialect.name == "postgresql":
             invalid = [r[0] for r in conn.execute(text(
-                "SELECT indexrelid::regclass::text FROM pg_index WHERE NOT indisvalid ORDER BY 1"))]
-            if invalid:
+                "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE NOT i.indisvalid ORDER BY 1"))]
+            own = [name for name in invalid if mentions(sql, name)]
+            if own:
                 raise MigrationError(
-                    f"{path.name} not recorded: invalid index(es) {', '.join(invalid)}, left by a failed concurrent "
-                    f"build. Drop each with DROP INDEX CONCURRENTLY <name>; and run the migration again.")
+                    f"{path.name} not recorded: its index {', '.join(own)} is INVALID, left by a failed concurrent "
+                    f"build. Drop it with DROP INDEX CONCURRENTLY <name>; and run the migration again.")
+            if invalid:
+                log(f"[WARN] invalid index(es) {', '.join(invalid)} in the database, not from {path.name}; "
+                    f"recording it anyway. Drop them with DROP INDEX CONCURRENTLY <name>; when convenient.")
         conn.execute(record, {"version": path.stem})
 
 
 def migrate(engine, directory=MIGRATIONS_DIR, log=print):
     migration_files(directory)   # fail on duplicate numbers before touching the database
     postgres = engine.dialect.name == "postgresql"
-    # The lock lives on its own autocommit connection: an open transaction here would make CREATE INDEX
-    # CONCURRENTLY wait for it forever.
+    # A second run refuses to start rather than wait: a session waiting for the lock holds a snapshot, and
+    # CREATE INDEX CONCURRENTLY in the first run would wait for that snapshot forever. The lock lives on its own
+    # autocommit connection for the same reason (an open transaction there would block the build too).
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as lock:
-        if postgres:
-            lock.execute(text("SELECT pg_advisory_lock(:key)"), {"key": LOCK_KEY})
+        if postgres and not lock.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": LOCK_KEY}).scalar():
+            raise MigrationError("another migrate.py run holds the lock; wait for it to finish")
         try:
             with engine.begin() as conn:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations (version varchar(255) PRIMARY KEY, "
@@ -96,10 +108,13 @@ def migrate(engine, directory=MIGRATIONS_DIR, log=print):
             todo = pending(engine, directory)   # read after taking the lock, so a run that just finished counts
             for path in todo:
                 log(f"[INFO] applying {path.name}")
-                apply(engine, path)
+                apply(engine, path, log)
         finally:
             if postgres:
-                lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
+                try:
+                    lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
+                except Exception:   # don't hide the original error; the lock goes with the session anyway
+                    pass
     log(f"[INFO] {len(todo)} migration(s) applied" if todo else "[INFO] nothing to apply")
     return [p.stem for p in todo]
 
