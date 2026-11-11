@@ -78,3 +78,6 @@ jobs:
 
       - name: deploy.sh in a sandbox (fake remote, stub docker and curl)
         run: bash .github/scripts/test_deploy.sh
+
+      - name: canary_issue.sh against a stub gh
+        run: bash .github/scripts/test_canary_issue.sh
