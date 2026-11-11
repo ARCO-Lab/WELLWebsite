@@ -1,11 +1,16 @@
 # This file initializes and configures the Flask application for the WELL backend.
 # It sets up CORS, registers all API routes, and integrates the database.
 
-from flask import Flask
-from flask_cors import CORS
-from api.routes import register_routes
-from db.database import db
-from config import Config
+from config import Config  # loads .env, so SENTRY_DSN is set before init_sentry reads it
+from utils.sentry import init_sentry
+
+# Report errors to Sentry when SENTRY_DSN is set (utils/sentry.py); before the app and its routes are created.
+init_sentry("backend")
+
+from flask import Flask  # noqa: E402
+from flask_cors import CORS  # noqa: E402
+from api.routes import register_routes  # noqa: E402
+from db.database import db  # noqa: E402
 
 def create_app():
     # Create and configure the Flask app

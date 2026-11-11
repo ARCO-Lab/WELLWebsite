@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
+import sentry_sdk
 from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert
 from zoneinfo import ZoneInfo
@@ -29,6 +30,7 @@ from api.services.weather import WeatherService
 from api.services.quality import QualityService
 from config import Config
 from utils.fetching import FMT, MAX_DAYS, RUN_LOOKBACK, fetch_range, start_from_newest
+from utils.sentry import capture_job_error
 from utils.parsers import (LOGGER_CONFIG, QUALITY_PARAM_ID_MAP, licor_rows,  # noqa: F401 (re-exported for other scripts)
                            parse_logger_entry, parse_quality_entry, parse_weather_entry, quality_rows)
 
@@ -100,8 +102,13 @@ def inject_all_new_data():
                 db.session.rollback()
                 failed.append(name)
                 print(f"[ERROR] {name} ingestion failed: {e!r}")
+                with sentry_sdk.new_scope() as scope:   # a no-op unless the scheduler turned Sentry on
+                    scope.set_tag("source", name)
+                    capture_job_error(e)
         if failed:
-            raise RuntimeError(f"ingestion failed for: {', '.join(failed)}")
+            error = RuntimeError(f"ingestion failed for: {', '.join(failed)}")
+            error.already_reported = True   # each failure above went to Sentry with its own traceback
+            raise error
 
 
 if __name__ == "__main__":

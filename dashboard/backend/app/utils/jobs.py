@@ -7,6 +7,10 @@ import subprocess
 import threading
 import time
 
+import sentry_sdk
+
+from utils.sentry import capture_job_error
+
 
 def run_in_background(job, log=print, name=None):
     """Wrap `job` so each call starts it in its own thread and returns at once.
@@ -30,12 +34,16 @@ def run_in_background(job, log=print, name=None):
         started_at[0] = time.monotonic()
 
         def target():
-            try:
-                job()
-            except Exception as e:  # never let a failed run leave the lock held
-                log(f"[ERROR] {label} failed: {e}")
-            finally:
-                lock.release()
+            # Errors reported to Sentry during this run (utils/sentry.py; a no-op when it is off) carry the job name.
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("job", label)
+                try:
+                    job()
+                except Exception as e:  # never let a failed run leave the lock held
+                    log(f"[ERROR] {label} failed: {e}")
+                    capture_job_error(e)
+                finally:
+                    lock.release()
 
         thread = threading.Thread(target=target, name=label, daemon=True)
         thread.start()
