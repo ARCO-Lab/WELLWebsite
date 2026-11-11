@@ -76,5 +76,15 @@ check "success, issue #7 open: closes it with a recovered comment and the run li
 OPEN_ISSUE="" run success "$T/empty.txt"
 check "success, no open issue: only looks" 'rc 0 && calls 1 && ran "issue list"'
 
+# A step with no `shell:` runs as `bash -e` without pipefail, so `canary | tee` would pass when the canary fails
+# (and close the issue as recovered). Every canary.yml step with a pipe on its run: line must set `shell: bash`.
+: > "$STUB_LOG"
+awk '/^      - /             { if (pipe && !bash) print step; pipe = 0; bash = 0; step = $0 }
+     /^        shell: bash$/ { bash = 1 }
+     /^        run: .* \| /  { pipe = 1 }
+     END                     { if (pipe && !bash) print step }' "$ROOT/.github/workflows/canary.yml" > "$T/out"
+check "canary.yml: every step that pipes its run: line sets shell: bash (pipefail)" \
+  '[ ! -s "$T/out" ] && grep -q "api_canary.py | tee" "$ROOT/.github/workflows/canary.yml"'
+
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]

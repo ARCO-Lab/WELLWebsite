@@ -30,13 +30,15 @@ fi
 
 # Only the canary's own result lines are posted, as a second guard against anything else reaching the issue.
 lines=$(grep -E '^(OK|FAIL) ' "$report" 2>/dev/null || true)
+fence='```'
 {
   echo "The API canary failed in $run_url"
   echo
   if [ -n "$lines" ]; then
-    printf '```\n%s\n```\n' "$lines"
+    printf '%s\n%s\n%s\n' "$fence" "$lines" "$fence"
   else
-    echo "The canary printed no results (it may not have started); see the run log."
+    echo "The canary printed no results: it may not have started, or GitHub withheld its output because it"
+    echo "matched a secret's value (the run log says \"Skip output 'report'\" then). See the run log."
   fi
 } > "$body"
 

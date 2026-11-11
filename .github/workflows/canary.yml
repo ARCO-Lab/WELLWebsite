@@ -41,10 +41,15 @@ jobs:
 
       - name: Check each vendor API
         working-directory: dashboard/backend
-        # The default shell sets pipefail, so the step still fails when the canary does.
+        # `shell: bash` is what adds -o pipefail (a step with no shell runs as plain `bash -e`), so the step fails
+        # when the canary does, not only when tee does. test_canary_issue.sh checks it stays. The step's own
+        # timeout, under the job's, makes a hung request fail this step instead of the whole job, so the next
+        # step still keeps the lines printed so far.
+        shell: bash
+        timeout-minutes: 8
         run: python app/scripts/api_canary.py | tee "$RUNNER_TEMP/canary.txt"
         env:
-          PYTHONUNBUFFERED: "1"   # each line reaches the file as it is printed, even if the run then times out
+          PYTHONUNBUFFERED: "1"   # each line reaches the file as it is printed, so a timeout keeps the ones before it
           HOBOLINK_API_URL: ${{ secrets.HOBOLINK_API_URL }}
           HOBOLINK_API_TOKEN: ${{ secrets.HOBOLINK_API_TOKEN }}
           HOBOLINK_LOGGERS: ${{ secrets.HOBOLINK_LOGGERS }}
