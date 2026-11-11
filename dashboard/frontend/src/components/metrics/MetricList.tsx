@@ -6,7 +6,7 @@
 // value is always whole. In the modal the tiles ("icon · name   value unit") wrap so every one is visible at once.
 // Old readings say when they were taken, so a value from last night or from last year doesn't look current.
 
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Clock } from "lucide-react";
 
 export interface Reading {
@@ -126,12 +126,39 @@ export const LATEST_CARD_CLASS = "flex flex-col rounded-lg p-3";
 // Shown above the groups when the latest values couldn't be fetched, so empty tiles aren't taken for "no data".
 // Any values already shown are the last ones fetched, and the message says so. It stays up while a retry runs (the
 // button, still focused, says "Retrying…" and does nothing), so focus isn't lost and the values on screen stay.
+// A retry that fails again changes the message (with the number of tries), so screen readers announce it again. When
+// a retry succeeds the banner goes; if its button had focus, focus moves to the panel's heading (the h2 of the card
+// it sits in, which has tabIndex -1) rather than dropping to the page.
 export function LatestDataError({ hasValues, retrying, onRetry }: { hasValues: boolean; retrying: boolean; onRetry: () => void }) {
+  const button = useRef<HTMLButtonElement>(null);
+  const hadFocus = useRef(false);
+  const wasRetrying = useRef(retrying);
+  const [failedRetries, setFailedRetries] = useState(0);
+
+  useEffect(() => {
+    if (wasRetrying.current && !retrying) setFailedRetries((n) => n + 1); // still mounted, so it failed again
+    wasRetrying.current = retrying;
+  }, [retrying]);
+
+  // Removing a focused element fires no blur, so hadFocus still says where focus was when the banner goes.
+  useLayoutEffect(() => {
+    const heading = button.current?.closest(".mcmaster-card")?.querySelector<HTMLElement>("h2[tabindex]");
+    return () => {
+      if (hadFocus.current && heading?.isConnected) heading.focus();
+    };
+  }, []);
+
+  const message = failedRetries > 0
+    ? `Still couldn’t reach the server (tried ${failedRetries + 1} times)${hasValues ? "; these are the last values fetched." : "."}`
+    : hasValues ? "Couldn’t refresh the latest data; these are the last values fetched." : "Couldn’t load the latest data.";
   return (
     <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-      <span role="alert">{hasValues ? "Couldn’t refresh the latest data; these are the last values fetched." : "Couldn’t load the latest data."}</span>{" "}
+      <span role="alert">{message}</span>{" "}
       <button
+        ref={button}
         type="button"
+        onFocus={() => { hadFocus.current = true; }}
+        onBlur={() => { hadFocus.current = false; }}
         aria-disabled={retrying}
         onClick={() => { if (!retrying) onRetry(); }}
         className={`font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${retrying ? "cursor-wait opacity-70" : "hover:text-red-900"}`}
@@ -263,8 +290,8 @@ function Ticker({ title, children }: { title: string; children: React.ReactNode 
 
   // Rows from the slot's height (set by the card, not by the tiles) and a rendered tile's height (every tile has
   // the tallest one's height, so this follows the text size), and scroll (with the second copy) only when the tiles
-  // don't fit across.
-  useEffect(() => {
+  // don't fit across. Measured before the first paint, so tiles taller than the first guess are never clipped.
+  useLayoutEffect(() => {
     const el = scroller.current;
     const copy = firstCopy.current;
     if (!el || !copy) return;

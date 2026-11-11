@@ -395,7 +395,7 @@ export default function Dashboard() {
                     {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds) */}
                     <div className="lg:col-span-1">
                       <div className={`mcmaster-card flex h-full flex-col p-6 lg:min-h-[30rem] ${LATEST_PANEL_CLASS}`}>
-                        <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
+                        <h2 tabIndex={-1} className="flex flex-wrap items-center justify-between gap-x-2 mb-4 text-xl font-poppins font-bold text-primary focus:outline-none">
                           Latest Data
                           <Information id={3} />
                         </h2>
@@ -623,7 +623,7 @@ export default function Dashboard() {
                     {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds) */}
                     <div className="lg:col-span-1">
                       <div className={`mcmaster-card flex h-full flex-col p-6 lg:min-h-[30rem] ${LATEST_PANEL_CLASS}`}>
-                        <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
+                        <h2 tabIndex={-1} className="flex flex-wrap items-center justify-between gap-x-2 mb-4 text-xl font-poppins font-bold text-primary focus:outline-none">
                           Latest Data
                           <Information id={8} />
                         </h2>
