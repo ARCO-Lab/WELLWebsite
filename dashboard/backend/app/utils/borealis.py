@@ -128,11 +128,18 @@ class Dataverse:
         if response.status_code in allow:
             return None
         if response.status_code not in ok:
-            raise DataverseError(action, response.status_code, server_message(response), self.token is not None)
+            raise DataverseError(action, response.status_code, self.redact(server_message(response)),
+                                 self.token is not None)
         try:
             return response.json()
         except ValueError:
             raise DataverseError(action, response.status_code, "the answer isn't JSON") from None
+
+    def redact(self, text):
+        """`text` with the token replaced, for anything the server says that is printed or raised: some answers
+        repeat the token (e.g. GET /api/users/token says "Token <token> expires on ...")."""
+        text = text or ""
+        return text.replace(self.token, "[token]") if self.token else text
 
     def pid_call(self, method, path, persistent_id, action, **kwargs):
         params = {**kwargs.pop("params", {}), "persistentId": persistent_id}
@@ -148,9 +155,13 @@ class Dataverse:
         return self.call("GET", "users/:me", "Checking the API token")["data"]
 
     def token_expiry(self):
-        """Borealis's message about when the token expires, e.g. "Token ... expires on 2027-11-01"."""
+        """When the token expires, e.g. "The token expires on 2027-11-01 10:00:00.0". Dataverse answers
+        "Token <the token itself> expires on <date>", so only the date is kept."""
         body = self.call("GET", "users/token", "Reading the token's expiry date")
-        return (body.get("data") or {}).get("message", "")
+        message = (body.get("data") or {}).get("message", "") or ""
+        if " expires on " in message:
+            return "The token expires on " + message.split(" expires on ", 1)[1].strip()
+        return self.redact(message)
 
     def collection(self, alias):
         return self.call("GET", f"dataverses/{alias}", f"Reading collection {alias}")["data"]
@@ -271,7 +282,9 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
       earlier version); one only in the draft (say, from a run that failed before publishing) is deleted and added
       again, since Dataverse can't replace an unpublished file.
     - Otherwise it is added.
-    Then, with `publish`, a draft (this run's, or one an earlier run left) is published as a major version.
+    Then, with `publish`, the draft is published as a major version, but only if it holds this month's file
+    unpublished: added or replaced by this run, or left by an earlier run that failed before publishing. A draft
+    that holds only someone else's changes (say, a curator's metadata edit in progress) is left alone.
 
     Returns (what happened: "added", "replaced" or "unchanged", the published version or None).
     """
@@ -283,6 +296,11 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
     if entry and same_content(entry, content):
         outcome = "unchanged"
         log(f"{name} is already in {persistent_id} with the same content; not uploading it again")
+        if latest.get("versionState") == "DRAFT":
+            published = client.published_version(persistent_id)
+            published_ids = {(f.get("dataFile") or {}).get("id") for f in (published or {}).get("files") or []}
+            if entry["dataFile"].get("id") not in published_ids:
+                outcome = "pending"   # an earlier run added it but didn't get to publish
     elif entry:
         datafile = entry["dataFile"]
         published = client.published_version(persistent_id) if latest.get("versionState") == "DRAFT" else latest
@@ -306,13 +324,13 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
     if not publish:
         log(f"Not publishing {persistent_id} (BOREALIS_PUBLISH is off): a curator publishes the draft")
         return outcome, None
-    state = client.dataset(persistent_id)["latestVersion"].get("versionState")
-    if state != "DRAFT":
-        log(f"{persistent_id} has no draft to publish (latest version {state})")
+    if outcome == "unchanged":
+        if latest.get("versionState") == "DRAFT":
+            log(f"{persistent_id} has a draft that this upload didn't make; leaving it for a curator to publish")
         return outcome, None
     version = client.publish(persistent_id)
     log(f"Published {persistent_id} as version {version}")
-    return outcome, version
+    return ("unchanged" if outcome == "pending" else outcome), version
 
 
 def published_files(client, persistent_id, log=print):

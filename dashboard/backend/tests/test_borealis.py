@@ -68,7 +68,7 @@ class FakeDataverse:
         for (m, suffix), status in list(self.fail.items()):
             if m == method and path.endswith(suffix):
                 del self.fail[(m, suffix)]
-                return Response(status, {"status": "ERROR", "message": "nope"})
+                return Response(status, {"status": "ERROR", "message": getattr(self, "route_message", "nope")})
         token = (headers or {}).get("X-Dataverse-key")
         if token is not None and token != TOKEN:
             return Response(401, {"status": "ERROR", "message": "Bad api key "})
@@ -81,7 +81,8 @@ class FakeDataverse:
         if path == "users/:me":
             return ok({"identifier": "@well-bot"}) if token else Response(401, {"message": "User with token null not found."})
         if path == "users/token":
-            return ok({"message": "Token for @well-bot is valid until 2027-11-01"})
+            # As Dataverse answers: the token itself, then the date
+            return ok({"message": f"Token {token} expires on 2027-11-01 10:00:00.0"})
         if path.startswith("dataverses/"):
             alias = path.split("/")[1]
             if path.endswith("/userPermissions"):
@@ -173,6 +174,24 @@ class UploadFileTests(unittest.TestCase):
         server = FakeDataverse(published=[file_entry(5, NAME, CSV, "2026")])
         self.assertEqual(self.upload(server), ("unchanged", None))
         self.assertEqual(server.posts(), [])
+
+    def test_a_draft_this_upload_did_not_make_is_not_published(self):
+        server = FakeDataverse(published=[file_entry(5, NAME, CSV, "2026")])
+        server.draft = list(server.published)   # e.g. a curator editing the metadata
+        self.assertEqual(self.upload(server), ("unchanged", None))
+        self.assertEqual(server.posts(), [])
+        self.assertIsNotNone(server.draft)
+
+    def test_server_messages_that_repeat_the_token_are_redacted(self):
+        server = FakeDataverse(published=[])
+        server.fail[("POST", "/add")] = 400
+        server.route_message = f"bad request for key {TOKEN}"
+        with self.assertRaises(borealis.DataverseError) as caught:
+            self.upload(server)
+        self.assertNotIn(TOKEN, str(caught.exception))
+        self.assertIn("[token]", str(caught.exception))
+        expiry = client(FakeDataverse(published=[])).token_expiry()
+        self.assertEqual(expiry, "The token expires on 2027-11-01 10:00:00.0")
 
     def test_a_publish_that_failed_is_finished_by_the_next_run_without_a_second_copy(self):
         server = FakeDataverse(published=[])
@@ -279,6 +298,12 @@ class DownloadTests(unittest.TestCase):
             files, out = quiet(download_data.get_files_from_dataset, client=client(server))
         self.assertEqual([f["id"] for f in files], [1])
         self.assertIn("unpublished draft", out)
+
+    def test_a_demo_dataset_with_the_production_server_is_refused(self):
+        with mock.patch.multiple(download_data, BOREALIS_URL="https://borealisdata.ca/dataverse/WELL",
+                                 BOREALIS_API_TOKEN=None, BOREALIS_AW_PERSISTENT_ID="doi:10.80240/FK2/JER05H"), \
+                self.assertRaisesRegex(ValueError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
+            quiet(download_data.get_files_from_dataset, client=client(FakeDataverse(published=[])))
 
     def test_a_rejected_token_fails_the_download_with_the_reason(self):
         server = FakeDataverse(published=[])

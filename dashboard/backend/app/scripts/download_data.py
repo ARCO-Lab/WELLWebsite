@@ -27,7 +27,7 @@ import subprocess
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 from utils.sampling_csv import INVALID_FILE_EXIT
-from utils.borealis import Dataverse, DataverseError, base_url, published_files
+from utils.borealis import Dataverse, DataverseError, base_url, is_demo, published_files
 
 load_dotenv()
 
@@ -113,6 +113,12 @@ def get_files_from_dataset(list_files=False, client=None):
     if missing:
         print(f"ERROR: Missing environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+    if is_demo(base_url(BOREALIS_URL)) != is_demo(persistent_id=BOREALIS_AW_PERSISTENT_ID):
+        message = (f"BOREALIS_URL is {base_url(BOREALIS_URL)} but the dataset {BOREALIS_AW_PERSISTENT_ID} is on the "
+                   f"{'production' if is_demo(base_url(BOREALIS_URL)) else 'demo'} server: set "
+                   f"BOREALIS_SAMPLING_PERSISTENT_ID to the sampling dataset's id on {base_url(BOREALIS_URL)}")
+        print(f"ERROR: {message}")
+        raise ValueError(message)
     if not BOREALIS_API_TOKEN:
         print("DEBUG: BOREALIS_API_TOKEN is not set; reading the dataset as a guest (public files only)")
 

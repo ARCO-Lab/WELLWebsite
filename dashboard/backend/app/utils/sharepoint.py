@@ -126,8 +126,11 @@ class SharePoint:
             # error_description starts with an AADSTS code, e.g. AADSTS7000215 (wrong secret); keep its first line
             body = safe_json(response)
             message = (body.get("error_description") or body.get("error") or "").splitlines()[0:1]
+            text = message[0] if message else ""
+            if c["secret"]:
+                text = text.replace(c["secret"], "[secret]")   # never echoed today; kept out of logs regardless
             raise SharePointError("Signing in to Microsoft", 401 if response.status_code in (400, 401) else
-                                  response.status_code, message[0] if message else "")
+                                  response.status_code, text)
         self._token = safe_json(response).get("access_token")
         if not self._token:
             raise SharePointError("Signing in to Microsoft", None, "no access token in the answer")
