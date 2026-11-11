@@ -100,14 +100,16 @@ async function openDashboard(page: Page) {
   return series;
 }
 
-// The Latest Data group with this title: the innermost block holding its heading.
-const metricGroup = (page: Page, title: string) =>
-  page.locator("div.space-y-2", { has: page.getByRole("heading", { level: 3, name: title, exact: true }) }).last();
+// The Latest Data group with this title (a role="group" named by its heading), in the panel.
+const metricGroup = (page: Page, title: string) => page.getByRole("group", { name: title, exact: true }).first();
+
+// A group's tiles are list items; a scrolling strip's hidden second copy isn't in the accessibility tree.
+const tiles = (group: Locator) => group.getByRole("listitem");
 
 function tile(group: Locator, label: string, caption?: string): Locator {
-  let t = group.locator("div.rounded-lg").filter({ has: group.page().getByText(label, { exact: true }) });
+  let t = tiles(group).filter({ has: group.page().getByText(label, { exact: true }) });
   if (caption) t = t.filter({ has: group.page().getByText(caption, { exact: true }) });
-  return t.first(); // a scrolling strip repeats its tiles in a hidden second copy
+  return t.first();
 }
 
 /** "2026-11-01T02:40:00" -> "2:40 a.m." (today) or "Oct 31, 12:00 p.m.", as the tiles write site times. */
@@ -182,7 +184,7 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     const sections: Record<string, Section> = EXPECTED.latest_data;
     for (const [title, section] of Object.entries(sections)) {
       const group = metricGroup(page, title);
-      await expect(group.locator("p", { hasText: /^as of / })).toHaveText(new RegExp(`^as of ${siteTime(section.as_of).source}$`));
+      await expect(group.locator("p", { hasText: /^as of / })).toHaveText(new RegExp(`^as of ${siteTime(section.as_of).source}( ET)?$`));
       for (const t of section.tiles) {
         const shown = tile(group, t.label, t.caption);
         await expect(shown).toContainText(t.value);
@@ -192,9 +194,9 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
       }
       for (const label of section.no_data ?? []) await expect(tile(group, label)).toContainText("No data");
       for (const caption of section.no_data_captions ?? []) {
-        const tiles = group.locator("div.rounded-lg").filter({ has: page.getByText(caption, { exact: true }) });
-        await expect(tiles.first()).toContainText("No data");
-        await expect(tiles.filter({ hasNotText: "No data" })).toHaveCount(0);
+        const captioned = tiles(group).filter({ has: page.getByText(caption, { exact: true }) });
+        await expect(captioned.first()).toContainText("No data");
+        await expect(captioned.filter({ hasNotText: "No data" })).toHaveCount(0);
       }
     }
   });
