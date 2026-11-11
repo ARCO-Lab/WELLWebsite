@@ -9,6 +9,7 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true, // lets src/utils import each other as "./x.ts", which Node runs in npm test
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

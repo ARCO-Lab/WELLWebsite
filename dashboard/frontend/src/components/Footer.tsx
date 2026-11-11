@@ -150,7 +150,7 @@ const Footer = () => {
             <div className="flex flex-wrap justify-center items-center gap-x-24 gap-y-2 text-lg">
               <a
                 href="https://www.mcmaster.ca/opr/html/opr/contact_us/main/contact_us.html"
-                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                className="relative hover:underline hover:decoration-white hover:underline-offset-4 transition-colors after:absolute after:inset-x-0 after:-inset-y-2 after:content-['']"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -158,7 +158,7 @@ const Footer = () => {
               </a>
               <a
                 href="https://www.mcmaster.ca/opr/html/footer/main/terms_of_use.html"
-                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                className="relative hover:underline hover:decoration-white hover:underline-offset-4 transition-colors after:absolute after:inset-x-0 after:-inset-y-2 after:content-['']"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -166,7 +166,7 @@ const Footer = () => {
               </a>
               <a
                 href="https://www.mcmaster.ca/privacy/"
-                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                className="relative hover:underline hover:decoration-white hover:underline-offset-4 transition-colors after:absolute after:inset-x-0 after:-inset-y-2 after:content-['']"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -175,7 +175,7 @@ const Footer = () => {
             </div>
           </div>
 
-          {/* Social Media Links - with white circles */}
+          {/* Social Media Links - with white circles (28 px on phones; the ::after makes each a 44 px tap target) */}
           <ul id="social--links" className="flex justify-center space-x-8 py-4">
             {socialLinks.map((social) => (
               <li key={social.name} className={social.className}>
@@ -184,7 +184,7 @@ const Footer = () => {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={social.name}
-                  className="p-1 rounded-full border-2 border-white/80 text-primary-foreground hover:border-secondary hover:text-secondary transition-colors flex items-center justify-center"
+                  className="relative p-1 rounded-full border-2 border-white/80 text-primary-foreground hover:border-secondary hover:text-secondary transition-colors flex items-center justify-center after:absolute after:-inset-2.5 after:rounded-full after:content-['']"
                 >
                   {social.icon}
                 </a>
@@ -199,13 +199,13 @@ const Footer = () => {
                 href="https://www.google.ca/maps/place/McMaster+University/@43.260879,-79.919225,17z/data=%213m1%214b1%214m2%213m1%211s0x882c84ac44f72ac1:0x399e00ea6143011c"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors max-sm:inline-block max-sm:py-2"
               >
                 1280 Main Street West{"\u00A0\u00A0\u00A0\u00A0"}Hamilton, Ontario L8S 4L8
               </a>
               <a
                 href="tel:+19055259140"
-                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors max-sm:inline-block max-sm:py-2"
               >
                 (905) 525-9140
               </a>
@@ -213,7 +213,7 @@ const Footer = () => {
             <div>
               <a
                 href="https://www.mcmaster.ca/"
-                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors"
+                className="hover:underline hover:decoration-white hover:underline-offset-4 transition-colors max-sm:inline-block max-sm:py-2"
               >
                 © 2026 McMaster University
               </a>

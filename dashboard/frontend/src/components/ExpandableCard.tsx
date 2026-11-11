@@ -24,6 +24,7 @@ const DRAG_PX = 5;
 
 const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, className = "", style, children }) => {
   const pressedAt = useRef<{ x: number; y: number } | null>(null);
+  const button = useRef<HTMLButtonElement>(null);
   return (
     <div
       onPointerDown={(e) => { pressedAt.current = { x: e.clientX, y: e.clientY }; }}
@@ -33,13 +34,17 @@ const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, classNam
         if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > DRAG_PX) return;
         const target = e.target as Element | null;
         if (target?.closest?.(OWN_CONTROLS)) return;
+        // The corner button takes focus first, so that is where focus returns when the larger view closes.
+        button.current?.focus({ preventScroll: true });
         onOpen();
       }}
       className={`mcmaster-card mcmaster-card-interactive group relative cursor-pointer ${className}`} style={style}>
+      {/* 28 px to look at; on phones 40 px to tap (the ::after, kept small to stay clear of controls at the card's top) */}
       <button
+        ref={button}
         type="button"
         onClick={(e) => { e.stopPropagation(); onOpen(); }}
-        className="absolute right-1.5 top-1.5 z-10 grid h-7 w-7 place-items-center rounded-md text-muted opacity-60 transition-opacity hover:bg-black/5 hover:text-primary hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary group-hover:opacity-100"
+        className="absolute right-1.5 top-1.5 z-10 grid h-7 w-7 place-items-center max-sm:after:absolute max-sm:after:-inset-1.5 max-sm:after:content-[''] rounded-md text-muted opacity-60 transition-opacity hover:bg-black/5 hover:text-primary hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary group-hover:opacity-100"
         aria-label={`Open ${label} in a larger view`}
         title="Open in a larger view"
       >
