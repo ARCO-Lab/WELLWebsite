@@ -30,6 +30,13 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 ### Backend
 - **Flask** WSGI app served by **Gunicorn** (3 workers)
 - REST endpoints for: `stations`, `parameters`, `metrics`, `aggregate`, `download`, `ai/analyze`, `health`
+- `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL: about 2,000 points per series
+  (raw 10-minute readings up to ~2 weeks, coarser buckets beyond; ranges longer than ~5.5 years are capped at daily
+  buckets, so they get more). Times with an offset (`...Z`) are real instants, times without one are Toronto local
+  time. Each series has an `agg` field saying what its `avg` array holds: `mean` for most measurements, `sum` for
+  Rain (the bucket total; `min`/`max` stay the smallest and largest single reading), and `vector_mean` for Wind
+  Direction (350° and 10° average to 0°; `min`/`max` are null, since a linear min/max of angles means nothing).
+  Details in `dashboard/backend/app/api/routes/series.py`.
 - Smart caching: DB-level query tuning + application caching + HTTP cache headers (ETag/Cache-Control)
 - Optional Nginx proxy cache for heavy CSV/static responses
 - Config via environment variables; request/ingestion activity logging for observability
