@@ -15,6 +15,7 @@
 
 /* A round marker in its group's colour (--marker-color): outlined when not shown on the dashboard, filled when shown. */
 .marker {
+  position: relative;
   display: grid;
   place-items: center;
   width: 2rem;
@@ -53,6 +54,14 @@
   .marker {
     width: 1.75rem;
     height: 1.75rem;
+  }
+
+  /* A 40 px tap target around the 28 px marker (neighbours spread 34 px apart overlap a little, at the edges) */
+  .marker::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border-radius: 9999px;
   }
 }
 
