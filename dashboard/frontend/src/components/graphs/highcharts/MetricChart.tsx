@@ -180,9 +180,13 @@ const MetricChart: React.FC<MetricChartProps> = ({
 
   // The window: the shared view, or the whole picked range.
   const win: Range | null = view.viewWindow ?? view.range;
+  const winRef = useRef(win);
+  winRef.current = win;
   useEffect(() => {
     const axis = chartRef.current?.chart?.xAxis[0];
-    if (!axis || !win) return;
+    // Not while this chart is being pinched: new data arriving mid-pinch would snap it back to the old window.
+    // The pinch ends by setting the window, which runs this again.
+    if (!axis || !win || pinchRef.current) return;
     axis.setExtremes(win.start, win.end, true, false); // no trigger: afterSetExtremes ignores it
   }, [win, series]);
 
@@ -202,6 +206,12 @@ const MetricChart: React.FC<MetricChartProps> = ({
     if (pinchRef.current && e.touches.length < 2) {
       zoomRef.current(pinchRef.current);
       pinchRef.current = null;
+      // If the window didn't change (e.g. pinched out past the picked days, which stays unzoomed), nothing re-runs
+      // the window effect: put this chart back on the window once React has rendered.
+      requestAnimationFrame(() => {
+        const w = winRef.current;
+        if (w) chartRef.current?.chart?.xAxis[0]?.setExtremes(w.start, w.end, true, false);
+      });
     }
   };
   const onClickCapture = (e: React.MouseEvent) => {
