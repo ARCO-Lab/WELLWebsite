@@ -53,20 +53,21 @@ class ToLocalNaiveTests(unittest.TestCase):
 
 class ColumnarTests(unittest.TestCase):
     def test_groups_rows_into_series_in_order(self):
-        rows = [("Weather", "s", "Rain", "mm", 1000, 0.2, 0.0, 0.2),
-                ("Weather", "s", "Rain", "mm", 2000, 0.0, 0.0, 0.0),
-                ("Logger", "l", "Water Temperature", "°C", 1000, 5.12345, 5.0, 5.3)]
+        rows = [("Weather", "s", "Rain", "mm", 1000, 0.2, 0.0, 0.2, 3),
+                ("Weather", "s", "Rain", "mm", 2000, 0.0, 0.0, 0.0, 6),
+                ("Logger", "l", "Water Temperature", "°C", 1000, 5.12345, 5.0, 5.3, 1)]
         out = columnar(rows)
         self.assertEqual([(s["group_type"], s["measurement_type"]) for s in out],
                          [("Weather", "Rain"), ("Logger", "Water Temperature")])
         self.assertEqual(out[0]["t"], [1000, 2000])
         self.assertEqual(out[1]["avg"], [5.1235])
         self.assertEqual((out[1]["min"], out[1]["max"]), ([5.0], [5.3]))
+        self.assertEqual((out[0]["n"], out[1]["n"]), ([3, 6], [1]))  # readings per bucket
 
     def test_agg_says_what_avg_holds_and_null_min_max_pass_through(self):
-        rows = [("Weather", "s", "Rain", "mm", 1000, 0.6, 0.0, 0.4),
-                ("Weather", "s", "Wind Direction", "°", 1000, 0.0, None, None),
-                ("Weather", "s", "Air Temperature", "°C", 1000, 11.0, 10.0, 12.0)]
+        rows = [("Weather", "s", "Rain", "mm", 1000, 0.6, 0.0, 0.4, 3),
+                ("Weather", "s", "Wind Direction", "°", 1000, 0.0, None, None, 2),
+                ("Weather", "s", "Air Temperature", "°C", 1000, 11.0, 10.0, 12.0, 3)]
         by = {s["measurement_type"]: s for s in columnar(rows)}
         self.assertEqual({m: s["agg"] for m, s in by.items()},
                          {"Rain": "sum", "Wind Direction": "vector_mean", "Air Temperature": "mean"})
@@ -119,6 +120,10 @@ class SeriesSqlTests(unittest.TestCase):
         for i in range(6):
             add("Air Temperature", "°C", t0 + dt.timedelta(minutes=10 * i), 10.0 + i)
         add("Water Temperature", "°C", t0, 4.0, group="Logger", station="2577531")
+        # Quality readings around a vendor "no reading" sentinel (-100000, as stored on 2026-06-12) and values that
+        # aren't finite (rows stored before ingestion skipped them); /api/series must leave all of those out.
+        for i, value in enumerate((8.0, -100000.0, 9.0, float("nan"), float("-inf"), float("inf"))):
+            add("ODO", "mg/L", t0 + dt.timedelta(minutes=10 * i), value, group="Quality", station="4501")
         db.session.commit()
         cls.client = cls.app.test_client()
 
@@ -228,6 +233,22 @@ class SeriesSqlTests(unittest.TestCase):
         direction = wind["avg"][0]
         self.assertTrue(direction < 0.01 or direction > 359.99, direction)  # 350° and 10° -> north, not 180°
         self.assertEqual((wind["min"], wind["max"]), ([None], [None]))  # a linear min/max of angles means nothing
+
+    def test_readings_per_bucket(self):
+        _, by = self.series("2026-10-15T00:00:00", "2026-11-14T00:00:00", "Weather")  # 30-minute buckets
+        self.assertEqual(by["Air Temperature"]["n"], [3, 3])
+        self.assertEqual(by["Rain"]["n"], [3, 3])
+        self.assertEqual(by["Wind Direction"]["n"], [2])  # counted though its min/max are null
+        _, by = self.series("2026-11-01T00:00:00", "2026-11-02T00:00:00", "Weather")  # raw: one reading each
+        self.assertEqual(by["Air Temperature"]["n"], [1] * 6)
+
+    def test_sentinel_and_non_finite_values_are_left_out(self):
+        _, by = self.series("2026-11-01T00:00:00", "2026-11-02T00:00:00", "Quality")
+        odo = by["ODO"]
+        self.assertEqual((odo["avg"], odo["n"]), ([8.0, 9.0], [1, 1]))  # 00:00 and 00:20; 00:10 was -100000
+        _, by = self.series("2026-10-15T00:00:00", "2026-11-14T00:00:00", "Quality")
+        odo = by["ODO"]
+        self.assertEqual((odo["avg"], odo["min"], odo["max"], odo["n"]), ([8.5], [8.0], [9.0], [2]))
 
     def test_only_the_requested_groups(self):
         body, by = self.series("2026-11-01T00:00:00", "2026-11-02T00:00:00", "Logger")

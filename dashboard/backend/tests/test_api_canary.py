@@ -101,12 +101,14 @@ class LicorShape(unittest.TestCase):
         self.assertEqual(canary.LOGGER_SERIALS, set(p.LOGGER_CONFIG))
         self.assertEqual(canary.WEATHER_UNITS, p.WEATHER_UNITS)
         self.assertEqual(canary.LOGGER_UNITS, p.LOGGER_UNITS)
+        self.assertEqual(canary.SENTINEL_MAX, p.SENTINEL_MAX)
         self.assertEqual(canary.UNIT_ALIASES, p.UNIT_ALIASES)
         self.assertEqual(canary.WEATHER_SENSOR_NAMES, WEATHER_SENSOR_NAMES)
 
     def test_numbers_and_units_judged_as_ingestion_does(self):
         p = parsers()
-        for value in (None, "", "n/a", True, float("nan"), "inf", 10 ** 400, 0, "4.5", -1.25):
+        for value in (None, "", "n/a", True, float("nan"), "inf", 10 ** 400, 0, "4.5", -1.25,
+                      -100000, "-99999", -99998.5):  # the last three: the vendors' "no reading" sentinel and just above
             self.assertEqual(canary.has_number(value), p.reading_value(value) is not None, repr(value))
         for r in LICOR["data"][:2] + [{**LICOR["data"][0], "sensor_sn": "21948438-1", "unit": "°F"},
                                       {**LICOR["data"][1], "unit": "ft"}, {**LICOR["data"][1], "unit": "meters"},
