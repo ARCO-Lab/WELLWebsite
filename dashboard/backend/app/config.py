@@ -1,11 +1,29 @@
 # This file defines the Config dataclass for loading environment variables and application settings.
 # It centralizes configuration for API endpoints, tokens, device IDs, and database URI.
 
+import logging
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def parse_timeout_ms(name, value):
+    """A timeout setting in milliseconds: a whole number >= 0, where 0 (or unset/empty) means no timeout.
+    Anything else logs a warning and means no timeout, so a typo can't make every query fail."""
+    if value is None or value.strip() == "":
+        return 0
+    try:
+        ms = int(value)
+    except ValueError:
+        ms = -1
+    if ms < 0:
+        logging.getLogger(__name__).warning("%s=%r is not a whole number of milliseconds; no timeout", name, value)
+        return 0
+    return ms
+
+
 @dataclass(frozen=True)
 class Config:
     HOBO_API_URL = os.getenv("HOBOLINK_API_URL")
@@ -18,6 +36,13 @@ class Config:
     
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Longest a single SQL statement may run before PostgreSQL cancels it; 0 = no limit. docker-compose.yml sets
+    # it for the backend (API) container only, so a query nobody is waiting for any more can't keep running long
+    # after the request has failed. The worker and export worker leave it unset: ingestion, backfills and big
+    # exports may legitimately run for minutes. scripts/migrate.py makes its own connection and never uses it.
+    DB_STATEMENT_TIMEOUT_MS = parse_timeout_ms("DB_STATEMENT_TIMEOUT_MS", os.getenv("DB_STATEMENT_TIMEOUT_MS"))
+    # Redis database for the short-lived /api/series response cache (utils/response_cache.py); empty = no cache.
+    API_CACHE_REDIS_URL = os.getenv("API_CACHE_REDIS_URL", "").strip()
 
     DEMO_BOREALIS_URL = os.getenv("DEMO_BOREALIS_URL")
     BOREALIS_API_TOKEN = os.getenv("BOREALIS_API_TOKEN")
