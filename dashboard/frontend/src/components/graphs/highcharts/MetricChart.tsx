@@ -112,9 +112,14 @@ const MetricChart: React.FC<MetricChartProps> = ({
   const view = useChartView();
   const chartRef = useRef<HighchartsReact.RefObject>(null);
   const [resolvedHeight, setResolvedHeight] = useState(height);
+  // How many y-axes fit beside the plot: each takes ~35 px, so on a phone seven (Quality) would leave no plot at all.
+  // Axes past this are hidden but still scale their series; the tooltip gives those values.
+  const [maxAxes, setMaxAxes] = useState(Infinity);
 
   useEffect(() => {
     const resolveHeight = () => {
+      const w = window.innerWidth;
+      setMaxAxes(w < 480 ? 2 : w < 768 ? 4 : w < 1024 ? 6 : Infinity);
       if (modalOpen) {
         setResolvedHeight(height);
         return;
@@ -228,9 +233,9 @@ const MetricChart: React.FC<MetricChartProps> = ({
         yAxis: unitIndex.get(s.unit)!,
       };
     });
-    // Each axis names its unit once, in a title along it, so the labels stay narrow; both are in the colour of the axis' only
-    // series (grey when it has several) and small in the cards. Only the first axis draws grid lines: with ticks no
-    // longer aligned, more would criss-cross.
+    // Each axis names its unit once, in a title along it, so the labels stay narrow; both are in the colour of the
+    // axis' only series (grey when it has several) and small in the cards. Only the first axis draws grid lines: with
+    // ticks no longer aligned, more would criss-cross. Past maxAxes (narrow screens) axes are hidden.
     const axes = Array.from(unitIndex.keys()).map((unit, index) => {
       const colors = unitColors.get(unit) ?? [];
       const color = colors.length === 1 ? colors[0] : '#4b5563';
@@ -239,6 +244,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
         title: { text: unit, margin: 4, style },
         labels: { style },
         gridLineWidth: index === 0 ? 1 : 0,
+        visible: index < maxAxes,
         opposite: index % 2 === 1,
       };
     });
@@ -248,7 +254,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
       hasData: built.some((s) => s.data.length > 0),
       hasTotals: picked.some((s) => s.agg === 'sum'),
     };
-  }, [view.overview, view.detail, groupType, stationId, measurements, modalOpen]);
+  }, [view.overview, view.detail, groupType, stationId, measurements, modalOpen, maxAxes]);
 
   useEffect(() => {
     const chart = chartRef.current?.chart;
