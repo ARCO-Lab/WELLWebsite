@@ -26,6 +26,8 @@ services:
     depends_on:
       - db
     volumes:
+      # Browser caching and compression for the site (wordpress/zz-performance.conf explains each rule).
+      - ./wordpress/zz-performance.conf:/etc/apache2/conf-enabled/zz-performance.conf:ro
       - ./home:/var/www/html
     ports:
       - "8080:80"
