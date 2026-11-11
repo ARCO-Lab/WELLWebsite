@@ -9,12 +9,13 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true, // lets src/utils import each other as "./x.ts", which Node runs in npm test
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx", // Next 16 requires the automatic runtime (it rewrites this otherwise)
     "incremental": true,
     "paths": {
       "@/*": ["./src/*"] // Path alias for cleaner imports

@@ -40,7 +40,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Watershed" src="/wp-content/uploads/2025/08/ancasterwatershed.jpg" class="img-fluid">
+                  <?php well_media_img('about-watershed', array(300, 600), array(600, 600), array('alt' => 'Ancaster Watershed', 'class' => 'img-fluid', 'sizes' => '300px')); ?>
                   </div>
                 </figure>
               </div>
@@ -60,7 +60,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Creek" src="/wp-content/uploads/2025/09/weatherstation.jpeg" class="img-fluid">
+                  <?php well_media_img('about-weatherstation', array(300, 600, 900), array(900, 900), array('alt' => 'Ancaster Creek', 'class' => 'img-fluid', 'sizes' => '300px')); ?>
                   </div>
                 </figure>
               </div>
@@ -89,7 +89,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Watershed" src="/wp-content/uploads/2025/09/InstallationPhoto1.jpeg" class="img-fluid">
+                  <?php well_media_img('about-installation', array(300, 600, 900), array(900, 900), array('alt' => 'Ancaster Watershed', 'class' => 'img-fluid', 'sizes' => '300px', 'loading' => 'lazy')); ?>
                   </div>
                 </figure>
               </div>
@@ -109,7 +109,7 @@ get_header();
               <div class="text-center">
                 <figure class="mb-0 profile mx-auto">
                   <div class="fig-img-mask rounded-circle">
-                  <img alt="Ancaster Creek" src="/wp-content/uploads/2025/09/wellresearch.png" class="img-fluid">
+                  <?php well_media_img('about-research', array(300, 600, 900), array(900, 900), array('alt' => 'Ancaster Creek', 'class' => 'img-fluid', 'sizes' => '300px', 'loading' => 'lazy')); ?>
                   </div>
                 </figure>
               </div>
@@ -166,7 +166,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/ellipapangelakis.jpg" class="rounded-circle wp-post-image" alt="Elli Papangelakis" decoding="async">
+                    <?php well_media_img('team-ellipapangelakis', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => 'Elli Papangelakis', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Elli Papangelakis</h3>
@@ -229,7 +229,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/mikewaddington.png" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-mikewaddington', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. James Michael Waddington</h3>
@@ -288,7 +288,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/seancarey.jpg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-seancarey', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Sean Carey</h3>
@@ -347,7 +347,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/altafarain.png" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-altafarain', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Altaf Arain</h3>
@@ -406,7 +406,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/alemugonsamo.jpg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-alemugonsamo', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Alemu Gonsamo</h3>
@@ -465,7 +465,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/paulincoulibaly.jpg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-paulincoulibaly', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Paulin Coulibaly</h3>
@@ -527,7 +527,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/chowfraser.jpg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-chowfraser', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Chow-Fraser</h3>
@@ -592,7 +592,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/matthewgiamou.jpg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-matthewgiamou', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Matthew Giamou</h3>
@@ -657,7 +657,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/karenkidd.jpg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-karenkidd', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Dr. Kidd</h3>
@@ -719,7 +719,7 @@ get_header();
               <div class="card border-0 no-shadow">
                 <div class="card-body pb-0 text-center">
                   <div class="icon-circle">
-                    <img width="150" height="150" src="/wp-content/uploads/2025/08/lukhsaankumar.jpeg" class="rounded-circle wp-post-image" alt="" decoding="async">
+                    <?php well_media_img('team-lukhsaankumar', array(), array(150, 150), array('class' => 'rounded-circle wp-post-image', 'alt' => '', 'loading' => 'lazy')); ?>
                   </div>
                   <div>
                     <h3 class="card-title no-line p-0 pb-2">Lukhsaan Elankumaran</h3>

@@ -10,7 +10,7 @@ import {
   CREEK_ID_MAP,
   SAMPLING_METRICS,
 } from "@/components/config/filters";
-import { pickedDaysRange } from "@/utils/chartWindow";
+import { dayStamp, siteDayBounds } from "@/utils/siteTime";
 
 // An error whose message was written for the user; any other error is shown as a generic message.
 class ExportError extends Error {}
@@ -99,10 +99,8 @@ const METRIC_NAME_MAP: Record<string, string> = {
   // Add more as needed
 };
 
-// YYYYMMDD of a picked day. The date pickers hand over Dates whose own calendar day is the day picked, so read that
-// day, not the UTC one (toISOString gave the day before in Tokyo, where local midnight is still yesterday in UTC).
-const formatDate = (date: Date) =>
-  `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+// The picked day itself (toISOString() gave the UTC date, a day off for viewers east of UTC)
+const formatDate = dayStamp;
 
 const Download: React.FC<DownloadProps> = ({
   activeGroups,
@@ -120,6 +118,7 @@ const Download: React.FC<DownloadProps> = ({
   // on a timer: exports can take a while, and someone who looked away would never learn why no file arrived.
   const [errorText, setErrorText] = useState<string>("");
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   // The queued export still being waited on, kept so Try again can resume it instead of queueing a duplicate.
   const resumeJobRef = useRef<{ jobId: string; pollIntervalSeconds: number; selectionKey: string } | null>(null);
 
@@ -134,6 +133,14 @@ const Download: React.FC<DownloadProps> = ({
     startDate?.getTime() ?? null,
     endDate?.getTime() ?? null,
   ]);
+
+  // A failure can arrive after the page was scrolled on (exports take a while), or the message can open below the
+  // window's bottom edge: bring it into view.
+  useEffect(() => {
+    if (!errorText || isExporting) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    errorRef.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+  }, [errorText, isExporting]);
 
   // An error about the previous selection no longer applies once the selection changes.
   useEffect(() => {
@@ -169,11 +176,8 @@ const Download: React.FC<DownloadProps> = ({
       throw new ExportError("Start and end date are required");
     }
 
-    // The picked days in site time (Toronto midnight to the last millisecond of the last day), whatever the
-    // browser's time zone: local midnight in Tokyo or London is a different instant.
-    const days = pickedDaysRange(startDate, endDate);
-    const start = new Date(days.start);
-    const end = new Date(days.end - 1);
+    // The picked days in Toronto time, wherever the viewer is
+    const { start, end } = siteDayBounds(startDate, endDate);
 
     if (isSampling) {
       const selectedCreeks = Object.entries(activeCreeks)
@@ -199,8 +203,8 @@ const Download: React.FC<DownloadProps> = ({
 
       return {
         domain: "sampling",
-        start: start.toISOString(),
-        end: end.toISOString(),
+        start,
+        end,
         creek_ids: selectedCreeks.map((creekKey) => CREEK_ID_MAP[creekKey as keyof typeof CREEK_ID_MAP]),
         site_ids: Array.from(siteIds),
         measurement_types: Array.from(measurementTypes),
@@ -276,8 +280,8 @@ const Download: React.FC<DownloadProps> = ({
 
     const payload = {
       domain: "sensor",
-      start: start.toISOString(),
-      end: end.toISOString(),
+      start,
+      end,
       group_types: groupTypes,
       station_ids: selectedStationIds,
       measurement_types: Array.from(selectedMetrics),
@@ -378,54 +382,45 @@ const Download: React.FC<DownloadProps> = ({
         setStatusText("Checking on the export");
       } else {
         setStatusText("Estimating export size");
-        console.log("[Download] Starting export...");
 
         const payload = buildExportPayload();
-        console.log("[Download] Payload:", payload);
 
         const estimateRes = await request("/api/exports/estimate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        console.log("[Download] Estimate response status:", estimateRes.status);
 
         if (!estimateRes.ok) {
           throw new ExportError(await readError(estimateRes, "Failed to estimate export size"));
         }
 
         const estimate = await readJson(estimateRes);
-        console.log("[Download] Estimate result:", estimate);
         const recommendedMode = estimate.recommended_mode || "async";
 
         if (recommendedMode === "sync") {
           setStatusText("Generating file");
-          console.log("[Download] Using SYNC mode");
           const syncRes = await request("/api/exports/sync", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
-          console.log("[Download] Sync response status:", syncRes.status);
           await triggerDownload(syncRes, getFileName());
           return;
         }
 
-        console.log("[Download] Using ASYNC mode");
         setStatusText("Queueing export job");
         const createJobRes = await request("/api/exports/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        console.log("[Download] Create job response status:", createJobRes.status);
 
         if (!createJobRes.ok) {
           throw new ExportError(await readError(createJobRes, "Failed to queue export job"));
         }
 
         const created = await readJson(createJobRes);
-        console.log("[Download] Job created:", created);
         job = {
           jobId: String(created.job_id),
           pollIntervalSeconds: Number(created.poll_interval_seconds || 3),
@@ -487,6 +482,7 @@ const Download: React.FC<DownloadProps> = ({
       </Button>
       {errorText && !isExporting && (
         <div
+          ref={errorRef}
           className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
           role="alert"
         >

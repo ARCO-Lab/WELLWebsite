@@ -76,10 +76,35 @@ class LicorShape(unittest.TestCase):
             with self.subTest(body=body), self.assertRaises(canary.ShapeError):
                 canary.check_licor(body)
 
+    def test_some_readings_without_a_number_are_counted_not_failed(self):
+        weather, logger = LICOR["data"][0], LICOR["data"][1]
+        body = {"data": [weather, {**logger, "value": None}, {**weather, "value": "n/a"}]}
+        self.assertEqual(canary.check_licor(body),
+                         "3 records (1 weather, 0 water-level logger read by ingestion), 2 without a number (skipped)")
+
+    def test_a_unit_change_fails(self):
+        air = {**LICOR["data"][0], "sensor_sn": "21948438-1", "unit": "°F"}
+        depth = {**LICOR["data"][1], "unit": "ft"}
+        with self.assertRaisesRegex(canary.ShapeError, r"21948438-1 reports '°F', not '°C'; 22168653-1 reports 'ft'"):
+            canary.check_licor({"data": [air, depth]})
+
     def test_constants_match_ingestion(self):
         p = parsers()
+        from utils.sensor_names import WEATHER_SENSOR_NAMES
         self.assertEqual(canary.LOGGER_PREFIX, p.LOGGER_PREFIX)
         self.assertEqual(canary.LOGGER_SERIALS, set(p.LOGGER_CONFIG))
+        self.assertEqual(canary.WEATHER_UNITS, p.WEATHER_UNITS)
+        self.assertEqual(canary.LOGGER_UNITS, p.LOGGER_UNITS)
+        self.assertEqual(canary.WEATHER_SENSOR_NAMES, WEATHER_SENSOR_NAMES)
+
+    def test_numbers_and_units_judged_as_ingestion_does(self):
+        p = parsers()
+        for value in (None, "", "n/a", True, float("nan"), "inf", 10 ** 400, 0, "4.5", -1.25):
+            self.assertEqual(canary.has_number(value), p.reading_value(value) is not None, repr(value))
+        for r in LICOR["data"][:2] + [{**LICOR["data"][0], "sensor_sn": "21948438-1", "unit": "°F"},
+                                      {**LICOR["data"][1], "unit": "ft"}]:
+            self.assertEqual(canary.expected_unit(r) is not None and canary.expected_unit(r) != r["unit"],
+                             p.unit_mismatch(r) is not None, r)
 
     def test_skips_the_same_records_as_ingestion(self):
         p = parsers()
@@ -150,8 +175,8 @@ class Response:
 
 ENV = {"HOBO_API_URL": "https://licor.invalid/v1/data", "HOBO_API_TOKEN": SECRET, "HOBO_LOGGERS": "21893775,x",
        "WQ_API_URL": "https://wq.invalid/api/v1", "WQ_API_KEY": SECRET, "WQ_DEVICE_ID": "42",
-       "DEMO_BOREALIS_URL": "https://borealis.invalid", "BOREALIS_API_TOKEN": SECRET,
-       "DEMO_BOREALIS_AW_PERSISTENT_ID": "doi:aw", "DEMO_BOREALIS_WC_PERSISTENT_ID": "doi:wc"}
+       "BOREALIS_URL": "https://borealis.invalid/dataverse/WELL", "BOREALIS_API_TOKEN": SECRET,
+       "BOREALIS_SAMPLING_PERSISTENT_ID": "doi:aw", "BOREALIS_UPLOAD_PERSISTENT_ID": "doi:wc"}
 
 
 class Run(unittest.TestCase):

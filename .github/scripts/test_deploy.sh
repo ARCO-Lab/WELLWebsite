@@ -51,6 +51,13 @@ for a in "$@"; do
   esac
 done
 case "$*" in
+  *127.0.0.1:8080*)
+    # WordPress: 500 while $WP_BAD_SHA is checked out; with $WP_SLOW_START, 000 on the first call after a
+    # rebuild/recreate (Apache not listening yet), then the usual answers
+    if [ -n "${WP_BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$WP_BAD_SHA" ]; then printf 500; exit 0; fi
+    if [ -n "${WP_SLOW_START:-}" ] && [ -f "$T/rebuilt" ] && [ ! -f "$T/wp-started" ]; then touch "$T/wp-started"; printf 000; exit 0; fi ;;
+esac
+case "$*" in
   *http_code*)
     if [ -n "${BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_SHA" ]; then printf 500
     elif [ -n "${HEALTH_AFTER_REBUILD:-}" ] && [ -f "$T/rebuilt" ]; then printf "$HEALTH_AFTER_REBUILD"
@@ -69,7 +76,8 @@ def run(name, c):
     return {"name": name, "status": "in_progress" if c == "pending" else "completed",
             "conclusion": None if c == "pending" else c}
 print(json.dumps({"check_runs": [run("Backend image and tests", sys.argv[1]), run("Dashboard build", sys.argv[2]),
-                                 run("Deploy script", "success"), run("End-to-end data (vendors to browser)", "success")]}))
+                                 run("Dashboard image", "success"), run("Deploy script", "success"),
+                                 run("End-to-end data (vendors to browser)", "success")]}))
 EOF
 }
 change() { # commit and push edits to the given paths
@@ -147,6 +155,22 @@ check "by hand, docker-compose.yml change: rebuilds everything, checks both work
 
 sync_vm; change README.md; deploy
 check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! ran "compose"'
+
+sync_vm; change wordpress/zz-performance.conf; ci success success; deploy --auto
+check "--auto, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change wordpress/php-hardening.ini
+WP_BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "WordPress config change that breaks WordPress only: rolls back and recreates wordpress with the old config" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "WordPress home answered 500" && [ "$(grep -c "force-recreate --no-deps wordpress" "$STUB_LOG")" = 2 ] && said "healthy again"'
+
+sync_vm; rm -f "$T/wp-started"; change wordpress/zz-performance.conf; WP_SLOW_START=1 deploy
+check "recreated wordpress not answering on the first try: waits for it, deploys, no rollback" 'rc 0 && head_is_remote && said "healthy" && ! said "rolling back" && [ -f "$T/wp-started" ]'
+
+sync_vm; change wordpress/theme-images.mjs; deploy
+check "other files in wordpress/ (not .conf/.ini): nothing restarted" 'rc 0 && head_is_remote && ! ran "compose"'
+
+sync_vm; (cd "$T/work" && echo 1 >> docker-compose.yml && mkdir -p wordpress && echo 1 >> wordpress/zz-performance.conf && git add -A && git commit -qm both && git push -q origin HEAD:main); deploy
+check "by hand, docker-compose.yml and a WordPress config change: rebuilds everything and recreates wordpress" 'rc 0 && ran "compose up -d --build" && ran "compose up -d --force-recreate --no-deps wordpress"'
 
 sync_vm; (cd "$T/work" && git mv dashboard/frontend/page.tsx dashboard/backend/app/page.tsx && git commit -qm move && git push -q origin HEAD:main); deploy
 check "a file moved between services: both sides rebuild" 'rc 0 && ran "--no-deps dashboard backend worker export_worker"'
