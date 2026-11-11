@@ -75,7 +75,7 @@ change() { # commit and push edits to the given paths
 }
 sync_vm() {
   git -C "$T/vm" fetch -q && git -C "$T/vm" reset -q --hard origin/main
-  : > "$STUB_LOG"; rm -f "$DEPLOY_STATE" "$DEPLOY_LOG" "$T/rebuilt"
+  : > "$STUB_LOG"; rm -rf "$DEPLOY_STATE" "$DEPLOY_STATE.rolled-back" "$DEPLOY_LOG" "$T/rebuilt"
 }
 deploy() { rm -f "$T/rebuilt"; (cd "$T/vm" && bash ./deploy.sh "$@") > "$T/out" 2>&1; echo $? > "$T/rc"; }
 head_is_remote() { [ "$(git -C "$T/vm" rev-parse HEAD)" = "$(git -C "$T/work" rev-parse HEAD)" ]; }
@@ -113,10 +113,20 @@ API_DOWN=1 deploy --auto
 check "--auto, GitHub API error: reports it only once" 'rc 0 && [ ! -s "$T/out" ]'
 
 sync_vm; change dashboard/backend/app/x.py; echo 'not json' > "$CHECKS_FILE"; deploy --auto
-check "a command failing unexpectedly still logs FAILED with the line" 'rc 1 && said "FAILED: line " && grep -q "FAILED: line " "$DEPLOY_LOG" && ! ran "compose"'
+check "--auto, GitHub sends something that isn't JSON: says so" 'rc 1 && said "couldn'"'"'t read GitHub'"'"'s CI result" && said "JSONDecodeError" && ! ran "compose"'
+deploy --auto
+check "--auto, GitHub keeps sending non-JSON: reported only once" 'rc 0 && [ ! -s "$T/out" ]'
+
+sync_vm; cp "$T/vm/.git/index" "$T/index.good"; echo garbage > "$T/vm/.git/index"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "a command failing unexpectedly (a corrupt git index) logs FAILED with the line, once, and pings /fail" 'rc 1 && [ "$(grep -c "FAILED" "$T/out")" = 1 ] && said "FAILED: line " && grep -q "FAILED: line " "$DEPLOY_LOG" && ran "ping http://hc.test/x/fail"'
+: > "$STUB_LOG"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "--auto, the same unexpected failure: no second FAILED line or ping" 'rc 0 && ! said "FAILED" && [ ! -s "$STUB_LOG" ]'
+cp "$T/index.good" "$T/vm/.git/index"
 
 sync_vm; change dashboard/frontend/page.tsx; DEPLOY_REMOTE=nowhere DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy
 check "fetch fails: logs FAILED and pings /fail" 'rc 1 && said "FAILED: couldn'"'"'t fetch nowhere/main" && ran "ping http://hc.test/x/fail" && ! ran "compose"'
+DEPLOY_REMOTE=nowhere deploy --auto
+check "--auto, fetch fails: reported only once, without git's own stderr" 'rc 0 && [ ! -s "$T/out" ]'
 
 sync_vm; change dashboard/backend/app/db/migrations/2026-12-01_x.sql; ci success success; deploy --auto
 check "--auto, new migration: held" 'rc 0 && ! head_is_remote && said "HELD" && said "migration" && ! ran "compose"'
@@ -161,8 +171,30 @@ export BAD_SHA; BAD_SHA=$(git -C "$T/work" rev-parse HEAD); deploy
 check "unhealthy after deploy: rolls back to the previous commit" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "rolling back" && said "healthy again"'
 : > "$STUB_LOG"; ci success success; deploy --auto
 check "--auto after a rollback: doesn't redeploy the rolled-back commit" 'rc 0 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && [ ! -s "$T/out" ] && ! ran "compose"'
+DEPLOY_REMOTE=nowhere deploy --auto; echo dirty >> "$T/vm/README.md"; deploy --auto; git -C "$T/vm" checkout -q -- README.md
+: > "$STUB_LOG"; deploy --auto
+check "--auto after a rollback, then fetch and local-edit errors: still doesn't redeploy it" 'rc 0 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && [ ! -s "$T/out" ] && ! ran "compose"'
 unset BAD_SHA; change dashboard/frontend/page.tsx; deploy --auto
-check "--auto after a rollback: a newer commit deploys" 'rc 0 && head_is_remote && ran "compose up"'
+check "--auto after a rollback: a newer commit deploys" 'rc 0 && head_is_remote && ran "compose up" && [ ! -e "$DEPLOY_STATE.rolled-back" ]'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx
+export BAD_SHA; BAD_SHA=$(git -C "$T/work" rev-parse HEAD); deploy; unset BAD_SHA
+deploy
+check "by hand after a rollback: deploys the rolled-back commit" 'rc 0 && head_is_remote && said "healthy" && [ ! -e "$DEPLOY_STATE.rolled-back" ]'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx; mkdir "$DEPLOY_STATE.rolled-back"
+BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "rollback record can't be written: still rolls back" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "couldn'"'"'t write" && said "healthy again"'
+
+sync_vm; change dashboard/frontend/new.tsx; echo untracked > "$T/vm/dashboard/frontend/new.tsx"; ci success success; deploy --auto
+check "--auto, fast-forward refused (an untracked file in the way): says so" 'rc 1 && ! head_is_remote && said "couldn'"'"'t fast-forward" && ! ran "compose"'
+deploy --auto
+check "--auto, fast-forward refused: reported only once" 'rc 0 && [ ! -s "$T/out" ]'
+rm -f "$T/vm/dashboard/frontend/new.tsx"
+
+sync_vm; change dashboard/frontend/page.tsx; mkdir "$DEPLOY_LOG"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy
+check "a failure inside a function (deploy.log unwritable): FAILED and /fail" 'rc 1 && said "FAILED: line " && ran "ping http://hc.test/x/fail" && ! ran "compose"'
+rmdir "$DEPLOY_LOG"
 
 sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
 BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=export_worker deploy

@@ -13,7 +13,7 @@
 # (deploy.log next to this script), DEPLOY_HEALTHCHECK_URL (a Healthchecks.io ping URL: success pings it,
 # failure pings <url>/fail), GITHUB_REPO (ARCO-Lab/WELLWebsite). DOCKER, CURL, GITHUB_API, DEPLOY_STATE,
 # DEPLOY_HEALTH_TRIES, DEPLOY_HEALTH_WAIT and DEPLOY_WORKER_WAIT exist for tests.
-set -euo pipefail
+set -Eeuo pipefail
 
 AUTO=0 DRY=0
 for arg in "$@"; do
@@ -42,9 +42,7 @@ ping_health() {
     "$CURL" -fsS -m 10 --retry 3 -o /dev/null "$DEPLOY_HEALTHCHECK_URL$1" || true
   fi
 }
-fail() { trap - ERR; log "FAILED: $*"; ping_health /fail; exit 1; }
-# A command that fails unexpectedly still gets a FAILED line and a /fail ping, not a silent exit
-trap 'fail "line $LINENO: $BASH_COMMAND failed"' ERR
+fail() { trap - ERR; log "FAILED: $*" || true; ping_health /fail; exit 1; }
 # --auto runs every few minutes: report a problem once (keyed by $1), not on every run. The key is cleared by the
 # next healthy deploy or up-to-date run, and replaced by any other problem, so new problems are always reported.
 once() {
@@ -53,6 +51,19 @@ once() {
   echo "$1" > "$STATE"
 }
 clear_state() { [ "$DRY" = 1 ] || rm -f "$STATE"; }
+# A command that fails unexpectedly (anywhere: set -E carries the trap into functions and subshells) still gets a
+# FAILED line and a /fail ping, reported once per line. In a subshell such as $(...) it only exits with the
+# command's status, so the failure is reported once, by the main shell.
+on_err() {
+  [ "$BASHPID" = "$$" ] || exit "$1"
+  trap - ERR
+  once "error at line $2"
+  fail "line $2: $3 failed"
+}
+trap 'on_err $? "$LINENO" "$BASH_COMMAND"' ERR
+# The last commit that was deployed and rolled back. Kept apart from $STATE (which `once` overwrites) so no other
+# problem can erase it; cleared by a healthy deploy or a deploy by hand.
+ROLLED_BACK=$STATE.rolled-back
 hold() {
   once "held $NEW"
   log "HELD $(git rev-parse --short "$NEW"): $* Deploy it by hand with ./deploy.sh once that's done."
@@ -75,9 +86,10 @@ if [ -n "$dirty" ]; then
   fail "the checkout has local changes to tracked files; commit or discard them first: $(head -5 <<<"$dirty" | tr '\n' ' ')"
 fi
 
-if ! git fetch -q "$REMOTE" "$BRANCH"; then
+# git's own messages go into the FAILED line rather than stderr, so a repeated failure stays quiet in cron
+if ! err=$(git fetch -q "$REMOTE" "$BRANCH" 2>&1); then
   once "fetch-failed"
-  fail "couldn't fetch $REMOTE/$BRANCH"
+  fail "couldn't fetch $REMOTE/$BRANCH: $(head -3 <<<"$err" | tr '\n' ' ')"
 fi
 OLD=$(git rev-parse HEAD)
 NEW=$(git rev-parse "$REMOTE/$BRANCH")
@@ -88,7 +100,7 @@ if [ "$OLD" = "$NEW" ]; then
   exit 0
 fi
 # A commit that was deployed and rolled back isn't retried by cron; a newer commit or ./deploy.sh moves past it
-if [ "$AUTO" = 1 ] && [ -f "$STATE" ] && [ "$(cat "$STATE")" = "rolled-back $NEW" ]; then exit 0; fi
+if [ "$AUTO" = 1 ] && [ -f "$ROLLED_BACK" ] && [ "$(cat "$ROLLED_BACK")" = "$NEW" ]; then exit 0; fi
 if ! git merge-base --is-ancestor "$OLD" "$NEW"; then
   once "not-fast-forward $OLD $NEW"
   fail "$REMOTE/$BRANCH isn't a fast-forward of the checkout ($(git rev-parse --short "$OLD")); sort it out by hand"
@@ -100,7 +112,7 @@ if [ "$AUTO" = 1 ]; then
     once "github-api $NEW"
     fail "couldn't ask GitHub for the CI result of $(git rev-parse --short "$NEW")"
   fi
-  verdict=$(CHECKS_JSON="$checks" python3 -c '
+  if ! verdict=$(CHECKS_JSON="$checks" python3 -c '
 import json, os, sys
 runs = {r["name"]: r for r in json.loads(os.environ["CHECKS_JSON"]).get("check_runs", [])}
 required = sys.argv[1:]
@@ -110,7 +122,10 @@ elif all(runs[n]["conclusion"] == "success" for n in required):
     print("passed")
 else:
     print("failed: " + ", ".join(n + "=" + str(runs[n]["conclusion"]) for n in required))
-' "${REQUIRED_CHECKS[@]}")
+' "${REQUIRED_CHECKS[@]}" 2>&1); then
+    once "github-reply $NEW"
+    fail "couldn't read GitHub's CI result for $(git rev-parse --short "$NEW"): $(tail -1 <<<"$verdict")"
+  fi
   case "$verdict" in
     pending) exit 0 ;;
     passed) ;;
@@ -146,8 +161,9 @@ rebuild() {
   fi
 }
 
-# The site's pages. Prints what's wrong and returns 1, or prints nothing and returns 0. $1: how many times to try
-# /api/latest (5 s apart), the slowest to come back after a rebuild.
+# The site's pages. Returns 0, or sets PROBLEM to what's wrong and returns 1. $1: how many times to try
+# /api/latest (5 s apart), the slowest to come back after a rebuild. The checks set PROBLEM rather than print it so
+# they're called straight from `if`, where the ERR trap doesn't apply, not from a $(...) subshell.
 site_ok() {
   local i code=000
   for i in $(seq 1 "$1"); do
@@ -155,11 +171,11 @@ site_ok() {
     [ "$code" = 200 ] && break
     sleep "${DEPLOY_HEALTH_WAIT:-5}"
   done
-  if [ "$code" != 200 ]; then echo "dashboard /api/latest answered $code"; return 1; fi
+  if [ "$code" != 200 ]; then PROBLEM="dashboard /api/latest answered $code"; return 1; fi
   code=$("$CURL" -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:8081/ || true)
-  if [ "$code" != 200 ]; then echo "dashboard home answered $code"; return 1; fi
+  if [ "$code" != 200 ]; then PROBLEM="dashboard home answered $code"; return 1; fi
   code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
-  if [ "$code" != 200 ]; then echo "WordPress home answered $code"; return 1; fi
+  if [ "$code" != 200 ]; then PROBLEM="WordPress home answered $code"; return 1; fi
 }
 
 # The rebuilt background workers serve no page, and compose restarts them when they crash (Docker even reports a
@@ -183,48 +199,56 @@ workers_ok() {
   if [ "$now" -lt "${DEPLOY_WORKER_WAIT:-60}" ]; then sleep $(( ${DEPLOY_WORKER_WAIT:-60} - now )); fi
   for w in "${WORKERS[@]}"; do
     IFS=: read -r s id count <<<"$w"
-    if [ -z "$id" ]; then echo "no $s container after the rebuild"; return 1; fi
+    if [ -z "$id" ]; then PROBLEM="no $s container after the rebuild"; return 1; fi
     now=$("$DOCKER" inspect -f '{{.State.Status}} {{.RestartCount}}' "$id" 2>/dev/null || echo "gone")
     if [ "$now" != "running $count" ]; then
-      echo "the $s container didn't stay up (status and restart count: '$now', right after the rebuild: restart count $count)"
+      PROBLEM="the $s container didn't stay up (status and restart count: '$now', right after the rebuild: restart count $count)"
       return 1
     fi
   done
 }
 
-rebuild_and_check() {  # prints what's wrong and returns 1, or prints nothing and returns 0
-  if ! rebuild; then echo "the rebuild failed"; return 1; fi
+rebuild_and_check() {  # returns 0, or sets PROBLEM and returns 1
+  if ! rebuild; then PROBLEM="the rebuild failed"; return 1; fi
   REBUILT_AT=$(date +%s)
   note_workers
   site_ok "${DEPLOY_HEALTH_TRIES:-24}" && workers_ok  # up to ~2 minutes for the pages to come back
 }
 
 # If the site is already down, a deploy would be blamed for it (and rolled back)
-was_healthy=1
-if ! before=$(site_ok 3); then
+was_healthy=1 PROBLEM=""
+if ! site_ok 3; then
   was_healthy=0
   if [ "$AUTO" = 1 ]; then
     once "unhealthy-before"
-    fail "the site is already unhealthy ($before), so not deploying $(git rev-parse --short "$NEW"); fix the site, or deploy by hand with ./deploy.sh"
+    fail "the site is already unhealthy ($PROBLEM), so not deploying $(git rev-parse --short "$NEW"); fix the site, or deploy by hand with ./deploy.sh"
   fi
-  log "the site is already unhealthy ($before); deploying anyway, and not rolling back if it stays unhealthy"
+  log "the site is already unhealthy ($PROBLEM); deploying anyway, and not rolling back if it stays unhealthy"
 fi
 
+[ "$AUTO" = 1 ] || rm -f "$ROLLED_BACK" 2>/dev/null || true  # deploying by hand moves past a rolled-back commit
+# Merge first, so a merge git refuses (e.g. an untracked file in the way) is reported once, like other problems
+if ! err=$(git merge -q --ff-only "$NEW" 2>&1); then
+  once "merge-failed $NEW"
+  fail "couldn't fast-forward to $(git rev-parse --short "$NEW") ($summary): $(head -3 <<<"$err" | tr '\n' ' ')"
+fi
 log "deploying $summary"
-git merge -q --ff-only "$NEW" || fail "couldn't fast-forward to $(git rev-parse --short "$NEW")"
-if problem=$(rebuild_and_check); then
+if rebuild_and_check; then
   log "deployed $(git rev-parse --short HEAD); healthy"
   clear_state
+  rm -f "$ROLLED_BACK" 2>/dev/null || true
   ping_health ""
   exit 0
 fi
+problem=$PROBLEM
 if [ "$was_healthy" = 0 ]; then
   fail "deployed $(git rev-parse --short HEAD), but the site is still unhealthy ($problem); needs a person now"
 fi
 log "unhealthy after deploying $(git rev-parse --short "$NEW") ($problem); rolling back to $(git rev-parse --short "$OLD")"
-echo "rolled-back $NEW" > "$STATE"  # so cron doesn't redeploy it every 5 minutes
+# So cron doesn't redeploy it every 5 minutes. Best effort: an unwritable file mustn't stop the rollback.
+{ echo "$NEW" > "$ROLLED_BACK"; } 2>/dev/null || log "couldn't write $ROLLED_BACK; cron may retry $(git rev-parse --short "$NEW")"
 git reset -q --keep "$OLD" || fail "couldn't roll back to $(git rev-parse --short "$OLD") (git reset failed) after $(git rev-parse --short "$NEW") was unhealthy ($problem); needs a person now"
-if problem2=$(rebuild_and_check); then
+if rebuild_and_check; then
   fail "rolled back to $(git rev-parse --short "$OLD"), which is healthy again; $(git rev-parse --short "$NEW") needs a look ($problem). Cron won't retry it: push a fix, or run ./deploy.sh by hand."
 fi
-fail "rolled back to $(git rev-parse --short "$OLD") but the site is STILL unhealthy (${problem2:-}); needs a person now"
+fail "rolled back to $(git rev-parse --short "$OLD") but the site is STILL unhealthy ($PROBLEM); needs a person now"

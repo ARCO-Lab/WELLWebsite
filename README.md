@@ -105,7 +105,7 @@ Each run is logged in `deploy.log`, and any failure, expected or not, logs a `FA
 - `docker-compose.yml`;
 - a WordPress core update, which needs its database update run from wp-admin.
 
-Deploy those with `./deploy.sh`. `--auto` reports each problem once, not every 5 minutes: a held commit, failed CI, local edits, a non-fast-forward, a GitHub API or fetch error, an already-unhealthy site. A commit that was deployed and rolled back isn't retried; a newer commit on `main`, or `./deploy.sh` by hand, moves past it.
+Deploy those with `./deploy.sh`. `--auto` reports each problem once, not every 5 minutes: a held commit, failed CI, local edits, a non-fast-forward or a merge git refuses, a GitHub API error or unreadable reply, a fetch error, an already-unhealthy site, or any other command failing (keyed by its line). A commit that was deployed and rolled back isn't retried, whatever else fails in between; a newer commit on `main`, or `./deploy.sh` by hand, moves past it.
 
 #### Before adding the cron line
 
