@@ -25,6 +25,8 @@ interface MetricChartProps {
   error: Error | null;
   modalOpen?: boolean;
   showLegend?: boolean;
+  // Small multiples (the logger charts) show one error message for the group instead of one each.
+  showErrorBanner?: boolean;
 }
 
 const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
@@ -40,9 +42,11 @@ const MetricChart: React.FC<MetricChartProps> = ({
   error,
   modalOpen= false,
   showLegend = true,
+  showErrorBanner = true,
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
-  const [chartOptions, setChartOptions] = useState<any>({});
+  // Until the first data arrives: no Highcharts placeholder title ("Chart title") or credits link.
+  const [chartOptions, setChartOptions] = useState<any>({ title: { text: undefined }, credits: { enabled: false } });
   const [resolvedHeight, setResolvedHeight] = useState(height);
 
   useEffect(() => {
@@ -196,7 +200,7 @@ const MetricChart: React.FC<MetricChartProps> = ({
         </div>
       )}
       {/* e.g. "This range has 1,451,713 readings, more than …": the API explains what to do instead */}
-      {error && !loading && (
+      {error && !loading && showErrorBanner && (
         <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" role="alert">
           {error.message}
         </div>

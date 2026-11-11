@@ -16,11 +16,13 @@ const LoggerMetrics = ({
   activeKeys,
   metrics: allData = [],
   loading = false,
+  inModal = false,
 }: {
   activeKeys: string[];
   activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
   metrics?: any[];
   loading?: boolean;
+  inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }) => {
   const loggerConfig = SENSOR_FILTER_CONFIG.gauges;
 
@@ -50,6 +52,7 @@ const LoggerMetrics = ({
       title="Water Logger Metrics"
       sections={sections}
       loading={loading}
+      layout={inModal ? "wrap" : "ticker"}
       emptyHint="Pick loggers and metrics under Filters to see their latest values."
     />
   );
