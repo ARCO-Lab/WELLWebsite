@@ -87,7 +87,11 @@ test("the database holds exactly the expected readings", async ({}, testInfo) =>
 
 async function openDashboard(page: Page) {
   await page.clock.setFixedTime(NOW); // Date is frozen; timers still run
-  const series = page.waitForResponse((r) => r.url().includes("/api/series?") && r.request().method() === "GET");
+  // The charts' request once all three groups are ticked (each tick before it asks for fewer groups).
+  const series = page.waitForResponse((r) => {
+    const url = new URL(r.url());
+    return url.pathname === "/api/series" && ["weather", "quality", "gauges"].every((g) => url.searchParams.get(g) === "true");
+  });
   await page.goto("/");
   for (const group of ["Weather Station", "Water Quality", "Water Loggers"]) {
     await page.getByRole("checkbox", { name: group, exact: true }).click();
@@ -146,7 +150,8 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     // The x-axis spans exactly the picked days; point at 07:40Z, the newest air temperature (3.55 °C).
     const start = Date.parse(RANGE_START), end = Date.parse(RANGE_END) + 1;
     const x = box.x + (box.width * (Date.parse("2026-11-01T07:40:00Z") - start)) / (end - start);
-    await page.mouse.move(x, box.y + box.height / 2);
+    await page.mouse.move(box.x + 5, box.y + box.height / 2);
+    await page.mouse.move(x, box.y + box.height / 2, { steps: 5 });
     const tooltip = chart.locator(".highcharts-tooltip");
     await expect(tooltip).toContainText("3.55");
     await expect(tooltip).toContainText(/Nov 1\b/);
