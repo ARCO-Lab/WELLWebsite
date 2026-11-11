@@ -2,7 +2,7 @@
 // It manages all dashboard state, handles modal logic, and coordinates data fetching and UI layout.
 // The West Campus charts share one data source and one zoom window (useChartSeries, provided as ChartViewContext).
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import type MapComponent from "@/components/map/Map";
@@ -27,9 +27,9 @@ import EmptyState from "@/components/EmptyState";
 import StickyPanel from "@/components/StickyPanel";
 // AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
 // import AIAnalysis from "@/components/AIAnalysis";
-import useFilteredData from "@/hooks/useFilteredData";
 import useChartSeries, { ChartViewContext } from "@/hooks/useChartSeries";
-import type { Range } from "@/utils/chartWindow";
+import useWindRose from "@/hooks/useWindRose";
+import { planWindow, searchWithWindow, windowFromSearch, type Range } from "@/utils/chartWindow";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
@@ -38,10 +38,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animation
 
 type ActiveFilters = { [key: string]: string[] };
 type SensorGroup = "weather" | "quality" | "gauges";
-
-// The wind rose's raw readings are weather-only; nothing is fetched while it isn't shown.
-const WEATHER_ONLY = { gauges: false, weather: true, quality: false };
-const NO_GROUPS = { gauges: false, weather: false, quality: false };
 
 // next/dynamic drops the map's generic props (sensor groups or creeks); keep them so both setters type-check.
 const Map = dynamic(() => import("@/components/map/Map"), { ssr: false }) as typeof MapComponent;
@@ -146,16 +142,47 @@ export default function Dashboard() {
   const [viewWindow, setViewWindow] = useState<Range | null>(null);
   const changeStartDate = useCallback((d: Date | null) => { setStartDate(d); setViewWindow(null); }, []);
   const changeEndDate = useCallback((d: Date | null) => { setEndDate(d); setViewWindow(null); }, []);
+  // The range buttons and shared links can move the picked days and zoom in one step.
+  const setDays = useCallback((startDay: Date, endDay: Date, w: Range | null) => {
+    setStartDate(startDay);
+    setEndDate(endDay);
+    setViewWindow(w);
+  }, []);
 
-  // Raw readings, only for the wind rose and only while it is shown, capped by /api/data's row limit.
-  // TODO: a /api/windrose endpoint that bins direction and speed in the database, so this needs no raw rows.
+  // Shareable links: ?from=&to= (ISO, Toronto time) hold the window the charts show. Read once on load (a link that
+  // makes no sense is ignored), then kept up to date with replaceState, so zooming adds no history entries. While
+  // the picked days are the default ones and nothing is zoomed, the link has no window.
+  const defaultDays = useRef({ start: startDate?.toDateString(), end: endDate?.toDateString() });
+  const [urlRead, setUrlRead] = useState(false);
+  useEffect(() => {
+    const w = windowFromSearch(window.location.search, Date.now());
+    if (w) {
+      const plan = planWindow(w, Date.now());
+      setDays(plan.startDay, plan.endDay, plan.viewWindow);
+    }
+    setUrlRead(true);
+  }, [setDays]);
+
+  // Wind rose counts, only while the wind rose is shown
   const windShown = activeGroups.weather && weatherTab === "windrose" && canShowWindRose(subFilters.weather);
-  const { data: windData, loading: windLoading, error: windError } = useFilteredData(
-    windShown ? WEATHER_ONLY : NO_GROUPS, startDate, endDate
-  );
-  const wind = useMemo(() => ({ data: windData, loading: windLoading, error: windError }), [windData, windLoading, windError]);
+  const seriesView = useChartSeries(activeGroups, startDate, endDate, viewWindow, setViewWindow, setDays);
+  const wind = useWindRose(seriesView.range, windShown);
+  const chartView = useMemo(() => ({ ...seriesView, wind }), [seriesView, wind]);
 
-  const chartView = useChartSeries(activeGroups, startDate, endDate, viewWindow, setViewWindow, wind);
+  useEffect(() => {
+    if (!urlRead) return;
+    const isDefault = !viewWindow && startDate?.toDateString() === defaultDays.current.start
+      && endDate?.toDateString() === defaultDays.current.end;
+    const shown = isDefault ? null : viewWindow ?? seriesView.range;
+    // Debounced: fast zooming would otherwise call replaceState dozens of times a second, which browsers throttle.
+    const timer = window.setTimeout(() => {
+      const search = searchWithWindow(window.location.search, shown);
+      if (search !== window.location.search) {
+        window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [urlRead, viewWindow, startDate, endDate, seriesView.range]);
   const { metrics: latestMetrics, loading: latestLoading } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
@@ -749,7 +776,7 @@ export default function Dashboard() {
           subtypes={modalSubtypes}
           data={modalData}
           header={modalSpec && !modalIsSampling && analysisType === "alltime" && !(modalSpec.key === "weather" && windShown)
-            ? <ChartWindowBar /> : null /* not over the wind rose, which shows all the picked days */}
+            ? <ChartWindowBar inModal group={modalSpec.key as SensorGroup} /> : null /* not over the wind rose, which shows all the picked days */}
           weatherTab={weatherTab}
           setWeatherTab={setWeatherTab}
         >

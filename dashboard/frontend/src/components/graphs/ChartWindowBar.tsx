@@ -2,29 +2,46 @@
 // (halve the window), move it (half its width at a time), widen it, or go back to the picked days. It stays mounted
 // with the charts, and buttons that can't act are marked aria-disabled instead of disabled, so keyboard focus is
 // never dropped (e.g. on Reset, or on ◀ at the start). It also holds the one screen-reader announcement for all
-// charts' loading and error states.
+// charts' loading and error states. In the larger view it adds range buttons (1 day · 1 week · 1 month · All) and an
+// overview strip (ChartNavigator); those can reach outside the picked days, which then move to cover the window.
 
 import React from "react";
+import dynamic from "next/dynamic";
 import { ChevronLeft, ChevronRight, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import { useChartView } from "@/hooks/useChartSeries";
 import {
-  TIME_ZONE, bucketLabel, shiftWindow, zoomInWindow, zoomOutWindow, type Range,
+  TIME_ZONE, bucketLabel, dataStart, presetWindow, shiftWindow, zoomInWindow, zoomOutWindow, type Range,
 } from "@/utils/chartWindow";
+
+const ChartNavigator = dynamic(() => import("@/components/graphs/ChartNavigator"), { ssr: false });
+
+// The visible text is the button's accessible name; the title says what it does.
+const PRESETS: { label: string; title: string; days: number | "all" }[] = [
+  { label: "1 day", title: "Show 1 day, ending where this view ends", days: 1 },
+  { label: "1 week", title: "Show 1 week, ending where this view ends", days: 7 },
+  { label: "1 month", title: "Show 30 days, ending where this view ends", days: 30 },
+  { label: "All", title: "Show all the data, since the sensors were installed", days: "all" },
+];
+const DAY_MS = 24 * 3600 * 1000;
 
 let labelFormatter: Intl.DateTimeFormat | null = null;
 
-/** "Apr 3 14:00", in Toronto time. */
-function formatInstant(ms: number): string {
+/** "Apr 3 14:00" (or "Apr 3, 2025 14:00"), in Toronto time. */
+function formatInstant(ms: number, withYear: boolean): string {
   labelFormatter ??= new Intl.DateTimeFormat("en-US", {
-    timeZone: TIME_ZONE, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    timeZone: TIME_ZONE, year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   });
   const p: Record<string, string> = {};
   for (const { type, value } of labelFormatter.formatToParts(new Date(ms))) p[type] = value;
-  return `${p.month} ${p.day} ${p.hour}:${p.minute}`;
+  return `${p.month} ${p.day}${withYear ? `, ${p.year}` : ""} ${p.hour}:${p.minute}`;
 }
 
-export function windowLabel(w: Range): string {
-  return `${formatInstant(w.start)} – ${formatInstant(w.end)}`;
+/** The window as "Nov 10 00:00 – Nov 11 05:00", with years when it isn't all in this year (e.g. after "All"). */
+export function windowLabel(w: Range, now: number): string {
+  const year = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: TIME_ZONE, year: "numeric" });
+  const thisYear = year(now);
+  const withYear = year(w.start) !== thisYear || year(w.end - 1) !== thisYear;
+  return `${formatInstant(w.start, withYear)} – ${formatInstant(w.end, withYear)}`;
 }
 
 const buttonClass =
@@ -42,9 +59,14 @@ const BarButton: React.FC<{
   </button>
 );
 
-const ChartWindowBar: React.FC = () => {
+interface Props {
+  inModal?: boolean; // the larger view: range buttons and the overview strip too
+  group?: "weather" | "quality" | "gauges"; // which group's series the overview strip draws
+}
+
+const ChartWindowBar: React.FC<Props> = ({ inModal = false, group = "weather" }) => {
   const view = useChartView();
-  const { viewWindow, range, zoomTo } = view;
+  const { viewWindow, range, zoomTo, showWindow } = view;
 
   const status = view.loading ? "Loading chart data…"
     : view.error ? view.error.message
@@ -75,7 +97,7 @@ const ChartWindowBar: React.FC = () => {
             <ChevronLeft aria-hidden className="h-4 w-4" />
           </BarButton>
           <p className="flex min-w-0 flex-1 items-center gap-2 text-xs text-gray-800 sm:flex-none sm:text-sm">
-            <span>{windowLabel(w)}<span className="text-gray-600">{resolution}</span></span>
+            <span>{windowLabel(w, view.clock)}<span className="text-gray-600">{resolution}</span></span>
             {view.detailLoading && (
               <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
             )}
@@ -101,6 +123,27 @@ const ChartWindowBar: React.FC = () => {
             <span className="hidden sm:inline">Reset</span>
           </BarButton>
         </div>
+        {inModal && (
+          <div className="flex w-full flex-wrap items-center gap-2" role="group" aria-label="Show a span of time">
+            {PRESETS.map((p) => {
+              // For the pressed state, the hour the charts go by; a press reads the clock itself
+              const target = presetWindow(p.days, w, view.clock + 1);
+              // Pressed when the window already is that span (to the minute)
+              const width = w.end - w.start;
+              const pressed = p.days === "all"
+                ? range.start <= dataStart() && !zoomed
+                : Math.abs(width - p.days * DAY_MS) < 60_000 && Math.abs(w.end - target.end) < 60_000;
+              return (
+                <button key={p.label} type="button" title={p.title} aria-pressed={pressed}
+                  className={`${buttonClass} aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary`}
+                  onClick={() => showWindow(presetWindow(p.days, w, Date.now()))}>
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {inModal && <div className="w-full"><ChartNavigator group={group} /></div>}
         {view.detailError && (
           <p className="w-full text-sm text-red-700">
             Couldn&apos;t load detail ·{" "}

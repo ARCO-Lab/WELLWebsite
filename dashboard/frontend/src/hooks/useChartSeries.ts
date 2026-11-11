@@ -7,11 +7,24 @@
 //   width on each side, snapped to the overview's bucket grid. Charts draw overview points outside that range
 //   and detail points inside it, so data is never blank: coarse first, then sharper in place.
 // - One AbortController for all of them: a new request cancels the previous one, and a response that is no longer
-//   wanted is ignored. The last 20 responses are cached, so zooming out, Reset and revisits need no request.
+//   wanted is ignored. The last 12 responses are cached, so zooming out, Reset and revisits need no request.
+// - The picked days end at the next whole hour after now (clampToNow), so today's empty future isn't drawn.
+// - showWindow: a window that may reach outside the picked days (the range buttons, a shared link) moves the
+//   picked days to cover it, then zooms to it.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { GroupSelection, SensorData } from "@/hooks/useFilteredData";
-import { Lru, detailRange, normalizeWindow, pickBucket, pickedDaysRange, type Range } from "@/utils/chartWindow";
+import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Lru, clampToNow, detailRange, normalizeWindow, pickBucket, pickedDaysRange, planWindow, type Range,
+} from "@/utils/chartWindow";
+
+/** The start of the hour an instant falls in (default: now). Called from effects and handlers, never in render. */
+export const hourStart = (now: number = Date.now()): number => Math.floor(now / 3_600_000) * 3_600_000;
+
+export interface GroupSelection {
+  gauges: boolean;
+  weather: boolean;
+  quality: boolean;
+}
 
 export interface ApiSeries {
   group_type: string;
@@ -31,8 +44,9 @@ export interface SeriesResponse {
   series: ApiSeries[];
 }
 
-// One series as kept in memory: only what the charts draw. Typed arrays (16 bytes a point; NaN for a missing
-// value) instead of the response's four arrays of boxed numbers.
+// One series as kept in memory: only what the charts draw. Typed arrays (NaN for a missing value) instead of the
+// response's four arrays of boxed numbers: t and avg as Float64 (16 bytes a point), and min/max as Float32 (8 more,
+// precise enough to draw) only for averaged series, the only ones drawn with a min–max band.
 export interface ChartSeries {
   group_type: string;
   station_id: string | number;
@@ -41,6 +55,8 @@ export interface ChartSeries {
   agg: "mean" | "sum" | "vector_mean";
   t: Float64Array;
   avg: Float64Array;
+  min?: Float32Array;
+  max?: Float32Array;
 }
 
 // One loaded response, with what it was loaded for and its series indexed by seriesKey.
@@ -53,33 +69,53 @@ export interface LoadedSeries {
   series: ChartSeries[];
 }
 
-const slim = (s: ApiSeries): ChartSeries => ({
-  group_type: s.group_type, station_id: s.station_id, measurement_type: s.measurement_type, unit: s.unit,
-  agg: s.agg ?? "mean",
-  t: Float64Array.from(s.t),
-  avg: Float64Array.from(s.avg, (v) => (v === null ? NaN : v)),
-});
+const nan = (v: number | null) => (v === null ? NaN : v);
+const slim = (s: ApiSeries): ChartSeries => {
+  const agg = s.agg ?? "mean";
+  const out: ChartSeries = {
+    group_type: s.group_type, station_id: s.station_id, measurement_type: s.measurement_type, unit: s.unit, agg,
+    t: Float64Array.from(s.t),
+    avg: Float64Array.from(s.avg, nan),
+  };
+  if (agg === "mean" && s.min && s.max) {
+    out.min = Float32Array.from(s.min, nan);
+    out.max = Float32Array.from(s.max, nan);
+  }
+  return out;
+};
 
 export const seriesKey = (s: Pick<ApiSeries, "group_type" | "station_id" | "measurement_type" | "unit">) =>
   `${s.group_type}|${s.station_id}|${s.measurement_type}|${s.unit}`;
 
-// Responses kept. One with every group is ~29 series of up to ~2,000 points: about 1 MB as typed arrays, so
-// at most ~12 MB.
+// Responses kept. One with every group is ~29 series of up to ~2,000 points: about 1.4 MB as typed arrays, so
+// at most ~17 MB.
 const CACHE_ENTRIES = 12;
 const DEBOUNCE_MS = 300;
 const GROUP_KEYS = ["weather", "quality", "gauges"] as const;
 
-async function errorFrom(res: Response): Promise<Error> {
-  // A 404 here most likely means the data service is an older version, without /api/series
+export const UNREACHABLE = "Couldn't reach the data service. Please check your connection and try again.";
+
+/** The error to show for a failed request. The backend's own message is shown for a request it refused (4xx: e.g.
+ *  a range it can't serve) or gave up on (504: too long to compute), since it says what to change; a server failure (5xx) shows a plain message instead of
+ *  whatever the server said, which is logged to the console (and so reaches Sentry's breadcrumbs). */
+export async function errorFrom(res: Response, what = "chart data"): Promise<Error> {
+  // A 404 here most likely means the data service is an older version, without this route
   let message = res.status === 404
-    ? "Couldn't load chart data (HTTP 404): the data service may be out of date."
-    : `Couldn't load chart data (HTTP ${res.status}).`;
+    ? `Couldn't load ${what} (HTTP 404): the data service may be out of date.`
+    : res.status >= 500
+      ? `Couldn't load ${what} just now (HTTP ${res.status}). Please try again in a moment.`
+      : `Couldn't load ${what} (HTTP ${res.status}).`;
+  let detail: unknown = null;
   try {
     const body = await res.json();
-    if (body?.error) message = body.error;
+    detail = body?.error ?? null;
+    // 504 is the backend's own "that range took too long; pick a shorter one", which the user can act on too
+    const actionable = (res.status >= 400 && res.status < 500 && res.status !== 404) || res.status === 504;
+    if (detail && actionable) message = String(detail);
   } catch {
     // keep the generic message
   }
+  if (res.status >= 500) console.error(`[charts] ${what}: HTTP ${res.status}`, detail);
   return new Error(message);
 }
 
@@ -96,8 +132,24 @@ export interface ChartView {
   detailLoading: boolean;
   detailError: Error | null;
   retryDetail: () => void;
-  // Raw readings for the wind rose (fetched only while it is shown)
-  wind: { data: SensorData[]; loading: boolean; error: Error | null };
+  clock: number; // the start of the current hour (epoch ms), as the charts last read it
+  // Show a window that may reach outside the picked days (the range buttons, a shared link): the picked days move
+  // to cover it. null: back to the picked days.
+  showWindow: (w: Range) => void;
+  // The wind rose's counts (fetched only while it is shown; see useWindRose)
+  wind: WindState;
+}
+
+export interface WindRoseResponse {
+  sectors: string[];
+  speed_classes: { name: string; from: number; to: number | null }[];
+  roses: Record<string, { total: number; counts: number[][]; percent: number[][] }>;
+}
+
+export interface WindState {
+  data: WindRoseResponse | null;
+  loading: boolean;
+  error: Error | null;
 }
 
 export const ChartViewContext = createContext<ChartView | null>(null);
@@ -114,11 +166,29 @@ export default function useChartSeries(
   endDate: Date | null,
   viewWindow: Range | null,
   setViewWindow: (w: Range | null) => void,
-  wind: ChartView["wind"],
-): ChartView {
-  const range = useMemo(
-    () => (startDate && endDate ? pickedDaysRange(startDate, endDate) : null),
-    [startDate, endDate]
+  setDays: (startDay: Date, endDay: Date, viewWindow: Range | null) => void,
+): Omit<ChartView, "wind"> {
+  // The clock the charts go by: the start of the current hour, kept in state so rendering never reads the time.
+  // The picked days end at the next whole hour (clampToNow), so on a page left open that end moves on as the hours
+  // pass, which loads a new overview with the newest hour. Not while zoomed in: that would swap the detail on screen
+  // for the coarse new overview at the top of the hour. The clock catches up when the view is unzoomed (Reset, Zoom
+  // out to the whole range) and when the range buttons or a link move the picked days, in those handlers, or else
+  // at the next tick.
+  const [clock, setClock] = useState(hourStart);
+  const zoomedRef = useRef(viewWindow !== null);
+  useEffect(() => {
+    zoomedRef.current = viewWindow !== null;
+  }, [viewWindow]);
+  useEffect(() => {
+    const id = window.setInterval(() => { if (!zoomedRef.current) setClock(hourStart()); }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const picked = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), clock + 1) : null;
+  // Memoised on the two numbers: the same object while they stay the same (past days don't change on the hour)
+  const rangeStart = picked?.start, rangeEnd = picked?.end;
+  const range = useMemo<Range | null>(
+    () => (rangeStart !== undefined && rangeEnd !== undefined ? { start: rangeStart, end: rangeEnd } : null),
+    [rangeStart, rangeEnd]
   );
   const groups = GROUP_KEYS.filter((g) => activeGroups[g]).join(",");
 
@@ -149,7 +219,11 @@ export default function useChartSeries(
     const params = new URLSearchParams({ start: new Date(r.start).toISOString(), end: new Date(r.end - 1).toISOString() });
     for (const group of g.split(",")) params.append(group, "true");
     try {
-      const res = await fetch(`/api/series?${params.toString()}`, { signal: c.signal });
+      const res = await fetch(`/api/series?${params.toString()}`, { signal: c.signal }).catch((err) => {
+        if (err?.name === "AbortError") throw err;
+        console.error("[charts] chart data:", err);
+        throw new Error(UNREACHABLE);
+      });
       if (!res.ok) throw await errorFrom(res);
       const json: SeriesResponse = await res.json();
       const series = json.series.map(slim);
@@ -257,10 +331,25 @@ export default function useChartSeries(
 
   const zoomTo = useCallback((w: Range | null) => {
     const next = w && range ? normalizeWindow(w, range) : null;
+    if (!next) setClock(hourStart()); // unzoomed: catch up with the hour (the same hour: no re-render)
     setViewWindow(next);
   }, [range, setViewWindow]);
 
   const retryDetail = useCallback(() => setRetry((n) => n + 1), []);
+
+  const showWindow = useCallback((w: Range) => {
+    if (range && w.start >= range.start && w.end <= range.end) {
+      zoomTo(w);
+      return;
+    }
+    const now = Date.now();
+    const plan = planWindow(w, now);
+    // New days rebuild every chart: let React keep the page responsive meanwhile (e.g. to the next button press)
+    startTransition(() => {
+      setClock(hourStart(now));
+      setDays(plan.startDay, plan.endDay, plan.viewWindow);
+    });
+  }, [range, zoomTo, setDays]);
 
   // Detail counts only while zoomed and when it belongs to the groups and days picked now; while a new range
   // loads, the resolution shown is unknown (null) rather than the previous range's.
@@ -284,7 +373,8 @@ export default function useChartSeries(
     detailLoading,
     detailError,
     retryDetail,
-    wind,
+    showWindow,
+    clock,
   }), [overview, range, viewWindow, zoomTo, activeDetail, shownBucketS, shownAggregated, loading, error, detailLoading,
-    detailError, retryDetail, wind]);
+    detailError, retryDetail, showWindow, clock]);
 }
