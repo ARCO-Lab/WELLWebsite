@@ -11,3 +11,4 @@ date,time,site,creek,parameter,value,unit,below_detection,qc_flag,sampler,method
 2026-11-02,14:05,Cootes Dr,Spencer's Creek,Nitrate-N,1.5e-3,mg/L,,,CD,,
 2026-11-02,14:05,Osler Dr,Coldwater Creek,Specific conductance,980.25,µS/cm,,,CD,,"windy, light rain"
 2026-11-02,14:05,Osler Dr,Coldwater Creek,Total coliform,0,CFU/100 mL,,,CD,,
+2026-11-03,04:30,Tiffany Falls,Tiffany Creek,Turbidity,2.0,NTU,,,EF,,early on Nov 3: outside a download ending Nov 2

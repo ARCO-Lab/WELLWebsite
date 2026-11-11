@@ -73,10 +73,13 @@ def json_bytes(value) -> bytes:
 # configured, readings and whole groups missing, one stored NULL, a unit change (Turbidity FNU, then NTU), " asl"
 # in a unit, numbers in several shapes, and these times:
 #   2026-10-01 00:00  first reading of October
+#   2026-10-31 01:00  early on the first picked day: in the Download CSV (Oct 31 00:00 Toronto is 04:00 UTC)
 #   2026-10-31 23:45  last reading of October
 #   2026-11-01 00:00  midnight on the 1st: November's file only
 #   2026-11-01 01:30  the hour repeated when clocks fall back; stored once (the unique key has no offset)
 #   2026-11-01 02:00
+#   2026-11-02 03:00  after the last picked day: not in the Download CSV, though 03:00 is before its end bound
+#                     read as wall time (2026-11-02T04:59:59.999Z is Nov 1 23:59:59.999 Toronto)
 #   2026-11-30 23:45  last reading of November
 #   2026-12-01 00:00  in neither file
 # No value is a vendor "no reading" sentinel (e.g. -100000): the export passes values through unfiltered, and these
@@ -93,6 +96,8 @@ def sensor_readings():
         (t(2026, 10, 1, 0, 0), QUALITY, "Quality", "Turbidity", "FNU", 3.2),
         (t(2026, 10, 1, 0, 0), "2577531", "Logger", WSE, "m asl", 85.123),
         (t(2026, 10, 1, 0, 0), "2577531", "Logger", WT, "°C", 11.0),
+
+        (t(2026, 10, 31, 1, 0), WEATHER, "Weather", "Air Temperature", "°C", 1.5),
 
         (t(2026, 10, 31, 23, 45), WEATHER, "Weather", "Air Temperature", "°C", -2.5),
         (t(2026, 10, 31, 23, 45), QUALITY, "Quality", "Turbidity", "FNU", 4.0),
@@ -123,6 +128,8 @@ def sensor_readings():
         (t(2026, 11, 1, 2, 0), "2577533", "Logger", WSE, "m asl", 84.97),
         (t(2026, 11, 1, 2, 0), "2577533", "Logger", WT, "°C", 4.5),
 
+        (t(2026, 11, 2, 3, 0), WEATHER, "Weather", "Air Temperature", "°C", -5.0),
+
         (t(2026, 11, 30, 23, 45), WEATHER, "Weather", "Air Temperature", "°C", 1.0),
         (t(2026, 11, 30, 23, 45), WEATHER, "Weather", "Pressure", "mbar", 1013.25),
         (t(2026, 11, 30, 23, 45), QUALITY, "Quality", "Turbidity", "NTU", 48.0),
@@ -145,8 +152,9 @@ def sensor_readings_with_formula():
 
 # The sampling file a researcher uploads (golden/sampling_upload.csv, the documented format: several creeks and
 # sites, name and unit aliases, a below-detection value, a blank and a rejected row that are skipped, a time in the
-# fall-back hour, no time, and a quoted comma), read by the validator into rows. Plus rows that didn't come through
-# the validator (older imports) with text a spreadsheet would run, to check the export neutralizes it.
+# fall-back hour, no time, a quoted comma, and a reading early on Nov 3 that a download of Oct 31-Nov 2 leaves out),
+# read by the validator into rows. Plus rows that didn't come through the validator (older imports) with text a
+# spreadsheet would run, to check the export neutralizes it.
 def sampling_rows():
     result = validate_csv(GOLDEN / "sampling_upload.csv")
     assert result.ok, [str(e) for e in result.errors]
@@ -240,9 +248,10 @@ class SensorExport:
         self.assertIn(f"{WSE}: m", header)  # " asl" dropped
         self.assertIn("'" + FORMULA_METRIC, header)
         # Toronto wall time from the picked days (sent in UTC); the fall-back hour's reading once
-        self.assertEqual([r[1] for r in rows[1:]], ["2026-10-31T23:45:00", "2026-11-01T00:00:00",
-                                                     "2026-11-01T01:30:00", "2026-11-01T02:00:00"])
-        self.assertEqual([r[0] for r in rows[1:]], ["1", "2", "3", "4"])
+        self.assertEqual([r[1] for r in rows[1:]], ["2026-10-31T01:00:00", "2026-10-31T23:45:00",
+                                                     "2026-11-01T00:00:00", "2026-11-01T01:30:00",
+                                                     "2026-11-01T02:00:00"])
+        self.assertEqual([r[0] for r in rows[1:]], ["1", "2", "3", "4", "5"])
 
     def test_chosen_loggers_and_metrics(self):
         data = self.export(SENSOR_CHOSEN)
@@ -260,8 +269,8 @@ class SensorExport:
         response = self.app.test_client().post("/api/exports/estimate", json=SENSOR_ALL)
         self.assertEqual(response.status_code, 200)
         body = response.get_json()
-        # Readings from Oct 31 23:45 to Nov 1 02:00, the formula-named one included
-        self.assertEqual((body["estimated_rows"], body["recommended_mode"]), (26, "sync"))
+        # Readings from Oct 31 01:00 to Nov 1 02:00, the formula-named one included
+        self.assertEqual((body["estimated_rows"], body["recommended_mode"]), (27, "sync"))
 
     def test_sync_route(self):
         for payload, golden, name in ((SENSOR_ALL, "sensor_export_all_groups.csv", SENSOR_ALL_NAME),
@@ -294,7 +303,7 @@ class SensorExport:
         self.db.session.expire_all()
         status = client.get(f"/api/exports/jobs/{job_id}").get_json()
         self.assertEqual((status["status"], status["download_ready"], status["produced_rows"],
-                          status["progress_pct"], status["artifact_name"]), ("ready", True, 26, 100.0, SENSOR_ALL_NAME))
+                          status["progress_pct"], status["artifact_name"]), ("ready", True, 27, 100.0, SENSOR_ALL_NAME))
 
         response = client.get(f"/api/exports/jobs/{job_id}/download")
         self.assertEqual(response.status_code, 200)
@@ -334,9 +343,9 @@ class MonthlyFile:
         november = self.month(2026, 11)[1].decode("utf-8")
         stamps = {name: [row[1] for row in csv.reader(io.StringIO(text, newline=""))][1:]
                   for name, text in (("Oct", october), ("Nov", november))}
-        self.assertEqual(stamps["Oct"], ["2026-10-01T00:00:00", "2026-10-31T23:45:00"])
+        self.assertEqual(stamps["Oct"], ["2026-10-01T00:00:00", "2026-10-31T01:00:00", "2026-10-31T23:45:00"])
         self.assertEqual(stamps["Nov"], ["2026-11-01T00:00:00", "2026-11-01T01:30:00", "2026-11-01T02:00:00",
-                                         "2026-11-30T23:45:00"])
+                                         "2026-11-02T03:00:00", "2026-11-30T23:45:00"])
         self.assertIn("Turbidity: FNU", october.splitlines()[0])  # each file names a metric by its own last unit
         self.assertIn("Turbidity: NTU", november.splitlines()[0])
 
@@ -362,7 +371,7 @@ class Sampling:
 
     def test_the_upload_is_read_as_documented(self):
         result = validate_csv(GOLDEN / "sampling_upload.csv")
-        self.assertEqual((len(result.records), result.blank, result.rejected, result.below_detection), (10, 1, 1, 1))
+        self.assertEqual((len(result.records), result.blank, result.rejected, result.below_detection), (11, 1, 1, 1))
         stored = [{**r, "recorded_at": r["recorded_at"].isoformat()} for r in result.records]
         check_golden(self, "sampling_upload_rows.json", json_bytes(stored))
 
@@ -390,6 +399,9 @@ class Sampling:
         self.assertEqual(rows[0], ["domain", "recorded_at", "group_type", "station_id", "creek_id", "site_id",
                                    "measurement_type", "value", "unit"])
         self.assertEqual(len(rows), 1 + 11)
+        # The 2026-11-03 04:30 reading is after the last picked day (Nov 2 in Toronto) though before the end
+        # bound read as wall time
+        self.assertEqual(max(r[1] for r in rows[1:]), "2026-11-02T15:00:00")
 
     def test_export_routes(self):
         from api.services.exports import default_export_filename, normalize_export_payload

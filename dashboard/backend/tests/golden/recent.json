@@ -56,12 +56,12 @@
   "value": 15.5
  },
  {
-  "creek_id": "19431905",
+  "creek_id": "20962187",
   "measurement_type": "Turbidity",
-  "recorded_at": "2026-10-31T10:15:00",
-  "site_id": "2",
+  "recorded_at": "2026-11-03T04:30:00",
+  "site_id": "6",
   "unit": "NTU",
-  "value": 3.5
+  "value": 2.0
  },
  {
   "creek_id": "20962187",

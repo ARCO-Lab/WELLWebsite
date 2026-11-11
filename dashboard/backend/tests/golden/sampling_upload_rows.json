@@ -78,5 +78,13 @@
   "site_id": "8",
   "unit": "CFU/100 mL",
   "value": 0.0
+ },
+ {
+  "creek_id": "20962187",
+  "measurement_type": "Turbidity",
+  "recorded_at": "2026-11-03T04:30:00",
+  "site_id": "6",
+  "unit": "NTU",
+  "value": 2.0
  }
 ]

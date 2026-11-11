@@ -24,16 +24,24 @@ people who use the files. If it isn't, fix the code.
 The fixture readings (in `test_golden_csv.py`) cover several groups and stations, missing readings and a missing
 group, a stored NULL, a unit that changes partway (Turbidity FNU, then NTU: the latest unit names the column), a
 unit ending in ` asl`, numbers such as `-2.5`, `0.0`, `1e-05` and `0.30000000000000004` (values are written as Python
-writes floats, unrounded), the hour repeated when clocks fall back on 2026-11-01 (stored once, as `01:30`), and the
-month boundary: the reading at midnight on November 1 is in November's file only. Times are America/Toronto wall
-clock time with no offset, as stored. No value is a vendor "no reading" sentinel such as `-100000`: these files pin
-the format, not how sentinels are filtered.
+writes floats, unrounded), the hour repeated when clocks fall back on 2026-11-01, the month boundary (the reading
+at midnight on November 1 is in November's file only), and both ends of a download's date range: the dashboard
+sends the picked days' bounds in UTC, so readings at 01:00 on the first day are in the file, and readings at 03:00
+the day after the last (sensor) or 04:30 (sampling), before the end bound read as wall-clock time, are not. Times
+are America/Toronto wall clock time with no offset, as stored.
+
+For the fall-back hour the fixture holds a single naive `01:30` row per sensor and metric, which is all ingestion's
+unique key (station, metric, naive time) can store of that hour, so the files show it once. How ingestion collapses
+the two `01:30` readings isn't tested here; the files show what is stored.
+
+No value is a vendor "no reading" sentinel such as `-100000`: these files pin the format, not how sentinels are
+filtered.
 
 Text cells starting with `=`, `+`, `-`, `@`, a tab or a carriage return get a leading `'` in the dashboard
 downloads, so a spreadsheet shows them as text instead of running them; the fixtures include such a measurement
 name and sampling site.
 
-Two things are pinned as they are today, not as they should be:
+Three things are pinned as they are today, intended or not:
 
 - The monthly file writes a stored NULL value as `nan` (the dashboard download leaves the cell empty), and it
   doesn't add the `'` to formula-like text. The monthly fixture has no formula-like text, so only the `nan` shows.
@@ -41,6 +49,8 @@ Two things are pinned as they are today, not as they should be:
   and `/api/samples` in no defined order, which differs between SQLite and PostgreSQL. The tests sort the rows of
   each timestamp before comparing, and the golden files are stored that way. The sensor files have one row per time,
   so their order is exact.
+- The monthly file's headers keep the unit as stored, `Water Surface Elevation: m asl`, while the dashboard
+  download drops ` asl` (`Water Surface Elevation: m`).
 
 ## Regenerating
 
