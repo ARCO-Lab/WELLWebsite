@@ -58,7 +58,7 @@ referencing==0.37.0
 repoze.lru==0.8
 requests==2.34.2
 Routes==2.5.1
-rpds-py==0.30.0
+rpds-py==2026.9.1
 schedule==1.2.2
 sentry-sdk[flask,celery]==2.74.0
 six==1.17.0
