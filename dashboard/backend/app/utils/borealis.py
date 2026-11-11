@@ -128,7 +128,7 @@ class Dataverse:
         if response.status_code in allow:
             return None
         if response.status_code not in ok:
-            raise DataverseError(action, response.status_code, self.redact(server_message(response)),
+            raise DataverseError(action, response.status_code, server_message(response, self.redact),
                                  self.token is not None)
         try:
             return response.json()
@@ -242,15 +242,16 @@ def file_metadata(description, directory):
     return meta
 
 
-def server_message(response):
-    """Dataverse's error message ({"status": "ERROR", "message": ...}), or the start of a non-JSON body."""
+def server_message(response, redact=lambda text: text):
+    """Dataverse's error message ({"status": "ERROR", "message": ...}), or the start of a non-JSON body, with
+    `redact` applied to the whole text before it is shortened (so no part of a token can be left at the cut)."""
     try:
         body = response.json()
         if isinstance(body, dict) and body.get("message"):
-            return str(body["message"])
+            return redact(str(body["message"]))
     except ValueError:
         pass   # not JSON (e.g. a proxy's HTML error page): fall back to the start of the body
-    return (getattr(response, "text", "") or "")[:200]
+    return redact(getattr(response, "text", "") or "")[:200]
 
 
 def find_file(version, name):
@@ -284,9 +285,13 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
     - Otherwise it is added.
     Then, with `publish`, the draft is published as a major version, but only if it holds this month's file
     unpublished: added or replaced by this run, or left by an earlier run that failed before publishing. A draft
-    that holds only someone else's changes (say, a curator's metadata edit in progress) is left alone.
+    that holds only someone else's changes (say, a curator's metadata edit in progress) is left alone. Dataverse
+    has a single draft, though: when a draft was already open before this run (a curator's edit, or an earlier
+    run's file), publishing it publishes everything in it, and a warning is logged.
 
-    Returns (what happened: "added", "replaced" or "unchanged", the published version or None).
+    Returns (what happened, the published version or None). What happened is "added", "replaced" or "unchanged";
+    or "pending" with publish off: the identical file is already there but only in the draft (an earlier run's),
+    still to be published.
     """
     dataset = client.dataset(persistent_id)
     latest = dataset.get("latestVersion") or {}
@@ -328,6 +333,9 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
         if latest.get("versionState") == "DRAFT":
             log(f"{persistent_id} has a draft that this upload didn't make; leaving it for a curator to publish")
         return outcome, None
+    if latest.get("versionState") == "DRAFT":
+        log(f"WARNING: {persistent_id} already had a draft before this upload; publishing that existing draft, "
+            f"including any other changes in it")
     version = client.publish(persistent_id)
     log(f"Published {persistent_id} as version {version}")
     return ("unchanged" if outcome == "pending" else outcome), version

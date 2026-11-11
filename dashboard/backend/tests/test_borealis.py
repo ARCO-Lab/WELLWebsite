@@ -175,6 +175,32 @@ class UploadFileTests(unittest.TestCase):
         self.assertEqual(self.upload(server), ("unchanged", None))
         self.assertEqual(server.posts(), [])
 
+    def test_an_existing_draft_published_with_the_new_file_is_warned_about(self):
+        server = FakeDataverse(published=[])
+        server.draft = []   # e.g. a curator's metadata edit, open when the month's file goes up
+        logs = []
+        borealis.upload_file(client(server), PID, NAME, CSV, "October", log=logs.append)
+        self.assertTrue(any("already had a draft" in line for line in logs), logs)
+        logs.clear()
+        borealis.upload_file(client(FakeDataverse(published=[])), PID, "WELLWestCampus_Nov2026.csv", CSV, "Nov",
+                             log=logs.append)
+        self.assertFalse(any("already had a draft" in line for line in logs), logs)
+
+    def test_a_pending_file_with_publish_off_is_reported_as_pending(self):
+        server = FakeDataverse(published=[], draft=[file_entry(7, NAME, CSV, "2026")])
+        self.assertEqual(self.upload(server, publish=False), ("pending", None))
+
+    def test_a_token_at_the_cut_of_a_long_non_json_body_is_still_redacted(self):
+        class Html(Response):
+            def json(self):
+                raise ValueError("not JSON")
+        response = Html(502)
+        response.text = "x" * 190 + TOKEN + "y" * 50
+        dv = client(FakeDataverse(published=[]))
+        message = borealis.server_message(response, dv.redact)
+        self.assertNotIn(TOKEN[:10], message)
+        self.assertLessEqual(len(message), 200)
+
     def test_a_draft_this_upload_did_not_make_is_not_published(self):
         server = FakeDataverse(published=[file_entry(5, NAME, CSV, "2026")])
         server.draft = list(server.published)   # e.g. a curator editing the metadata
