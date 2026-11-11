@@ -74,6 +74,9 @@ function useCodeReady(load: () => Promise<unknown>, wanted: boolean): boolean {
   return ready;
 }
 
+// The first sampling day: the sampling tab shows everything from here by default.
+const SAMPLING_DATA_START = new Date(2025, 4, 1).getTime();
+
 // Graph cards side by side while each can be at least this wide, else stacked: rem-based, so large text stacks them.
 const GRAPH_GRID: Record<number, string> = {
   1: "grid-cols-1",
@@ -156,8 +159,8 @@ export default function Dashboard() {
   const [startDate, setStartDate] = useState<Date | null>(() => siteDay(-1));
   const [endDate, setEndDate] = useState<Date | null>(() => siteDay());
 
-  // Dates for the SAMPLING Tab: the last two months
-  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => siteDay(0, -2));
+  // Dates for the SAMPLING Tab: all of it, from the first samples (May 1, 2025) to today
+  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => new Date(SAMPLING_DATA_START));
   const [samplingEndDate, setSamplingEndDate] = useState<Date | null>(() => siteDay());
 
   const [analysisType, setAnalysisType] = useState<"recent" | "alltime">("alltime");
@@ -190,9 +193,9 @@ export default function Dashboard() {
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
 
-  // Sampling is done in campaigns, so the default range (the last two months) can hold no samples at all. Then the
-  // graphs say so, with the date of the most recent samples and a button for the two months up to it, rather than
-  // moving the picked dates on their own (which would hide that the data isn't recent).
+  // Sampling is done in campaigns, so a picked range can hold no samples at all. Then the graphs say so, with the
+  // date of the most recent samples and a button for the two months up to it, rather than moving the picked dates
+  // on their own (which would hide that the data isn't recent).
   const latestSampleDay = useMemo(() => {
     let latest = "";
     for (const sample of recentSamples) if (sample.recorded_at > latest) latest = sample.recorded_at;
@@ -434,6 +437,7 @@ export default function Dashboard() {
                                 key={comp.key as string}
                                 label={`the latest ${groupNames[comp.key as string] ?? ""} readings`}
                                 onOpen={() => openModal(comp.key as string, "recent", comp.key as "weather" | "quality" | "gauges")}
+                                placement="corner" // the strip keeps the corner free (pr-9)
                                 className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
@@ -660,6 +664,7 @@ export default function Dashboard() {
                                 key={comp.key as string}
                                 label="the latest samples"
                                 onOpen={() => openModal(comp.key as string, "recent", "sampling")}
+                                placement="corner" // the strip keeps the corner free (pr-9)
                                 className={`rounded-lg p-3 pr-9 ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
