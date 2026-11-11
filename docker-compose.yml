@@ -6,7 +6,11 @@ networks:
   front:
   internal_api:
   # Only wordpress and ops (welldash²) join it, so welldash² can check WordPress without joining front, where MySQL is.
+  # Its subnet is fixed so firewall rules can name it; it needs no access to the VM's PostgreSQL.
   wp_probe:
+    ipam:
+      config:
+        - subnet: 10.20.2.0/24
 
 services:
   # --- WordPress + MySQL as you had ---
@@ -199,8 +203,11 @@ services:
       - dashboard
     restart: unless-stopped
     networks:
-      - internal_api   # to check the dashboard and the backend
-      - wp_probe       # to check WordPress (not front, which WordPress shares with MySQL)
+      # internal_api carries the default route (gw_priority, Docker Engine 28+), so ops reaches PostgreSQL on the VM
+      # (host.docker.internal) from internal_api's subnet whatever order Docker lists the networks in.
+      internal_api:
+        gw_priority: 1
+      wp_probe: {}     # to check WordPress (not front, which WordPress shares with MySQL)
     volumes:
       # Log sizes on the System page, and deploy.log if deploy.sh writes it here (README). Read-only.
       - ./dashboard/backend/app/logs:/ops/logs:ro

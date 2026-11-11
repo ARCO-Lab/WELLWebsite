@@ -68,6 +68,8 @@ Both apps run as separate Docker containers on a Linux VM, fronted by a single N
 
 Without it, every container fails with "No route to host" after the next reboot, and ingestion stops. To add it without a reboot as well, run `sudo iptables -I INPUT -s 10.20.0.0/16 -p tcp --dport 5432 -j ACCEPT`. Never run `systemctl restart iptables`, which wipes Docker's own rules until Docker restarts. Never run `iptables-save > /etc/sysconfig/iptables` either, which would save Docker's temporary rules into the file.
 
+Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used only by welldash²'s check of WordPress (see [welldash²](#welldash²-operations-dashboard)). Nothing on it needs PostgreSQL, so a narrower rule should leave it out: welldash² reaches PostgreSQL from `internal_api`, which carries its default route.
+
 ---
 
 ## Data Sources & APIs
