@@ -77,14 +77,38 @@ OPEN_ISSUE="" run success "$T/empty.txt"
 check "success, no open issue: only looks" 'rc 0 && calls 1 && ran "issue list"'
 
 # A step with no `shell:` runs as `bash -e` without pipefail, so `canary | tee` would pass when the canary fails
-# (and close the issue as recovered). Every canary.yml step with a pipe on its run: line must set `shell: bash`.
+# (and close the issue as recovered). unpiped_steps prints each step of a workflow that runs the canary, or has a
+# ` | ` anywhere in its run: command (one line or a `run: |` block), without `shell: bash`.
+unpiped_steps() {
+  awk '
+    function flush() { if ((pipe || canary) && !bash) print step }
+    /^ *#/                   { next }
+    /^      - /              { flush(); pipe = canary = bash = inrun = 0; step = $0 }
+    /^        [a-z-]+:/      { inrun = 0 }
+    /^        shell: bash *$/ { bash = 1 }
+    /api_canary\.py/         { canary = 1 }
+    /^        run:/          { inrun = 1; cmd = $0; sub(/^        run:/, "", cmd); if (cmd ~ / \| /) pipe = 1; next }
+    inrun && / \| /          { pipe = 1 }
+    END                      { flush() }' "$1"
+}
+W=$ROOT/.github/workflows/canary.yml
 : > "$STUB_LOG"
-awk '/^      - /             { if (pipe && !bash) print step; pipe = 0; bash = 0; step = $0 }
-     /^        shell: bash$/ { bash = 1 }
-     /^        run: .* \| /  { pipe = 1 }
-     END                     { if (pipe && !bash) print step }' "$ROOT/.github/workflows/canary.yml" > "$T/out"
-check "canary.yml: every step that pipes its run: line sets shell: bash (pipefail)" \
-  '[ ! -s "$T/out" ] && grep -q "api_canary.py | tee" "$ROOT/.github/workflows/canary.yml"'
+unpiped_steps "$W" > "$T/out"
+check "canary.yml: the canary step, and every step with a pipe, sets shell: bash (pipefail)" \
+  '[ ! -s "$T/out" ] && grep -q "api_canary.py | tee" "$W"'
+
+# The guard itself: the same file without `shell: bash`, with the command on the run: line or in a run: | block
+sed '/^        shell: bash$/d' "$W" > "$T/one-line.yml"
+sed -e '/^        shell: bash$/d' \
+    -e 's/^        run: \(python app\/scripts\/api_canary.py | tee .*\)$/        run: |\n          \1/' "$W" > "$T/block.yml"
+unpiped_steps "$T/one-line.yml" > "$T/out"
+check "guard: catches the canary step without shell: bash" 'grep -q "Check each vendor API" "$T/out"'
+unpiped_steps "$T/block.yml" > "$T/out"
+check "guard: catches it with the command in a run: | block" \
+  'grep -q "Check each vendor API" "$T/out" && grep -qx "          python app/scripts/api_canary.py | tee .*" "$T/block.yml"'
+sed 's/api_canary\.py/other.py/' "$T/block.yml" > "$T/pipe-only.yml"
+unpiped_steps "$T/pipe-only.yml" > "$T/out"
+check "guard: catches any piped run: | block without shell: bash" 'grep -q "Check each vendor API" "$T/out"'
 
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]
