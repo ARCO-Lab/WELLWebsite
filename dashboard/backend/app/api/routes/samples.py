@@ -1,6 +1,5 @@
 # This file defines the /api/samples route for retrieving and filtering creek/point sampling data, and
 # /api/samples/template.csv, the template for sampling files.
-# (AI ANALYSIS DISABLED: it used to start a background summary of the result for the AI routes; see below.)
 
 import pathlib
 
