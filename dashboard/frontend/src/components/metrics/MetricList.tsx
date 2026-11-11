@@ -6,7 +6,7 @@
 // value is always whole. In the modal the tiles ("icon · name   value unit") wrap so every one is visible at once.
 // Old readings say when they were taken, so a value from last night or from last year doesn't look current.
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { Clock } from "lucide-react";
 
 export interface Reading {
@@ -106,48 +106,47 @@ function showsClockTime(value: string | null | undefined, dateOnly = false): boo
 
 // --- layout of the Latest Data panel ---
 
-// The group cards share the panel: one card fills it, two take half each, three a third each. Beside the map (lg
-// and up) the panel is a column at least as tall as the map, so the cards share its height, and a card with room
-// for more than one row of tiles gets them. Below lg the panel is as wide as the page, so the cards sit side by
-// side (halves from sm, thirds from md) and stack on phones. A card never gets less than its title and one row:
-// with more groups than fit (five creeks), the panel grows instead.
+// The group cards share the panel: one card fills it, two take half each, three a third each. The columns follow
+// the panel's own width (a container query on LATEST_PANEL_CLASS), not the window's, since the panel can be a narrow
+// column beside the map at many window widths: in a narrow panel the cards stack, and share its height when the
+// panel is stretched to the map's height, so a card with room for more than one row of tiles gets them; in a wide
+// one they sit side by side (halves from 28rem, thirds from 36rem). A card never gets less than its title and one
+// row: with more groups than fit (five creeks), the panel grows instead.
 export function latestGroupsClass(count: number): string {
-  const columns = count > 3 ? "sm:grid-cols-2 md:grid-cols-3" : count === 3 ? "md:grid-cols-3" : count === 2 ? "sm:grid-cols-2" : "";
-  return `grid min-w-0 grid-cols-1 gap-3 ${columns} lg:flex-1 lg:grid-cols-1 lg:auto-rows-fr`;
+  const columns = count > 3 ? "@md:grid-cols-2 @xl:grid-cols-3" : count === 3 ? "@xl:grid-cols-3" : count === 2 ? "@md:grid-cols-2" : "";
+  return `grid min-w-0 flex-1 auto-rows-fr grid-cols-1 gap-3 ${columns}`;
 }
+
+// The Latest Data panel's card is the container that latestGroupsClass's columns respond to.
+export const LATEST_PANEL_CLASS = "@container";
 
 // Each group's card in the panel is a column, so the strip can take the room under the title.
 export const LATEST_CARD_CLASS = "flex flex-col rounded-lg p-3";
 
 // Shown above the groups when the latest values couldn't be fetched, so empty tiles aren't taken for "no data".
-// Any values already shown are the last ones fetched, and the message says so.
-export function LatestDataError({ hasValues, onRetry }: { hasValues: boolean; onRetry: () => void }) {
+// Any values already shown are the last ones fetched, and the message says so. It stays up while a retry runs (the
+// button, still focused, says "Retrying…" and does nothing), so focus isn't lost and the values on screen stay.
+export function LatestDataError({ hasValues, retrying, onRetry }: { hasValues: boolean; retrying: boolean; onRetry: () => void }) {
   return (
-    <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-      {hasValues ? "Couldn’t refresh the latest data; these are the last values fetched." : "Couldn’t load the latest data."}{" "}
+    <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+      <span role="alert">{hasValues ? "Couldn’t refresh the latest data; these are the last values fetched." : "Couldn’t load the latest data."}</span>{" "}
       <button
         type="button"
-        onClick={onRetry}
-        className="font-medium underline underline-offset-2 hover:text-red-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        aria-disabled={retrying}
+        onClick={() => { if (!retrying) onRetry(); }}
+        className={`font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${retrying ? "cursor-wait opacity-70" : "hover:text-red-900"}`}
       >
-        Retry
+        {retrying ? "Retrying…" : "Retry"}
       </button>
-    </p>
+    </div>
   );
 }
 
 // --- tiles ---
 
-const GAP_PX = 12; // gap-3, between tiles
-const FADE_PX = 16; // the strip's faded edge, 1rem
-const TILE_INSET_PX = 26; // a strip tile's padding (px-3) and border, both sides
-
-// Every tile in a strip has the same height, so the rows line up: room for the lines any tile in the group needs
-// (a caption for a logger or site, the name, the value, a "last reading" note). In px, with the tile's padding. The
-// caption and name lines are a little taller than the rest, so cutting them short doesn't clip their descenders.
-function tileHeight(lines: { caption: boolean; stale: boolean }): number {
-  return 60 + (lines.caption ? 14 : 0) + (lines.stale ? 14 : 0);
-}
+// Sizes are in rem (or measured on the page), so the strip still fits its tiles when someone makes text larger.
+// A first guess at a tile's height before one has been measured: padding, border, name and value.
+const TILE_HEIGHT_GUESS = "3.75rem";
 
 function shownValue(row: MetricRow) {
   const value = row.reading?.value;
@@ -172,24 +171,28 @@ function Value({ row, stale }: { row: MetricRow; stale: boolean }) {
 }
 
 // A tile in the strip: the name above its value, so a tile stays narrow enough to be seen whole in the narrow
-// column beside the map. It never wraps, and tiles in one column share its width. Its caption and name are never
-// wider than the strip has room for (less the fade at its edge), cut short with an ellipsis when longer (the full
-// name is in the tooltip and in the modal), so a tile can be seen whole; the value is always shown in full. An old
+// column beside the map. It never wraps, and tiles in one column share its width; tiles in one strip share its
+// height, the height of the tallest. Its caption and name are never wider than the strip has room for (less the
+// fade at its edge), cut short with an ellipsis when longer, so a tile can be seen whole; the value is always shown
+// in full. A shortened name (fullLabel) is read out in full by screen readers and shown in full in the modal. An old
 // reading shows its time under a clock ("last reading" for screen readers), short enough for the narrow column.
-function StripTile({ row, caption, stale, height }: { row: MetricRow; caption?: string; stale: boolean; height: number }) {
+// The caption and name lines are a little taller than their text, so cutting them short doesn't clip descenders.
+function StripTile({ row, caption, stale }: { row: MetricRow; caption?: string; stale: boolean }) {
   const Icon = row.icon;
+  const shortened = row.fullLabel != null && row.fullLabel !== row.label;
   return (
-    <div className="flex flex-col justify-center whitespace-nowrap rounded-lg border border-input-border bg-card px-3 py-2 leading-tight" style={{ height }}>
-      {caption && <p className="max-w-[var(--line-max,none)] shrink-0 truncate text-[11px] font-semibold leading-[14px] text-primary/80" title={caption}>{caption}</p>}
-      <p className="flex max-w-[var(--line-max,none)] shrink-0 items-center gap-1.5 text-[13px] text-foreground" title={row.fullLabel ?? row.label}>
+    <div role="listitem" className="flex flex-col justify-center whitespace-nowrap rounded-lg border border-input-border bg-card px-3 py-2 leading-tight">
+      {caption && <p className="max-w-[var(--line-max,none)] shrink-0 truncate text-[0.6875rem] font-semibold leading-[1.3] text-primary/80" title={caption}>{caption}</p>}
+      <p className="flex max-w-[var(--line-max,none)] shrink-0 items-center gap-1.5 text-[0.8125rem] text-foreground" title={row.fullLabel ?? row.label}>
         <Icon aria-hidden className={`h-3.5 w-3.5 shrink-0 ${row.color}`} />
-        <span className="truncate leading-[1.3]">{row.label}</span>
+        <span className="truncate leading-[1.3]" aria-hidden={shortened || undefined}>{row.label}</span>
+        {shortened && <span className="sr-only">{row.fullLabel}</span>}
       </p>
       <p className="shrink-0"><Value row={row} stale={stale} /></p>
       {stale && (
-        <p className="flex shrink-0 items-center gap-1 text-[11px] text-amber-800">
+        <p className="flex shrink-0 items-center gap-1 text-[0.6875rem] text-amber-800">
           <Clock aria-hidden className="h-3 w-3 shrink-0" />
-          <span className="sr-only">Last reading</span>
+          <span className="sr-only">Last reading </span>
           {formatSiteTime(row.reading?.recorded_at)}
         </p>
       )}
@@ -198,16 +201,16 @@ function StripTile({ row, caption, stale, height }: { row: MetricRow; caption?: 
 }
 
 // A tile in the modal: name on the left, value on the right. It is at most as wide as the modal, and a long name
-// wraps instead of being cut off on a narrow phone.
+// wraps instead of being cut off on a narrow phone, so the modal shows the full name.
 function WrapTile({ row, caption, stale }: { row: MetricRow; caption?: string; stale: boolean }) {
   const Icon = row.icon;
   return (
-    <div className="flex min-w-0 max-w-full items-center gap-3 rounded-lg border border-input-border bg-card px-3 py-2">
+    <div role="listitem" className="flex min-w-0 max-w-full items-center gap-3 rounded-lg border border-input-border bg-card px-3 py-2">
       <Icon aria-hidden className={`h-4 w-4 shrink-0 ${row.color}`} />
       <div className="min-w-0 break-words leading-tight">
-        {caption && <p className="text-[11px] font-semibold text-primary/80">{caption}</p>}
-        <p className="text-sm text-foreground" title={row.fullLabel ?? row.label}>{row.label}</p>
-        {stale && <p className="text-[11px] text-amber-800">Last reading {formatSiteTime(row.reading?.recorded_at)}</p>}
+        {caption && <p className="text-[0.6875rem] font-semibold text-primary/80">{caption}</p>}
+        <p className="text-sm text-foreground">{row.fullLabel ?? row.label}</p>
+        {stale && <p className="text-[0.6875rem] text-amber-800">Last reading {formatSiteTime(row.reading?.recorded_at)}</p>}
       </div>
       <p className="ml-auto shrink-0 whitespace-nowrap pl-1 leading-tight"><Value row={row} stale={stale} /></p>
     </div>
@@ -229,8 +232,8 @@ function keyboardFocus(el: Element): boolean {
 
 // How many rows of tiles fit in a strip this tall, balanced so the last column isn't nearly empty
 // (7 tiles with room for 6 rows: 4 + 3, not 6 + 1).
-function rowsFor(height: number, tile: number, tiles: number): number {
-  const fit = Math.max(1, Math.floor((height + GAP_PX) / (tile + GAP_PX)));
+function rowsFor(height: number, tile: number, tiles: number, gap: number): number {
+  const fit = Math.max(1, Math.floor((height + gap) / (tile + gap)));
   const columns = Math.max(1, Math.ceil(tiles / fit));
   return Math.max(1, Math.ceil(tiles / columns));
 }
@@ -240,28 +243,38 @@ function rowsFor(height: number, tile: number, tiles: number): number {
 // instead of leaving it empty. It scrolls by moving scrollLeft, so it is also an ordinary horizontal scroller:
 // a trackpad, Shift + wheel, a swipe or the arrow keys move it by hand, while a normal wheel still scrolls the page.
 // When the tiles don't all fit, a second copy follows the first and the strip wraps by exactly one copy's width,
-// so the loop is seamless. It pauses where it is while a mouse is over it or it has keyboard focus, and for 2.5 s
-// after a touch. A tap is not a hover, and focus from a click or a closing modal pauses it only once a scrolling
-// key is pressed. It doesn't auto-scroll at all for people who ask their system for reduced motion.
-function Ticker({ label, tileHeight, children }: { label: string; tileHeight: number; children: React.ReactNode }) {
+// so the loop is seamless (by hand too). It pauses where it is while a mouse is over it or it has keyboard focus,
+// and for 2.5 s after a touch. A tap is not a hover, and focus from a click or a closing modal pauses it only once
+// a scrolling key is pressed. It doesn't auto-scroll at all for people who ask their system for reduced motion, and
+// its animation frames stop whenever it isn't moving: paused, off screen, or with nothing to scroll.
+function Ticker({ title, children }: { title: string; children: React.ReactNode }) {
   const scroller = useRef<HTMLDivElement>(null);
   const firstCopy = useRef<HTMLDivElement>(null);
   const paused = useRef(false);
+  const wake = useRef<(() => void) | null>(null); // restarts the animation after a pause
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [overflowing, setOverflowing] = useState(false);
+  const [moving, setMoving] = useState(false); // overflowing, and motion allowed
   const [rows, setRows] = useState(1);
+  const [tileHeight, setTileHeight] = useState<number | null>(null); // a rendered tile's height, in px
   const [stripWidth, setStripWidth] = useState(0);
   const [atStart, setAtStart] = useState(true);
   const tileCount = React.Children.count(children);
 
-  // Rows from the slot's height (set by the card, not by the tiles), and scroll (with the second copy) only when
-  // the tiles don't fit across.
+  // Rows from the slot's height (set by the card, not by the tiles) and a rendered tile's height (every tile has
+  // the tallest one's height, so this follows the text size), and scroll (with the second copy) only when the tiles
+  // don't fit across.
   useEffect(() => {
     const el = scroller.current;
     const copy = firstCopy.current;
     if (!el || !copy) return;
     const check = () => {
-      setRows(rowsFor(el.clientHeight, tileHeight, tileCount));
+      const tile = copy.firstElementChild as HTMLElement | null;
+      const height = tile ? tile.offsetHeight : 0;
+      if (height > 0) {
+        setTileHeight(height);
+        setRows(rowsFor(el.clientHeight, height, tileCount, parseFloat(getComputedStyle(copy).rowGap) || 0));
+      }
       setStripWidth(el.clientWidth);
       setOverflowing(copy.offsetWidth > el.clientWidth + 1);
     };
@@ -270,32 +283,48 @@ function Ticker({ label, tileHeight, children }: { label: string; tileHeight: nu
     observer.observe(el);
     observer.observe(copy);
     return () => observer.disconnect();
-  }, [tileCount, tileHeight]);
+  }, [tileCount]);
 
   useEffect(() => {
     const el = scroller.current;
     const copy = firstCopy.current;
-    if (!el || !copy || !overflowing) return;
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setMoving(overflowing && !reduceMotion);
+    if (!el || !copy || !overflowing || reduceMotion) return;
     let frame = 0;
-    let last = performance.now();
+    let last = 0;
     let position = el.scrollLeft;
+    let visible = true;
 
     const step = (now: number) => {
-      const copyWidth = copy.offsetWidth + GAP_PX; // where the second copy starts
-      const elapsed = Math.min(now - last, 100);
+      frame = 0;
+      if (paused.current || !visible) return; // stopped until woken
+      const elapsed = last ? Math.min(now - last, 100) : 0;
       last = now;
-      if (paused.current || reduceMotion) {
-        position = el.scrollLeft; // follow any scrolling by hand
-      } else {
-        position += (SPEED_PX_PER_S * elapsed) / 1000;
-      }
-      if (position >= copyWidth) position -= copyWidth; // seamless wrap, by hand or automatic
+      position += (SPEED_PX_PER_S * elapsed) / 1000;
+      const wrapAt = copyWidth(copy);
+      if (wrapAt > 0 && position >= wrapAt) position -= wrapAt; // seamless wrap
       if (Math.abs(el.scrollLeft - position) >= 0.5) el.scrollLeft = position;
       frame = requestAnimationFrame(step);
     };
-    frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
+    const start = () => {
+      if (frame || paused.current || !visible) return;
+      position = el.scrollLeft; // carry on from wherever it was scrolled by hand
+      last = 0;
+      frame = requestAnimationFrame(step);
+    };
+    wake.current = start;
+    const io = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      start();
+    });
+    io.observe(el);
+    start();
+    return () => {
+      cancelAnimationFrame(frame);
+      io.disconnect();
+      wake.current = null;
+    };
   }, [overflowing]);
 
   useEffect(() => () => { if (resumeTimer.current) clearTimeout(resumeTimer.current); }, []);
@@ -306,34 +335,45 @@ function Ticker({ label, tileHeight, children }: { label: string; tileHeight: nu
   };
   const resume = (delay = 0) => {
     if (resumeTimer.current) clearTimeout(resumeTimer.current);
-    resumeTimer.current = setTimeout(() => { paused.current = false; }, delay);
+    resumeTimer.current = setTimeout(() => {
+      paused.current = false;
+      wake.current?.();
+    }, delay);
+  };
+  // Scrolling by hand (or while the strip stands still for reduced motion) wraps the same way.
+  const onScroll = (el: HTMLDivElement) => {
+    setAtStart(el.scrollLeft < 1);
+    const copy = firstCopy.current;
+    if (!overflowing || !copy) return;
+    const wrapAt = copyWidth(copy);
+    if (wrapAt > 0 && el.scrollLeft >= wrapAt) el.scrollLeft -= wrapAt;
   };
 
-  // Columns as wide as their widest tile, sharing out any spare width when everything fits.
-  // A tile's caption and name are at most the strip's width less the fade on its right and the tile's padding and
-  // border, so a tile can be seen whole. This holds whether or not the strip scrolls: tying it to the overflow check
-  // would change the width that check measures, and the two could flip each other back and forth.
+  // Columns as wide as their widest tile, sharing out any spare width when everything fits; rows of equal height,
+  // the tallest tile's. A tile's caption and name are at most the strip's width less the fade on its right (1rem)
+  // and the tile's padding and border, so a tile can be seen whole. This holds whether or not the strip scrolls:
+  // tying it to the overflow check would change the width that check measures, and the two could flip each other.
   const grid: React.CSSProperties & { "--line-max"?: string } = {
-    ...(stripWidth > FADE_PX + TILE_INSET_PX + 40 ? { "--line-max": `${stripWidth - FADE_PX - TILE_INSET_PX}px` } : {}),
-    gridTemplateRows: `repeat(${rows}, ${tileHeight}px)`,
+    ...(stripWidth > 0 ? { "--line-max": `max(3rem, calc(${stripWidth}px - 2.5rem - 2px))` } : {}),
+    gridTemplateRows: `repeat(${rows}, 1fr)`,
     gridAutoFlow: "column",
     gridAutoColumns: "minmax(max-content, 1fr)",
   };
 
   return (
     // The strip sits over its slot, so its height comes from the card rather than from the tiles inside it.
-    <div className="relative flex-1" style={{ minHeight: tileHeight }}>
+    <div className="relative flex-1" style={{ minHeight: tileHeight ?? TILE_HEIGHT_GUESS }}>
       <div
         ref={scroller}
         role="region"
-        aria-label={label}
-        tabIndex={0}
+        aria-label={moving ? `${title}, scrolling` : title}
+        tabIndex={overflowing ? 0 : undefined}
         onPointerEnter={(e) => { if (e.pointerType === "mouse") pause(); }}
         onPointerLeave={(e) => { if (e.pointerType === "mouse") resume(); }}
         onFocus={(e) => { if (keyboardFocus(e.currentTarget)) pause(); }}
         onKeyDown={(e) => { if (SCROLL_KEYS.has(e.key)) pause(); }}
         onBlur={() => resume()}
-        onScroll={(e) => setAtStart(e.currentTarget.scrollLeft < 1)}
+        onScroll={(e) => onScroll(e.currentTarget)}
         onTouchStart={pause}
         onTouchEnd={() => resume(2500)}
         // When the tiles don't all fit, the edges fade, so a tile cut off at the edge reads as "more this way" (also when
@@ -346,12 +386,17 @@ function Ticker({ label, tileHeight, children }: { label: string; tileHeight: nu
         }`}
       >
         <div className="flex min-w-full gap-3">
-          <div ref={firstCopy} className={`grid gap-3 ${overflowing ? "w-max shrink-0" : "flex-1"}`} style={grid}>{children}</div>
+          <div ref={firstCopy} role="list" className={`grid gap-3 ${overflowing ? "w-max shrink-0" : "flex-1"}`} style={grid}>{children}</div>
           {overflowing && <div className="grid w-max shrink-0 gap-3" style={grid} aria-hidden>{children}</div>}
         </div>
       </div>
     </div>
   );
+}
+
+// Where a strip's second copy starts: the first copy's width plus the gap after it, read from the page.
+function copyWidth(copy: HTMLElement): number {
+  return copy.offsetWidth + (parseFloat(getComputedStyle(copy.parentElement as Element).columnGap) || 0);
 }
 
 const MetricGroup: React.FC<MetricGroupProps> = ({
@@ -374,35 +419,36 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
   const items = sections.flatMap((section) =>
     section.rows.map((row) => ({ row, caption: section.title, stale: isStale(row, staleAfterHours) }))
   );
-  const height = tileHeight({ caption: items.some((t) => t.caption), stale: items.some((t) => t.stale) });
+  const titleId = useId();
   const tiles = items.map(({ row, caption, stale }) =>
     ticker
-      ? <StripTile key={row.key} row={row} caption={caption} stale={stale} height={height} />
+      ? <StripTile key={row.key} row={row} caption={caption} stale={stale} />
       : <WrapTile key={row.key} row={row} caption={caption} stale={stale} />
   );
 
   return (
-    <div className={ticker ? "flex flex-1 flex-col gap-2" : "space-y-2"}>
-      {/* The time follows the title on its line, or starts the next line whole. In the panel a float keeps the first
-          line clear of the card's corner button without narrowing the lines below it. */}
+    <div role="group" aria-labelledby={titleId} className={ticker ? "flex flex-1 flex-col gap-2" : "space-y-2"}>
+      {/* The time follows the title on its line, or starts the next line whole (wrapping only if even a line of its own
+          is too narrow, with very large text). In the panel a float keeps the first line clear of the card's corner
+          button without narrowing the lines below it. */}
       <div className="flow-root leading-5">
         {ticker && <span aria-hidden className="float-right h-5 w-7" />}
-        <h3 className="mr-3 inline font-poppins text-sm font-semibold text-primary">{title}</h3>
+        <h3 id={titleId} className="mr-3 inline [overflow-wrap:anywhere] font-poppins text-sm font-semibold text-primary">{title}</h3>
         {!loading && newest && (
-          <p className="inline-block whitespace-nowrap text-[11px] text-muted">
+          <p className="inline-block max-w-full text-[0.6875rem] text-muted">
             {timeLabel} {formatSiteTime(newest, dateOnly)}
             {showsClockTime(newest, dateOnly) && <abbr title="Eastern Time, the sites' local time" className="no-underline"> ET</abbr>}
           </p>
         )}
       </div>
       {loading ? (
-        <div className="h-[60px] animate-pulse rounded-lg bg-black/5" aria-hidden />
+        <div className="h-[3.75rem] animate-pulse rounded-lg bg-black/5" aria-hidden />
       ) : tiles.length === 0 ? (
         <p className="text-xs text-muted">{emptyHint}</p>
       ) : ticker ? (
-        <Ticker label={`${title}, scrolling`} tileHeight={height}>{tiles}</Ticker>
+        <Ticker title={title}>{tiles}</Ticker>
       ) : (
-        <div className="flex flex-wrap gap-3">{tiles}</div>
+        <div role="list" className="flex flex-wrap gap-3">{tiles}</div>
       )}
     </div>
   );

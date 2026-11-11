@@ -17,6 +17,8 @@ export default function useRecentSamples() {
   const [loading, setLoading] = useState(true);
   // Set when the last fetch failed, so the panel can say so (and offer a retry) instead of showing "No data".
   const [error, setError] = useState(false);
+  // True while a retry runs; the values on screen stay (loading is only for the first fetch).
+  const [retrying, setRetrying] = useState(false);
 
   // Fetches overlap when Retry is pressed during a refresh; only the newest one's reply counts.
   const latestRequest = useRef(0);
@@ -38,13 +40,16 @@ export default function useRecentSamples() {
       console.error("[ERROR] Failed to fetch recent samples:", err);
       setError(true);
     } finally {
-      if (request === latestRequest.current) setLoading(false);
+      if (request === latestRequest.current) {
+        setLoading(false);
+        setRetrying(false);
+      }
     }
   }, []);
 
-  // Try again now, showing the loading placeholder while it does.
+  // Try again now, keeping whatever is on screen while it does.
   const retry = useCallback(() => {
-    setLoading(true);
+    setRetrying(true);
     fetchRecent();
   }, [fetchRecent]);
 
@@ -59,5 +64,5 @@ export default function useRecentSamples() {
     return () => clearInterval(interval);
   }, [fetchRecent]);
 
-  return { samples, loading, error, retry };
+  return { samples, loading, error, retrying, retry };
 }

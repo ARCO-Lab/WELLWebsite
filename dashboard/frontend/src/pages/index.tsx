@@ -18,7 +18,7 @@ import WeatherMetrics from "@/components/metrics/WeatherMetrics";
 import QualityMetrics from "@/components/metrics/QualityMetrics";
 import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 import CreekMetrics from "@/components/metrics/CreekMetrics";
-import { LATEST_CARD_CLASS, LatestDataError, latestGroupsClass } from "@/components/metrics/MetricList";
+import { LATEST_CARD_CLASS, LATEST_PANEL_CLASS, LatestDataError, latestGroupsClass } from "@/components/metrics/MetricList";
 import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
@@ -157,7 +157,7 @@ export default function Dashboard() {
   const wind = useMemo(() => ({ data: windData, loading: windLoading, error: windError }), [windData, windLoading, windError]);
 
   const chartView = useChartSeries(activeGroups, startDate, endDate, viewWindow, setViewWindow, wind);
-  const { metrics: latestMetrics, loading: latestLoading, error: latestError, retry: retryLatest } = useLatestMetrics();
+  const { metrics: latestMetrics, loading: latestLoading, error: latestError, retrying: retryingLatest, retry: retryLatest } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
     activeCreeks,
@@ -165,7 +165,7 @@ export default function Dashboard() {
     samplingEndDate
   );
   
-  const { samples: recentSamples, loading: recentSamplesLoading, error: recentSamplesError, retry: retryRecentSamples } = useRecentSamples();
+  const { samples: recentSamples, loading: recentSamplesLoading, error: recentSamplesError, retrying: retryingRecentSamples, retry: retryRecentSamples } = useRecentSamples();
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
     
@@ -394,13 +394,13 @@ export default function Dashboard() {
                     
                     {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds) */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex h-full flex-col p-6 lg:min-h-[30rem]">
+                      <div className={`mcmaster-card flex h-full flex-col p-6 lg:min-h-[30rem] ${LATEST_PANEL_CLASS}`}>
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Latest Data
                           <Information id={3} />
                         </h2>
-                        {latestError && !latestLoading && metricComponents.length > 0 && (
-                          <LatestDataError hasValues={latestMetrics.length > 0} onRetry={retryLatest} />
+                        {latestError && metricComponents.length > 0 && (
+                          <LatestDataError hasValues={latestMetrics.length > 0} retrying={retryingLatest} onRetry={retryLatest} />
                         )}
                         {metricComponents.length === 0 ? (
                           <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its latest readings.</EmptyState>
@@ -622,13 +622,13 @@ export default function Dashboard() {
                     
                     {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds) */}
                     <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex h-full flex-col p-6 lg:min-h-[30rem]">
+                      <div className={`mcmaster-card flex h-full flex-col p-6 lg:min-h-[30rem] ${LATEST_PANEL_CLASS}`}>
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Latest Data
                           <Information id={8} />
                         </h2>
-                        {recentSamplesError && !recentSamplesLoading && samplingMetricComponents.length > 0 && (
-                          <LatestDataError hasValues={recentSamples.length > 0} onRetry={retryRecentSamples} />
+                        {recentSamplesError && samplingMetricComponents.length > 0 && (
+                          <LatestDataError hasValues={recentSamples.length > 0} retrying={retryingRecentSamples} onRetry={retryRecentSamples} />
                         )}
                         {samplingMetricComponents.length === 0 ? (
                           <EmptyState>Tick a creek under Filters, or click a site on the map, to see its latest samples.</EmptyState>
