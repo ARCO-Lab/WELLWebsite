@@ -8,9 +8,10 @@
 #
 # start/end: an ISO time with an offset (e.g. ...Z) is a real instant; one without is local wall-clock time
 # (utils.timezone.parse_instant). recorded_at is an instant (timestamptz); readings are bucketed on its America/Toronto
-# wall-clock time, so buckets follow local time (daily buckets are local days), and `t` is each bucket start converted
-# back to a real instant. Both readings of the hour repeated when clocks fall back are counted; they share that
-# hour's local buckets. The zone is named in the SQL, so the result doesn't depend on the session's TimeZone setting.
+# wall-clock time from 3-hour buckets up, so those follow local time (daily buckets are local days); buckets of up to an
+# hour are on real time, which gives the same edges (Toronto's offsets are whole hours) and keeps the two readings of
+# the hour repeated when clocks fall back apart. `t` is each bucket's start as a real instant. The zone is named in
+# the SQL, so the result doesn't depend on the session's TimeZone setting.
 #
 # `agg` says what each series' `avg` holds:
 #   "mean"        the mean of the readings in the bucket; min/max are the smallest and largest reading.
@@ -36,13 +37,17 @@ LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the site's zone
 SQL = text(f"""
 WITH b AS (
   SELECT group_type, station_id, measurement_type, unit, value,
-         to_timestamp(floor(extract(epoch FROM (recorded_at AT TIME ZONE '{LOCAL_ZONE}')) / :b) * :b) AT TIME ZONE 'UTC'
-           AS bucket_local
+         -- Up to an hour, buckets on real time: Toronto's offsets are whole hours, so the edges are the same as on
+         -- the wall clock, and the two copies of the hour repeated when clocks fall back stay apart. From 3 h,
+         -- buckets on the wall clock, so they start at local 00:00, 03:00, ... (daily buckets are local days).
+         CASE WHEN :b <= 3600 THEN to_timestamp(floor(extract(epoch FROM recorded_at) / :b) * :b)
+              ELSE (to_timestamp(floor(extract(epoch FROM (recorded_at AT TIME ZONE '{LOCAL_ZONE}')) / :b) * :b)
+                    AT TIME ZONE 'UTC') AT TIME ZONE '{LOCAL_ZONE}' END AS bucket
   FROM sensor_measurements
   WHERE recorded_at BETWEEN :s AND :e AND group_type = ANY(:g) AND value IS NOT NULL
 )
 SELECT group_type, station_id, measurement_type, unit,
-       (extract(epoch FROM (bucket_local AT TIME ZONE '{LOCAL_ZONE}')) * 1000)::bigint AS t,
+       (extract(epoch FROM bucket) * 1000)::bigint AS t,
        CASE WHEN measurement_type = 'Rain' THEN sum(value)
             WHEN measurement_type = 'Wind Direction'
               THEN mod((degrees(atan2(avg(sin(radians(value))), avg(cos(radians(value))))) + 360)::numeric, 360)::float
@@ -50,8 +55,8 @@ SELECT group_type, station_id, measurement_type, unit,
        CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE min(value) END AS lo,
        CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE max(value) END AS hi
 FROM b
-GROUP BY group_type, station_id, measurement_type, unit, bucket_local
-ORDER BY group_type, station_id, measurement_type, unit, bucket_local
+GROUP BY group_type, station_id, measurement_type, unit, bucket
+ORDER BY group_type, station_id, measurement_type, unit, bucket
 """).bindparams(bindparam("s", type_=Instant), bindparam("e", type_=Instant))  # the bounds as instants
 
 

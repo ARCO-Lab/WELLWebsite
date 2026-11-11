@@ -201,26 +201,45 @@ class SeriesSqlTests(unittest.TestCase):
             _, by = self.series(start, end, "Weather")
             self.assertEqual(by["Air Temperature"]["avg"], [12.0, 13.0, 14.0, 15.0], (start, end))
 
-    def test_both_copies_of_the_fall_back_hour_are_counted(self):
-        # 01:00-01:30 happened twice on 2026-11-01: 05:00Z-05:30Z (EDT) and 06:00Z-06:30Z (EST). recorded_at holds both.
-        # Buckets follow the local wall clock, so each 01:x0 bucket holds one reading of each copy.
+    def test_both_copies_of_the_fall_back_hour_are_kept_apart(self):
+        # 01:00-01:30 happened twice on 2026-11-01: 05:00Z-05:30Z (EDT) and 06:00Z-06:30Z (EST). recorded_at holds both,
+        # and 10-minute buckets are on real time, so each reading is its own bucket at its own instant.
         edt = dt.datetime(2026, 11, 1, 5, 0, tzinfo=UTC)
         self.add_readings("Air Temperature", "°C", edt, (20.0, 21.0, 22.0, 23.0))
         self.add_readings("Air Temperature", "°C", edt + dt.timedelta(hours=1), (30.0, 31.0, 32.0, 33.0))
         try:
+            start, end = edt, edt + dt.timedelta(hours=2)
             body, by = self.series("2026-11-01T05:00:00Z", "2026-11-01T07:00:00Z", "Weather")
             self.assertEqual(body["bucket_seconds"], 600)
             air = by["Air Temperature"]
-            self.assertEqual(air["avg"], [25.0, 26.0, 27.0, 28.0])
-            self.assertEqual((air["min"], air["max"]), ([20.0, 21.0, 22.0, 23.0], [30.0, 31.0, 32.0, 33.0]))
+            self.assertEqual(air["avg"], [20.0, 21.0, 22.0, 23.0, 30.0, 31.0, 32.0, 33.0])
+            self.assertEqual([self.utc(t) for t in air["t"]],
+                             [edt + dt.timedelta(minutes=m) for m in (0, 10, 20, 30, 60, 70, 80, 90)])
+            self.assertTrue(all(start <= self.utc(t) <= end for t in air["t"]))
             # A 40-minute range whose wall-clock times run backwards (01:30 EDT to 01:10 EST) is valid: it is
-            # compared as instants, and holds 05:30Z, 06:00Z and 06:10Z.
+            # compared as instants, and holds 05:30Z, 06:00Z and 06:10Z, in that order.
             body, by = self.series("2026-11-01T05:30:00Z", "2026-11-01T06:10:00Z", "Weather")
-            self.assertEqual(sorted(by["Air Temperature"]["avg"]), [23.0, 30.0, 31.0])
+            self.assertEqual(by["Air Temperature"]["avg"], [23.0, 30.0, 31.0])
+            self.assertEqual([self.utc(t) for t in by["Air Temperature"]["t"]],
+                             [edt + dt.timedelta(minutes=m) for m in (30, 60, 70)])
             r = self.client.get("/api/series?start=2026-11-01T06:10:00Z&end=2026-11-01T05:30:00Z&group_type=Weather")
             self.assertEqual(r.status_code, 400)
         finally:
             self.delete_readings("Air Temperature", edt)
+
+    def test_real_time_buckets_match_wall_clock_buckets_on_ordinary_days(self):
+        # Buckets of up to an hour are on real time; on any day without a clock change (summer, winter, and the days
+        # either side of the change) their edges are exactly the wall-clock ones, because the offsets are whole hours.
+        from sqlalchemy import text
+        mismatches = self.db.session.execute(text("""
+            SELECT count(*) FROM unnest(ARRAY[timestamptz '2026-07-01 04:00Z', '2026-01-15 05:00Z',
+                                              '2026-10-31 04:00Z', '2026-11-02 05:00Z']) AS day,
+                 generate_series(day, day + interval '1 day' - interval '1 minute', interval '1 minute') AS t,
+                 unnest(ARRAY[600, 1800, 3600]) AS b
+            WHERE to_timestamp(floor(extract(epoch FROM t) / b) * b)
+               <> (to_timestamp(floor(extract(epoch FROM (t AT TIME ZONE 'America/Toronto')) / b) * b)
+                   AT TIME ZONE 'UTC') AT TIME ZONE 'America/Toronto'""")).scalar()
+        self.assertEqual(mismatches, 0)
 
     def test_rain_is_summed_and_wind_direction_is_a_vector_mean(self):
         # 30 days -> 30-minute buckets: 00:00 holds the first three readings, 00:30 the next three
