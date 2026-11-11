@@ -1,4 +1,8 @@
+// This file defines the Next.js API route that reports an export job's status from the Flask backend.
+// The backend's status and body (e.g. its 404 for an unknown job) are passed through unchanged.
+
 import type { NextApiRequest, NextApiResponse } from "next";
+import { proxyToBackend } from "@/lib/proxyBackend";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
@@ -10,13 +14,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: "Missing jobId" });
   }
 
-  try {
-    const flaskUrl = `${process.env.FLASK_API_URL}/api/exports/jobs/${encodeURIComponent(jobId)}`;
-    const response = await fetch(flaskUrl);
-    const payload = await response.json();
-    return res.status(response.status).json(payload);
-  } catch (error) {
-    console.error("[ERROR] Export status proxy failed:", error);
-    return res.status(500).json({ error: "Failed to fetch export status" });
-  }
+  return proxyToBackend(req, res, `/api/exports/jobs/${encodeURIComponent(jobId)}`, {}, "export status");
 }

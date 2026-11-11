@@ -16,6 +16,8 @@ class SensorMeasurement(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint("station_id", "measurement_type", "recorded_at"),
+        # For queries by group and time range; existing databases get it from db/migrations/0001_*.sql.
+        db.Index("ix_sensor_measurements_group_type_recorded_at", "group_type", "recorded_at"),
     )
 
 
