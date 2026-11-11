@@ -31,7 +31,8 @@ cat > "$T/bin/docker" <<'EOF'
 echo "docker $*" >> "$STUB_LOG"
 bad_head() { [ -n "${BAD_WORKER_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_WORKER_SHA" ]; }
 case "$*" in
-  "compose up"*) touch "$T/rebuilt" ;;
+  "compose up"*) touch "$T/rebuilt"
+    if [ -n "${BREAK_LOG:-}" ]; then rm -f "$DEPLOY_LOG"; mkdir -p "$DEPLOY_LOG"; fi ;;  # deploy.log unwritable mid-deploy
   "compose ps -q "*) if [ "$4" = "${MISSING:-}" ] && bad_head; then :; else echo "id-$4"; fi ;;
   "inspect -f {{.RestartCount}} "*) echo 0 ;;
   "inspect -f {{.State.Status}} {{.RestartCount}} "*)
@@ -193,8 +194,28 @@ check "--auto, fast-forward refused: reported only once" 'rc 0 && [ ! -s "$T/out
 rm -f "$T/vm/dashboard/frontend/new.tsx"
 
 sync_vm; change dashboard/frontend/page.tsx; mkdir "$DEPLOY_LOG"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy
-check "a failure inside a function (deploy.log unwritable): FAILED and /fail" 'rc 1 && said "FAILED: line " && ran "ping http://hc.test/x/fail" && ! ran "compose"'
+check "deploy.log unwritable: deploys anyway, still printing the log lines" 'rc 0 && head_is_remote && ran "compose up -d --build --no-deps dashboard" && said "deployed" && ran "ping http://hc.test/x" && ! ran "ping http://hc.test/x/fail"'
 rmdir "$DEPLOY_LOG"
+
+sync_vm; change dashboard/frontend/page.tsx; BREAK_LOG=1 deploy
+check "deploy.log becomes unwritable mid-deploy: the deploy completes" 'rc 0 && head_is_remote && ran "compose up" && said "deployed" && said "healthy"'
+rm -rf "$DEPLOY_LOG"
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx
+BREAK_LOG=1 BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "deploy.log becomes unwritable mid-deploy, and the deploy is unhealthy: still rolls back" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "rolling back" && said "healthy again"'
+rm -rf "$DEPLOY_LOG"
+
+sync_vm; mkdir "$DEPLOY_STATE"; echo dirty >> "$T/vm/README.md"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "state file unwritable: the problem is still reported, with a /fail ping" 'rc 1 && said "FAILED: the checkout has local changes" && ran "ping http://hc.test/x/fail"'
+git -C "$T/vm" checkout -q -- README.md
+
+sync_vm; mkdir "$DEPLOY_STATE"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy
+check "a failure inside a function (state can't be cleared): FAILED with the line, and /fail" 'rc 1 && said "FAILED: line " && said "rm -f" && ran "ping http://hc.test/x/fail"'
+
+sync_vm; head -c 3000 /dev/zero | tr '\0' x > "$DEPLOY_LOG"; change README.md; DEPLOY_LOG_MAX=2000 deploy
+check "deploy.log over DEPLOY_LOG_MAX: moved to deploy.log.1, a fresh one started" 'rc 0 && [ "$(wc -c < "$DEPLOY_LOG.1")" = 3000 ] && [ "$(wc -c < "$DEPLOY_LOG")" -lt 2000 ] && grep -q deploying "$DEPLOY_LOG"'
+rm -f "$DEPLOY_LOG.1"
 
 sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
 BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=export_worker deploy

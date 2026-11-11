@@ -98,7 +98,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
 
 If the site is already unhealthy before a deploy, `--auto` doesn't deploy (so the new commit isn't blamed and rolled back); `./deploy.sh` by hand deploys anyway and doesn't roll back.
 
-Each run is logged in `deploy.log`, and any failure, expected or not, logs a `FAILED:` line. `./deploy.sh --dry-run` only shows what would happen: no log, no pings, no state. It refuses to run over local edits to tracked files, so change the VM only through `main`.
+Each run is logged in `deploy.log` (best effort: a log it can't write never stops a deploy halfway), and any failure, expected or not, logs a `FAILED:` line. Over 5 MB, `deploy.log` is moved to `deploy.log.1` and a new one started. `./deploy.sh --dry-run` only shows what would happen: no log, no pings, no state. It refuses to run over local edits to tracked files, so change the VM only through `main`.
 
 `./deploy.sh --auto` deploys a new commit on `main` only once all its CI checks have passed (`.github/workflows/ci.yml`). It holds changes that need a person, logging them and leaving them for you:
 - a new database migration;

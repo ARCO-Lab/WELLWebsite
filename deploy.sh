@@ -36,19 +36,23 @@ DOCKER=${DOCKER:-docker}
 CURL=${CURL:-curl}
 REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Deploy script")  # job names in .github/workflows/ci.yml
 
-log() { if [ "$DRY" = 1 ]; then echo "$*"; else echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; fi; }
+# Best effort: an unwritable deploy.log must never stop a deploy halfway (tee still prints the line either way)
+log() {
+  if [ "$DRY" = 1 ]; then echo "$*"; return 0; fi
+  { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; } 2>/dev/null || true
+}
 ping_health() {
   if [ "$DRY" = 0 ] && [ -n "${DEPLOY_HEALTHCHECK_URL:-}" ]; then
     "$CURL" -fsS -m 10 --retry 3 -o /dev/null "$DEPLOY_HEALTHCHECK_URL$1" || true
   fi
 }
-fail() { trap - ERR; log "FAILED: $*" || true; ping_health /fail; exit 1; }
+fail() { trap - ERR; log "FAILED: $*"; ping_health /fail; exit 1; }
 # --auto runs every few minutes: report a problem once (keyed by $1), not on every run. The key is cleared by the
 # next healthy deploy or up-to-date run, and replaced by any other problem, so new problems are always reported.
 once() {
   [ "$DRY" = 1 ] && return 0
   if [ "$AUTO" = 1 ] && [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$1" ]; then exit 0; fi
-  echo "$1" > "$STATE"
+  { echo "$1" > "$STATE"; } 2>/dev/null || true  # unwritable: the problem is still reported, just not deduplicated
 }
 clear_state() { [ "$DRY" = 1 ] || rm -f "$STATE"; }
 # A command that fails unexpectedly (anywhere: set -E carries the trap into functions and subshells) still gets a
@@ -77,6 +81,11 @@ if ! flock -n 9; then
   [ "$AUTO" = 1 ] && exit 0
   echo "Another deploy is running." >&2
   exit 1
+fi
+
+# Keep deploy.log (which also gets cron's stderr) to about DEPLOY_LOG_MAX bytes (5 MB): move it to deploy.log.1
+if [ "$DRY" = 0 ] && [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt "${DEPLOY_LOG_MAX:-5242880}" ]; then
+  mv -f "$LOG" "$LOG.1" 2>/dev/null || true
 fi
 
 # Never overwrite edits made on the VM (untracked files such as .env are fine)
