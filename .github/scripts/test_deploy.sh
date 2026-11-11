@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2034  # check's conditions are single-quoted on purpose: check evals them later, so
+# their $(...) and variables (such as old) are read then, not where they're written
 # Tests deploy.sh in a sandbox: a bare repo plays GitHub, a clone plays the VM's checkout, and stub `docker` and
 # `curl` commands record what would run and answer CI/health queries. Nothing real is deployed or contacted.
 #   bash .github/scripts/test_deploy.sh
