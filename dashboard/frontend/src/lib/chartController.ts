@@ -30,7 +30,20 @@ export interface ChartSnapshot {
   wantedBucket: number; // the bucket the window needs
   loading: boolean; // something this chart needs is queued or on its way
   error: Error | null;
-  hasData: boolean | null; // null: don't know yet
+  hasData: boolean | null; // whether any of the chart's series has a reading at all (null: don't know yet)
+  windowEmpty: boolean; // nothing drawn inside the window
+}
+
+/** Whether any point with a value lies in [w.start, w.end); points are in time order. */
+export function hasPointIn(points: ComposedPoint[], w: Range): boolean {
+  let lo = 0, hi = points.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].x < w.start) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < points.length && points[i].x < w.end; i++) if (points[i].y !== null) return true;
+  return false;
 }
 
 export interface ComposedData {
@@ -136,6 +149,12 @@ export class ChartController {
     this.win = next;
     for (const cb of this.windowListeners) cb(next, reason);
     this.scheduleFrame();
+    this.requestSoon(true);
+  }
+
+  // Ask once things have been still for debounceMs. `restart`: a new change, so wait again from now.
+  private requestSoon(restart: boolean): void {
+    if (this.debounce && !restart) return;
     if (this.debounce) clearTimeout(this.debounce);
     this.debounce = setTimeout(() => { this.debounce = null; this.request(); }, this.debounceMs);
   }
@@ -180,17 +199,19 @@ export class ChartController {
     this.request();
   }
 
+  /** The plot's width (it changes a little whenever the axis labels do): asks again only if that changes the bucket,
+   *  and only once things are still, so a redraw in the middle of a zoom never sends a request. */
   setPlotWidth(px: number): void {
-    if (!(px > 0) || Math.abs(px - this.width) < 1) return;
+    if (!(px > 0) || px === this.width) return;
     this.width = px;
-    this.request();
+    if (bucketFor(this.win.end - this.win.start, px) !== this.wantB) this.requestSoon(false);
   }
 
   /** Charts off screen ask for their tiles after the ones on screen. */
   setVisible(visible: boolean): void {
     if (visible === this.visible) return;
     this.visible = visible;
-    this.request();
+    this.requestSoon(false);
   }
 
   /** Ask again for whatever is missing (after an error). */
@@ -209,6 +230,12 @@ export class ChartController {
     if (!this.disposed) return;
     this.disposed = false;
     this.request();
+  }
+
+  /** One series at the overview bucket only (the whole history, daily), for the slider's line. */
+  overview(key: string): ComposedPoint[] {
+    const tiles = [...this.loader.loadedTiles(key, OVERVIEW_BUCKET)];
+    return composeSeries(segmentsFor([{ bucketS: OVERVIEW_BUCKET, tiles }]), (b, i) => this.loader.tile(key, b, i), () => NaN);
   }
 
   // ---- loading and composing ----
@@ -315,6 +342,7 @@ export class ChartController {
       loading: owners.slice(0, 2).some((o) => this.loader.waiting(o)),
       error,
       hasData,
+      windowEmpty: ![...this.lastData.series.values()].some((pts) => hasPointIn(pts, this.win)),
     };
   }
 
@@ -323,7 +351,7 @@ export class ChartController {
     const s = this.snap;
     if (s.window === next.window && s.extent === next.extent && s.shownBucket === next.shownBucket
       && s.wantedBucket === next.wantedBucket && s.loading === next.loading && s.error === next.error
-      && s.hasData === next.hasData) return;
+      && s.hasData === next.hasData && s.windowEmpty === next.windowEmpty) return;
     this.snap = next;
     for (const cb of this.listeners) cb();
   }
