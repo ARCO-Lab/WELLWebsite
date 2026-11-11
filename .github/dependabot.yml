@@ -19,7 +19,6 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
-    labels: [dependencies]
     assignees: [lukhsaankumar]
 
   # requirements.txt pins every package, dependencies of dependencies included, so each bump is explicit.
@@ -34,7 +33,6 @@ updates:
     groups:
       pip-minor-and-patch:
         update-types: [minor, patch]
-    labels: [dependencies]
     assignees: [lukhsaankumar]
 
   # Base images of the two images built on the server.
@@ -51,7 +49,14 @@ updates:
     groups:
       docker-minor-and-patch:
         update-types: [minor, patch]
-    labels: [dependencies]
+    ignore:
+      # A new Python minor (3.11 to 3.12 and on) can break the pinned packages, so it is done by hand together
+      # with requirements.txt rather than slipped into the grouped pull request.
+      - dependency-name: python
+        update-types: ["version-update:semver-minor"]
+      # Odd Node majors are never LTS; only move between LTS lines (22, 24, ...). Docker uses Bundler syntax.
+      - dependency-name: node
+        versions: ["~> 23.0", "~> 25.0"]
     assignees: [lukhsaankumar]
 
   # Actions used in .github/workflows.
@@ -66,5 +71,4 @@ updates:
     groups:
       actions-minor-and-patch:
         update-types: [minor, patch]
-    labels: [dependencies]
     assignees: [lukhsaankumar]
