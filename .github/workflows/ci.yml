@@ -102,7 +102,7 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Unit tests (chart zoom helpers)
+      - name: Unit tests (chart helpers, site time, the backend proxy)
         run: npm test
 
       - run: npm run build
