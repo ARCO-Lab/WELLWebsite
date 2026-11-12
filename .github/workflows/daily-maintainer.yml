@@ -1,0 +1,200 @@
+# Daily maintainer: once a day, Claude Code (anthropics/claude-code-action) reads what went wrong in the last 24
+# hours (Sentry, failed runs on main, code-quality comments, security alerts; collected by
+# .github/scripts/maintainer_inputs.py), fixes real problems in at most MAX_PRS pull requests from maint/* branches,
+# audits each one, and labels it. It never merges. Then .github/scripts/maintainer_summary.py emails what is ready
+# to merge and what needs a person. Its instructions are .github/maintainer/PROMPT.md, its tool rules
+# .github/maintainer/settings.json. See the README's "Daily maintainer" section for the secrets and how to pause it.
+name: Daily maintainer
+
+on:
+  schedule:
+    - cron: "23 11 * * *"   # 11:23 UTC: 6:23 (EST) or 7:23 (EDT) in Toronto, after the 11:17 API canary
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Investigate and report only: no branches, commits or pull requests"
+        type: boolean
+        default: false
+      max_prs:
+        description: "Most pull requests to open or update in this run"
+        type: number
+        default: 3
+
+# With WELL_MAINTAINER_PAT set, every write goes through that token and the workflow token only reads, so these
+# could be all `read`. The writes are for the fallback without it, where the workflow token opens the pull
+# requests and starts CI on them (workflow_dispatch: a push by this token starts no workflow).
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  checks: read
+  security-events: read   # code scanning alerts, for the inputs
+
+concurrency:
+  group: daily-maintainer
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    if: github.repository == 'ARCO-Lab/WELLWebsite'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ASSIGNEE: lukhsaankumar   # every pull request is assigned to this account
+    steps:
+      # Fails here, before anything runs, when Claude can't authenticate. The PAT, Sentry and SMTP are optional.
+      - name: Check the secrets
+        id: secrets
+        env:
+          PAT: ${{ secrets.WELL_MAINTAINER_PAT }}
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SENTRY: ${{ secrets.SENTRY_API_TOKEN }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+        run: |
+          if [ -z "$OAUTH" ] && [ -z "$API_KEY" ]; then
+            echo "::error::Set CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token') or ANTHROPIC_API_KEY"; exit 1
+          fi
+          if [ -n "$PAT" ]; then
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::WELL_MAINTAINER_PAT is not set: pull requests are opened as github-actions[bot]"
+            echo "mode=github_token" >> "$GITHUB_OUTPUT"
+          fi
+          [ -n "$SENTRY" ] || echo "::warning::SENTRY_API_TOKEN is not set: Sentry is not queried"
+          [ -n "$SMTP_HOST" ] || echo "::warning::SMTP_HOST is not set: the summary is not emailed"
+          # Outside the checkout, so nothing Claude writes there can end up in a commit.
+          echo "WORK_DIR=$RUNNER_TEMP/maintainer" >> "$GITHUB_ENV"
+
+      # Commits carry the token owner's name and GitHub noreply address (<id>+<login>@users.noreply.github.com),
+      # read from the API rather than written here; without the PAT, github-actions[bot]'s.
+      - name: Find the commit identity
+        id: identity
+        env:
+          PAT: ${{ secrets.WELL_MAINTAINER_PAT }}
+          MODE: ${{ steps.secrets.outputs.mode }}
+        run: |
+          if [ "$MODE" = pat ]; then
+            user=$(curl -sf -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
+              https://api.github.com/user) || { echo "::error::WELL_MAINTAINER_PAT was rejected (expired?)"; exit 1; }
+            login=$(jq -r .login <<<"$user"); id=$(jq -r .id <<<"$user")
+          else
+            login='github-actions[bot]'; id=41898282
+          fi
+          echo "login=$login" >> "$GITHUB_OUTPUT"; echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Commits and pull requests as $login"
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.WELL_MAINTAINER_PAT || github.token }}
+          fetch-depth: 0
+
+      - name: Remember main's commit
+        id: before
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The tools CI uses, so Claude can run the same checks.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      # The Sentry token is used here only; it is not in Claude's environment.
+      - name: Collect the inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ALERTS_TOKEN: ${{ secrets.WELL_MAINTAINER_PAT }}
+          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
+        run: |
+          mkdir -p "$WORK_DIR"
+          python3 .github/scripts/maintainer_inputs.py "$WORK_DIR/inputs.json"
+
+      - name: Write the prompt
+        id: prompt
+        env:
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          MAX_PRS: ${{ inputs.max_prs || 3 }}
+          MODE: ${{ steps.secrets.outputs.mode }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "prompt<<MAINTAINER_PROMPT_EOF"
+            echo "DATE: $(date -u +%Y-%m-%d)"
+            echo "REPOSITORY: $GITHUB_REPOSITORY"
+            echo "RUN_URL: $RUN_URL"
+            echo "MAX_PRS: $MAX_PRS"
+            echo "DRY_RUN: $DRY_RUN"
+            echo "TOKEN_MODE: $MODE"
+            echo "ASSIGNEE: $ASSIGNEE"
+            echo "INPUTS_FILE: $WORK_DIR/inputs.json"
+            echo "WORK_DIR: $WORK_DIR"
+            echo
+            cat .github/maintainer/PROMPT.md
+            echo "MAINTAINER_PROMPT_EOF"
+            echo "schema=$(jq -c . .github/maintainer/report-schema.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      # A dry run is only an instruction in the prompt (both tokens can write). The step's timeout leaves time for
+      # the email after it. --add-dir lets Claude read the inputs and write pull request bodies outside the checkout.
+      - name: Claude
+        id: claude
+        continue-on-error: true
+        timeout-minutes: 75
+        uses: anthropics/claude-code-action@v1
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"   # Claude's own credential stays out of the commands it runs
+        with:
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.WELL_MAINTAINER_PAT || github.token }}
+          bot_name: ${{ steps.identity.outputs.login }}
+          bot_id: ${{ steps.identity.outputs.id }}
+          settings: .github/maintainer/settings.json
+          claude_args: >-
+            --max-turns 400
+            --add-dir ${{ runner.temp }}/maintainer
+            --json-schema '${{ steps.prompt.outputs.schema }}'
+            ${{ vars.MAINTAINER_MODEL && format('--model {0}', vars.MAINTAINER_MODEL) || '' }}
+
+      - name: Remember main's commit after the run
+        id: after
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" >> "$GITHUB_OUTPUT"
+
+      - name: Email the summary
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAINTAINER_LOGIN: ${{ steps.identity.outputs.login }}
+          TOKEN_MODE: ${{ steps.secrets.outputs.mode }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          CLAUDE_RESULT: ${{ steps.claude.outputs.structured_output }}
+          INPUTS_FILE: ${{ env.WORK_DIR }}/inputs.json
+          MAIN_BEFORE: ${{ steps.before.outputs.sha }}
+          MAIN_AFTER: ${{ steps.after.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
+        run: python3 .github/scripts/maintainer_summary.py
+
+      - name: Fail the run if Claude failed
+        if: ${{ steps.claude.outcome != 'success' }}
+        env:
+          OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          echo "::error::The Claude step ended with '$OUTCOME'; see its log above"
+          exit 1
