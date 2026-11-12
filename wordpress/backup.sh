@@ -22,10 +22,11 @@
 # DOCKER, CURL, WP_DB_CONTAINER, WP_UPLOADS_DIR, WP_RESTORE_IMAGE and WP_BACKUP_LOCK_WAIT exist for tests.
 #
 # A backup is two files with the same Toronto-time stamp: wordpress-db-YYYYmmdd-HHMM.sql.gz and
-# wordpress-uploads-YYYYmmdd-HHMM.tar.gz. Both are written as hidden .partial files and renamed only once both have
-# passed their checks, so a failed run leaves nothing that looks like a backup. Only files with those names are ever
-# deleted, both files of a backup together. The database password stays in the db container: mysqldump reads it from
-# the container's own environment, so it is never on a command line or in the output.
+# wordpress-uploads-YYYYmmdd-HHMM.tar.gz. Each is written as a hidden .partial file and renamed only once it has
+# passed its check, so a failed run leaves nothing that looks like a good file. The dump is checked and kept first: if
+# the uploads archive then fails, the run fails (exit 1, /fail ping) but keeps the dump. Only files with those names
+# are ever deleted, both files of a backup together. The database password stays in the db container: mysqldump
+# reads it from the container's own environment, so it is never on a command line or in the output.
 set -Eeuo pipefail
 
 MODE=backup PRUNE=1 STAMP_ARG=""
@@ -36,7 +37,7 @@ while [ $# -gt 0 ]; do
     --restore-check)
       MODE=restore-check
       if [ $# -gt 1 ] && [[ "$2" != -* ]]; then STAMP_ARG=$2; shift; fi ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -217,20 +218,26 @@ back_up() {
   fi
   if ! tables=$(check_dump "$db_part"); then die "$tables"; fi
 
+  # The dump has passed its check, so it is kept even if the uploads archive fails below
+  chmod 600 "$db_part"
+  mv "$db_part" "$db_final"
+  PARTIALS=("$up_part" "$err")
+
   log "Archiving ${UPLOADS#"$ROOT"/}"
   rc=0
   ( umask 077 && tar -C "$(dirname "$UPLOADS")" -czf "$up_part" "$(basename "$UPLOADS")" 2>"$err" ) || rc=$?
   # GNU tar exits 1 when a file changed while it was read (an upload during the backup): the archive is still
-  # complete apart from that file, so that is a warning, anything else a failure.
+  # complete apart from that file, so that is a warning. Anything else (e.g. a file the cron user can't read) fails
+  # the run, with the database dump kept.
   if [ "$rc" = 1 ]; then
     warn "tar: $(tail -c 500 "$err" | tr '\n' ' ')"
   elif [ "$rc" != 0 ]; then
-    die "tar failed: $(tail -c 1500 "$err" | tr '\n' ' ')"
+    die "the uploads archive failed (tar exit $rc: $(tail -c 1500 "$err" | tr '\n' ' ')); the database dump is kept as ${db_final##*/}"
   fi
-  files=$(tar -tzf "$up_part" 2>/dev/null | wc -l) || die "the uploads archive doesn't read back"
+  files=$(tar -tzf "$up_part" 2>/dev/null | wc -l) \
+    || die "the uploads archive doesn't read back; the database dump is kept as ${db_final##*/}"
 
-  chmod 600 "$db_part" "$up_part"
-  mv "$db_part" "$db_final"
+  chmod 600 "$up_part"
   mv "$up_part" "$up_final"
   rm -f "$err"
   PARTIALS=()
@@ -244,9 +251,14 @@ restore_check() {
   [ -n "$stamp" ] || die "no backups in $DIR"
   db_file=$DIR/$DB_PREFIX$stamp$DB_SUFFIX up_file=$DIR/$UP_PREFIX$stamp$UP_SUFFIX
   [ -f "$db_file" ] || die "no database dump $db_file"
-  [ -f "$up_file" ] || die "no uploads archive $up_file"
+  # A backup whose uploads archive failed has only its dump (that run failed and said so); the dump is still checked
+  if [ -f "$up_file" ]; then
+    files="$(tar -tzf "$up_file" 2>/dev/null | wc -l) entries" || die "the uploads archive $up_file doesn't read back"
+  else
+    files="none (this backup has no uploads archive)"
+    warn "$stamp has no uploads archive (that night's archive failed); checking its database dump only"
+  fi
   if ! tables=$(check_dump "$db_file"); then die "$tables"; fi
-  files=$(tar -tzf "$up_file" 2>/dev/null | wc -l) || die "the uploads archive $up_file doesn't read back"
 
   # The same MySQL image the site runs (the db container's), unless WP_RESTORE_IMAGE says otherwise
   image=${WP_RESTORE_IMAGE:-}
@@ -280,7 +292,7 @@ restore_check() {
   [ -n "$siteurl" ] || die "the restored $options table has no siteurl"
   posts=$(restored_sql "SELECT COUNT(*) FROM \`${prefix}posts\`" 2>/dev/null || echo "?")
   log "Restore check passed for $stamp: $restored tables restored, siteurl $siteurl, $posts rows in ${prefix}posts;" \
-    "the uploads archive lists $files entries. The throwaway container is deleted now."
+    "uploads archive: $files. The throwaway container is deleted now."
 }
 # Runs a query ($1) on the restored database and prints the result without headers
 restored_sql() { "$DOCKER" exec "$RESTORE_CONTAINER" mysql -uroot -N -B -e "$1" restore_check; }

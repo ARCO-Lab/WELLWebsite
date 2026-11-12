@@ -77,7 +77,11 @@ said() { grep -qF -- "$1" "$T/out"; }
 ran() { grep -qF -- "$1" "$STUB_LOG"; }
 count() { find "$B" -maxdepth 1 -name "$1" | wc -l; }
 # Backup files with the given stamps (empty, for retention tests)
-make_backups() { local s; mkdir -p "$B"; for s in "$@"; do : > "$B/wordpress-db-$s.sql.gz"; : > "$B/wordpress-uploads-$s.tar.gz"; done; }
+make_backups() {
+  local s; mkdir -p "$B"
+  for s in "$@"; do : > "$B/wordpress-db-$s.sql.gz"; : > "$B/wordpress-uploads-$s.tar.gz"; done
+  chmod 600 "$B"/wordpress-*
+}
 has() { [ -e "$B/wordpress-db-$1.sql.gz" ] && [ -e "$B/wordpress-uploads-$1.tar.gz" ]; }
 gone() { [ ! -e "$B/wordpress-db-$1.sql.gz" ] && [ ! -e "$B/wordpress-uploads-$1.tar.gz" ]; }
 
@@ -112,6 +116,16 @@ check "db container not running: fails and says so" 'rc 1 && said "the db contai
 reset; WP_UPLOADS_DIR=$T/nowhere run
 check "uploads folder missing: fails before dumping" 'rc 1 && said "doesn'"'"'t exist" && ! ran "mysqldump"'
 
+# tar fails (exit 2) on an upload the cron user can't read. Skipped as root, which can read anything.
+if [ "$(id -u)" != 0 ]; then
+  reset; make_backups 20200101-0000; mkdir -p "$T/locked-uploads"; echo x > "$T/locked-uploads/private.jpg"
+  chmod 000 "$T/locked-uploads/private.jpg"
+  WP_UPLOADS_DIR=$T/locked-uploads run
+  check "uploads archive fails: exit 1 and a /fail ping naming it, the checked dump kept" 'rc 1 && said "the uploads archive failed" && said "Permission denied" && ran "ping http://hc.test/x/fail the uploads archive failed" && [ "$(count "wordpress-db-*.sql.gz")" = 2 ] && [ -z "$(find "$B" -maxdepth 1 -name "wordpress-db-*.sql.gz" ! -perm 600)" ]'
+  check "uploads archive fails: no archive or .partial left, and no retention run" '[ "$(count "wordpress-uploads-*.tar.gz")" = 1 ] && [ "$(count ".*.partial")" = 0 ] && [ "$(count ".*.err")" = 0 ] && has 20200101-0000 && ! said "Retention:"'
+  chmod 644 "$T/locked-uploads/private.jpg"
+fi
+
 reset; HC="" run
 check "no HEALTHCHECK_URL_WP_BACKUP: backs up, pings nothing" 'rc 0 && ! ran "ping"'
 
@@ -145,6 +159,9 @@ check "--no-prune: backs up and deletes nothing" 'rc 0 && has 20200101-0000 && [
 reset; run --restore-check
 check "--restore-check with no backups: fails and pings nothing" 'rc 1 && said "no backups" && ! ran "ping"'
 
+reset; mkdir -p "$B"; : > "$B/wordpress-db-20261111-0345.sql.gz"; run --restore-check 20261111-0345
+check "--restore-check of a backup with no uploads archive: says so, still checks the dump" 'rc 1 && said "has no uploads archive" && said "doesn'"'"'t decompress"'
+
 if [ "${1:-}" = --real ]; then
   # A throwaway MySQL 5.7 with no network, as on the VM, holding a small WordPress-like database
   REAL_DB=wp-backup-test-$$
@@ -175,24 +192,35 @@ SQL
   echo $? > "$T/rc"
   check "real MySQL 5.7: --restore-check fails on a dump cut short" 'rc 1 && said "cut short"'
 
-  # "Restoring for real" in wordpress/README.md, with `docker exec <container>` for `docker compose exec db`: after
-  # a post is deleted and a table added, the restore brings back exactly the backed-up database and uploads.
+  # "Restoring for real" in wordpress/README.md, with `docker exec <container>` for `docker compose exec db`, and
+  # `docker run` of an image that runs as root for `docker compose run ... wordpress`: after a post is deleted, a
+  # table added and a file uploaded, the restore brings back exactly the backed-up database and uploads. The live
+  # uploads folder belongs to www-data (uid 33) here, as when WordPress writes its own uploads, so the restored folder
+  # must get that owner back, and the old folder (which the test user can't delete) goes through the container.
+  as_root() { docker run --rm -v "$site/home:/var/www/html" --entrypoint "$1" mysql:5.7 "${@:2}"; }
   rm -f "$B/wordpress-db-29991231-2359.sql.gz" "$B/wordpress-uploads-29991231-2359.tar.gz"
   docker exec "$REAL_DB" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot wordpress -e "DELETE FROM wp_posts WHERE ID = 1; CREATE TABLE wp_junk (x int)"'
   site=$T/site && mkdir -p "$site/home/wp-content/uploads" && echo "new" > "$site/home/wp-content/uploads/added-later.jpg"
+  as_root chown -R 33:33 /var/www/html/wp-content/uploads
   (
     set -e
     cd "$site"
     STAMP=$stamp
     docker exec -i "$REAL_DB" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP DATABASE IF EXISTS \`$MYSQL_DATABASE\`; CREATE DATABASE \`$MYSQL_DATABASE\` DEFAULT CHARACTER SET utf8mb4"'
     gunzip -c "$B/wordpress-db-$STAMP.sql.gz" | docker exec -i "$REAL_DB" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot --default-character-set=utf8mb4 "$MYSQL_DATABASE"'
+    OWNER=$(stat -c %u:%g home/wp-content/uploads)
     mv home/wp-content/uploads home/wp-content/uploads.before-restore
-    tar -C home/wp-content -xzf "$B/wordpress-uploads-$STAMP.tar.gz"
+    tar -p -C home/wp-content -xzf "$B/wordpress-uploads-$STAMP.tar.gz"
+    as_root chown -R "$OWNER" /var/www/html/wp-content/uploads
+    [ "$(stat -c %u:%g home/wp-content/uploads.before-restore/added-later.jpg)" = 33:33 ]   # checked before it goes
+    as_root rm -rf /var/www/html/wp-content/uploads.before-restore
   ) > "$T/out" 2>&1
   echo $? > "$T/rc"
   restored=$(docker exec "$REAL_DB" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot --default-character-set=utf8mb4 -N -B wordpress -e "SELECT COUNT(*) FROM wp_posts; SHOW TABLES LIKE \"wp_junk\"; SELECT option_value FROM wp_options WHERE option_name = \"blogname\""' 2>&1 | tr '\n' '|')
   check "real MySQL 5.7: the README's restore steps bring back the database (rows, no extra table, UTF-8)" 'rc 0 && [ "$restored" = "3|Café ☔|" ]'
-  check "real MySQL 5.7: the README's restore steps bring back the uploads and keep the old folder aside" '[ -f "$site/home/wp-content/uploads/2026/11/creek.jpg" ] && [ ! -e "$site/home/wp-content/uploads/added-later.jpg" ] && [ -f "$site/home/wp-content/uploads.before-restore/added-later.jpg" ]'
+  check "real MySQL 5.7: the README's restore steps bring back the uploads, owned by the old folder's owner (uid 33)" '[ -f "$site/home/wp-content/uploads/2026/11/creek.jpg" ] && [ ! -e "$site/home/wp-content/uploads/added-later.jpg" ] && [ -z "$(find "$site/home/wp-content/uploads" ! -uid 33)" ]'
+  check "real MySQL 5.7: the README's restore steps delete the old www-data folder through the container" '[ ! -e "$site/home/wp-content/uploads.before-restore" ]'
+  as_root chown -R "$(id -u):$(id -g)" /var/www/html/wp-content   # so the test's own cleanup can delete it
 fi
 
 echo "$pass passed, $failures failed"
