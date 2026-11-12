@@ -1,6 +1,8 @@
 // The query-string side of hooks/useSelectionLink: reading and writing ?tab=, ?groups= and ?creeks=. Pure functions,
 // tested in scripts/selectionLink.test.mjs.
 
+import { searchString } from "./searchString.ts";
+
 /** The known names in a comma-separated parameter, in their usual order. */
 export function namesFromParam<K extends string>(value: string | null, known: readonly K[]): K[] {
   const asked = new Set((value ?? "").split(",").map((s) => s.trim()));
@@ -14,6 +16,5 @@ export function searchWithSelection(search: string, tab: "sensor" | "sampling", 
   put("tab", tab === "sampling" ? "sampling" : "");
   put("groups", groups.join(","));
   put("creeks", creeks.join(","));
-  const s = q.toString().replace(/%2C/gi, ","); // commas are fine in a query string, and easier to read
-  return s ? `?${s}` : "";
+  return searchString(q);
 }
