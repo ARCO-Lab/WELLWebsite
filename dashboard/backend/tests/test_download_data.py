@@ -8,6 +8,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import types
 from unittest import TestCase, main, mock
 
@@ -51,6 +52,19 @@ class BookkeepingTests(TestCase):
         self.assertEqual(download_data.run_status(0, 0, 0), "NO_FILES_PROCESSED")
         self.assertEqual(download_data.run_status(3, 1, 1), "REJECTED_1_FILES")
         self.assertEqual(download_data.run_status(3, 0, 2), "FAILED_2_FILES")
+
+    def test_state_is_written_whole_or_not_at_all(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(pathlib.Path(folder, "processed.json"))
+            state = empty_state()
+            download_data.record(state, OLD, "processed", scope={"sites": ["1"]})
+            with mock.patch.object(download_data, "STATE_FILE", path), contextlib.redirect_stdout(io.StringIO()):
+                download_data.save_state(state)
+                self.assertEqual(json.loads(pathlib.Path(path).read_text())["processed_files"][0]["id"], 1)
+                # A write that fails part-way (here an entry that can't be written as JSON) leaves the file as it was
+                download_data.record(state, NEW, "processed", scope={"sites": {"not", "json"}})
+                download_data.save_state(state)
+            self.assertEqual([f["id"] for f in json.loads(pathlib.Path(path).read_text())["processed_files"]], [1])
 
     def test_record_moves_a_file_between_lists(self):
         state = empty_state()

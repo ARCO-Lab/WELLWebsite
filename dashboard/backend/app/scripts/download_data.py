@@ -78,9 +78,11 @@ def save_state(state):
     """Save the state file (see load_state)."""
     print(f"DEBUG: Saving {len(state['processed_files'])} processed and {len(state['refused_files'])} refused files")
     try:
-        with open(STATE_FILE, "w") as f:
+        # Written to a temporary file and renamed, so a crash or a full disk leaves the previous state intact
+        with open(STATE_FILE + ".tmp", "w") as f:
             json.dump({"processed_files": state["processed_files"], "refused_files": state["refused_files"]}, f,
                       indent=2)
+        os.replace(STATE_FILE + ".tmp", STATE_FILE)
         print(f"DEBUG: Saved state to {STATE_FILE}")
     except Exception as e:
         print(f"ERROR: Failed to save {STATE_FILE}: {e}")
