@@ -344,4 +344,29 @@ function well_remove_auto_sizes_from_content_images($content) {
 }
 add_filter('the_content', 'well_remove_auto_sizes_from_content_images', 20);
 
+/**
+ * Count page views with GoatCounter (https://www.goatcounter.com): no cookies, nothing stored in the browser, and
+ * GoatCounter keeps only aggregated counts. The site shares one GoatCounter site with the dashboard, so each path is
+ * counted with the host in front ("well.mcmaster.ca/news/"), which keeps the two sites' "/" apart. Query strings are
+ * left out of the path. Nothing is counted for logged-in users (editors checking their pages), in previews, or on
+ * any host other than well.mcmaster.ca (count.js also skips localhost and pages shown inside a frame).
+ */
+function well_goatcounter_script() {
+    if (is_admin() || is_user_logged_in() || is_preview() || is_customize_preview()) {
+        return;
+    }
+    ?>
+<script>
+window.goatcounter = {
+    path: function (p) {
+        var host = location.hostname.replace(/^www\./, '');
+        return host === 'well.mcmaster.ca' ? host + p.split(/[?#]/)[0] : null;
+    }
+};
+</script>
+<script data-goatcounter="https://well.goatcounter.com/count" async src="https://gc.zgo.at/count.js"></script>
+    <?php
+}
+add_action('wp_footer', 'well_goatcounter_script');
+
 ?>
