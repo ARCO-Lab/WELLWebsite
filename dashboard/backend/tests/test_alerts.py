@@ -775,6 +775,7 @@ class PostgresTests(unittest.TestCase):
         cls.ctx.pop()
 
     def setUp(self):
+        self.db.session.remove()   # a session left open by the previous test would block TRUNCATE
         with self.db.engine.begin() as conn:
             conn.exec_driver_sql("TRUNCATE alert_incidents, vendor_status, sensor_measurements")
 
@@ -863,19 +864,20 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(self.db.session.execute(self.db.text(
             "SELECT count(*) FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).scalar(), 1)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_wqdata_failing_on_page_two_keeps_page_one_and_fails_the_run(self):
         from utils.alert_state import vendor_statuses
         stamp = (dt.datetime.now(UTC) - dt.timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
         page_one = reply(200, {"data": [{"timestamp": stamp, "values": [{"parameterId": 125001, "value": "8.5"}]}],
                                "info": {"more": True, "lastDataPointTimestamp": stamp, "count": 1, "total": 2}})
-        with self.assertRaisesRegex(RuntimeError, "WQData request failed: HTTPError \\(HTTP 503\\)"):
+        with self.assertRaisesRegex(RuntimeError, "ingestion failed for: WQData$"):
             self.ingest_with(reply(200, {"data": []}), [page_one, reply(503)])
         self.db.session.remove()
         stored = self.db.session.execute(self.db.text(
             "SELECT measurement_type, value FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).all()
         self.assertEqual([tuple(r) for r in stored], [("Water Temperature", 8.5)])
-        self.assertEqual(vendor_statuses()["WQData"]["consecutive_failures"], 1)
+        row = vendor_statuses()["WQData"]
+        self.assertEqual((row["consecutive_failures"], row["last_error"]), (1, "HTTPError (HTTP 503)"))
+
+
+if __name__ == "__main__":
+    unittest.main()
