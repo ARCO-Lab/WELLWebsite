@@ -6,7 +6,8 @@
 // Each iteration is one page view by a new visitor (no browser cache, its own IP address):
 //   1. the page, then /api/latest and /api/recent at once, as the page does on load;
 //   2. a few seconds later, the chart overview for the groups and days picked: half the time a range ending today
-//      (1 day, 1 week, 1 month or 1 year: views many visitors share, so mostly answered from the Redis cache),
+//      (1 day, 1 week, 1 month or 1 year: views many visitors share; these requests have no bucket=, so the backend
+//      computes them every time, as only tile requests are cached),
 //      otherwise the same lengths ending on a random day of the history (almost always computed afresh);
 //   3. 3-5 zooms, each a detail request for the window plus half its width either side, as useChartSeries makes
 //      (only when the window needs finer buckets than the overview, as in the browser);
