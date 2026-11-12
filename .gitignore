@@ -64,6 +64,8 @@ well-vm/
 
 # Nightly database dumps (scripts/backup_db.py), bind-mounted into the worker
 /backups/
+# Nightly WordPress backups (wordpress/backup.sh)
+/wp-backups/
 
 # deploy.sh: its lock, the problem it last reported, and the last commit it rolled back
 /.deploy-state/

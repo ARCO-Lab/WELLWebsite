@@ -14,15 +14,16 @@ Docker image the VM builds. Its jobs:
 | Dashboard build | `npx tsc --noEmit`, `npm test` (chart helpers, site time, the tile loader, the backend proxy), `npm run build` and `npm run lint`. |
 | Dashboard image | The dashboard image builds and starts and serves the dashboard. |
 | End-to-end data (vendors to browser) | Vendor fixtures through the real ingestion, PostgreSQL, the backend and the built dashboard, to what a browser shows and downloads, in three browser time zones ([dashboard/frontend/README.md](../../dashboard/frontend/README.md#end-to-end-tests)). |
-| Lint Python, shell and compose | ruff's pyflakes rules on the backend and the CI scripts, the `.github/scripts` unit tests (Sentry issues, daily maintainer), shellcheck on `deploy.sh` and the CI and load-test scripts, `docker compose config`, the WordPress Apache/PHP config files in the image compose runs, and `php -l` on every PHP file of the theme (`home/wp-content/themes/well`) in that image. |
+| Lint Python, shell and compose | ruff's pyflakes rules on the backend and the CI scripts, the `.github/scripts` unit tests (Sentry issues, daily maintainer), shellcheck on `deploy.sh`, `wordpress/backup.sh` and the CI and load-test scripts, the WordPress backup's tests (`test_wordpress_backup.sh`: stub `docker` and `curl`, then a throwaway MySQL 5.7), `docker compose config`, the WordPress Apache/PHP config files in the image compose runs, and `php -l` on every PHP file of the theme (`home/wp-content/themes/well`) in that image. |
 | Deploy script | `deploy.sh` in a sandbox (`test_deploy.sh`: a fake remote and stub `docker` and `curl`), and `canary_issue.sh` against a stub `gh`. |
 
 `deploy.sh --auto` waits for every job except the lint job before deploying a commit
 ([docs/deploying.md](../../docs/deploying.md#automatic-deploys---auto)). How to keep the lint job and GitHub's
 code-quality bot quiet in backend code is in [dashboard/backend/README.md](../../dashboard/backend/README.md#local-setup).
 
-A new push to a pull request cancels the older CI run on it. Runs on `main` are never cancelled, because `--auto`
-counts a cancelled check as failed and wouldn't deploy that commit.
+A new push to a pull request cancels the older CI run on it. Runs on `main` are never cancelled or replaced, because
+`--auto` counts a cancelled check as failed and wouldn't deploy that commit: each commit on `main` gets its own
+concurrency group, so its run neither cancels nor waits behind another.
 
 Every third-party action is pinned to a full commit SHA, with its release in a comment
 (`actions/checkout@<sha>  # v7.0.1`), so a moved or replaced tag can't change what runs; this matters most in
