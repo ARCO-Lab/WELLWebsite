@@ -1,10 +1,13 @@
 # Backs up the PostgreSQL database with pg_dump (custom format, compressed) into BACKUP_DIR, checks that the dump
-# can be read back and holds the main tables' data, then deletes old dumps. scripts/scheduler_temp.py runs it every
+# can be read back and holds the main tables' data, and that those tables haven't been emptied or lost many rows
+# since the last good backup, then deletes old dumps. scripts/scheduler_temp.py runs it every
 # night at 03:15 Toronto time; it can also be run by hand in the worker container.
 #
 #   python scripts/backup_db.py                   back up now, then apply retention
 #   python scripts/backup_db.py --no-prune        back up, delete nothing
 #   python scripts/backup_db.py --prune-only      apply retention to the existing dumps only
+#   python scripts/backup_db.py --accept-row-counts   back up, and accept tables that were emptied or shrank (see
+#                                                 BACKUP_MAX_SHRINK_PCT) as the new reference
 #
 # Settings (environment):
 #   DATABASE_URL            the database to dump (the app's own URL; the password goes to pg_dump through a
@@ -17,6 +20,13 @@
 #                           the app connects as postgres, which reads everything). A comma-separated list leaves
 #                           out exactly those; an empty value leaves out nothing.
 #   BACKUP_EXPECT_TABLES    tables the dump must hold data for (default sensor_measurements,sampling_measurements)
+#   BACKUP_MAX_SHRINK_PCT   before dumping, those tables' rows are counted (exactly when small, the planner's
+#                           estimate when large) and compared with the counts at the last good backup, kept in
+#                           .row-counts.json in BACKUP_DIR. A table that is empty, or has more than this many percent
+#                           fewer rows (default 5, see utils/backup.py), fails the run: the dump is still written
+#                           and checked, but old dumps are not deleted and the counts are not recorded, so every
+#                           night fails until someone looks. If the rows were removed on purpose, run once with
+#                           --accept-row-counts. "off" turns the comparison off.
 #   BACKUP_MIN_FREE_MB      free space to leave on the disk after a dump the size of the last one (default 2048):
 #                           the database usually shares the disk, and must never be the one to run out
 #   PG_BIN_DIR              where pg_dump and pg_restore are (default /usr/lib/postgresql/13/bin, else PATH)
@@ -25,8 +35,9 @@
 # written as .welldb-*.partial and renamed once it is complete and checked, so a failed run leaves no file that
 # looks like a backup; one left by a run that was killed is deleted by the next run. Only one run at a time: a run
 # holds a lock (.backup.lock in BACKUP_DIR) and another one refuses to start.
-# Exit code 0 means a checked dump was written (tables left out because the role can't read them, and a failure of
-# the retention step after it, are printed as WARNING: lines); 1 means it wasn't, and the reason is printed.
+# Exit code 0 means a checked dump was written (tables left out because the role can't read them, row counts accepted
+# with --accept-row-counts, and a failure of the retention step after it, are printed as WARNING: lines); 1 means it
+# wasn't, or that a table was emptied or shrank, and the reason is printed.
 
 import argparse
 import fcntl
@@ -44,9 +55,10 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 import psycopg2  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, csv_setting, dump_name, dumps_in, dumps_to_prune, exclusion_setting,
-    human_size, libpq_env, missing_tables, owned_sequences, parse_database_url, pg_tool, quoted_pattern,
-    remove_stale_passfiles, run_tool, stale_partials, table_data_entries, unreadable_relations,
+    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, DEFAULT_MAX_SHRINK_PCT, count_rows, csv_setting, dump_name, dumps_in,
+    dumps_to_prune, exclusion_setting, human_size, libpq_env, load_row_counts, missing_tables, owned_sequences,
+    parse_database_url, pg_tool, quoted_pattern, remove_stale_passfiles, row_count_problems, run_tool,
+    save_row_counts, stale_partials, table_data_entries, unreadable_relations,
 )
 
 SITE_TZ = ZoneInfo("America/Toronto")
@@ -61,6 +73,10 @@ LOCK_NAME = ".backup.lock"
 
 class BackupError(Exception):
     """A backup that failed for a reason worth reporting as is (no traceback needed)."""
+
+
+class RowCountError(BackupError):
+    """The dump was written and checked, but a table it must hold was emptied or lost many rows."""
 
 
 def int_setting(name, default, minimum=0):
@@ -80,6 +96,31 @@ def tool_error(what, error):
         return BackupError(f"{what} was stopped after {error.timeout // 60:.0f} min without finishing")
     stderr = (error.stderr or "").strip()[-1500:]
     return BackupError(f"{what} failed with exit code {error.returncode}: {stderr or '(no output)'}")
+
+
+def shrink_setting():
+    """BACKUP_MAX_SHRINK_PCT as a whole number of percent, or None when it is "off"."""
+    raw = os.getenv("BACKUP_MAX_SHRINK_PCT", "").strip()
+    if raw.lower() == "off":
+        return None
+    return int_setting("BACKUP_MAX_SHRINK_PCT", DEFAULT_MAX_SHRINK_PCT)
+
+
+def check_row_counts(directory, settings, expected, max_shrink_pct, log=print):
+    """Count the `expected` tables' rows now and compare them with the last good backup's. Returns (counts,
+    problems), problems being a list of messages (row_count_problems)."""
+    try:
+        counts = count_rows(settings, expected)
+        previous = load_row_counts(directory)
+    except psycopg2.Error as e:
+        raise BackupError(f"could not count the rows of {', '.join(expected)}: {str(e).strip()}")
+    except ValueError as e:
+        raise BackupError(f"{e}. Delete it to start comparing afresh from this backup on.")
+    now_text = ", ".join(f"{table} {'(missing)' if rows is None else f'{rows:,}'}" for table, rows in counts.items())
+    before_text = (", ".join(f"{table} {rows:,}" for table, rows in previous.items()) if previous
+                   else "no earlier count to compare with")
+    log(f"Rows now: {now_text} (last good backup: {before_text})")
+    return counts, row_count_problems(counts, previous, max_shrink_pct)
 
 
 def check_free_space(directory, previous_size, min_free_mb):
@@ -177,13 +218,20 @@ def exclusions(settings, exclude, warn=warn_stderr):
     return exclude, patterns
 
 
-def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=print, warn=warn_stderr):
+def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=print, warn=warn_stderr,
+            max_shrink_pct=None, accept_row_counts=False):
     """Dump the database into `directory` and check the dump. Returns the path of the new dump. `exclude` is a list
-    of tables or AUTO_EXCLUDE (see exclusions). The caller holds the backup lock (take_lock)."""
+    of tables or AUTO_EXCLUDE (see exclusions). With `max_shrink_pct` (see BACKUP_MAX_SHRINK_PCT), the `expected`
+    tables' rows are counted before the dump, and if one was emptied or shrank by more than that, RowCountError is
+    raised once the dump is written and checked (the dump is kept), unless `accept_row_counts`. The caller holds
+    the backup lock (take_lock)."""
     remove_leftovers(directory, log)
     existing = dumps_in(os.listdir(directory))
     previous_size = os.path.getsize(os.path.join(directory, existing[0][1])) if existing else 0
     check_free_space(directory, previous_size, min_free_mb)
+    counts, problems = None, []
+    if max_shrink_pct is not None:
+        counts, problems = check_row_counts(directory, settings, expected, max_shrink_pct, log)
 
     now = now or datetime.now(SITE_TZ)
     final = pathlib.Path(directory) / dump_name(now)
@@ -209,6 +257,16 @@ def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=p
         if partial.exists():
             partial.unlink()
     log(f"Backup written: {final} ({human_size(final.stat().st_size)})")
+    if counts is not None:
+        if problems and not accept_row_counts:
+            # Not recording these counts keeps the comparison with the last good backup, so the next nights fail too
+            raise RowCountError(
+                f"{'; '.join(problems)}. The dump {final.name} was written and checked, but old dumps were not "
+                f"deleted and these counts were not recorded, so every backup fails until this is looked at. If the "
+                f"rows were removed on purpose, run python scripts/backup_db.py --accept-row-counts once.")
+        if problems:
+            warn(f"row counts accepted with --accept-row-counts: {'; '.join(problems)}")
+        save_row_counts(directory, counts, final.name, now)
     return final
 
 
@@ -225,6 +283,9 @@ def main(argv=None):
     parser.add_argument("--dir", default=os.getenv("BACKUP_DIR", "/app/backups"), help="backup directory")
     parser.add_argument("--no-prune", action="store_true", help="don't delete old dumps")
     parser.add_argument("--prune-only", action="store_true", help="only apply retention to the existing dumps")
+    parser.add_argument("--accept-row-counts", action="store_true",
+                        help="accept tables that were emptied or shrank since the last good backup as the new "
+                             "reference (when the rows were removed on purpose)")
     args = parser.parse_args(argv)
     signal.signal(signal.SIGTERM, stop_on_sigterm)
     try:
@@ -246,7 +307,8 @@ def run(args, keep_daily, keep_weekly):
             settings = parse_database_url(os.getenv("DATABASE_URL", "").strip())
             exclude = exclusion_setting()
             expected = csv_setting(os.getenv("BACKUP_EXPECT_TABLES", DEFAULT_EXPECT_TABLES))
-            back_up(args.dir, settings, exclude, expected, int_setting("BACKUP_MIN_FREE_MB", 2048))
+            back_up(args.dir, settings, exclude, expected, int_setting("BACKUP_MIN_FREE_MB", 2048),
+                    max_shrink_pct=shrink_setting(), accept_row_counts=args.accept_row_counts)
     except (BackupError, ValueError, RuntimeError, OSError) as e:
         print(f"ERROR: backup failed: {e}", file=sys.stderr)
         return 1

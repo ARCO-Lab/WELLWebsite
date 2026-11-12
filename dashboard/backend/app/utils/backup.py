@@ -4,6 +4,7 @@ They connect pg_dump, pg_restore and psql through libpq environment variables an
 the database password never appears on a command line (where `ps` shows it) or in a log.
 """
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -36,6 +37,20 @@ DUMP_TIME_FORMAT = "%Y%m%d-%H%M"
 AUTO_EXCLUDE = "auto"
 # Tables a dump must hold data for, or it counts as failed.
 DEFAULT_EXPECT_TABLES = "sensor_measurements,sampling_measurements"
+
+# Row counts of those tables at the last good backup, compared with the counts before each new dump (a dump of an
+# emptied table still lists TABLE DATA for it, so the dump's own check can't see that rows went missing). The file
+# sits in the backup folder, next to the dumps it describes.
+ROW_COUNTS_NAME = ".row-counts.json"
+# A table with fewer rows than this many percent below its count at the last good backup fails the backup
+# (BACKUP_MAX_SHRINK_PCT). These tables only grow: readings are added, and the only routine deletions are a handful
+# of sentinel rows (scripts/clean_sentinels.py) or a sampling reload with about as many rows. Large tables are
+# counted with the planner's estimate, which drifts by a percent or so between ANALYZE runs, so 5% stays clear of
+# that noise and still catches the loss of a few weeks of data or more.
+DEFAULT_MAX_SHRINK_PCT = 5
+# Tables estimated below this many rows are counted exactly with count(*) (well under a second); larger ones use
+# the estimate (pg_class.reltuples, which autovacuum and ANALYZE keep current), so the check stays cheap.
+EXACT_COUNT_LIMIT = 1_000_000
 
 # pg_dump and pg_restore of the server's major version (13 on the VM), installed in the image from the PostgreSQL
 # apt repository (Dockerfile). A newer pg_dump writes archives that an older pg_restore can't read, so the
@@ -302,6 +317,92 @@ def missing_tables(listing, expected):
     entries = table_data_entries(listing)
     names = {table for _, table in entries} | {f"{schema}.{table}" for schema, table in entries}
     return [table for table in expected if table not in names]
+
+
+# The planner's row estimate and the exact name of a table given as name or schema.name (None if there is none)
+_TABLE_ESTIMATE_SQL = """
+SELECT n.nspname, c.relname, c.reltuples::bigint
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = to_regclass(%s)
+"""
+
+
+def count_rows(settings, tables, exact_limit=EXACT_COUNT_LIMIT):
+    """{table: rows} for `tables` (names or schema.name): exact (count(*)) for tables the planner estimates under
+    `exact_limit` rows, the estimate for larger ones, and always exactly 0 for a table with no row at all (an
+    emptied table's estimate can lag until autovacuum runs). None for a table that doesn't exist. Read-only."""
+    import psycopg2
+    from psycopg2 import sql
+    conn = psycopg2.connect(**psycopg2_kwargs(settings))
+    counts = {}
+    try:
+        conn.set_session(readonly=True, autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '5min'")
+            for table in tables:
+                cur.execute(_TABLE_ESTIMATE_SQL, (table,))
+                found = cur.fetchone()
+                if found is None:
+                    counts[table] = None
+                    continue
+                schema, name, estimate = found
+                relation = sql.Identifier(schema, name)
+                cur.execute(sql.SQL("SELECT EXISTS (SELECT 1 FROM {})").format(relation))
+                if not cur.fetchone()[0]:
+                    counts[table] = 0
+                elif estimate < exact_limit:
+                    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(relation))
+                    counts[table] = cur.fetchone()[0]
+                else:
+                    counts[table] = int(estimate)
+    finally:
+        conn.close()
+    return counts
+
+
+def row_count_problems(counts, previous, max_shrink_pct):
+    """What is wrong with `counts` (from count_rows) compared with `previous`, the counts at the last good backup
+    ({} if none): a table that doesn't exist, one that is empty (unless it was empty then too), or one with more
+    than `max_shrink_pct` percent fewer rows than then. One message per table; [] when all is well."""
+    problems = []
+    for table, rows in counts.items():
+        before = previous.get(table)
+        if rows is None:
+            problems.append(f"{table} does not exist")
+        elif rows == 0 and before != 0:
+            problems.append(f"{table} is empty" + (f" (it had {before:,} rows at the last good backup)" if before
+                                                   else ""))
+        elif before and rows < before * (1 - max_shrink_pct / 100):
+            problems.append(f"{table} has {rows:,} rows, {100 * (before - rows) / before:.0f}% fewer than the "
+                            f"{before:,} at the last good backup")
+    return problems
+
+
+def load_row_counts(directory):
+    """The counts recorded at the last good backup in `directory` ({} if none were recorded). ValueError if the
+    file can't be read as such."""
+    path = os.path.join(directory, ROW_COUNTS_NAME)
+    try:
+        with open(path, encoding="utf-8") as f:
+            counts = json.load(f).get("counts")
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, AttributeError) as e:
+        raise ValueError(f"{path} can't be read ({e})") from None
+    if not isinstance(counts, dict) or not all(isinstance(v, int) for v in counts.values()):
+        raise ValueError(f"{path} doesn't hold row counts")
+    return counts
+
+
+def save_row_counts(directory, counts, dump, when):
+    """Record `counts` as those of the good backup `dump` (a file name) made at `when`. Written to a temporary file
+    and renamed, so a crash leaves the previous record intact."""
+    path = os.path.join(directory, ROW_COUNTS_NAME)
+    record = {"dump": dump, "recorded_at": when.isoformat(timespec="seconds"),
+              "counts": {table: rows for table, rows in counts.items() if rows is not None}}
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2)
+    os.replace(path + ".tmp", path)
 
 
 def run_tool(cmd, env, timeout):

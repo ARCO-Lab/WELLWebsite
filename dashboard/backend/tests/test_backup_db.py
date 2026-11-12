@@ -110,6 +110,50 @@ class ListingTests(unittest.TestCase):
         self.assertEqual(backup.missing_tables(LISTING, ["sensor_measurements", "export_jobs"]), ["export_jobs"])
 
 
+class RowCountTests(unittest.TestCase):
+    """The comparison of the key tables' rows with the last good backup's (pg_dump lists data for an empty table)."""
+
+    def test_growth_and_small_drops_pass(self):
+        before = {"sensor_measurements": 1_000_000, "sampling_measurements": 300}
+        self.assertEqual(backup.row_count_problems({"sensor_measurements": 1_000_500, "sampling_measurements": 300},
+                                                   before, 5), [])
+        self.assertEqual(backup.row_count_problems({"sensor_measurements": 960_000, "sampling_measurements": 290},
+                                                   before, 5), [])   # 4% and 3.3% fewer: within the estimate's drift
+
+    def test_an_emptied_or_shrunk_table_fails(self):
+        before = {"sensor_measurements": 1_000_000, "sampling_measurements": 300}
+        problems = backup.row_count_problems({"sensor_measurements": 900_000, "sampling_measurements": 0}, before, 5)
+        self.assertEqual(problems, [
+            "sensor_measurements has 900,000 rows, 10% fewer than the 1,000,000 at the last good backup",
+            "sampling_measurements is empty (it had 300 rows at the last good backup)"])
+
+    def test_without_an_earlier_count_only_an_empty_or_missing_table_fails(self):
+        self.assertEqual(backup.row_count_problems({"a": 5, "b": 0, "c": None}, {}, 5),
+                         ["b is empty", "c does not exist"])
+
+    def test_an_accepted_empty_table_stays_accepted(self):
+        self.assertEqual(backup.row_count_problems({"sampling_measurements": 0}, {"sampling_measurements": 0}, 5), [])
+
+    def test_counts_are_saved_and_read_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(backup.load_row_counts(directory), {})
+            backup.save_row_counts(directory, {"a": 12, "missing": None}, "welldb-20261111-0315.dump",
+                                   dt.datetime(2026, 11, 11, 3, 15))
+            self.assertEqual(backup.load_row_counts(directory), {"a": 12})
+            self.assertEqual(os.listdir(directory), [backup.ROW_COUNTS_NAME])   # no temporary file left
+            pathlib.Path(directory, backup.ROW_COUNTS_NAME).write_text("not json")
+            with self.assertRaises(ValueError):
+                backup.load_row_counts(directory)
+
+    def test_the_setting(self):
+        import backup_db
+        for raw, expected in (("", backup.DEFAULT_MAX_SHRINK_PCT), (" OFF ", None), ("20", 20)):
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, {"BACKUP_MAX_SHRINK_PCT": raw}):
+                self.assertEqual(backup_db.shrink_setting(), expected)
+        with mock.patch.dict(os.environ, {"BACKUP_MAX_SHRINK_PCT": "five"}), self.assertRaises(backup_db.BackupError):
+            backup_db.shrink_setting()
+
+
 class SchedulerTests(unittest.TestCase):
     def setUp(self):
         sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
@@ -206,6 +250,7 @@ class ScriptTests(unittest.TestCase):
         self.env = {**os.environ, "PG_BIN_DIR": str(self.bin), "TMPDIR": str(self.temp), "SENTRY_DSN": "",
                     "DATABASE_URL": "postgresql+psycopg2://welluser:s3cret@127.0.0.1:1/welldb",
                     "BACKUP_EXCLUDE_TABLES": "",   # nothing to exclude, so no catalog lookup (no database here)
+                    "BACKUP_MAX_SHRINK_PCT": "off",   # no row counts either (RowCountTests and RoundTrip cover them)
                     "BACKUP_MIN_FREE_MB": "0", "FAKE_LISTING": str(root / "listing"), "FAKE_MARKER": str(self.marker)}
 
     def start(self, *args, **env):
@@ -399,7 +444,8 @@ class RoundTrip(unittest.TestCase):
                                      BACKUP_EXCLUDE_TABLES="")
             self.assertEqual(failed.returncode, 1)
             self.assertIn("permission denied", failed.stderr)
-            self.assertEqual(sorted(n for n in os.listdir(directory) if n != ".backup.lock"), dumps)
+            self.assertEqual(sorted(n for n in os.listdir(directory)
+                                    if n not in (".backup.lock", backup.ROW_COUNTS_NAME)), dumps)
 
     def listing(self, path):
         return subprocess.run([backup.pg_tool("pg_restore"), "--list", path], capture_output=True, text=True,
@@ -428,6 +474,61 @@ class RoundTrip(unittest.TestCase):
             drill = self.run_script("restore_check.py", "--dir", directory, "--database", self.RESTORED)
             self.assertEqual(drill.returncode, 1)
             self.assertIn("CREATEDB", drill.stderr)
+
+    def source_sql(self, statement):
+        """Run `statement` in the source database as the owner role."""
+        conn = self.psycopg2.connect(**backup.psycopg2_kwargs(backup.with_database(self.admin, self.SOURCE)))
+        with conn, conn.cursor() as cur:
+            cur.execute(f"SET ROLE {self.ROLE}")
+            cur.execute(statement)
+        conn.close()
+
+    def test_an_emptied_or_shrunk_table_fails_the_backup_until_accepted(self):
+        # A table of its own (BACKUP_EXPECT_TABLES), so the other tests' data stays as it is
+        self.source_sql("CREATE TABLE shrink_check (id int); INSERT INTO shrink_check SELECT generate_series(1, 100)")
+        self.addCleanup(self.source_sql, "DROP TABLE IF EXISTS shrink_check")
+        expect = {"BACKUP_EXPECT_TABLES": "shrink_check,sensor_measurements"}
+        with tempfile.TemporaryDirectory() as directory:
+            def dumps():
+                return [name for _, name in backup.dumps_in(os.listdir(directory))]
+
+            def run(*args):
+                return self.run_script("backup_db.py", "--dir", directory, *args, **expect)
+
+            first = run()
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn("Rows now: shrink_check 100, sensor_measurements 500 (last good backup: no earlier count",
+                          first.stdout)
+            self.assertEqual(backup.load_row_counts(directory), {"shrink_check": 100, "sensor_measurements": 500})
+
+            # 4% fewer rows passes (within BACKUP_MAX_SHRINK_PCT's default 5%), and becomes the new reference
+            self.source_sql("DELETE FROM shrink_check WHERE id <= 4")
+            self.assertEqual(run("--no-prune").returncode, 0)
+            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 96)
+
+            # 50% fewer: the dump is written and checked, but the run fails and the counts aren't recorded
+            self.source_sql("DELETE FROM shrink_check WHERE id <= 52")
+            shrunk = run()
+            self.assertEqual(shrunk.returncode, 1)
+            self.assertIn("shrink_check has 48 rows, 50% fewer than the 96 at the last good backup", shrunk.stderr)
+            self.assertIn("--accept-row-counts", shrunk.stderr)
+            self.assertIn("Backup written", shrunk.stdout)
+            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 96)
+
+            # Emptied: still failing, also on the next run
+            self.source_sql("TRUNCATE shrink_check")
+            for _ in range(2):
+                emptied = run("--no-prune")
+                self.assertEqual(emptied.returncode, 1)
+                self.assertIn("shrink_check is empty (it had 96 rows at the last good backup)", emptied.stderr)
+
+            # Accepted on purpose: a warning, the new counts recorded, and the next run passes
+            accepted = run("--no-prune", "--accept-row-counts")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertIn("WARNING: row counts accepted with --accept-row-counts: shrink_check is empty", accepted.stderr)
+            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 0)
+            self.assertEqual(run("--no-prune").returncode, 0)
+            self.assertTrue(dumps())
 
 
 class ExclusionSettingTests(unittest.TestCase):

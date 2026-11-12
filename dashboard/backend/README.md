@@ -540,6 +540,14 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
   2 h for the whole run. Only one backup runs at a time (a lock file, `.backup.lock`). If deleting old dumps fails
   after a good backup, the run still counts as a success and logs a `WARNING:` line, which also goes to Sentry as a
   warning.
+- **Row counts**: a dump of an emptied table still lists data for it, so before dumping, the job also counts the
+  rows of those tables (exactly for tables under a million rows, PostgreSQL's estimate for larger ones) and compares
+  them with the counts at the last good backup, kept in `backups/.row-counts.json`. If a table is empty or has more
+  than 5% fewer rows (`BACKUP_MAX_SHRINK_PCT`; these tables only grow, and 5% is well above the estimate's drift),
+  the dump is still written and checked, but the run fails (`/fail` ping, Sentry), no old dump is deleted and the
+  counts aren't recorded, so the following nights fail too until someone looks. If the rows were removed on
+  purpose, run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it records the new
+  counts, with a `WARNING:` line naming what was accepted. `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off.
 - **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks
   (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only
   after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`)
