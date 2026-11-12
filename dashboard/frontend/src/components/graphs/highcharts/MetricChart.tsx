@@ -57,6 +57,11 @@ const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture unti
 const HINT_EVERY_MS = 30_000;
 const NAV_HANDLE_PX = 14; // how near a navigator handle a finger must land to take it
 const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
+// Axis dates on the 24-hour clock, like the rest of the dashboard (Highcharts would follow the browser locale: 1 PM)
+const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
+  millisecond: '%H:%M:%S', second: '%H:%M:%S', minute: '%H:%M', hour: '%H:%M', day: '%b %e', week: '%b %e',
+  month: "%b '%y", year: '%Y',
+};
 const EXTENT_ID = 'picked-range'; // the invisible series that spans the picked range
 
 // What a series is, for the tooltip and legend.
@@ -191,7 +196,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       maskFill: 'rgba(122, 0, 60, 0.12)',
       outlineColor: '#d1d5db',
       handles: { backgroundColor: '#ffffff', borderColor: '#7a003c', height: 18, width: 9 },
-      xAxis: { labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#6b7280' } } },
+      xAxis: { dateTimeLabelFormats: DATE_FORMATS, labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#6b7280' } } },
     },
     // liveRedraw (for the navigator too): on touch screens the chart redraws when the finger lifts
     scrollbar: { enabled: true, liveRedraw: !coarse, height: coarse ? 12 : 10, barBorderRadius: 5, buttonBorderRadius: 5, trackBorderRadius: 5 },
@@ -235,6 +240,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       minRange: MIN_RANGE_MS,
       crosshair: { width: 1, color: '#9ca3af' },
       title: { text: null },
+      dateTimeLabelFormats: DATE_FORMATS,
       labels: { style: { fontFamily: FONT, fontSize: '10px' } },
       events: {
         // The navigator, its scrollbar and the plot move the axis themselves: tell the controller, which loads that
