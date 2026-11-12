@@ -14,12 +14,20 @@ Docker image the VM builds. Its jobs:
 | Dashboard build | `npx tsc --noEmit`, `npm test` (chart helpers, site time, the tile loader, the backend proxy), `npm run build` and `npm run lint`. |
 | Dashboard image | The dashboard image builds and starts and serves the dashboard. |
 | End-to-end data (vendors to browser) | Vendor fixtures through the real ingestion, PostgreSQL, the backend and the built dashboard, to what a browser shows and downloads, in three browser time zones ([dashboard/frontend/README.md](../../dashboard/frontend/README.md#end-to-end-tests)). |
-| Lint Python, shell and compose | ruff's pyflakes rules on the backend and the CI scripts, the `.github/scripts` unit tests (Sentry issues, daily maintainer), shellcheck on `deploy.sh` and the CI and load-test scripts, `docker compose config`, and the WordPress Apache/PHP config files in the image compose runs. |
+| Lint Python, shell and compose | ruff's pyflakes rules on the backend and the CI scripts, the `.github/scripts` unit tests (Sentry issues, daily maintainer), shellcheck on `deploy.sh` and the CI and load-test scripts, `docker compose config`, the WordPress Apache/PHP config files in the image compose runs, and `php -l` on every PHP file of the theme (`home/wp-content/themes/well`) in that image. |
 | Deploy script | `deploy.sh` in a sandbox (`test_deploy.sh`: a fake remote and stub `docker` and `curl`), and `canary_issue.sh` against a stub `gh`. |
 
 `deploy.sh --auto` waits for every job except the lint job before deploying a commit
 ([docs/deploying.md](../../docs/deploying.md#automatic-deploys---auto)). How to keep the lint job and GitHub's
 code-quality bot quiet in backend code is in [dashboard/backend/README.md](../../dashboard/backend/README.md#local-setup).
+
+A new push to a pull request cancels the older CI run on it. Runs on `main` are never cancelled, because `--auto`
+counts a cancelled check as failed and wouldn't deploy that commit.
+
+Every third-party action is pinned to a full commit SHA, with its release in a comment
+(`actions/checkout@<sha>  # v7.0.1`), so a moved or replaced tag can't change what runs; this matters most in
+`maintainer-run.yml`, whose Claude step receives the maintainer's token. Dependabot updates the SHA and the comment
+together.
 
 ## API canary
 
@@ -170,7 +178,8 @@ repository variable `LOAD_TEST_WEEKLY` is `true`). What it runs and how to read 
 `.github/dependabot.yml` opens a few pull requests every Monday that bump dependencies, each checked by CI like any
 other pull request: the dashboard's npm packages, the end-to-end tests' npm packages, the backend's pip requirements
 (`requirements.txt` pins every package, dependencies included), the base images of the two images built on the
-server, and the actions used in these workflows. Minor and patch bumps are grouped into one pull request per
+server, the images `docker-compose.yml` runs as they are (MySQL, WordPress, Redis; changes to that file are deployed by
+hand, since `--auto` holds them), and the actions used in these workflows. Minor and patch bumps are grouped into one pull request per
 ecosystem; major bumps come one per pull request, so each breaking change is reviewed on its own. A few packages are
 held back on purpose; the file says which and why. WordPress core and plugins under `home/` are updated through
 WordPress itself, not by Dependabot.
