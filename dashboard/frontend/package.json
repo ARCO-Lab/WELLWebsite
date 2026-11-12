@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test scripts/chartWindow.test.mjs scripts/siteTime.test.mjs scripts/seriesLoader.test.mjs"
+    "test": "node --experimental-strip-types --test scripts/chartWindow.test.mjs scripts/siteTime.test.mjs scripts/seriesLoader.test.mjs scripts/proxyBackend.test.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
