@@ -1,19 +1,27 @@
 # Daily check that each vendor API still accepts our credentials and still answers in the shape ingestion reads.
 # Run by .github/workflows/canary.yml once a day; by hand from dashboard/backend: python app/scripts/api_canary.py
 #
-# Makes exactly one small request per data source, so it stays far inside every quota:
+# Makes a few small requests per data source, so it stays far inside every quota:
 #  - LI-COR (HOBOlink): the last few hours for the station's logger (weather and water-level sensors).
 #  - WQData: the last few hours of one device. WQData's hourly request quota is shared with the 10-minute
-#    ingestion, so this is a single request with no paging and no retries.
-#  - Borealis: the metadata of each dataset (the one downloads read and the one uploads add to), with our token.
+#    ingestion, so this is a single request with no paging and no retries. Only when it holds no points does the
+#    canary look further back (one day per request, at most a week) for the newest point, so the failure says
+#    when the device stopped reporting.
+#  - Borealis: first the token (/api/users/:me), then the metadata of each dataset (the one downloads read and the
+#    one uploads add to), so a rejected token and a dataset the token can't see give different messages.
 # Prints one line per source (OK or FAIL with the HTTP status and a reason) and exits 1 if any failed.
 # Never prints URLs, tokens, keys or response bodies: WQData takes its key in the query string, and requests'
-# error text includes the full URL, so errors are reported as exception type and HTTP status only.
+# error text includes the full URL, so errors are reported as exception type and HTTP status only. The one
+# exception is the Borealis host name (e.g. demo.borealisdata.ca), which says which server a token was tried on.
+# Persistent ids are named by their variable, not printed: in CI they are secrets, and GitHub drops a job output
+# that contains a secret's value, which would leave the issue without the result lines.
 
 import math
 import sys
 import pathlib
+import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -21,10 +29,17 @@ import requests
 
 from config import Config
 from api.services.quality import describe_request_error
-from utils.borealis import base_url
+from utils.borealis import base_url, is_demo
 
 WINDOW = timedelta(hours=6)    # recent enough to be cheap, long enough that a slow upload still shows data
 TIMEOUT = (10, 60)
+# Looking back for WQData's newest point, only after an empty window: one day per request (about 2,700 values, so
+# one page of WQData's ~5,000), newest day first, stopping at the first day with points. The shorter timeout keeps
+# a week of slow answers inside the workflow step's timeout.
+LOOKBACK_DAYS = 7
+LOOKBACK_TIMEOUT = (10, 20)
+WQ_PAUSE_S = 3.5          # WQData throttles bursts of requests (as QualityService.PAGE_PAUSE_S)
+sleep = time.sleep        # replaced in tests
 FMT = "%Y-%m-%d %H:%M:%S"
 
 # Copies of the values in utils/parsers.py, which can't be imported here without the database packages
@@ -46,6 +61,10 @@ WEATHER_SENSOR_NAMES = {"21948438-1": "Air Temperature", "21948438-2": "Relative
 
 class ShapeError(Exception):
     """The response parsed, but not in the shape ingestion depends on."""
+
+
+class NoRecentData(ShapeError):
+    """WQData answered in the expected shape, but with no points in the window."""
 
 
 # ---- Shape checks: pure functions on a parsed response body. Each returns a short summary or raises ShapeError.
@@ -142,7 +161,7 @@ def check_wqdata(body):
         raise ShapeError("no 'info' object (used for paging)")
     points = body["data"]
     if not points:
-        raise ShapeError(f"no data points in the last {WINDOW.total_seconds() / 3600:g} h")
+        raise NoRecentData(f"no data points in the last {WINDOW.total_seconds() / 3600:g} h")
     known = 0
     for i, p in enumerate(points):
         if not isinstance(p, dict) or not isinstance(p.get("values"), list):
@@ -180,9 +199,9 @@ def check_borealis(body):
 
 # ---- Requests
 
-def get_json(url, **kwargs):
+def get_json(url, timeout=TIMEOUT, **kwargs):
     """(HTTP status, parsed body). Raises requests errors (non-2xx included) and ValueError for a non-JSON body."""
-    response = requests.get(url, timeout=TIMEOUT, **kwargs)
+    response = requests.get(url, timeout=timeout, **kwargs)
     response.raise_for_status()
     return response.status_code, response.json()
 
@@ -207,32 +226,97 @@ def probe_licor(now):
 def probe_wqdata(now):
     if gone := missing("WQ_API_URL", "WQ_API_KEY", "WQ_DEVICE_ID"):
         return None, f"not configured: {', '.join(gone)}"
+    url = f"{Config.WQ_API_URL}/devices/{Config.WQ_DEVICE_ID}/parameters/data"
     params = {"apiKey": Config.WQ_API_KEY, "from": (now - WINDOW).strftime(FMT), "to": now.strftime(FMT)}
-    status, body = get_json(f"{Config.WQ_API_URL}/devices/{Config.WQ_DEVICE_ID}/parameters/data", params=params)
-    return status, check_wqdata(body)
+    status, body = get_json(url, params=params)
+    try:
+        return status, check_wqdata(body)
+    except NoRecentData as e:
+        # Still a failure (ingestion has nothing to store), but say when the device last reported, so a sonde or
+        # modem that went quiet doesn't read as a rejected key or a broken API.
+        raise ProbeError(f"{e}; {last_reported(url, now)}") from None
+
+
+def last_reported(url, now):
+    """When the device's newest point before the canary's window is from, as a phrase for the failure line."""
+    end = now - WINDOW
+    try:
+        for _ in range(LOOKBACK_DAYS):
+            start = end - timedelta(days=1)
+            sleep(WQ_PAUSE_S)
+            _, body = get_json(url, timeout=LOOKBACK_TIMEOUT,
+                               params={"apiKey": Config.WQ_API_KEY, "from": start.strftime(FMT),
+                                       "to": end.strftime(FMT)})
+            newest = newest_point(body)
+            if newest:
+                ago = (now - newest).total_seconds() / 3600
+                return (f"the device stopped reporting at {newest.strftime('%Y-%m-%d %H:%M')} UTC ({ago:.0f} h ago): "
+                        f"WQData answered normally, so check the sonde and its modem, not the API key")
+            end = start
+    except Exception as e:   # the window's answer already showed the API works; this is only the detail
+        return f"couldn't look further back ({describe(e)})"
+    return (f"none in the last {LOOKBACK_DAYS} days either: WQData answered normally, so the device has stopped "
+            f"reporting (check the sonde and its modem, not the API key)")
+
+
+def newest_point(body):
+    """The latest timestamp among a WQData answer's points (UTC), or None when it has none."""
+    times = []
+    for p in (body.get("data") if isinstance(body, dict) else None) or []:
+        try:
+            times.append(datetime.strptime(p.get("timestamp"), FMT).replace(tzinfo=timezone.utc))
+        except (AttributeError, TypeError, ValueError):
+            continue   # a malformed point; the shape check reports those when they are in the window
+    return max(times, default=None)
 
 
 def probe_borealis(now):
     if gone := missing("BOREALIS_URL", "BOREALIS_API_TOKEN",
                        "BOREALIS_SAMPLING_PERSISTENT_ID", "BOREALIS_UPLOAD_PERSISTENT_ID"):
         return None, f"not configured: {', '.join(gone)}"
-    # Both datasets: downloads read the first, uploads add files to the second, so the token must work on each.
     # BOREALIS_URL may be a collection page (https://borealisdata.ca/dataverse/WELL); the API is at the server root.
     try:
         server = base_url(Config.BOREALIS_URL)
     except ValueError:
         return None, "not configured: BOREALIS_URL isn't a URL such as https://borealisdata.ca"
+    host = urlsplit(server).netloc
+    headers = {"X-Dataverse-key": Config.BOREALIS_API_TOKEN}
+    # The token on its own first. Dataverse answers 401 to a bad token on every call, so only this tells "the token
+    # isn't valid here" (wrong, expired, or made on the other server: demo and production tokens are separate)
+    # apart from "this dataset isn't there".
+    try:
+        get_json(f"{server}/api/users/:me", headers=headers)
+    except Exception as e:
+        if http_status(e) == 401:
+            raise ProbeError(f"token not valid on {host} (HTTP 401): BOREALIS_API_TOKEN is wrong, has expired, or "
+                             f"was made on another Borealis server (demo and production tokens are separate). "
+                             f"Create or recreate it on {host} (your name > API Token), then update it in the "
+                             f"repository secrets and the VM's .env") from None
+        raise ProbeError(f"checking the token on {host}: {describe(e)}") from None
+    # Both datasets: downloads read the first, uploads add files to the second, so the token must work on each.
     summaries, status = [], None
-    for label, pid in (("download dataset", Config.BOREALIS_SAMPLING_PERSISTENT_ID),
-                       ("upload dataset", Config.BOREALIS_UPLOAD_PERSISTENT_ID)):
+    for label, name, pid in (("download dataset", "BOREALIS_SAMPLING_PERSISTENT_ID",
+                              Config.BOREALIS_SAMPLING_PERSISTENT_ID),
+                             ("upload dataset", "BOREALIS_UPLOAD_PERSISTENT_ID", Config.BOREALIS_UPLOAD_PERSISTENT_ID)):
         try:
             status, body = get_json(f"{server}/api/datasets/:persistentId",
-                                    params={"persistentId": pid},
-                                    headers={"X-Dataverse-key": Config.BOREALIS_API_TOKEN})
+                                    params={"persistentId": pid}, headers=headers)
             summaries.append(f"{label} {check_borealis(body)}")
         except Exception as e:
+            code = http_status(e)
+            if code in (403, 404):
+                pid_on = "demo" if is_demo(persistent_id=pid) else "production"
+                other = "" if is_demo(persistent_id=pid) == is_demo(server) else (
+                    f"; its id is a {pid_on}-server id, not one on {host}")
+                raise ProbeError(f"token OK on {host}; the {label} ({name}) was not found or isn't shared with "
+                                 f"this token (HTTP {code}){other}") from None
             raise ProbeError(f"{label}: {describe(e)}") from None
-    return status, "; ".join(summaries)
+    return status, f"{host}, token OK; " + "; ".join(summaries)
+
+
+def http_status(e):
+    """The HTTP status of a failed request, or None (no answer, or not a request error)."""
+    return getattr(getattr(e, "response", None), "status_code", None)
 
 
 class ProbeError(Exception):
