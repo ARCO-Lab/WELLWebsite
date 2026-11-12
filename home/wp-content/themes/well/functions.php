@@ -147,7 +147,8 @@ function well_theme_enqueue_assets() {
     // js/video_slider.js is not loaded: it is for YouTube hero videos this site doesn't have, and
     // it loaded the YouTube player API on every page before stopping with an error.
     $js_files = [
-        'popper.min', 'theme.min', 'ekko-lightbox.min', 'header_footer',
+        'popper.min', 'theme.min', 'ekko-lightbox.min',
+        // 'header_footer', // off: it reads a directory_uri variable the theme never sets (an error on every page), and working it would load hfcopy.js twice and add McMaster header markup the site has never shown.
         'hfcopy', 'mcmaster', 'countdown-timer',
         'wp-form-name-fields', 'comm100-wrapper'
     ];
@@ -271,6 +272,55 @@ function well_media_img($name, $widths, $size, $attrs = array()) {
         }
     }
     echo $html . '>';
+}
+
+/**
+ * The query behind every list of news on the site: the home page's "Latest News" carousel,
+ * the News page and the "Related News" list under a post. A news item is any published post,
+ * newest first, whatever its category, so a post shows up in all three places as soon as it
+ * is published (scheduled posts appear on their date, drafts never do).
+ *
+ * $count:   how many posts to show (per page, when $paged is given).
+ * $exclude: post IDs to leave out, e.g. the post being read.
+ * $paged:   page number for a paginated list such as the News page; 0 for a single block of
+ *           posts. With a page number WordPress also counts all posts, so max_num_pages is set.
+ */
+function well_news_query($count, $exclude = array(), $paged = 0) {
+    $args = array(
+        'post_type'           => 'post',
+        'post_status'         => 'publish',
+        'posts_per_page'      => (int) $count,
+        'post__not_in'        => array_map('intval', (array) $exclude),
+        'ignore_sticky_posts' => true,
+    );
+    if ($paged > 0) {
+        $args['paged'] = (int) $paged;
+    } else {
+        $args['no_found_rows'] = true; // no pagination, so skip counting every post
+    }
+    return new WP_Query($args);
+}
+
+/**
+ * Print the current post's featured image at the top of a news card, cropped to 16:9 by the
+ * card-img-mask classes. Prints nothing when the post has no featured image, so the card
+ * keeps its text-only layout. The image is decorative: the card's title link right below it
+ * names the post, so it gets an empty alt and screen readers skip it.
+ *
+ * Uses the media library's copies (srcset and sizes), so a phone downloads a small one.
+ */
+function well_news_card_image() {
+    if (!has_post_thumbnail()) {
+        return;
+    }
+    echo '<div class="card-img-mask card-img-mask-top">';
+    the_post_thumbnail('medium_large', array(
+        'alt'     => '',
+        'class'   => 'card-img-top',
+        'sizes'   => '(min-width: 992px) 350px, (min-width: 768px) 50vw, 100vw',
+        'loading' => 'lazy',
+    ));
+    echo '</div>';
 }
 
 /**
