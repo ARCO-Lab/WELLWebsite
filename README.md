@@ -397,6 +397,29 @@ recreate the three backend containers, or build the dashboard with `--build-arg 
 the key in Sentry also stops everything at once. In the Sentry project settings, keep *Prevent storing of IP
 addresses* on as a second guard.
 
+### Visitor counts (GoatCounter)
+
+Page views on both sites are counted with [GoatCounter](https://www.goatcounter.com), in one GoatCounter site,
+`well` (statistics at https://well.goatcounter.com; welldash²'s Visitors page shows them once
+`OPS_GOATCOUNTER_TOKEN` is set). GoatCounter sets no cookies and stores nothing in the browser; it keeps aggregated
+counts of pages, referrers, browsers, screen sizes and countries, and no IP addresses or other personal data.
+
+- **Paths start with the host**, since both sites have a `/`: `welldash.mcmaster.ca/` is the dashboard,
+  `well.mcmaster.ca/news/` a WordPress page. Query strings are left out of the path. (GoatCounter's script still
+  sends the query string separately; GoatCounter reads only campaign parameters such as `utm_source` from it.)
+- **Dashboard:** `dashboard/frontend/src/components/VisitorCount.tsx` loads GoatCounter's script and counts the first
+  page load and each move to another page; a change of query alone (`?from=&to=`) or a chart zoom isn't a page
+  view. It counts only in a production build with `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` set (the Dockerfile's default)
+  and only when the page is served from welldash.mcmaster.ca, so local, preview, CI and e2e runs send nothing. The
+  dashboard shown inside WordPress's Dashboard page isn't counted a second time: GoatCounter's script skips pages
+  shown in a frame, and the WordPress page around it is counted.
+- **WordPress:** `well_goatcounter_script()` in the theme's `functions.php` adds the script to every public page,
+  except for logged-in users and previews, and counts only on well.mcmaster.ca. Theme files are mounted into the
+  container, so a change is live once it is pulled, with no restart.
+- **Turning it off:** build the dashboard with `--build-arg NEXT_PUBLIC_GOATCOUNTER_ENDPOINT=`, and remove the
+  `add_action('wp_footer', 'well_goatcounter_script')` line from the theme. One browser can opt out of a site by
+  opening its address with `#toggle-goatcounter` at the end (GoatCounter's switch, kept in that browser).
+
 ---
 
 ## AI Analysis
@@ -626,7 +649,7 @@ Then set `OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal
 | `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
 | `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |
 | `OPS_HEALTHCHECKS_API_KEY` | none | The Healthchecks.io project's **read-only** API key (Project Settings, API Access). |
-| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Counting visits needs GoatCounter's script on the dashboard, which isn't added yet. |
+| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Both sites count into the site `well` (see [Visitor counts](#visitor-counts-goatcounter)). |
 | `REQUEST_METRICS` | on | In `dashboard/backend/app/.env`: `0` stops the backend counting requests (recreate `backend`). |
 
 **Request to McMaster IT** (copy, fill in, send):
@@ -726,7 +749,8 @@ The platform should publish a simple privacy notice covering both the dashboard 
 - **Analytics and observability:** Monitoring tools, logs, metrics, and alerts may be used to understand uptime, failures, and performance across Nginx, Flask, Next.js, WordPress, and PostgreSQL.
 - **User-submitted or uploaded files:** Research uploads such as CSV or Excel sampling files may contain user-supplied content and should be handled as institutional research data, with access limited to authorized project administrators.
 - **Third-party processing:** Data sent to third-party services, such as the external APIs used for ingestion and export workflows, is subject to those providers' terms and privacy practices.
-- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content. If analytics or non-essential cookies are added later, a cookie notice/consent flow should be considered.
+- **Visitor counts:** Both sites count page views with GoatCounter, which sets no cookies, stores nothing in the browser and keeps only aggregated counts (pages, referrers, browsers, screen sizes, countries), not personal data or IP addresses. Query strings are left out of the counted page.
+- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content; the visitor counts add none. If non-essential cookies are added later, a cookie notice/consent flow should be considered.
 - **Data retention:** Application logs, backups, exports, and uploaded files should follow a defined retention and deletion policy appropriate for operational, institutional, and research needs.
 - **Access and protection:** Secrets should be stored securely, admin access should be restricted, backups should be protected, and production systems should use TLS and least-privilege access controls.
 - **Contact and governance:** The public site should identify the responsible WELL/McMaster contact or team for privacy questions, correction requests, and operational issues.
