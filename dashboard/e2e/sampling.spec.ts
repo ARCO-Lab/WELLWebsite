@@ -56,6 +56,17 @@ async function openSampling(page: Page, path = "/") {
   await page.getByRole("tab", { name: "Ancaster Watershed" }).click();
 }
 
+// Errors thrown in the page (a hydration mismatch, say) fail the test that saw them.
+const pageErrors = new WeakMap<Page, string[]>();
+test.beforeEach(({ page }) => {
+  const errors: string[] = [];
+  pageErrors.set(page, errors);
+  page.on("pageerror", (e) => errors.push(String(e)));
+});
+test.afterEach(({ page }) => {
+  expect(pageErrors.get(page) ?? []).toEqual([]);
+});
+
 const graphsCard = (page: Page) => page.getByRole("heading", { level: 2, name: "Graphs" }).locator("xpath=..");
 
 // Series drawn in the sampling charts on the page (not in the modal), with their colour and visibility.
