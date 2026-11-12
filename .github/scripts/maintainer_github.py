@@ -105,6 +105,16 @@ def github_client(token, transport=urllib_transport):
     return Client(os.environ.get("GITHUB_API_URL") or "https://api.github.com", token, transport)
 
 
+def is_maintainer_pr(pr, repo, login):
+    """Whether a pull request is the maintainer's own: from a maint/* branch of this repository, opened by its
+    account. All three are needed: with a personal token the account is the owner's own, who opens other pull
+    requests too, so the maint/* branch is what tells the maintainer's apart. A label alone never counts."""
+    head = pr.get("head") or {}
+    return (bool(login) and (head.get("ref") or "").startswith("maint/")
+            and (pr.get("user") or {}).get("login") == login
+            and (head.get("repo") or {}).get("full_name") == repo)
+
+
 def clip(text, limit):
     """Text cut to `limit` characters, marked when cut."""
     text = text or ""

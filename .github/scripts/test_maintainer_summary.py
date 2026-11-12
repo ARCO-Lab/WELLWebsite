@@ -96,7 +96,9 @@ class ClassifyTests(unittest.TestCase):
     def test_not_opened_by_the_maintainer(self):
         approved = ["risk:low", "audit:approved", "maintainer"]
         for p in [pr(1, "maint/a", approved, user="someone"), pr(1, "maint/a", approved, head_repo="fork/WELLWebsite"),
-                  pr(1, "maint/a", approved, head_repo=None)]:
+                  pr(1, "maint/a", approved, head_repo=None),
+                  # The owner's own pull request from another branch: with a PAT, the same account as the maintainer.
+                  pr(1, "feat/charts", approved), pr(1, "main", approved), pr(1, "fix/maint/x", approved)]:
             verdict, reasons = classify(p, ["README.md"], "green")
             self.assertEqual(("review", ["not opened by the maintainer"]), (verdict, reasons))
         # No maintainer login known: nothing counts as the maintainer's.
@@ -188,11 +190,14 @@ def env(**extra):
 class GatherTests(unittest.TestCase):
     def test_selects_maint_branches_of_the_maintainer_and_labelled_prs(self):
         prs = [pr(1, "maint/a", ["risk:low", "audit:approved"]), pr(2, "feat/x"), pr(3, "maint/b", user="someone"),
-               pr(4, "fix/y", ["maintainer"], user="someone")]
+               pr(4, "fix/y", ["maintainer"], user="someone"),
+               pr(5, "feat/owner", ["risk:low", "audit:approved", "maintainer"])]
         reviewed, result, errors, _ = ms.gather(env(), FakeTransport(routes(prs)))
-        self.assertEqual([1, 4], [p["number"] for p, _, _ in reviewed])
+        self.assertEqual([1, 4, 5], [p["number"] for p, _, _ in reviewed])
         self.assertEqual("ready", reviewed[0][1])
         self.assertIn("not opened by the maintainer", reviewed[1][2])
+        # The owner's labelled pull request from a feature branch is listed, but never ready.
+        self.assertEqual(("review", ["not opened by the maintainer"]), reviewed[2][1:])
         self.assertEqual("Fixed one thing.", result["summary"])
         self.assertEqual([], errors)
 

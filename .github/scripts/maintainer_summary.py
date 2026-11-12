@@ -5,8 +5,9 @@ when there is nothing to report, so a missing email means the job itself didn't 
 A pull request is the maintainer's if it comes from a maint/* branch of the maintainer's account, or carries the
 `maintainer` label. It is "Ready to merge" only when all of these hold; otherwise it "Needs your review", with the
 reasons listed:
-- it was opened by the maintainer's account from a branch of this repository (a `maintainer` label alone, which
-  anyone with triage rights can add, isn't enough);
+- it is the maintainer's own: from a maint/* branch of this repository, opened by the maintainer's account
+  (with a personal token that is the owner's own account, so the branch is what tells them apart; a `maintainer`
+  label alone, which anyone with triage rights can add, isn't enough);
 - CI finished, every check passed, and the checks main requires (REQUIRED_CHECKS) are among them;
 - it has the `audit:approved` label (set after an independent audit said "Approval recommended") and no
   `audit:findings` label;
@@ -29,7 +30,7 @@ import ssl
 import sys
 from email.message import EmailMessage
 
-from maintainer_github import HttpError, clip, github_client, urllib_transport
+from maintainer_github import HttpError, clip, github_client, is_maintainer_pr, urllib_transport
 
 # Changes a person must look at, whatever the audit said: data, schema, deploy, infrastructure, dependencies,
 # security, the WordPress site, and the automation itself. PROMPT.md tells Claude to label these risk:high.
@@ -92,16 +93,11 @@ def ci_state(check_runs, required=REQUIRED_CHECKS):
     return ("missing", missing) if missing else ("green", [])
 
 
-def opened_by_maintainer(pr, repo, login):
-    return (bool(login) and (pr.get("user") or {}).get("login") == login
-            and ((pr.get("head") or {}).get("repo") or {}).get("full_name") == repo)
-
-
 def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=()):
     """("ready", []) or ("review", [reasons])."""
     labels = {label.get("name") for label in pr.get("labels") or []}
     reasons = []
-    if not opened_by_maintainer(pr, repo, login):
+    if not is_maintainer_pr(pr, repo, login):
         reasons.append("not opened by the maintainer")
     if ci == "red":
         reasons.append("CI failed" + (f": {', '.join(failed_checks)}" if failed_checks else ""))
@@ -130,9 +126,9 @@ def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=()):
 
 def maintainer_prs(gh, repo, login):
     prs = gh.get_all(f"repos/{repo}/pulls", {"state": "open", "per_page": 100}, max_pages=3)
+    # Labelled ones are listed too, so a stray `maintainer` label shows up, as "not opened by the maintainer".
     return [p for p in prs
-            if (((p.get("head") or {}).get("ref") or "").startswith("maint/")
-                and (p.get("user") or {}).get("login") == login)
+            if is_maintainer_pr(p, repo, login)
             or any(label.get("name") == "maintainer" for label in p.get("labels") or [])]
 
 

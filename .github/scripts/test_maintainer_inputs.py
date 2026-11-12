@@ -58,7 +58,10 @@ def base_routes():
             {"number": 81, "title": "u", "html_url": "p81", "user": {"login": "someone"},
              "head": {"ref": "maint/y", "repo": {"full_name": REPO}}, "labels": [{"name": "maintainer"}]},
             {"number": 82, "title": "v", "html_url": "p82", "user": {"login": "maint-user"},
-             "head": {"ref": "maint/z", "repo": {"full_name": "fork/WELLWebsite"}}, "labels": []}],
+             "head": {"ref": "maint/z", "repo": {"full_name": "fork/WELLWebsite"}}, "labels": []},
+            # The owner's own feature pull request: with a PAT, the same account as the maintainer.
+            {"number": 83, "title": "w", "html_url": "p83", "user": {"login": "maint-user"},
+             "head": {"ref": "feat/charts", "repo": {"full_name": REPO}}, "labels": [{"name": "maintainer"}]}],
         ("GET", f"/repos/{REPO}/git/matching-refs/heads/maint/"): [{"ref": "refs/heads/maint/x"},
                                                                    {"ref": "refs/heads/maint/old"}],
     }

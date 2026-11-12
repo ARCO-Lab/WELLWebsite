@@ -21,7 +21,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-from maintainer_github import Client, HttpError, clip, github_client, urllib_transport
+from maintainer_github import Client, HttpError, clip, github_client, is_maintainer_pr, urllib_transport
 
 SKIPPED_WORKFLOWS = {".github/workflows/canary.yml", ".github/workflows/load-test.yml",
                      ".github/workflows/daily-maintainer.yml"}
@@ -166,14 +166,13 @@ def dependabot_alerts(gh, repo):
 
 
 def maintainer_work(gh, repo, login):
-    """The maintainer's own open pull requests (opened by its account from a branch of this repository), and the
-    maint/* branches. Pull requests by anyone else are left out, so a stranger's one can't pose as its work."""
+    """The maintainer's own open pull requests (is_maintainer_pr), and the maint/* branches. Everything else,
+    the owner's other pull requests included, is left out, so the maintainer never treats it as its work."""
     prs = gh.get_all(f"repos/{repo}/pulls", {"state": "open", "per_page": 100}, max_pages=3)
     open_prs = [{"number": p["number"], "title": p.get("title"), "branch": (p.get("head") or {}).get("ref"),
                  "url": p.get("html_url"), "labels": [label.get("name") for label in p.get("labels") or []]}
                 for p in prs
-                if login and (p.get("user") or {}).get("login") == login
-                and ((p.get("head") or {}).get("repo") or {}).get("full_name") == repo]
+                if is_maintainer_pr(p, repo, login)]
     refs = gh.get(f"repos/{repo}/git/matching-refs/heads/maint/") or []
     return {"open_prs": open_prs, "branches": [r["ref"].removeprefix("refs/heads/") for r in refs]}
 

@@ -88,6 +88,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           MAX_PRS: ${{ inputs.max_prs }}
           MODE: ${{ inputs.mode }}
+          LOGIN: ${{ steps.identity.outputs.login }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
@@ -99,6 +100,7 @@ jobs:
             echo "DRY_RUN: $DRY_RUN"
             echo "TOKEN_MODE: $MODE"
             echo "ASSIGNEE: $ASSIGNEE"
+            echo "MAINTAINER_LOGIN: $LOGIN"
             echo "INPUTS_FILE: $WORK_DIR/inputs.json"
             echo "WORK_DIR: $WORK_DIR"
             echo
