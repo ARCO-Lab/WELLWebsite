@@ -2,8 +2,9 @@
 // temperatures), drawn with Highcharts Core, that zooms and pans by itself. Its window and data come from its own
 // controller (hooks/useChartWindow), so zooming Logger 1 leaves Logger 4 where it is.
 //
-// Drawing: one or more panes stacked on one time axis (a logger: water level on top, temperature below), each with
-// a visible y-axis scaled to its own data (alignTicks off); a colour per measurement; averaged lines over a band
+// Drawing: one or more panes stacked on one time axis (a logger: water level on top, temperature below), each scaled
+// to its own data (alignTicks off). The small charts in the cards show no y-axes (the tooltip gives values and the
+// legend units); the larger view shows them; a colour per measurement; averaged lines over a band
 // from the smallest to the largest reading in each bucket; rain as bars of totals as wide as their bucket; wind
 // direction as points on an N/E/S/W axis. Averaged buckets sit at their middle; the tooltip names the span they
 // cover. Points the line alone wouldn't show get a marker: filled for a reading between two gaps, hollow for a bucket
@@ -99,7 +100,7 @@ function useChartValue<T>(controller: ChartController, pick: (s: ChartSnapshot) 
   return useSyncExternalStore(controller.subscribe, () => pick(controller.snapshot()), () => pick(controller.snapshot()));
 }
 
-function buildOptions(props: MetricChartProps, keys: string[], controller: ChartController, height: number): Highcharts.Options {
+function buildOptions(props: MetricChartProps, keys: string[], controller: ChartController, height: number, axes: boolean): Highcharts.Options {
   const { panes, groupType, title } = props;
   const two = panes.length > 1;
   const yAxis: Highcharts.YAxisOptions[] = panes.map((ms, n) => {
@@ -107,6 +108,7 @@ function buildOptions(props: MetricChartProps, keys: string[], controller: Chart
     const color = ms.length === 1 ? measurementColor(ms[0]) : '#4b5563';
     const style = { fontFamily: FONT, fontSize: '10px', color, whiteSpace: 'nowrap' as const };
     const axis: Highcharts.YAxisOptions = {
+      visible: axes, // hidden, an axis still scales its pane
       title: { text: unit === '°' ? 'Direction' : unit, margin: 4, style },
       labels: { style },
       gridLineWidth: 1,
@@ -222,8 +224,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   const chartHeight = modalOpen ? Math.round(height * 1.4) : height;
   // Rebuilt (a new chart) only when what is drawn changes: other measurements, panes or height
   const options = useMemo(
-    () => buildOptions({ id, title, groupType, stationId, panes: JSON.parse(structure) }, keys, controller, chartHeight),
-    [id, title, groupType, stationId, structure, keys, controller, chartHeight]
+    () => buildOptions({ id, title, groupType, stationId, panes: JSON.parse(structure) }, keys, controller, chartHeight, modalOpen),
+    [id, title, groupType, stationId, structure, keys, controller, chartHeight, modalOpen]
   );
 
   const error = useChartValue(controller, (s) => s.error);
@@ -297,8 +299,17 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     place(controller.window);
     const offData = controller.onData(apply);
     const offRedraw = controller.onRedraw(place);
-    const offGesture = controller.onGesture((active) => bands(!active));
-    return () => { offData(); offRedraw(); offGesture(); };
+    // Accessibility repositions its hidden buttons (forcing a page layout) on every redraw: off while the window
+    // moves, back 300 ms after (the toolbar's live region still announces where the gesture ended)
+    let a11yTimer = 0;
+    const a11y = (on: boolean) => chart.update({ accessibility: { enabled: on } }, false);
+    const offGesture = controller.onGesture((active) => {
+      bands(!active);
+      window.clearTimeout(a11yTimer);
+      if (active) a11y(false);
+      else a11yTimer = window.setTimeout(() => { a11y(true); chart.redraw(false); }, 300);
+    });
+    return () => { offData(); offRedraw(); offGesture(); window.clearTimeout(a11yTimer); };
   }, [controller, keys, options]);
 
   // About one point per pixel on phones (each costs more to draw there), 1.5 elsewhere
@@ -419,7 +430,10 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     };
     const onLeave = () => { if (!drag) active = false; };
 
-    let pinch: { d0: number; t0: number; span0: number } | null = null;
+    // The plot's left edge and width are measured once per pinch: reading them on every move forced a layout of the
+    // whole page each time (the page doesn't scroll during a pinch). Two-finger events stop here, before Highcharts'
+    // own touch handling (which measured the page again for its tooltip), since they are this chart's pinch.
+    let pinch: { d0: number; t0: number; span0: number; left: number; width: number } | null = null;
     const touchState = (e: TouchEvent) => {
       const [a, b] = [e.touches[0], e.touches[1]];
       return { d: Math.max(20, Math.abs(a.clientX - b.clientX)), cx: (a.clientX + b.clientX) / 2 };
@@ -427,20 +441,23 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 2) return;
       e.preventDefault();
+      e.stopPropagation();
+      const c = chart();
+      if (!c) return;
       const { d, cx } = touchState(e);
       const w = controller.window;
-      pinch = { d0: d, t0: timeAt(cx), span0: w.end - w.start };
+      const left = c.container.getBoundingClientRect().left + c.plotLeft;
+      pinch = { d0: d, t0: timeAt(cx), span0: w.end - w.start, left, width: Math.max(c.plotWidth, 1) };
       chart()?.tooltip?.hide(0);
       controller.beginGesture();
     };
     const onTouchMove = (e: TouchEvent) => {
       if (!pinch || e.touches.length !== 2) return;
       e.preventDefault();
-      const c = chart();
-      if (!c) return;
+      e.stopPropagation();
       const { d, cx } = touchState(e);
       const span = Math.max(pinch.span0 * (pinch.d0 / d), MIN_RANGE_MS);
-      const share = (cx - c.container.getBoundingClientRect().left - c.plotLeft) / Math.max(c.plotWidth, 1);
+      const share = (cx - pinch.left) / pinch.width;
       const start = pinch.t0 - share * span;
       controller.setWindow({ start, end: start + span }, 'pinch');
     };
@@ -477,8 +494,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     el.addEventListener('pointercancel', onUp);
     el.addEventListener('pointerleave', onLeave);
     el.addEventListener('blur', onLeave);
-    el.addEventListener('touchstart', onTouchStart, { passive: false });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
     el.addEventListener('touchend', onTouchEnd);
     el.addEventListener('touchcancel', onTouchEnd);
     el.addEventListener('keydown', onKey);
@@ -493,8 +510,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       el.removeEventListener('pointercancel', onUp);
       el.removeEventListener('pointerleave', onLeave);
       el.removeEventListener('blur', onLeave);
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchstart', onTouchStart, { capture: true });
+      el.removeEventListener('touchmove', onTouchMove, { capture: true });
       el.removeEventListener('touchend', onTouchEnd);
       el.removeEventListener('touchcancel', onTouchEnd);
       el.removeEventListener('keydown', onKey);
@@ -502,12 +519,14 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   }, [controller]);
 
   const kind = panes.flat().every((m) => aggOf(m) === 'sum') ? 'totals' : 'means';
+  const plotId = `plot-${id}${modalOpen ? '-modal' : ''}`;
   const firstKey = keys.find((k) => !seriesNote(groupType, k.split('|')[2])?.hidden) ?? keys[0];
   return (
     <div className="min-w-0" data-testid={`chart-${id}`}>
       <ChartToolbar controller={controller} title={title} kind={kind} />
       <div
         ref={plotRef}
+        id={plotId}
         tabIndex={0}
         role="group"
         aria-label={`${title} chart. Arrow keys move it, plus and minus zoom, 0 resets.`}
@@ -553,7 +572,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         )}
       </div>
       {keys.length > 0 && (
-        <ChartSlider controller={controller} sparkKey={firstKey} color={measurementColor(firstKey.split('|')[2])} label={`the ${title} chart's window`} />
+        <ChartSlider controller={controller} sparkKey={firstKey} color={measurementColor(firstKey.split('|')[2])} label={title} controls={plotId} />
       )}
     </div>
   );

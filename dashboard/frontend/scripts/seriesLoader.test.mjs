@@ -368,7 +368,7 @@ test("controller: a slow gesture sends nothing until it ends, however long its f
   c.dispose();
 });
 
-test("controller: a gesture longer than the max wait fetches only the window it is on", async () => {
+test("controller: a lingering gesture longer than the max wait fetches only the window it is on; a sweep doesn't", async () => {
   const srv = fakeServer();
   const loader = new SeriesLoader(srv.fetchTiles);
   const c = new ChartController("logger-1", [A], twoDays, extent, loader, syncFrame, 30);
@@ -376,9 +376,9 @@ test("controller: a gesture longer than the max wait fetches only the window it 
   await sleep(60);
   await srv.settle();
   const n0 = srv.calls.length;
-  c.beginGesture();
   c.setWindow({ start: Date.parse("2026-03-01T05:00:00Z"), end: Date.parse("2026-03-03T05:00:00Z") }, "slider");
-  for (let i = 0; i < 9; i++) { // 1.8 s of small moves
+  c.beginGesture(); // before the debounce fires: nothing sent yet
+  for (let i = 0; i < 9; i++) { // 1.8 s of small moves: lingering
     c.pan(0.01, "slider");
     await sleep(200);
   }
@@ -387,6 +387,18 @@ test("controller: a gesture longer than the max wait fetches only the window it 
   assert.equal(during[0].bucketS, 600);
   assert.ok(during[0].last - during[0].first <= 1);
   c.endGesture();
+  await sleep(60);
+  await srv.settle();
+  // A sweep: a window's width or more every 100 ms for 1.8 s sends nothing until it ends
+  const n1 = srv.calls.length;
+  c.beginGesture();
+  for (let i = 0; i < 18; i++) {
+    c.pan(-1.5, "slider");
+    await sleep(100);
+  }
+  assert.equal(srv.calls.length, n1);
+  c.endGesture();
+  await sleep(60);
   await srv.settle();
   c.dispose();
 });

@@ -3,7 +3,7 @@
 // to the picked days (Reset). Each chart has its own; buttons that can't act are aria-disabled (not disabled), so
 // keyboard focus is never dropped.
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Minus, Plus, RotateCcw } from "lucide-react";
 import type { ChartController } from "@/lib/chartController";
 import { useChartSnapshot } from "@/hooks/useChartWindow";
@@ -54,6 +54,12 @@ interface Props {
 
 const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel = "h4" }) => {
   const snap = useChartSnapshot(controller);
+  // The dates follow every frame of a gesture straight from the controller (React re-renders this toolbar only when
+  // the gesture ends: see ChartController.updateSnapshot)
+  const labelRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => controller.onFrame((win) => {
+    if (labelRef.current) labelRef.current.textContent = windowLabel(win, controller.extent.end);
+  }), [controller]);
   const w = snap.window, ext = snap.extent, def = controller.defaultWindow;
   const atDefault = Math.abs(w.start - def.start) < 60_000 && Math.abs(w.end - def.end) < 60_000;
   const Heading = headingLevel;
@@ -64,13 +70,14 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
     <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
       <Heading className="text-sm font-semibold text-gray-900">{title}</Heading>
       <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-gray-600">
-        <span data-testid="chart-window-label">{windowLabel(w, ext.end)}</span>
+        <span ref={labelRef} data-testid="chart-window-label">{windowLabel(w, ext.end)}</span>
         {snap.shownBucket !== null && (
           <span className="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-gray-700" data-testid="chart-resolution">
             {resolutionLabel(snap.shownBucket, kind)}
           </span>
         )}
-        <span aria-hidden="true" className={`h-3 w-3 shrink-0 rounded-full border-2 border-gray-300 border-t-gray-700 motion-safe:animate-spin ${snap.loading ? "" : "invisible"}`} />
+        {/* Animated only while shown: twenty idle spinning (if invisible) layers made the browser re-layer the page every frame */}
+        <span aria-hidden="true" className={`h-3 w-3 shrink-0 rounded-full border-2 border-gray-300 border-t-gray-700 ${snap.loading ? "motion-safe:animate-spin" : "invisible"}`} />
       </p>
       <span className="sr-only" role="status" aria-live="polite">{status}</span>
       <div className="ml-auto flex gap-1" role="group" aria-label={`${title}: time window`}>
