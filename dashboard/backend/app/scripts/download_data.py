@@ -336,9 +336,9 @@ def import_file(file_info, inject_script, newer=()):
             print("inject_sampling.py stderr:", result.stderr)
         if result.returncode not in (0, INVALID_FILE_EXIT):
             print(f"ERROR: inject_sampling.py failed with return code {result.returncode}")
+        outcome, number = import_outcome(result.returncode, result.stdout)
         ok = result.returncode == 0
-        return (*import_outcome(result.returncode, result.stdout), import_counts(result.stdout if ok else ""),
-                import_scope(result.stdout) if ok else None)
+        return outcome, number, import_counts(result.stdout if ok else ""), import_scope(result.stdout) if ok else None
     except Exception as e:
         print(f"ERROR: Failed to process {file_info['filename']}: {e}")
         return "failed", None, import_counts(""), None
