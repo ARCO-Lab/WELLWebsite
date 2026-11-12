@@ -10,7 +10,7 @@ import http from "node:http";
 import { once } from "node:events";
 import { proxyToBackend } from "../src/lib/proxyBackend.ts";
 
-const SIZE = 4 * 1024 * 1024; // well above the socket and stream buffers, so the proxy has to pause
+const SIZE = 4 * 1024 * 1024; // more than the proxy's stream buffers, so a slow browser makes it pause reading
 const CHUNK = Buffer.alloc(64 * 1024, "x");
 
 let backend;
@@ -18,7 +18,8 @@ let backendUrl;
 const backendEvents = []; // what the backend saw, per request: "finished" or "closed early"
 const backendRequests = [];
 
-// Sends SIZE bytes like gunicorn: Content-Length, then the connection is closed. /break stops half way.
+// Sends SIZE bytes like gunicorn: Content-Length, then the connection is closed. /break stops half way, and
+// /endless sends a chunk every few milliseconds until the connection is closed.
 function backendHandler(req, res) {
   let posted = "";
   req.on("data", (d) => (posted += d));
@@ -28,8 +29,13 @@ function backendHandler(req, res) {
       res.writeHead(400, { "content-type": "application/json", connection: "close" });
       return res.end(JSON.stringify({ error: "start must be before end" }));
     }
-    res.writeHead(200, { "content-type": "application/json", "content-length": SIZE, connection: "close" });
     res.on("close", () => backendEvents.push(res.writableFinished ? "finished" : "closed early"));
+    if (req.url === "/endless") {
+      res.writeHead(200, { "content-type": "application/json", connection: "close" });
+      const timer = setInterval(() => res.write(CHUNK), 5);
+      return res.on("close", () => clearInterval(timer));
+    }
+    res.writeHead(200, { "content-type": "application/json", "content-length": SIZE, connection: "close" });
     let sent = 0;
     (function write() {
       while (sent < SIZE) {
@@ -43,7 +49,8 @@ function backendHandler(req, res) {
 }
 
 // A proxy server that runs proxyToBackend the way the API routes do, with Next's res.status/res.json added.
-async function startProxy(path, init) {
+// The server is closed when the test ends, even if it fails.
+async function startProxy(t, path, init) {
   const server = http.createServer((req, res) => {
     res.status = (code) => {
       res.statusCode = code;
@@ -57,7 +64,11 @@ async function startProxy(path, init) {
   });
   server.listen(0);
   await once(server, "listening");
-  return { server, url: `http://127.0.0.1:${server.address().port}` };
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return `http://127.0.0.1:${server.address().port}`;
 }
 
 // Collects console.error calls (and silences the sampled [client-ip] log lines) while fn runs.
@@ -75,8 +86,9 @@ async function captureErrors(fn) {
   return errors;
 }
 
-// GET url; the body isn't read for pauseMs, then is read in full (or the request is dropped when abort is set).
-function get(url, { pauseMs = 0, abort = false } = {}) {
+// GET url; the body isn't read for pauseMs, then is read in full, waiting slowMs after each chunk (or the request
+// is dropped when abort is set).
+function get(url, { pauseMs = 0, slowMs = 0, abort = false } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
       res.pause();
@@ -86,7 +98,13 @@ function get(url, { pauseMs = 0, abort = false } = {}) {
           return resolve({ status: res.statusCode, aborted: true });
         }
         const parts = [];
-        res.on("data", (d) => parts.push(d));
+        res.on("data", (d) => {
+          parts.push(d);
+          if (slowMs) {
+            res.pause();
+            setTimeout(() => res.resume(), slowMs);
+          }
+        });
         res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(parts) }));
         res.on("error", (error) => resolve({ status: res.statusCode, error, body: Buffer.concat(parts) }));
         res.resume();
@@ -108,23 +126,25 @@ before(async () => {
   process.env.FLASK_API_URL = backendUrl;
 });
 
-after(() => backend.close());
+after(() => {
+  backend.closeAllConnections();
+  backend.close();
+});
 
-test("a slow browser gets the whole body when the backend closes the connection (no crash)", async () => {
-  const { server, url } = await startProxy("/series");
+test("a slow browser gets the whole body when the backend closes the connection (no crash)", async (t) => {
+  const url = await startProxy(t, "/series");
   const errors = await captureErrors(async () => {
-    for (let i = 0; i < 8; i++) {
-      const result = await get(url, { pauseMs: 150 });
+    for (let i = 0; i < 6; i++) {
+      const result = await get(url, { pauseMs: 100, slowMs: 1 });
       assert.equal(result.status, 200);
       assert.equal(result.body.length, SIZE);
     }
   });
   assert.deepEqual(errors, []);
-  server.close();
 });
 
-test("a browser leaving mid-body stops the backend request and logs nothing", async () => {
-  const { server, url } = await startProxy("/series");
+test("a browser leaving mid-body stops the backend request and logs nothing", async (t) => {
+  const url = await startProxy(t, "/endless");
   backendEvents.length = 0;
   const errors = await captureErrors(async () => {
     const result = await get(url, { pauseMs: 100, abort: true });
@@ -133,11 +153,10 @@ test("a browser leaving mid-body stops the backend request and logs nothing", as
   });
   assert.deepEqual(backendEvents, ["closed early"]);
   assert.deepEqual(errors, []);
-  server.close();
 });
 
-test("a backend that breaks off mid-body is logged and the response is cut short", async () => {
-  const { server, url } = await startProxy("/break");
+test("a backend that breaks off mid-body is logged and the response is cut short", async (t) => {
+  const url = await startProxy(t, "/break");
   let result;
   const errors = await captureErrors(async () => {
     result = await get(url);
@@ -146,11 +165,10 @@ test("a backend that breaks off mid-body is logged and the response is cut short
   assert.ok(result.error || result.body.length < SIZE, "the browser must not see a complete response");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /Backend response for test broke off/);
-  server.close();
 });
 
-test("an unreachable backend is a 502 with a message, and is logged", async () => {
-  const { server, url } = await startProxy("/series");
+test("an unreachable backend is a 502 with a message, and is logged", async (t) => {
+  const url = await startProxy(t, "/series");
   const closed = http.createServer();
   closed.listen(0);
   await once(closed, "listening");
@@ -167,11 +185,10 @@ test("an unreachable backend is a 502 with a message, and is logged", async () =
   assert.match(result.body.toString(), /didn't respond/);
   assert.equal(errors.length, 1);
   assert.match(errors[0], /Failed to reach the Flask backend for test/);
-  server.close();
 });
 
-test("the backend's status, body and headers pass through; POST bodies and X-Forwarded-For are sent", async () => {
-  const { server, url } = await startProxy("/bad-request", {
+test("the backend's status, body and headers pass through; POST bodies and X-Forwarded-For are sent", async (t) => {
+  const url = await startProxy(t, "/bad-request", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ start: "é" }),
@@ -190,5 +207,4 @@ test("the backend's status, body and headers pass through; POST bodies and X-For
   assert.equal(sent.headers["content-type"], "application/json");
   assert.equal(sent.headers["x-forwarded-for"], "127.0.0.1");
   assert.deepEqual(errors, []);
-  server.close();
 });
