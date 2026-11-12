@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 
@@ -14,14 +15,22 @@ REPO = "ARCO-Lab/WELLWebsite"
 LOGIN = "maint-user"
 
 
-def pr(number, branch, labels=(), user=LOGIN, sha=None, draft=False):
+def pr(number, branch, labels=(), user=LOGIN, sha=None, draft=False, head_repo=REPO):
     return {"number": number, "title": f"Fix {number}", "html_url": f"https://github.com/{REPO}/pull/{number}",
-            "head": {"ref": branch, "sha": sha or f"sha{number}"}, "user": {"login": user},
-            "labels": [{"name": name} for name in labels], "draft": draft}
+            "head": {"ref": branch, "sha": sha or f"sha{number}", "repo": {"full_name": head_repo}},
+            "user": {"login": user}, "labels": [{"name": name} for name in labels], "draft": draft}
 
 
-def checks(*conclusions, status="completed"):
-    return {"check_runs": [{"name": f"job{i}", "status": status, "conclusion": c} for i, c in enumerate(conclusions)]}
+def checks(*conclusions, status="completed", required=True):
+    """Check runs with these conclusions, after the five required ones (all passed) unless required=False."""
+    runs = [{"id": i, "name": name, "status": "completed", "conclusion": "success"}
+            for i, name in enumerate(ms.REQUIRED_CHECKS if required else [])]
+    runs += [{"id": 100 + i, "name": f"job{i}", "status": status, "conclusion": c} for i, c in enumerate(conclusions)]
+    return {"check_runs": runs}
+
+
+def classify(p, files, ci, *args, **kwargs):
+    return ms.classify(p, files, ci, REPO, LOGIN, *args, **kwargs)
 
 
 class FakeSMTP:
@@ -68,12 +77,12 @@ class NoStartTlsModule:
 
 class ClassifyTests(unittest.TestCase):
     def test_ready_needs_green_ci_audit_and_low_risk(self):
-        verdict, reasons = ms.classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), ["README.md"], "green")
+        verdict, reasons = classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), ["README.md"], "green")
         self.assertEqual(("ready", []), (verdict, reasons))
 
     def test_each_missing_condition_is_a_reason(self):
-        verdict, reasons = ms.classify(pr(1, "maint/a", ["risk:high", "audit:findings"], draft=True),
-                                       ["README.md"], "red", ["Dashboard build"])
+        verdict, reasons = classify(pr(1, "maint/a", ["risk:high", "audit:findings"], draft=True),
+                                    ["README.md"], "red", ["Dashboard build"])
         self.assertEqual("review", verdict)
         self.assertIn("CI failed: Dashboard build", reasons)
         self.assertIn("labelled risk:high", reasons)
@@ -81,28 +90,77 @@ class ClassifyTests(unittest.TestCase):
         self.assertIn("draft", reasons)
 
     def test_unaudited_and_unlabelled(self):
-        _, reasons = ms.classify(pr(1, "maint/a"), ["README.md"], "pending")
+        _, reasons = classify(pr(1, "maint/a"), ["README.md"], "pending")
         self.assertEqual(["CI still running", "no risk label", "not audited yet (no audit:approved label)"], reasons)
 
+    def test_not_opened_by_the_maintainer(self):
+        approved = ["risk:low", "audit:approved", "maintainer"]
+        for p in [pr(1, "maint/a", approved, user="someone"), pr(1, "maint/a", approved, head_repo="fork/WELLWebsite"),
+                  pr(1, "maint/a", approved, head_repo=None)]:
+            verdict, reasons = classify(p, ["README.md"], "green")
+            self.assertEqual(("review", ["not opened by the maintainer"]), (verdict, reasons))
+        # No maintainer login known: nothing counts as the maintainer's.
+        self.assertEqual("review", ms.classify(pr(1, "maint/a", approved, user=""), [], "green", REPO, "")[0])
+
+    def test_required_checks_missing(self):
+        _, reasons = classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), ["README.md"], "missing",
+                              missing_checks=["Dashboard image"])
+        self.assertEqual(["required checks missing: Dashboard image"], reasons)
+
     def test_risky_files_override_a_low_risk_label(self):
-        for path in ["dashboard/backend/app/db/migrations/0006_x.sql", "docker-compose.yml", "deploy.sh",
-                     "dashboard/frontend/Dockerfile", "dashboard/backend/app/scripts/inject_from_api.py",
-                     "dashboard/backend/app/utils/parsers.py", "dashboard/backend/requirements.txt",
-                     ".github/workflows/ci.yml", "dashboard/backend/app/utils/sentry.py", "home/index.php"]:
-            verdict, reasons = ms.classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), [path], "green")
+        for path in ["dashboard/backend/app/db/migrations/0006_x.sql", "dashboard/backend/app/db/models.py",
+                     "dashboard/backend/app/scripts/migrate.py", "docker-compose.yml", "deploy.sh", "nginx.conf",
+                     "dashboard/frontend/Dockerfile", "dashboard/backend/.dockerignore",
+                     "dashboard/backend/app/scripts/inject_from_api.py",
+                     "dashboard/backend/app/scripts/licor_backfill.py",
+                     "dashboard/backend/app/scripts/scheduler_temp.py", "dashboard/backend/app/tasks/exports.py",
+                     "dashboard/backend/app/utils/parsers.py", "dashboard/backend/app/utils/sampling_csv.py",
+                     "dashboard/backend/app/config.py", "dashboard/backend/requirements.txt",
+                     "dashboard/frontend/package.json", "dashboard/frontend/package-lock.json",
+                     "dashboard/backend/app/utils/sentry.py", "dashboard/backend/app/utils/guards.py",
+                     "dashboard/frontend/src/lib/sentry.ts", "dashboard/backend/app/server.py",
+                     "dashboard/backend/app/ops/auth.py", "dashboard/backend/app/ops/templates/login.html",
+                     "dashboard/frontend/src/pages/api/latest.ts", "dashboard/frontend/next.config.mjs",
+                     ".gitignore", "dashboard/frontend/.gitignore", ".gitattributes",
+                     ".github/workflows/ci.yml", ".github/maintainer/PROMPT.md",
+                     ".github/scripts/maintainer_summary.py", ".claude/settings.json",
+                     "home/index.php", "wordpress/uploads.ini"]:
+            verdict, reasons = classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), [path], "green")
             self.assertEqual("review", verdict, path)
             self.assertIn(path, reasons[0])
 
     def test_ordinary_files_are_not_risky(self):
         self.assertEqual([], ms.risky_files(["dashboard/frontend/src/components/Map.tsx",
                                              "dashboard/backend/app/api/routes/latest.py", "README.md",
-                                             "dashboard/backend/tests/test_alerts.py"]))
+                                             "dashboard/backend/tests/test_alerts.py",
+                                             "dashboard/frontend/src/pages/index.tsx",
+                                             "dashboard/backend/app/scripts/daily_digest.py",
+                                             "dashboard/backend/app/utils/alerts.py", "docs/configuration.md"]))
 
     def test_ci_state(self):
-        self.assertEqual("none", ms.ci_state([]))
-        self.assertEqual("green", ms.ci_state(checks("success", "skipped", "neutral")["check_runs"]))
-        self.assertEqual("red", ms.ci_state(checks("success", "failure")["check_runs"]))
-        self.assertEqual("pending", ms.ci_state(checks(None, status="in_progress")["check_runs"]))
+        self.assertEqual(("none", ms.REQUIRED_CHECKS), ms.ci_state([]))
+        self.assertEqual(("green", []), ms.ci_state(checks("success", "skipped", "neutral")["check_runs"]))
+        self.assertEqual(("red", []), ms.ci_state(checks("success", "failure")["check_runs"]))
+        self.assertEqual(("pending", []), ms.ci_state(checks(None, status="in_progress")["check_runs"]))
+        # Everything that ran passed, but the required jobs never ran (CodeQL alone, say).
+        self.assertEqual(("missing", ms.REQUIRED_CHECKS), ms.ci_state(checks("success", required=False)["check_runs"]))
+        # A required job that was skipped doesn't count as passed.
+        runs = checks()["check_runs"]
+        runs[2]["conclusion"] = "skipped"
+        self.assertEqual(("missing", ["Dashboard image"]), ms.ci_state(runs))
+
+    def test_the_newest_run_of_a_check_counts(self):
+        runs = checks()["check_runs"] + [{"id": -1, "name": "Dashboard build", "status": "completed",
+                                          "conclusion": "failure"}]
+        self.assertEqual(("green", []), ms.ci_state(runs))   # the failure is older than the success
+        runs.append({"id": 50, "name": "Dashboard build", "status": "completed", "conclusion": "failure"})
+        self.assertEqual(("red", []), ms.ci_state(runs))
+
+    def test_required_checks_match_deploy_sh(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(root, "deploy.sh"), encoding="utf-8") as f:
+            line = next(line for line in f if line.startswith("REQUIRED_CHECKS=("))
+        self.assertEqual(ms.REQUIRED_CHECKS, re.findall(r'"([^"]+)"', line.split("#")[0]))
 
 
 def routes(prs, files=None, runs=None, compare=None):
@@ -134,6 +192,7 @@ class GatherTests(unittest.TestCase):
         reviewed, result, errors, _ = ms.gather(env(), FakeTransport(routes(prs)))
         self.assertEqual([1, 4], [p["number"] for p, _, _ in reviewed])
         self.assertEqual("ready", reviewed[0][1])
+        self.assertIn("not opened by the maintainer", reviewed[1][2])
         self.assertEqual("Fixed one thing.", result["summary"])
         self.assertEqual([], errors)
 

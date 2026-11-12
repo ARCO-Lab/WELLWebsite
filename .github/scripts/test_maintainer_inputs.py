@@ -53,8 +53,12 @@ def base_routes():
              "security_advisory": {"severity": "high", "summary": "SSRF"},
              "security_vulnerability": {"first_patched_version": {"identifier": "16.0.9"}}}],
         ("GET", f"/repos/{REPO}/pulls"): [
-            {"number": 80, "title": "t", "html_url": "p80", "head": {"ref": "maint/x"}, "labels": []},
-            {"number": 81, "title": "u", "html_url": "p81", "head": {"ref": "feat/y"}, "labels": []}],
+            {"number": 80, "title": "t", "html_url": "p80", "user": {"login": "maint-user"},
+             "head": {"ref": "maint/x", "repo": {"full_name": REPO}}, "labels": []},
+            {"number": 81, "title": "u", "html_url": "p81", "user": {"login": "someone"},
+             "head": {"ref": "maint/y", "repo": {"full_name": REPO}}, "labels": [{"name": "maintainer"}]},
+            {"number": 82, "title": "v", "html_url": "p82", "user": {"login": "maint-user"},
+             "head": {"ref": "maint/z", "repo": {"full_name": "fork/WELLWebsite"}}, "labels": []}],
         ("GET", f"/repos/{REPO}/git/matching-refs/heads/maint/"): [{"ref": "refs/heads/maint/x"},
                                                                    {"ref": "refs/heads/maint/old"}],
     }
@@ -76,7 +80,8 @@ def sentry_routes():
 class CollectTests(unittest.TestCase):
     def collect(self, routes, **env):
         transport = FakeTransport(routes)
-        result = mi.collect({"GITHUB_REPOSITORY": REPO, "GITHUB_TOKEN": "gh-token", **env}, transport, NOW)
+        result = mi.collect({"GITHUB_REPOSITORY": REPO, "GITHUB_TOKEN": "gh-token", "MAINTAINER_LOGIN": "maint-user",
+                             **env}, transport, NOW)
         return result, transport
 
     def test_everything(self):

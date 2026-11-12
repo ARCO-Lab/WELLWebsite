@@ -5,7 +5,9 @@ when there is nothing to report, so a missing email means the job itself didn't 
 A pull request is the maintainer's if it comes from a maint/* branch of the maintainer's account, or carries the
 `maintainer` label. It is "Ready to merge" only when all of these hold; otherwise it "Needs your review", with the
 reasons listed:
-- CI finished and every check passed;
+- it was opened by the maintainer's account from a branch of this repository (a `maintainer` label alone, which
+  anyone with triage rights can add, isn't enough);
+- CI finished, every check passed, and the checks main requires (REQUIRED_CHECKS) are among them;
 - it has the `audit:approved` label (set after an independent audit said "Approval recommended") and no
   `audit:findings` label;
 - it has the `risk:low` label and not `risk:high`;
@@ -38,15 +40,25 @@ RISKY_PATHS = [
     r"^deploy\.sh$", r"^nginx\.conf$",
     r"(^|/)requirements[^/]*\.txt$", r"(^|/)package(-lock)?\.json$",
     r"^dashboard/backend/app/config\.py$",
+    r"^dashboard/backend/app/server\.py$",               # the Flask app: routes, CORS, error handling
+    r"^dashboard/backend/app/ops/",                      # the ops dashboard: login, password hashing, settings
     r"^dashboard/backend/app/tasks/",
     # ingestion, backfills, uploads and the scheduler
     r"^dashboard/backend/app/scripts/(inject|licor|wqdata|clean|clear|upload|download|sharepoint|scheduler)_",
     r"^dashboard/backend/app/utils/(parsers|fetching|borealis|sharepoint|sampling_\w+|sensor_names|timezone)\.py$",
     r"^dashboard/backend/app/utils/(sentry|guards)\.py$",   # error reporting and request guards
     r"^dashboard/frontend/src/lib/sentry\.ts$",
+    r"^dashboard/frontend/src/pages/api/",              # the dashboard's server side: proxying to the backend
+    r"(^|/)next\.config\.[^/]+$",
+    r"(^|/)\.git(ignore|attributes)$",
     r"^\.github/",                                       # workflows, Dependabot, and this maintainer
+    r"^\.claude/",
     r"^home/", r"^wordpress/",
 ]
+# The checks main's branch protection requires: the job names in ci.yml, as in deploy.sh's REQUIRED_CHECKS
+# (a unit test keeps the two the same).
+REQUIRED_CHECKS = ["Backend image and tests", "Dashboard build", "Dashboard image", "Deploy script",
+                   "End-to-end data (vendors to browser)"]
 PASSED = {"success", "neutral", "skipped"}
 
 
@@ -54,25 +66,51 @@ def risky_files(paths):
     return [p for p in paths if any(re.search(pattern, p) for pattern in RISKY_PATHS)]
 
 
-def ci_state(check_runs):
-    """"green", "red", "pending" or "none" for a commit's check runs."""
-    if not check_runs:
-        return "none"
-    if any(run.get("status") != "completed" for run in check_runs):
-        return "pending"
-    return "green" if all(run.get("conclusion") in PASSED for run in check_runs) else "red"
+def latest_runs(check_runs):
+    """The newest check run of each name (a re-run, or CI started by hand after a pull_request run)."""
+    newest = {}
+    for run in check_runs:
+        name = run.get("name")
+        if name not in newest or (run.get("id") or 0) > (newest[name].get("id") or 0):
+            newest[name] = run
+    return list(newest.values())
 
 
-def classify(pr, files, ci, failed_checks=()):
+def ci_state(check_runs, required=REQUIRED_CHECKS):
+    """(state, [missing required check names]) for a commit's check runs. The state is "green" (all finished and
+    passed, every required check among them), "red", "pending", "missing" (passed, but a required check never
+    ran) or "none"."""
+    runs = latest_runs(check_runs)
+    if not runs:
+        return "none", list(required)
+    if any(run.get("status") != "completed" for run in runs):
+        return "pending", []
+    if not all(run.get("conclusion") in PASSED for run in runs):
+        return "red", []
+    passed = {run.get("name") for run in runs if run.get("conclusion") == "success"}
+    missing = [name for name in required if name not in passed]
+    return ("missing", missing) if missing else ("green", [])
+
+
+def opened_by_maintainer(pr, repo, login):
+    return (bool(login) and (pr.get("user") or {}).get("login") == login
+            and ((pr.get("head") or {}).get("repo") or {}).get("full_name") == repo)
+
+
+def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=()):
     """("ready", []) or ("review", [reasons])."""
     labels = {label.get("name") for label in pr.get("labels") or []}
     reasons = []
+    if not opened_by_maintainer(pr, repo, login):
+        reasons.append("not opened by the maintainer")
     if ci == "red":
         reasons.append("CI failed" + (f": {', '.join(failed_checks)}" if failed_checks else ""))
     elif ci == "pending":
         reasons.append("CI still running")
     elif ci == "none":
         reasons.append("no CI checks found")
+    elif ci == "missing":
+        reasons.append(f"required checks missing: {', '.join(missing_checks)}")
     if "risk:high" in labels:
         reasons.append("labelled risk:high")
     elif "risk:low" not in labels:
@@ -98,17 +136,18 @@ def maintainer_prs(gh, repo, login):
             or any(label.get("name") == "maintainer" for label in p.get("labels") or [])]
 
 
-def review_prs(gh, repo, prs):
+def review_prs(gh, repo, prs, login):
     """[(pr, verdict, reasons)] with each pull request's files and checks looked up."""
     out = []
     for pr in prs:
         files = [f["filename"] for f in gh.get_all(f"repos/{repo}/pulls/{pr['number']}/files",
                                                    {"per_page": 100}, max_pages=30)]
-        runs = gh.get_all(f"repos/{repo}/commits/{pr['head']['sha']}/check-runs", {"per_page": 100},
-                          max_pages=3, key="check_runs")
+        runs = latest_runs(gh.get_all(f"repos/{repo}/commits/{pr['head']['sha']}/check-runs",
+                                      {"per_page": 100, "filter": "latest"}, max_pages=3, key="check_runs"))
         failed = sorted({r.get("name") for r in runs
                          if r.get("status") == "completed" and r.get("conclusion") not in PASSED})
-        verdict, reasons = classify(pr, files, ci_state(runs), failed)
+        state, missing = ci_state(runs)
+        verdict, reasons = classify(pr, files, state, repo, login, failed, missing)
         out.append((pr, verdict, reasons))
     return out
 
@@ -256,7 +295,7 @@ def gather(env, transport=urllib_transport):
     gh = github_client(env["GITHUB_TOKEN"], transport)
     reviewed = []
     try:
-        reviewed = review_prs(gh, repo, maintainer_prs(gh, repo, login))
+        reviewed = review_prs(gh, repo, maintainer_prs(gh, repo, login), login)
     except (HttpError, OSError, ValueError, KeyError) as error:
         errors.append(f"listing the maintainer's pull requests: {error}")
     if login:

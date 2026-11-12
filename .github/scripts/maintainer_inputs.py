@@ -13,7 +13,8 @@ Collected (each part on its own: one that fails is recorded under "errors" and t
 - the maintainer's own open pull requests and maint/* branches, so the same problem isn't fixed twice.
 
 Usage: python3 maintainer_inputs.py OUTPUT.json
-Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (read-only is enough), ALERTS_TOKEN (optional), SENTRY_API_TOKEN
+Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (read-only is enough), MAINTAINER_LOGIN, ALERTS_TOKEN (optional),
+SENTRY_API_TOKEN
 (optional), SENTRY_ORG (default well-cs), SENTRY_API_URL (default https://sentry.io)."""
 import json
 import os
@@ -164,13 +165,15 @@ def dependabot_alerts(gh, repo):
     return out
 
 
-def maintainer_work(gh, repo):
+def maintainer_work(gh, repo, login):
+    """The maintainer's own open pull requests (opened by its account from a branch of this repository), and the
+    maint/* branches. Pull requests by anyone else are left out, so a stranger's one can't pose as its work."""
     prs = gh.get_all(f"repos/{repo}/pulls", {"state": "open", "per_page": 100}, max_pages=3)
     open_prs = [{"number": p["number"], "title": p.get("title"), "branch": (p.get("head") or {}).get("ref"),
                  "url": p.get("html_url"), "labels": [label.get("name") for label in p.get("labels") or []]}
                 for p in prs
-                if ((p.get("head") or {}).get("ref") or "").startswith("maint/")
-                or any(label.get("name") == "maintainer" for label in p.get("labels") or [])]
+                if login and (p.get("user") or {}).get("login") == login
+                and ((p.get("head") or {}).get("repo") or {}).get("full_name") == repo]
     refs = gh.get(f"repos/{repo}/git/matching-refs/heads/maint/") or []
     return {"open_prs": open_prs, "branches": [r["ref"].removeprefix("refs/heads/") for r in refs]}
 
@@ -211,7 +214,7 @@ def collect(env, transport=urllib_transport, now=None):
         except (RuntimeError, OSError, ValueError) as error:
             result[name] = None
             result["errors"].append(f"{name}: {error}")
-    part("maintainer_work", maintainer_work, gh, repo)
+    part("maintainer_work", maintainer_work, gh, repo, env.get("MAINTAINER_LOGIN") or "")
     return result
 
 
