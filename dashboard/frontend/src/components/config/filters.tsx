@@ -99,3 +99,6 @@ export const SAMPLING_SITE_COORDINATES = [
   { id: "9", lat: 43.2651150, lng: -79.9429224, label: "Site 9: McMaster Lot P", group: "coldwater" },
   { id: "10", lat: 43.2664186, lng: -79.9293879, label: "Site 10: Cootes Dr", group: "spencer" },
 ];
+// The station_id the weather station's and the water quality probe's readings are stored under (the loggers'
+// are the keys of SENSOR_FILTER_CONFIG.gauges.sites). The charts ask /api/series for "<group>|<station>|<measurement>".
+export const SENSOR_STATIONS = { weather: "22051538", quality: "4501" };

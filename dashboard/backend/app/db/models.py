@@ -18,6 +18,9 @@ class SensorMeasurement(db.Model):
         db.UniqueConstraint("station_id", "measurement_type", "recorded_at"),
         # For queries by group and time range; existing databases get it from db/migrations/0001_*.sql.
         db.Index("ix_sensor_measurements_group_type_recorded_at", "group_type", "recorded_at"),
+        # For /api/series asking for a few series in a time range; existing databases get it from 0004_*.sql.
+        db.Index("ix_sensor_measurements_series_time", "group_type", "station_id", "measurement_type", "recorded_at",
+                 postgresql_include=["value"]),
     )
 
 
