@@ -11,7 +11,9 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.routes.series import (  # noqa: E402
-    LADDER, MAX_POINTS, browser_cache_control, columnar, parse_bucket, pick_bucket, to_local_naive)
+    LADDER, MAX_POINTS, browser_cache_control, cache_key, columnar, parse_bucket, parse_filters, pick_bucket,
+    to_local_naive)
+from werkzeug.datastructures import MultiDict  # noqa: E402
 
 DAY = 86400
 
@@ -50,16 +52,41 @@ class ParseBucketTests(unittest.TestCase):
 class BrowserCacheControlTests(unittest.TestCase):
     now = dt.datetime(2026, 11, 11, 12, 0)
 
-    def test_settled_ranges_are_immutable_for_a_day(self):
-        self.assertEqual(browser_cache_control(self.now - dt.timedelta(days=2), self.now),
-                         "public, max-age=86400, immutable")
+    def test_settled_ranges_for_a_few_hours(self):
+        self.assertEqual(browser_cache_control(self.now - dt.timedelta(days=2), self.now), "public, max-age=10800")
         self.assertEqual(browser_cache_control(self.now - dt.timedelta(days=2), self.now, seconds_left=5),
-                         "public, max-age=86400, immutable")
+                         "public, max-age=10800")  # not immutable: a backfill can still change old readings
 
     def test_anything_newer_a_minute_at_most(self):
         self.assertEqual(browser_cache_control(self.now - dt.timedelta(hours=23), self.now), "public, max-age=60")
         self.assertEqual(browser_cache_control(self.now, self.now, seconds_left=42), "public, max-age=42")
         self.assertEqual(browser_cache_control(self.now, self.now, seconds_left=300), "public, max-age=60")
+
+
+class CacheKeyTests(unittest.TestCase):
+    start, end = dt.datetime(2026, 11, 1), dt.datetime(2026, 11, 2)
+
+    def key(self, query):
+        filters, groups = parse_filters(MultiDict(query))
+        return cache_key(600, self.start, self.end, ["Logger", *groups], filters)
+
+    def test_one_value_with_a_separator_cant_stand_for_two(self):
+        # Two measurements, as a chart asks; then one value that joined with "," used to give the same key
+        two = self.key([("measurement_type", "Level"), ("measurement_type", "Water Temperature")])
+        with self.assertRaises(ValueError):
+            self.key([("measurement_type", "Level,Water Temperature")])
+        one = self.key([("measurement_type", "Level")])
+        self.assertNotEqual(one, two)
+        # The key covers every part: groups, filters, bucket and range
+        self.assertNotEqual(self.key([("station_id", "1")]), self.key([("measurement_type", "1")]))
+        self.assertNotEqual(cache_key(600, self.start, self.end, ["Logger"]), cache_key(1800, self.start, self.end, ["Logger"]))
+        self.assertEqual(two, self.key([("measurement_type", "Water Temperature"), ("measurement_type", "Level")]))
+
+    def test_separators_in_values_are_refused(self):
+        for query in ([("station_id", "1|2")], [("station_id", "1,2")], [("measurement_type", "a|b")],
+                      [("series", "Logger|1,2|Level")], [("series", "Logger|1|Level,Rain")]):
+            with self.assertRaises(ValueError, msg=query):
+                parse_filters(MultiDict(query))
 
 
 class ToLocalNaiveTests(unittest.TestCase):
@@ -298,10 +325,12 @@ class SeriesSqlTests(unittest.TestCase):
                 mock.patch.object(response_cache, "put", side_effect=put):
             # A range that ended over a day ago: stored for an hour, and browsers may keep it for a day.
             r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
-            self.assertEqual(r.headers["Cache-Control"], "public, max-age=86400, immutable")
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")
             (key, body), = bodies.items()
             self.assertEqual(ttls[key], 3600)
-            self.assertIn(":2026-11-01T00:10:00:2026-11-01T00:50:00:Weather", key)  # rounded inward to 10-min marks
+            # rounded inward to 10-min marks
+            self.assertEqual(key, cache_key(600, dt.datetime(2026, 11, 1, 0, 10), dt.datetime(2026, 11, 1, 0, 50),
+                                            ["Weather"], {"st": None, "m": None, "k": None}))
             self.assertEqual(body, r.get_data())
             self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])  # as unrounded
 
@@ -309,7 +338,7 @@ class SeriesSqlTests(unittest.TestCase):
             bodies[key], ttls[key] = b'{"cached": true}', 42
             r = self.client.get("/api/series?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00&group_type=Weather")
             self.assertEqual(r.get_json(), {"cached": True})
-            self.assertEqual(r.headers["Cache-Control"], "public, max-age=86400, immutable")
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")
 
             # A range that ended two hours ago: stored for 5 minutes; browsers get a minute at most, and no longer
             # than the cached copy has left.
@@ -393,7 +422,8 @@ class SeriesSqlTests(unittest.TestCase):
         base = "start=2026-11-01T00:00:00&end=2026-11-02T00:00:00"
         too_many = "group_type=Weather&" + "&".join(f"station_id={i}" for i in range(41))
         for bad in ("series=Weather", "series=Weather|22051538", "series=Nope|1|Rain", "series=Weather||Rain",
-                    "series=Weather|1|Rain|x", too_many):
+                    "series=Weather|1|Rain|x", too_many, "group_type=Logger&measurement_type=Level,Water Temperature",
+                    "group_type=Logger&station_id=1|2"):
             self.assertEqual(self.get(f"{base}&{bad}").status_code, 400, bad)
 
     def test_bad_requests(self):

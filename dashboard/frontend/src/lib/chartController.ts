@@ -43,6 +43,7 @@ export interface ChartSnapshot {
   hasData: boolean | null; // whether any of the chart's series has a reading at all (null: don't know yet)
   windowEmpty: boolean; // nothing drawn inside the window
   settled: Range; // the window as of the last time it came to rest (for screen readers: announced once, not per frame)
+  settledByUser: boolean; // it came to rest after the user moved it (not new picked days, a link or the first load)
 }
 
 /** Whether any point with a value lies in [w.start, w.end); points are in time order. */
@@ -95,6 +96,8 @@ export class ChartController {
   private lastMove = 0;
   private density = POINTS_PER_PX;
   private settledWin: Range;
+  private settledByUser = false;
+  private lastReason: WindowReason = "default";
   private paceQueued = false;
   private needCompose = true; // tiles arrived, or a gesture ended: compose at the next paced redraw
   private lastTick: Range | null = null; // the window at the last max-wait check
@@ -185,6 +188,7 @@ export class ChartController {
     const next = clampWindow(w, this.ext, keep);
     if (next.start === this.win.start && next.end === this.win.end) return;
     this.win = next;
+    this.lastReason = reason;
     this.lastMove = now();
     for (const cb of this.windowListeners) cb(next, reason);
     this.scheduleFrame();
@@ -351,6 +355,7 @@ export class ChartController {
       return;
     }
     this.settledWin = w;
+    this.settledByUser = this.lastReason !== "default";
     const changed = () => this.dataChanged(false);
     this.loader.want(this.owner("overview"), keys, OVERVIEW_BUCKET, tilesFor(this.ext, OVERVIEW_BUCKET), near + 1, changed);
     const around = fine
@@ -420,7 +425,8 @@ export class ChartController {
 
   private compose(): void {
     const segs = this.segments();
-    const sig = `${this.keys.join(",")}|${segs.map((g) => `${g.wallStart}-${g.wallEnd}@${g.bucketS}`).join(",")}`;
+    // The tiles in use, and each series' revision: a tile fetched again (the latest hour, filling in) draws anew
+    const sig = `${this.keys.map((k) => `${k}#${this.loader.revision(k)}`).join(",")}|${segs.map((g) => `${g.wallStart}-${g.wallEnd}@${g.bucketS}`).join(",")}`;
     if (sig === this.composedSig) return;
     this.composedSig = sig;
     const series = new Map<string, ComposedPoint[]>();
@@ -450,6 +456,7 @@ export class ChartController {
       hasData,
       windowEmpty: ![...this.lastData.series.values()].some((pts) => hasPointIn(pts, this.win)),
       settled: this.settledWin,
+      settledByUser: this.settledByUser,
     };
   }
 

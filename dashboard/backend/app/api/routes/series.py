@@ -28,16 +28,19 @@
 # (pick_bucket). Either way a request for more than MAX_BUCKETS buckets per series is refused with a 400.
 # series, station_id, measurement_type: only these series, so one chart fetches only what it draws. `series` names
 # whole series ("Logger|2577531|Water Temperature") and stands in for group_type; station_id and measurement_type
-# narrow the groups asked for. Each can be repeated, up to MAX_FILTERS values.
+# narrow the groups asked for. Each can be repeated, up to MAX_FILTERS values; a value may not contain "," or "|"
+# (no station or measurement name does, and a key is split on "|").
 #
 # Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
 # same readings as the request (no bucket is added at either edge), while visitors who open the same view a few
 # minutes apart share one cache key. (A chart's tiles start and end on bucket edges, so for them this changes
 # nothing.) The answer is kept in Redis (utils/response_cache.py) for an hour for a range that ended over a day ago,
-# 5 minutes for one that ended over an hour ago, 1 minute otherwise. Browsers may keep an answer for a range that ended over a day ago for a day, as
-# "immutable" (readings that old don't change, so a chart scrolling back over them asks for nothing), and any other
-# for a minute at most, and no longer than the cached copy has left.
+# 5 minutes for one that ended over an hour ago, 1 minute otherwise, under a key that is a hash of all its parameters.
+# Browsers may keep an answer for a range that ended over a day ago for BROWSER_SETTLED_AGE, and any other for a
+# minute at most, and no longer than the cached copy has left (see browser_cache_control).
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 
 from flask import current_app, jsonify, request
@@ -58,7 +61,7 @@ SNAP = timedelta(minutes=10)
 RECENT = timedelta(hours=1)  # a range ending less long ago than this is still filling in, so reuse it briefly
 MAX_AGE_RECENT, MAX_AGE_PAST, MAX_AGE_SETTLED = 60, 300, 3600  # seconds the shared cache keeps a response
 SETTLED = timedelta(days=1)  # a range that ended longer ago than this is complete
-BROWSER_SETTLED = "public, max-age=86400, immutable"
+BROWSER_SETTLED_AGE = 3 * 3600  # seconds browsers may reuse an answer for a range that ended over a day ago
 BROWSER_MAX_AGE = 60  # seconds browsers may reuse an answer for any other range
 MAX_BUCKETS = 4000  # the most buckets per series one request may ask for (span / bucket)
 MAX_FILTERS = 40  # values per filter parameter
@@ -129,21 +132,27 @@ def max_age(end, now):
 
 
 def browser_cache_control(end, now, seconds_left=None):
-    """Cache-Control for a range ending at `end` (naive local times, like `now`): a day, immutable, once the range
-    ended over a day ago; otherwise a minute, or what is left of the shared cache's copy if that is less."""
+    """Cache-Control for a range ending at `end` (naive local times, like `now`): BROWSER_SETTLED_AGE once the range
+    ended over a day ago; otherwise a minute, or what is left of the shared cache's copy if that is less.
+
+    Readings over a day old rarely change, so a chart panning back over them can reuse what it fetched. They can
+    change, though: a backfill fills a gap, or a cleanup removes bad values. So not "immutable" and not for a day: a
+    few hours, after which the browser asks again (and usually gets the copy in Redis), is the trade-off between
+    requests saved while someone explores the charts and how long a corrected range can look stale."""
     if end < now - SETTLED:
-        return BROWSER_SETTLED
+        return f"public, max-age={BROWSER_SETTLED_AGE}"
     age = BROWSER_MAX_AGE if seconds_left is None else min(BROWSER_MAX_AGE, seconds_left)
     return f"public, max-age={age}"
 
 
 def cache_key(bucket, start, end, groups, filters=None):
-    """Everything the answer depends on: the query's parameters, after snap_range."""
-    parts = [f"series:v3:{bucket}:{start.isoformat()}:{end.isoformat()}:{','.join(sorted(set(groups)))}"]
-    for name in ("st", "m", "k"):
-        values = (filters or {}).get(name)
-        parts.append(",".join(sorted(set(values))) if values else "*")
-    return "|".join(parts)
+    """Everything the answer depends on (the query's parameters, after snap_range), as a hash of their JSON: an
+    unambiguous encoding, so no request can produce another's key (joining values with separators let a single
+    value containing one stand for two values, and store its empty answer for a real tile)."""
+    filters = filters or {}
+    parts = [bucket, start.isoformat(), end.isoformat(), sorted(set(groups))]
+    parts += [sorted(set(filters[name])) if filters.get(name) else None for name in ("st", "m", "k")]
+    return "series:v4:" + hashlib.sha256(json.dumps(parts).encode()).hexdigest()
 
 
 def parse_filters(args):
@@ -154,9 +163,11 @@ def parse_filters(args):
         values = [v for v in args.getlist(param) if v]
         if len(values) > MAX_FILTERS:
             raise ValueError(f"At most {MAX_FILTERS} values for {param}")
+        if name != "k" and any("," in v or "|" in v for v in values):
+            raise ValueError(f"{param} values may not contain ',' or '|'")
         filters[name] = values or None
     keys = [k.split("|") for k in filters["k"] or []]
-    if any(len(k) != 3 or k[0] not in GROUPS or not k[1] or not k[2] for k in keys):
+    if any(len(k) != 3 or k[0] not in GROUPS or not k[1] or not k[2] or "," in k[1] + k[2] for k in keys):
         raise ValueError("series must look like Weather|<station_id>|<measurement_type>")
     if keys:
         # The stations and measurements the keys name, so the index narrows the scan to them too

@@ -11,11 +11,13 @@
 //   one request for their shared tiles instead of the first chart's going out alone;
 // - a chart's new wish replaces its old one: queued requests no chart wants any more are dropped before they are
 //   sent. A request already sent can't be taken back (the backend runs it anyway), so it finishes and is cached;
-// - a failed request caches nothing, so asking again retries it.
+// - a failed request caches nothing, so asking again retries it;
+// - a tile that reaches into the last LIVE_WINDOW_MS (still filling in with new readings) is kept only LIVE_TTL_MS
+//   as fresh: asked for after that, it is fetched again (the old copy is drawn until the new one arrives).
 // No React or browser APIs here (fetching is passed in), so scripts/seriesLoader.test.mjs can test it with Node.
 
 import {
-  cutIntoTiles, seriesKey, tileQuery, type ApiSeries, type TileSeries,
+  cutIntoTiles, seriesKey, tileQuery, tileRange, type ApiSeries, type TileSeries,
 } from "./seriesTiles.ts";
 
 export const MAX_ENTRIES = 3000;
@@ -23,6 +25,8 @@ export const MAX_IN_FLIGHT = 2;
 export const MAX_BATCH = 8; // tiles per request: 8 x 360 = 2,880 buckets, under the API's 4,000
 export const MAX_KEYS = 40; // series per request (the API's MAX_FILTERS)
 export const BATCH_MS = 30;
+export const LIVE_WINDOW_MS = 3_600_000; // a tile ending later than this before now may still get readings
+export const LIVE_TTL_MS = 60_000; // how long such a tile counts as fresh (the API lets browsers reuse it as long)
 
 export interface TileRequest { keys: string[]; bucketS: number; first: number; last: number }
 export type FetchTiles = (req: TileRequest) => Promise<ApiSeries[]>;
@@ -53,6 +57,8 @@ const tileKey = (key: string, bucketS: number, index: number) => `${key}#${bucke
 
 export class SeriesLoader {
   private cache = new Map<string, TileSeries>(); // insertion order = least recently used first
+  private liveSince = new Map<string, number>(); // series-tile -> when it was fetched, for tiles still filling in
+  private revisions = new Map<string, number>(); // series -> how many times its tiles were stored (charts redraw on a change)
   private loaded = new Map<string, Set<number>>(); // `${key}#${bucketS}` -> cached tile indexes
   private meta = new Map<string, SeriesMeta>();
   private pending = new Map<string, Job>(); // series-tile -> the job that will load it
@@ -69,7 +75,10 @@ export class SeriesLoader {
   private batchMs: number;
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(fetchTiles: FetchTiles, maxEntries = MAX_ENTRIES, maxInFlight = MAX_IN_FLIGHT, batchMs = 0) {
+  private now: () => number;
+
+  constructor(fetchTiles: FetchTiles, maxEntries = MAX_ENTRIES, maxInFlight = MAX_IN_FLIGHT, batchMs = 0, now: () => number = Date.now) {
+    this.now = now;
     this.fetchTiles = fetchTiles;
     this.maxEntries = maxEntries;
     this.maxInFlight = maxInFlight;
@@ -86,7 +95,7 @@ export class SeriesLoader {
     for (const i of indexes) {
       for (const k of keys) {
         const tk = tileKey(k, bucketS, i);
-        if (this.cache.has(tk)) { this.stats.hits++; continue; }
+        if (this.cache.has(tk) && !this.stale(tk)) { this.stats.hits++; continue; }
         const job = this.pending.get(tk);
         if (job) {
           this.stats.deduped++;
@@ -138,6 +147,11 @@ export class SeriesLoader {
       this.cache.set(tk, t);
     }
     return t;
+  }
+
+  /** A number that changes whenever a tile of this series is stored (a refetched tile included). */
+  revision(key: string): number {
+    return this.revisions.get(key) ?? 0;
   }
 
   has(key: string, bucketS: number, index: number): boolean {
@@ -193,8 +207,17 @@ export class SeriesLoader {
     }
   }
 
+  // A tile still filling in, fetched more than LIVE_TTL_MS ago
+  private stale(tk: string): boolean {
+    const at = this.liveSince.get(tk);
+    return at !== undefined && this.now() - at > LIVE_TTL_MS;
+  }
+
   private put(key: string, bucketS: number, index: number, tile: TileSeries): void {
     const tk = tileKey(key, bucketS, index);
+    this.revisions.set(key, this.revision(key) + 1);
+    if (tileRange(index, bucketS).end > this.now() - LIVE_WINDOW_MS) this.liveSince.set(tk, this.now());
+    else this.liveSince.delete(tk);
     this.cache.delete(tk);
     this.cache.set(tk, tile);
     const lk = `${key}#${bucketS}`;
@@ -204,6 +227,7 @@ export class SeriesLoader {
     while (this.cache.size > this.maxEntries) {
       const oldest = this.cache.keys().next().value as string;
       this.cache.delete(oldest);
+      this.liveSince.delete(oldest);
       const [k, b, i] = oldest.split("#");
       this.loaded.get(`${k}#${b}`)?.delete(Number(i));
     }

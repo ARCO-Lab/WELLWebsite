@@ -1,6 +1,7 @@
 // This file defines useWindRose, which loads the wind rose's counts from /api/windrose: how often the wind blew
 // from each of 16 directions at each speed over a range, counted by the database. Only while the wind rose is shown;
-// one request per range (a newer one aborts the older), and the last few answers are cached.
+// one request per range (a newer one aborts the older), and the last few answers are cached: a range that reaches
+// into the last hour (still filling in) for a minute only, so the rose catches up when it is shown again.
 
 import { useEffect, useState } from "react";
 import { UNREACHABLE, errorFrom } from "@/lib/seriesLoader";
@@ -18,7 +19,8 @@ export interface WindState {
   error: Error | null;
 }
 
-const cache = new Lru<WindRoseResponse>(6); // a few hundred numbers each
+const cache = new Lru<{ data: WindRoseResponse; at: number }>(6); // a few hundred numbers each
+const LIVE_WINDOW_MS = 3_600_000, LIVE_TTL_MS = 60_000;
 
 export default function useWindRose(range: Range | null, shown: boolean): WindState {
   const [state, setState] = useState<WindState>({ data: null, loading: false, error: null });
@@ -27,9 +29,9 @@ export default function useWindRose(range: Range | null, shown: boolean): WindSt
   useEffect(() => {
     if (!shown || start === undefined || end === undefined) return;
     const key = `${start}|${end}`;
-    const cached = cache.get(key);
-    if (cached) {
-      setState({ data: cached, loading: false, error: null });
+    const hit = cache.get(key);
+    if (hit && !(end > Date.now() - LIVE_WINDOW_MS && Date.now() - hit.at > LIVE_TTL_MS)) {
+      setState({ data: hit.data, loading: false, error: null });
       return;
     }
     const controller = new AbortController();
@@ -44,7 +46,7 @@ export default function useWindRose(range: Range | null, shown: boolean): WindSt
       return (await res.json()) as WindRoseResponse;
     })()
       .then((data) => {
-        cache.set(key, data);
+        cache.set(key, { data, at: Date.now() });
         setState({ data, loading: false, error: null });
       })
       .catch((err) => {

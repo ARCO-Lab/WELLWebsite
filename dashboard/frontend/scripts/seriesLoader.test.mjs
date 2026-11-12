@@ -433,3 +433,29 @@ test("bucketFor: about one point per pixel on phones", () => {
   assert.equal(bucketFor(3 * D, 300), 600); // 432 points at 1.5 per px (450)
   assert.equal(bucketFor(3 * D, 300, 1), 1800); // over 300 at 1 per px: 30-min buckets (144)
 });
+
+test("loader: a tile still filling in is fetched again after a minute; older tiles never are", async () => {
+  const srv = fakeServer();
+  let clock = Date.parse("2026-11-11T17:00:00Z");
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+  const live = tileAt(clock - 3600e3, 600); // ends after now - 1 h: still getting readings
+  const old = live - 3;
+  let changes = 0;
+  loader.want("c", [A], 600, [old, live], 0, () => changes++);
+  await srv.settle();
+  const n0 = srv.calls.length;
+  const rev0 = loader.revision(A);
+  clock += 30_000;
+  loader.want("c", [A], 600, [old, live], 0, () => changes++);
+  assert.equal(srv.calls.length, n0); // fresh for a minute
+  clock += 40_000;
+  loader.want("c", [A], 600, [old, live], 0, () => changes++);
+  assert.equal(srv.calls.length, n0 + 1); // the live tile only
+  assert.deepEqual([srv.calls.at(-1).first, srv.calls.at(-1).last], [live, live]);
+  assert.ok(loader.has(A, 600, live)); // the old copy is still drawn meanwhile
+  await srv.settle();
+  assert.ok(loader.revision(A) > rev0); // charts recompose with the new readings
+  clock += 10 * 60_000;
+  loader.want("c", [A], 600, [old], 0, () => {});
+  assert.equal(srv.calls.length, n0 + 1); // a past tile stays cached
+});
