@@ -6,7 +6,7 @@
 //
 // Drawing: one y-axis per unit, each scaled to its own data (alignTicks off); the cards hide the axes (the tooltip
 // gives values, the legend units), the larger view shows them. A colour per measurement (per logger on the loggers'
-// chart, temperature dashed); rain as bars of totals as wide as their bucket; wind direction as points; in the larger
+// chart, temperature dashed); rain as a stepped area of totals, flat across each bucket; wind direction as points; in the larger
 // view a band from the smallest to the largest reading behind each averaged line. Averaged buckets sit at their middle
 // and the tooltip names the span they cover. Points the line alone wouldn't show get a marker: filled for a reading
 // between two gaps, hollow for a bucket with under half the readings its series usually has at that time of day.
@@ -20,7 +20,8 @@
 // - mouse wheel: a plain (vertical) wheel always scrolls the page, and now and then shows a hint. Ctrl/⌘ + wheel or
 //   a trackpad pinch zooms around the pointer; Shift + wheel or a sideways swipe pans.
 // - drag in the plot pans; Shift + drag selects a span to zoom to; the navigator and its scrollbar move and resize it.
-// - touch: one finger scrolls the page (a tap shows the tooltip); two fingers pinch to zoom and move to pan.
+// - touch: one finger moving up or down scrolls the page (the plot is touch-action: pan-y), sideways pans the chart, a
+//   tap shows the tooltip; two fingers pinch to zoom and move to pan.
 // - keyboard, once the chart has focus: ← → pan, + − zoom, 0 resets.
 // The chart redraws at a pace its own redraw cost allows, once per turn for new data and the window together. During a
 // gesture the bands and the accessibility layer are off and requests wait for its end. Screen readers get the chart's
@@ -53,7 +54,8 @@ export interface MetricChartProps {
 const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
 const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
-const HINT_EVERY_MS = 30_000; // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
+const HINT_EVERY_MS = 30_000;
+const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
 const EXTENT_ID = 'picked-range'; // the invisible series that spans the picked range
 
 // What a series is, for the tooltip and legend.
@@ -135,6 +137,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     return axis;
   });
   const series: Highcharts.SeriesOptionsType[] = [];
+  const first = specs.find((s) => !s.hidden) ?? specs[0];
   for (const s of specs) {
     const info: SeriesInfo = { label: s.name.replace(/ \([^)]*\)$/, ''), unit: s.unit, agg: s.agg, note: s.note };
     if (axes && s.agg === 'mean') { // bands in the larger view only: on a card with many series they hide the lines
@@ -147,9 +150,11 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     const type = seriesType(s.agg);
     series.push({
       id: s.key, type, name: s.name, custom: info, yAxis: s.axis, color: s.color, data: [], zIndex: 1, visible: !s.hidden,
+      showInNavigator: s === first,
+      ...(s === first ? { navigatorOptions: { type: 'line', color: s.color, lineWidth: 1, data: [], dataGrouping: { enabled: false } } } : {}),
       ...(s.dash ? { dashStyle: s.dash } : {}),
       ...(type === 'line' ? { lineWidth: 1.5 } : {}),
-      ...(type === 'column' ? { pointPadding: 0, groupPadding: 0, borderWidth: 0, grouping: false, pointRange: 3600 * 1000 } : {}),
+      ...(type === 'area' ? { step: 'center', threshold: 0, lineWidth: 1, fillOpacity: 0.35 } : {}),
       ...(type === 'scatter' ? { marker: { enabled: true, radius: 2, symbol: 'circle' }, findNearestPointBy: 'x' } : {}),
     } as Highcharts.SeriesOptionsType);
   }
@@ -158,7 +163,8 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     id: EXTENT_ID, type: 'line', data: extentData(ext), yAxis: 0, enableMouseTracking: false, showInLegend: false,
     showInNavigator: false, includeInDataExport: false, accessibility: { enabled: false }, lineWidth: 0,
   } as Highcharts.SeriesLineOptions);
-  const first = specs.find((s) => !s.hidden) ?? specs[0];
+  // Exactly one series carries the navigator (Stock otherwise adds a navigator series per series it is given); its
+  // navigator line is the range's overview, set by setNavigator below, not the series' own (detailed) data
   return {
     time: { timezone: TIME_ZONE },
     chart: {
@@ -184,7 +190,6 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       maskFill: 'rgba(122, 0, 60, 0.12)',
       outlineColor: '#d1d5db',
       handles: { backgroundColor: '#ffffff', borderColor: '#7a003c', height: 18, width: 9 },
-      series: { type: 'line', color: first?.color ?? '#6b7280', lineWidth: 1, data: [], dataGrouping: { enabled: false } } as Highcharts.NavigatorSeriesOptions,
       xAxis: { labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#6b7280' } } },
     },
     // liveRedraw (for the navigator too): on touch screens the chart redraws when the finger lifts
@@ -192,8 +197,10 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     accessibility: {
       description: `${title}. Use the buttons above the chart, or the arrow, plus and minus keys, to move and zoom.`,
       keyboardNavigation: { enabled: false }, // the chart's own keys (see above) move and zoom it
-      // No hidden description per point: the chart is described as a whole, and the toolbar announces its window
-      series: { pointDescriptionEnabledThreshold: 1 },
+      // No hidden description per point: the chart is described as a whole, and the toolbar announces its window.
+      // 0, not 1 or false: below the threshold the module adds invisible markers, and as an empty series fills it
+      // updates every series' markers with a redraw each, so a chart was drawn as many times as it has series.
+      series: { pointDescriptionEnabledThreshold: 0 },
       point: { describeNull: false },
     },
     legend: {
@@ -206,14 +213,15 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
         return info?.note ? `${name} <span style="color:#9a3412">· ${info.note}</span>` : name;
       },
     },
-    tooltip: { shared: true, split: false, formatter: tooltipText, style: { fontFamily: FONT, fontSize: '12px' }, outside: true },
+    // followTouchMove off: a finger moving over the chart scrolls the page (Highcharts would otherwise hold the touch
+    // for its tooltip and cancel touchend mid-scroll); a tap still shows the tooltip
+    tooltip: { shared: true, split: false, followTouchMove: false, formatter: tooltipText, style: { fontFamily: FONT, fontSize: '12px' }, outside: true },
     plotOptions: {
       series: {
         animation: false,
         connectNulls: false,
         turboThreshold: 0, // points are objects (they carry their bucket for the tooltip)
         dataGrouping: { enabled: false }, // the server's buckets, as they are
-        showInNavigator: false,
         states: { inactive: { opacity: 1 } },
         marker: { enabled: false, radius: 2.5, symbol: 'circle' },
       },
@@ -270,7 +278,6 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   useEffect(() => {
     const chart = chartRef.current?.chart;
     if (!chart) return;
-    let pointRange = 0;
     let dirty = false;
     const apply = (d: ComposedData) => {
       dirty = true;
@@ -298,12 +305,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           const c = p.custom;
           return c && p.y !== null && c.bucketS > RAW_S && c.lo !== null && c.hi !== null ? [p.x, c.lo, c.hi] : [p.x, null, null];
         }), false, false, false);
-        if (info.agg === 'sum') { // bars as wide as their bucket
-          const range = (d.shownBucket ?? RAW_S) * 1000;
-          if (range !== pointRange) s.update({ pointRange: range } as Highcharts.SeriesColumnOptions, false);
-        }
       }
-      pointRange = (d.shownBucket ?? RAW_S) * 1000;
       navigator();
     };
     // The navigator's line: the first shown series over the picked range, at the overview's bucket, with the range's
@@ -452,7 +454,9 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       controller.zoom(factor, at, 'wheel');
     };
 
-    let drag: { x0: number; w0: { start: number; end: number }; mode: 'pan' | 'select'; moved: boolean; id: number } | null = null;
+    // A drag in the plot. With a finger (or pen) it waits until it has moved TOUCH_SLOP_PX: sideways it pans, up or down
+    // it is the browser's page scroll (which cancels it)
+    let drag: { x0: number; y0: number; w0: { start: number; end: number }; mode: 'pan' | 'select'; moved: boolean; id: number; touch: boolean } | null = null;
     // A press below the plot (the navigator, its scrollbar) starts a gesture that ends when the pointer lifts anywhere
     let below = false;
     const belowPlot = (clientY: number) => {
@@ -470,9 +474,12 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         controller.beginGesture();
         return;
       }
-      if (e.pointerType !== 'mouse' || e.button !== 0 || !inPlot(e.clientX, e.clientY)) return;
-      el.focus({ preventScroll: true }); // for the keys
-      drag = { x0: e.clientX, w0: { ...controller.window }, mode: e.shiftKey ? 'select' : 'pan', moved: false, id: e.pointerId };
+      if (e.button !== 0 || !inPlot(e.clientX, e.clientY)) return;
+      if (e.pointerType === 'mouse') el.focus({ preventScroll: true }); // for the keys
+      drag = {
+        x0: e.clientX, y0: e.clientY, w0: { ...controller.window }, mode: e.shiftKey ? 'select' : 'pan', moved: false,
+        id: e.pointerId, touch: e.pointerType !== 'mouse',
+      };
     };
     const onMove = (e: PointerEvent) => {
       if (!drag || e.pointerId !== drag.id) return;
@@ -484,7 +491,11 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       if (!c) return;
       const dx = e.clientX - drag.x0;
       if (!drag.moved) {
-        if (Math.abs(dx) < 4) return;
+        if (drag.touch) {
+          const dy = e.clientY - drag.y0;
+          if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
+          if (Math.abs(dy) >= Math.abs(dx)) { drag = null; return; } // the page's scroll
+        } else if (Math.abs(dx) < 4) return;
         drag.moved = true;
         el.setPointerCapture(e.pointerId);
         c.tooltip?.hide(0);
@@ -538,6 +549,10 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const { d, cx } = touchState(e);
       const w = controller.window;
       const left = c.container.getBoundingClientRect().left + c.plotLeft;
+      if (drag?.touch) { // a second finger: the one-finger pan becomes this pinch
+        if (drag.moved) controller.endGesture();
+        drag = null;
+      }
       pinch = { d0: d, t0: timeAt(cx), span0: w.end - w.start, left, width: Math.max(c.plotWidth, 1) };
       chart()?.tooltip?.hide(0);
       controller.beginGesture();

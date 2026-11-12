@@ -228,7 +228,7 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Dew Point"));
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Soil Temperature"));
   assert.equal(measurementColor("Something new"), measurementColor("Something new")); // unknown: stable too
-  assert.equal(seriesType("sum"), "column");
+  assert.equal(seriesType("sum"), "area"); // stepped
   assert.equal(seriesType("vector_mean"), "scatter");
   assert.equal(seriesType("mean"), "line");
   assert.equal(compassLabel(225), "225° (SW)");

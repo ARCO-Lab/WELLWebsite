@@ -111,7 +111,7 @@ export class ChartController {
   private lastEnd = 0;
   private listeners = new Set<() => void>();
   private frameListeners = new Set<(w: Range) => void>();
-  private redrawListeners = new Set<(w: Range) => void>();
+  private redrawListeners = new Set<(w: Range, gesture: boolean) => void>();
   private gestureListeners = new Set<(active: boolean) => void>();
   private dataListeners = new Set<(d: ComposedData) => void>();
   private windowListeners = new Set<(w: Range, reason: WindowReason) => void>();
@@ -164,9 +164,10 @@ export class ChartController {
     this.frameListeners.add(cb);
     return () => this.frameListeners.delete(cb);
   }
-  /** Called when the chart should redraw, at a pace its own cost allows, with the window to show. Data listeners run
-   *  just before, in the same turn, so one redraw covers both. */
-  onRedraw(cb: (w: Range) => void): () => void {
+  /** Called when the chart should redraw, at a pace its own cost allows, with the window to show and whether a gesture
+   *  is under way (a chart may draw a cheaper preview then, and redraw fully when it ends: the gesture's end schedules
+   *  one more call). Data listeners run just before, in the same turn, so one redraw covers both. */
+  onRedraw(cb: (w: Range, gesture: boolean) => void): () => void {
     this.redrawListeners.add(cb);
     return () => this.redrawListeners.delete(cb);
   }
@@ -584,7 +585,7 @@ export class ChartController {
       this.needCompose = false;
       this.compose();
     }
-    for (const cb of this.redrawListeners) cb(this.win);
+    for (const cb of this.redrawListeners) cb(this.win, this.gestureActive);
     this.updateSnapshot();
     this.lastEnd = now();
     this.lastCost = this.lastEnd - t;
