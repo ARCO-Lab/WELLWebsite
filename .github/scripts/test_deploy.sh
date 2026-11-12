@@ -171,8 +171,26 @@ check "by hand, docker-compose.yml change: rebuilds everything, checks both work
 sync_vm; change README.md; deploy
 check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! ran "compose"'
 
-sync_vm; change wordpress/zz-performance.conf; ci success success; deploy --auto
-check "--auto, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
+# HOLD_PATHS: code a merged pull request alone mustn't put live. Each is held by --auto even with CI green.
+for path in .github/workflows/ci.yml home/index.php home/wp-content/plugins/p/p.php home/.htaccess \
+  home/wp-config.php wp-config-extra.php wordpress/apache-hardening.conf wordpress/php-hardening.ini; do
+  sync_vm; change "$path"; ci success success; deploy --auto
+  check "--auto, $path changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "a person must deploy" && said "$path" && ! ran "compose"'
+done
+# Names git prints quoted ("home/a\".php") match none of the patterns, so they're held whatever they are
+for path in 'home/a".php' 'home/b\c.php' "docs/tab	name.md"; do
+  sync_vm; change "$path"; ci success success; deploy --auto
+  check "--auto, a name git quotes ($path): held" 'rc 0 && ! head_is_remote && said "HELD" && said "quotes, backslashes or control characters" && ! ran "compose"'
+done
+# deploy.sh itself: a comment line, so the VM's copy still runs once a later test pulls it
+sync_vm; (cd "$T/work" && echo "# edited" >> deploy.sh && git commit -qam "edit deploy.sh" && git push -q origin HEAD:main)
+ci success success; deploy --auto
+check "--auto, deploy.sh changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "deploy.sh"'
+sync_vm; change home/wp-content/themes/t/style.css; ci success success; deploy --auto
+check "--auto, non-PHP files under home/: deployed" 'rc 0 && head_is_remote && ! said "HELD"'
+
+sync_vm; change wordpress/zz-performance.conf; deploy
+check "by hand, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
 
 sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change wordpress/php-hardening.ini
 WP_BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
@@ -308,6 +326,11 @@ DEPLOY_STATE='' deploy --auto
 check "old state in TMPDIR: moved into .deploy-state once, and the rolled-back commit still isn't retried" 'rc 0 && ! head_is_remote && [ ! -s "$T/out" ] && [ ! -e "$T/well-deploy.state.rolled-back" ] && [ ! -e "$T/well-deploy.state" ] && [ "$(cat "$T/vm/.deploy-state/state.rolled-back")" = "$(git -C "$T/work" rev-parse HEAD)" ] && [ "$(cat "$T/vm/.deploy-state/state")" = "held x" ]'
 DEPLOY_STATE='' deploy
 check "default state location: a deploy by hand clears it" 'rc 0 && head_is_remote && [ ! -e "$T/vm/.deploy-state/state.rolled-back" ] && [ ! -e "$T/vm/.deploy-state/state" ]'
+
+# --help prints the comment block at the top (line 2 up to the first line that isn't a comment), all of it and no more
+bash "$ROOT/deploy.sh" --help > "$T/out" 2>&1; echo $? > "$T/rc"
+awk 'NR > 1 && !/^#/ { exit } NR > 1' "$ROOT/deploy.sh" > "$T/header"
+check "--help: exactly the header comment" 'rc 0 && cmp -s "$T/out" "$T/header"'
 
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]
