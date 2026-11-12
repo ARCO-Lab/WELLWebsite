@@ -3,7 +3,7 @@
 // Each West Campus chart has its own zoom window and loads its own data (hooks/useChartWindow); the page gives them,
 // through ChartPageContext, the window they start at (the picked days, or a shared link's window) and the data's extent.
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import type MapComponent from "@/components/map/Map";
@@ -84,6 +84,18 @@ export default function Dashboard() {
   const [inIframe, setInIframe] = useState(false);
 
   const [activeTab, setActiveTab] = useState<"sensor" | "sampling">("sensor");
+  // A tab once opened stays mounted while another is shown: switching back is then instant, with its map, charts and
+  // data as they were, instead of rebuilding them all (seconds on a phone). The hidden one keeps its width, out of the
+  // flow and unrendered (content-visibility), so showing it again needs no reflow either.
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(["sensor"]));
+  // The tab bar and the shown panel switch at once (Radix holds the value); the page's own state follows in a
+  // transition, so the click isn't held up by re-rendering the whole dashboard
+  const showTab = useCallback((value: string) => {
+    startTransition(() => {
+      setActiveTab(value as "sensor" | "sampling");
+      setVisited((v) => (v.has(value) ? v : new Set([...v, value])));
+    });
+  }, []);
   
   const [activeGroups, setActiveGroups] = useState({
     gauges: false,
@@ -394,7 +406,8 @@ export default function Dashboard() {
       {!inIframe && <Header />}
       <ChartPageContext.Provider value={chartPage}>
       <main className="min-h-screen bg-background text-foreground">
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
+        {/* relative: a visited tab that isn't shown is kept, out of the flow, at the page's width (see TabsContent below) */}
+        <Tabs defaultValue="sensor" onValueChange={showTab} className="relative p-6">
           
           {/* Title and tab triggers */}
           <div className="col-span-full mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -408,7 +421,7 @@ export default function Dashboard() {
           </div>
 
           {/* Sensor Tab Content (Your existing dashboard) */}
-          <TabsContent value="sensor" className="mt-0" tabIndex={-1}>
+          <TabsContent value="sensor" className="mt-0 data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sensor") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
               <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
@@ -586,7 +599,7 @@ export default function Dashboard() {
           {/* Sampling Tab Content (New) */}
 
 
-          <TabsContent value="sampling" tabIndex={-1}>
+          <TabsContent value="sampling" className="data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sampling") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
               <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
