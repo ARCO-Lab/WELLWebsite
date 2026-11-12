@@ -65,9 +65,11 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, header, type, 
         
         <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1">
           {header}
-          {/* Main content: inject modal props if children is a valid React element */}
+          {/* Main content: inject modal props if children is a valid React element. modalOpen is always true here,
+              not isOpen: this copy only exists inside the dialog, so if it is still shown while the dialog fades out
+              (isOpen already false) it keeps its modal layout rather than switching to the card's (hidden axes). */}
           {React.isValidElement(children)
-            ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: isOpen, inModal: true, weatherTab, setWeatherTab, })
+            ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: true, inModal: true, weatherTab, setWeatherTab, })
             : children}
 
           {/* AI ANALYSIS DISABLED: AI panel in the chart modal. Uncomment to restore.
