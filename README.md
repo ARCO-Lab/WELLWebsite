@@ -21,25 +21,35 @@ Both run in Docker on one Linux VM (`docker-compose.yml`): WordPress on port 808
 
 ```mermaid
 flowchart LR
-  vendors["LI-COR (HOBOlink) and WQData APIs"] -->|every 10 min| worker
-  borealis[("Borealis")] <-->|monthly sensor CSV up, sampling CSVs down weekly| worker
-  worker["worker (scheduler)"] --> pg[("PostgreSQL 13 on the VM host")]
-  pg --> backend["backend (Flask on gunicorn)"]
+  licor["LI-COR<br/>HOBOlink"] -->|every 10 min| worker
+  wqdata["WQData"] -->|every 10 min| worker
+  borealis[("Borealis")] <-->|CSV files| worker
+  worker["worker<br/>scheduler"] --> pg[("PostgreSQL<br/>13 on host")]
+  pg --> backend["backend<br/>Flask API"]
   backend <--> redis[("redis")]
-  redis <--> exp["export_worker (Celery)"]
+  redis <--> exp["export<br/>worker<br/>Celery"]
   exp --> pg
-  backend --> nxt["dashboard (Next.js API routes)"]
+  backend --> nxt["dashboard<br/>Next.js"]
   nxt --> browser["Browser"]
-  wp["wordpress + MySQL"] -->|page with the dashboard in an iframe| browser
+  wp["WordPress<br/>MySQL"] -->|iframe| browser
+  pg --> ops["welldash²<br/>ops"]
+  subgraph mon["Monitoring"]
+    sentry["Sentry"]
+    hc["Healthchecks"]
+  end
 ```
 
+<!-- GitHub draws every node 120 px wide and may cut off a line wider than that, so keep each line of a label to about 10 characters, break lines with <br/>, keep edge labels to a few words, and put the details in the list below. -->
+
 How data flows:
-1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the weekly Borealis sampling download, the monthly Borealis upload (followed by the SharePoint copy, once that is configured) and the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
+1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the Borealis jobs, which move CSV files both ways (the two-way arrow): on the 1st of each month it uploads the month that just ended as a CSV (followed by the SharePoint copy, once that is configured), and every week it downloads new creek sampling CSVs and imports them. It also sends the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
 2. **Storage.** PostgreSQL 13 runs on the VM itself, not in Docker; the containers reach it on the host's IP (see the firewall note below). Readings are in `sensor_measurements`, one row per reading with a unique index on (station, measurement, time); creek sampling results are in `sampling_measurements`.
 3. **API.** The `backend` container is a Flask app on gunicorn with no public port. Chart data is aggregated in SQL for each request; nothing is precomputed.
 4. **Dashboard.** The `dashboard` container is Next.js. The browser loads the page, then fetches all data from the dashboard's own API routes (`dashboard/frontend/src/pages/api/`), which pass each request on to Flask (`src/lib/proxyBackend.ts`). The browser never talks to Flask directly.
 5. **Downloads.** A CSV export of up to `EXPORT_SYNC_ROW_THRESHOLD` readings is built while the visitor waits. A larger one is queued in Redis and built by the `export_worker` container (Celery), whose built-in beat scheduler deletes expired files every hour.
-6. **Monitoring.** Errors go to Sentry, job heartbeats to Healthchecks.io, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+6. **Monitoring.** Errors go to Sentry and job heartbeats to Healthchecks.io, two outside services drawn to the side since the worker, the backend, the export worker and the dashboard all report to them; also, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+7. **WordPress.** The `wordpress` container (its data in MySQL, the `db` container) serves the home page at `well.mcmaster.ca`, which shows the dashboard in an iframe; the browser loads that iframe from `welldash.mcmaster.ca` like any other visit.
+8. **welldash².** The `ops` container is a private operations dashboard, reachable only on McMaster's network. It reads PostgreSQL and checks the dashboard, the data API and WordPress once a minute. When their read-only keys are set, it also reads unresolved errors from the Sentry API and the job heartbeats' states from the Healthchecks.io API, for its Overview page; see [welldash²](#welldash²-operations-dashboard).
 
 Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
