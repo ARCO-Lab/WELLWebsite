@@ -16,8 +16,9 @@ permissions:
 
 # A new push to a pull request cancels its older run. Never on main: deploy.sh --auto deploys a commit only once
 # its checks have passed, and a cancelled run counts as "CI didn't pass", so every push to main runs to the end.
+# Each main commit also gets its own group: in a shared group, a newer run would still replace one that is queued.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
