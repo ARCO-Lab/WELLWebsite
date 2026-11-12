@@ -9,8 +9,9 @@ import io
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+import unittest.mock
+
+mock = unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
