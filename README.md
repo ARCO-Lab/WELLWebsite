@@ -423,6 +423,8 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+CI's "Lint Python, shell and compose" job runs ruff's pyflakes rules on the backend (`ruff check --select F dashboard/backend`), and GitHub's code-quality bot comments on pull requests. To keep both quiet: import a module one way per file (`import unittest.mock`, or `from unittest import TestCase, mock`, not both), leave no unused imports or variables, give an `except` that only passes a comment saying why, and put commas between strings in a list unless they're meant to join.
+
 ---
 
 ## Environment Variables
