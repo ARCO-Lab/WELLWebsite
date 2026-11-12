@@ -67,6 +67,15 @@ const nextConfig = {
   env: {
     FLASK_API_URL: process.env.FLASK_API_URL,
   },
+  // The WordPress site embeds /?embed=1: serve it the page without header and footer (src/pages/embed.tsx, and
+  // src/lib/embed.ts). beforeFiles, because "/" itself is a page and would otherwise be served first.
+  async rewrites() {
+    return {
+      beforeFiles: [{ source: "/", has: [{ type: "query" as const, key: "embed", value: "1" }], destination: "/embed" }],
+      afterFiles: [],
+      fallback: [],
+    };
+  },
 };
 
 // Sentry error reporting (src/lib/sentry.ts). The build talks to nothing: no source maps are uploaded (that would
