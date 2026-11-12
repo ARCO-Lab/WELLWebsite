@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import unittest
 import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))

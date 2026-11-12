@@ -97,7 +97,7 @@ def read_wqdata(config, now):
                 try:
                     power.append(float(v["value"]))
                 except (TypeError, ValueError, KeyError):
-                    pass
+                    pass   # a reading without a numeric value is left out of the power range
     result = {"power_min": min(power, default=None), "power_max": max(power, default=None),
               "power_readings": len(power), "last_point": None, "last_point_age_minutes": None}
     if newest:   # WQData timestamps are UTC without an offset
