@@ -264,6 +264,9 @@ test("links: Toronto ISO times out, and only sensible ones back in", () => {
   assert.equal(searchWithWindow("?tab=x", { start: Date.UTC(2026, 10, 10, 19, 20), end: Date.UTC(2026, 10, 10, 23) }),
     "?tab=x&from=2026-11-10T14%3A20-05%3A00&to=2026-11-10T18%3A00-05%3A00");
   assert.equal(searchWithWindow("?from=a&to=b", null), "");
+  // Other parameters keep their commas, written the way utils/selectionLink writes them
+  assert.equal(searchWithWindow("?groups=gauges,weather&from=a&to=b", null), "?groups=gauges,weather");
+  assert.equal(searchWithWindow("?groups=gauges%2Cweather", null), "?groups=gauges,weather");
   const back = searchWithWindow("", { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
   assert.deepEqual(windowFromSearch(back, now), { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
 });

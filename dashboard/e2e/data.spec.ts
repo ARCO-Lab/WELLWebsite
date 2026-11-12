@@ -118,11 +118,11 @@ function tile(group: Locator, label: string, caption?: string): Locator {
   return t.first();
 }
 
-/** "2026-11-01T02:40:00" -> "2:40 a.m." (today) or "Oct 31, 12:00 p.m.", as the tiles write site times. */
+/** "2026-11-01T02:40:00" -> "02:40" (today) or "Oct 31, 12:00", as the tiles write site times (a 24-hour clock, as
+ *  on the charts). */
 function siteTime(wall: string): RegExp {
   const [date, time] = wall.split("T");
-  const [h, m] = time.split(":").map(Number);
-  const clock = `${h % 12 || 12}:${String(m).padStart(2, "0")}\\s${h < 12 ? "a" : "p"}\\.m\\.`;
+  const clock = time.slice(0, 5);
   const today = torontoWallClock(NOW.getTime()).slice(0, 10);
   if (date === today) return new RegExp(clock);
   const [, month, day] = date.split("-").map(Number);

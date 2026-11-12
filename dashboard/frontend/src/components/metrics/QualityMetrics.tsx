@@ -4,6 +4,7 @@ import React from "react";
 import { Beaker, Eye, Waves, Zap, Droplets, FlaskConical, Activity, Thermometer } from "lucide-react";
 import MetricGroup, { type MetricRow } from "./MetricList";
 import type { Metric } from "@/hooks/useLatestMetrics";
+import { seriesNote } from "@/utils/chartStyle";
 
 // fullLabel = the filter's name for the metric; label = the shorter name shown in the panel;
 // key = measurement_type in the API
@@ -35,6 +36,8 @@ const QualityMetrics = ({
     .map((metric) => ({
       ...metric,
       reading: qualityData.find((d) => d.group_type === "Quality" && d.measurement_type === metric.key),
+      // The same notes the charts show for sensors known to be faulty (e.g. oxygen reading about 0)
+      note: seriesNote("Quality", metric.key)?.note,
     }));
 
   return <MetricGroup title="Water Quality Metrics" sections={[{ key: "quality", rows }]} loading={loading} layout={inModal ? "wrap" : "ticker"} />;

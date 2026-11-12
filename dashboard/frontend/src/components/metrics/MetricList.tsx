@@ -7,7 +7,8 @@
 // Old readings say when they were taken, so a value from last night or from last year doesn't look current.
 
 import React, { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Clock } from "lucide-react";
+import { AlertTriangle, Clock, Pause, Play } from "lucide-react";
+import { displayUnit } from "@/utils/chartStyle";
 
 export interface Reading {
   value?: number | null;
@@ -23,6 +24,7 @@ export interface MetricRow {
   color: string; // Tailwind text colour class for the icon
   reading?: Reading | null;
   format?: (value: number) => { value: string; unit?: string };
+  note?: string; // a known fault with this sensor (utils/chartStyle SERIES_NOTES), e.g. "suspect since Jun 2026"
 }
 
 export interface MetricSection {
@@ -66,8 +68,8 @@ function siteNowMs(): number {
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
 }
 
-// Formats a site wall-clock time: "11:30 AM" today, "Nov 8, 9:10 PM" this year, "Oct 6, 2025" before that
-// (or always the date, for samples).
+// Formats a site wall-clock time: "11:30" today, "Nov 8, 21:10" this year, "Oct 6, 2025" before that (or always
+// the date, for samples). A 24-hour clock, as on the charts.
 export function formatSiteTime(value: string | null | undefined, dateOnly = false): string | null {
   const ms = value ? wallClockMs(value) : null;
   if (ms == null) return null;
@@ -78,11 +80,11 @@ export function formatSiteTime(value: string | null | undefined, dateOnly = fals
   const options: Intl.DateTimeFormatOptions = dateOnly
     ? { month: "short", day: "numeric", year: "numeric" }
     : sameDay
-      ? { hour: "numeric", minute: "2-digit" }
+      ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
       : at.getUTCFullYear() === now.getUTCFullYear()
-        ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+        ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
         : { month: "short", day: "numeric", year: "numeric" };
-  return new Intl.DateTimeFormat("en-CA", { ...options, timeZone: "UTC" }).format(at);
+  return new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" }).format(at);
 }
 
 // How many hours ago a reading was taken, by the site's clock; null if there is no usable time.
@@ -182,7 +184,7 @@ const TILE_HEIGHT_GUESS = "3.75rem";
 function shownValue(row: MetricRow) {
   const value = row.reading?.value;
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return row.format ? row.format(value) : { value: formatNumber(value), unit: row.reading?.unit ?? undefined };
+  return row.format ? row.format(value) : { value: formatNumber(value), unit: displayUnit(row.reading?.unit ?? "") || undefined };
 }
 
 function isStale(row: MetricRow, staleAfterHours: number | null): boolean {
@@ -198,6 +200,16 @@ function Value({ row, stale }: { row: MetricRow; stale: boolean }) {
       <span className={`font-poppins text-lg font-semibold leading-6 tabular-nums ${stale ? "text-muted" : "text-primary"}`}>{shown.value}</span>
       {shown.unit && <span className="ml-1 text-xs text-muted">{shown.unit}</span>}
     </>
+  );
+}
+
+// A known sensor fault, under the value, as the charts show it beside the series name.
+function Note({ note }: { note: string }) {
+  return (
+    <p className="flex max-w-[var(--line-max,none)] shrink-0 items-center gap-1 text-[0.6875rem] text-amber-800" title={note}>
+      <AlertTriangle aria-hidden className="h-3 w-3 shrink-0" />
+      <span className="truncate"><span className="sr-only">Sensor note: </span>{note}</span>
+    </p>
   );
 }
 
@@ -220,6 +232,7 @@ function StripTile({ row, caption, stale }: { row: MetricRow; caption?: string; 
         {shortened && <span className="sr-only">{row.fullLabel}</span>}
       </p>
       <p className="shrink-0"><Value row={row} stale={stale} /></p>
+      {row.note && <Note note={row.note} />}
       {stale && (
         <p className="flex shrink-0 items-center gap-1 text-[0.6875rem] text-amber-800">
           <Clock aria-hidden className="h-3 w-3 shrink-0" />
@@ -241,6 +254,7 @@ function WrapTile({ row, caption, stale }: { row: MetricRow; caption?: string; s
       <div className="min-w-0 break-words leading-tight">
         {caption && <p className="text-[0.6875rem] font-semibold text-primary/80">{caption}</p>}
         <p className="text-sm text-foreground">{row.fullLabel ?? row.label}</p>
+        {row.note && <Note note={row.note} />}
         {stale && <p className="text-[0.6875rem] text-amber-800">Last reading {formatSiteTime(row.reading?.recorded_at)}</p>}
       </div>
       <p className="ml-auto shrink-0 whitespace-nowrap pl-1 leading-tight"><Value row={row} stale={stale} /></p>
@@ -287,9 +301,16 @@ function rowsFor(height: number, tile: number, tiles: number, gap: number): numb
 // When the tiles don't all fit, a second copy follows the first and the strip wraps by exactly one copy's width,
 // so the loop is seamless (by hand too). It pauses where it is while a mouse is over it or it has keyboard focus,
 // and for 2.5 s after a touch. A tap is not a hover, and focus from a click or a closing modal pauses it only once
-// a scrolling key is pressed. It doesn't auto-scroll at all for people who ask their system for reduced motion, and
-// its animation frames stop whenever it isn't moving: paused, off screen, or with nothing to scroll.
-function Ticker({ title, children }: { title: string; children: React.ReactNode }) {
+// a scrolling key is pressed. Its group's Pause button stops it until Play is pressed (WCAG 2.2.2). It doesn't
+// auto-scroll at all for people who ask their system for reduced motion, and its animation frames stop whenever it
+// isn't moving: paused, off screen, or with nothing to scroll. It tells its group whether it would scroll
+// (onCanScroll), so the group shows the Pause button only then.
+function Ticker({ title, stopped, onCanScroll, children }: {
+  title: string;
+  stopped: boolean; // paused with the group's Pause button
+  onCanScroll: (canScroll: boolean) => void;
+  children: React.ReactNode;
+}) {
   const scroller = useRef<HTMLDivElement>(null);
   const firstCopy = useRef<HTMLDivElement>(null);
   const paused = useRef(false);
@@ -302,7 +323,9 @@ function Ticker({ title, children }: { title: string; children: React.ReactNode 
   const [atStart, setAtStart] = useState(true);
   const tileCount = React.Children.count(children);
   const reduceMotion = usePrefersReducedMotion();
-  const moving = overflowing && !reduceMotion;
+  const canScroll = overflowing && !reduceMotion;
+  const moving = canScroll && !stopped;
+  useEffect(() => onCanScroll(canScroll), [canScroll, onCanScroll]);
 
   // Rows from the slot's height (set by the card, not by the tiles) and a rendered tile's height (every tile has
   // the tallest one's height, so this follows the text size), and scroll (with the second copy) only when the tiles
@@ -461,6 +484,9 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
     section.rows.map((row) => ({ row, caption: section.title, stale: isStale(row, staleAfterHours) }))
   );
   const titleId = useId();
+  // The Pause button: shown while the strip would scroll, and kept until pressed again.
+  const [stopped, setStopped] = useState(false);
+  const [canScroll, setCanScroll] = useState(false);
   const tiles = items.map(({ row, caption, stale }) =>
     ticker
       ? <StripTile key={row.key} row={row} caption={caption} stale={stale} />
@@ -481,13 +507,25 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
             {showsClockTime(newest, dateOnly) && <abbr title="Eastern Time, the sites' local time" className="no-underline"> ET</abbr>}
           </p>
         )}
+        {ticker && !loading && (canScroll || stopped) && (
+          <button
+            type="button"
+            onClick={() => setStopped((s) => !s)}
+            aria-label={stopped ? `Play the ${title} strip` : `Pause the ${title} strip`}
+            title={stopped ? "Play" : "Pause"}
+            className="relative ml-2 inline-flex h-5 items-center gap-1 rounded px-1 align-top text-[0.6875rem] text-muted hover:bg-black/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-sm:after:absolute max-sm:after:-inset-2.5 max-sm:after:content-['']"
+          >
+            {stopped ? <Play aria-hidden className="h-3 w-3" /> : <Pause aria-hidden className="h-3 w-3" />}
+            {stopped ? "Play" : "Pause"}
+          </button>
+        )}
       </div>
       {loading ? (
         <div className="h-[3.75rem] animate-pulse rounded-lg bg-black/5" aria-hidden />
       ) : tiles.length === 0 ? (
         <p className="text-xs text-muted">{emptyHint}</p>
       ) : ticker ? (
-        <Ticker title={title}>{tiles}</Ticker>
+        <Ticker title={title} stopped={stopped} onCanScroll={setCanScroll}>{tiles}</Ticker>
       ) : (
         <div role="list" className="flex flex-wrap gap-3">{tiles}</div>
       )}

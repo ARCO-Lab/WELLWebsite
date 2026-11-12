@@ -41,6 +41,7 @@ import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 import { useEmbedFrame } from "@/lib/embed";
+import useSelectionLink from "@/hooks/useSelectionLink";
 
 type ActiveFilters = { [key: string]: string[] };
 type SensorGroup = "weather" | "quality" | "gauges";
@@ -152,6 +153,12 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
       return acc;
     }, {} as ActiveFilters);
 
+
+  // A shared link's ?tab=, ?groups= and ?creeks= tick what its sender had ticked, and the link follows the ticks
+  useSelectionLink({
+    activeTab, setActiveTab, activeGroups, setActiveGroups, setSubFilters, activeCreeks, setActiveCreeks,
+    setSamplingSubFilters, setOpen, setChevronState,
+  });
 
   // Dates are calendar days at the site (Toronto), whatever the viewer's time zone (utils/siteTime).
   // Dates for the SENSOR Tab: yesterday and today
@@ -370,7 +377,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
       {!embedded && <div data-site-chrome><Header /></div>}
       <ChartPageContext.Provider value={chartPage}>
       {/* Embedded, the page is as tall as its content (the iframe is sized to it), never the iframe's height */}
-      <main ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground`}>
+      <main id="main-content" tabIndex={-1} ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground focus:outline-none`}>
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
           {/* Title and tab triggers */}
@@ -433,7 +440,6 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                           }}
                           startDate={startDate}
                           endDate={endDate}
-                          data={[] /* unused for sensors: the backend builds exports */}
                           isSampling={false}
                         />
                       </div>
@@ -605,7 +611,6 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         samplingSubFilters={samplingSubFilters}  // ✅ Correct prop name
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
-                        data={samplingData}
                         isSampling={true}
                       />
                       {/* For researchers adding sampling files: the standard format, with example rows */}
