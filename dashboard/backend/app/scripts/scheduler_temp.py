@@ -121,7 +121,7 @@ def touch_alive(path=None):
             pass
         os.utime(path or ALIVE_PATH)
     except OSError:
-        pass
+        pass   # the file then goes stale and the healthcheck reports the worker unhealthy, as it should
 
 
 def shut_down(jobs, log, wait_s=STOP_WAIT_S, grace_s=STOP_SUBPROCESS_GRACE_S, final_wait_s=STOP_FINAL_WAIT_S):

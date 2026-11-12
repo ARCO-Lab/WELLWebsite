@@ -8,8 +8,7 @@ import re
 import sys
 import tempfile
 import types
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -18,7 +17,7 @@ sys.path.insert(0, str(APP / "scripts"))
 from utils.worklog import file_logger  # noqa: E402
 
 
-class FileLoggerTests(unittest.TestCase):
+class FileLoggerTests(TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
@@ -90,7 +89,7 @@ class FileLoggerTests(unittest.TestCase):
         self.assertEqual([re.sub(r"^\[[^]]+\] ", "", line) for line in self.lines("s.log")], ["from a", "from b"])
 
 
-class IngestionWithoutALogTests(unittest.TestCase):
+class IngestionWithoutALogTests(TestCase):
     """A log that can't be written mustn't stop a job before its heartbeat ping."""
 
     def test_a_failed_run_still_pings_fail_when_its_log_is_unwritable(self):
@@ -115,4 +114,4 @@ class IngestionWithoutALogTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
