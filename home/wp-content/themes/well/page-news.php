@@ -30,8 +30,11 @@ get_header();
       <h2 class="sr-only">News Listing</h2>
       <div class="row row-eq-height">
         <?php
-        // The latest 9 published posts (well_news_query() in functions.php explains what counts as news)
-        $news_query = well_news_query(9);
+        // 9 published posts per page, newest first (well_news_query() in functions.php explains
+        // what counts as news). Later pages are /news/page/2/ and so on.
+        $news_page  = max(1, (int) get_query_var('paged'), (int) get_query_var('page'));
+        $news_query = well_news_query(9, array(), $news_page);
+        $news_pages = (int) $news_query->max_num_pages;
         if ($news_query->have_posts()) :
           while ($news_query->have_posts()) : $news_query->the_post(); ?>
             <div class="col-lg-4 col-md-6">
@@ -65,6 +68,36 @@ get_header();
         endif;
         ?>
       </div>
+      <?php
+      // Page links under the cards, once there are more than 9 posts. Bootstrap's .pagination
+      // styles them; the current page is a <span aria-current="page">, not a link.
+      $news_base  = trailingslashit(get_permalink());
+      $news_links = paginate_links(array(
+        'base'      => $news_base . 'page/%#%/',
+        'format'    => '',
+        'current'   => $news_page,
+        'total'     => $news_pages,
+        'type'      => 'array',
+        'prev_text' => 'Newer',
+        'next_text' => 'Older',
+      ));
+      if (!empty($news_links)) : ?>
+        <nav class="mt-4" aria-label="News pages">
+          <ul class="pagination justify-content-center flex-wrap">
+            <?php foreach ($news_links as $link) : ?>
+              <li class="page-item<?php echo false !== strpos($link, 'current') ? ' active' : ''; ?>">
+                <?php
+                // Page 1 is the News page itself, not /news/page/1/.
+                echo str_replace(
+                  array('page-numbers', '"' . $news_base . 'page/1/"'),
+                  array('page-numbers page-link', '"' . $news_base . '"'),
+                  $link
+                ); ?>
+              </li>
+            <?php endforeach; ?>
+          </ul>
+        </nav>
+      <?php endif; ?>
     </div>
   </section>
 </main>

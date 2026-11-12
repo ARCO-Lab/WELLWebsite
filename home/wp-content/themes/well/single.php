@@ -66,9 +66,8 @@ if ( have_posts() ) :
                     </section>
 
                     <?php
-                    // Related News: the 3 newest other published posts. This used to ask for the
-                    // category "news", which the site doesn't use (posts are filed under any
-                    // category), so the list never appeared. well_news_query() is in functions.php.
+                    // Related News: the 3 newest other published posts; every post on this site is
+                    // news, see well_news_query() in functions.php.
                     $related_query = well_news_query( 3, array( get_the_ID() ) );
                     if ( $related_query->have_posts() ) :
                     ?>

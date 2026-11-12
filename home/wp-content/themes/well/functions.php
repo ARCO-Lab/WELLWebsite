@@ -279,18 +279,25 @@ function well_media_img($name, $widths, $size, $attrs = array()) {
  * newest first, whatever its category, so a post shows up in all three places as soon as it
  * is published (scheduled posts appear on their date, drafts never do).
  *
- * $count:   how many posts to show.
+ * $count:   how many posts to show (per page, when $paged is given).
  * $exclude: post IDs to leave out, e.g. the post being read.
+ * $paged:   page number for a paginated list such as the News page; 0 for a single block of
+ *           posts. With a page number WordPress also counts all posts, so max_num_pages is set.
  */
-function well_news_query($count, $exclude = array()) {
-    return new WP_Query(array(
+function well_news_query($count, $exclude = array(), $paged = 0) {
+    $args = array(
         'post_type'           => 'post',
         'post_status'         => 'publish',
         'posts_per_page'      => (int) $count,
         'post__not_in'        => array_map('intval', (array) $exclude),
         'ignore_sticky_posts' => true,
-        'no_found_rows'       => true, // no pagination, so skip counting every post
-    ));
+    );
+    if ($paged > 0) {
+        $args['paged'] = (int) $paged;
+    } else {
+        $args['no_found_rows'] = true; // no pagination, so skip counting every post
+    }
+    return new WP_Query($args);
 }
 
 /**
