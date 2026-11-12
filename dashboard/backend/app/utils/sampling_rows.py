@@ -58,6 +58,7 @@ def check_skipped(rows, inserted_keys, fetch_stored, log=print):
 
 
 def _sql_text(value):
+    # A value as an SQL string literal, for the example DELETE printed below (shown to a person, never executed).
     return "'" + str(value).replace("'", "''") + "'"
 
 

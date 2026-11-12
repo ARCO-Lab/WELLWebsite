@@ -7,8 +7,7 @@ import json
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 from urllib.parse import urlsplit
 
 os.environ["DATABASE_URL"] = "sqlite://"  # config is read once on first import; never a real database
@@ -149,7 +148,7 @@ CSV = b"ID,Timestamp\n1,2026-10-01T00:00:00\n"
 NAME = "WELLWestCampus_Oct2026.csv"
 
 
-class UploadFileTests(unittest.TestCase):
+class UploadFileTests(TestCase):
     def upload(self, server, content=CSV, publish=True):
         return borealis.upload_file(client(server), PID, NAME, content, "October", directory="2026", publish=publish,
                                     log=lambda *a: None)
@@ -291,7 +290,7 @@ class UploadFileTests(unittest.TestCase):
             self.upload(server)
 
 
-class PublishedFilesTests(unittest.TestCase):
+class PublishedFilesTests(TestCase):
     def test_reads_only_the_published_version_and_mentions_a_waiting_draft(self):
         published = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a")]
         server = FakeDataverse(published=published, draft=published + [file_entry(2, "WELLAncasterWatershed_Jun2026.csv", b"b")])
@@ -313,7 +312,7 @@ class PublishedFilesTests(unittest.TestCase):
             borealis.published_files(guest, PID, log=lambda *a: None)
 
 
-class DownloadTests(unittest.TestCase):
+class DownloadTests(TestCase):
     def test_the_download_lists_only_published_sampling_files(self):
         published = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a"),
                      file_entry(2, "WELLAncasterWatershed_SAMPLE.csv", b"t"), file_entry(3, "README.md", b"r")]
@@ -339,7 +338,7 @@ class DownloadTests(unittest.TestCase):
                            client=borealis.Dataverse(SERVER, "old", session=server))
 
 
-class SettingsTests(unittest.TestCase):
+class SettingsTests(TestCase):
     def test_urls(self):
         self.assertEqual(borealis.base_url("https://borealisdata.ca/dataverse/WELL"), "https://borealisdata.ca")
         self.assertEqual(borealis.collection_alias("https://borealisdata.ca/dataverse/WELL/"), "WELL")
@@ -353,7 +352,7 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(borealis.is_demo("https://borealisdata.ca", "doi:10.5683/SP3/ABC"))
 
 
-class UploadScriptTests(unittest.TestCase):
+class UploadScriptTests(TestCase):
     def settings(self, **overrides):
         values = {"BOREALIS_URL": "https://borealis.example/dataverse/WELL", "BOREALIS_API_TOKEN": TOKEN,
                   "BOREALIS_UPLOAD_PERSISTENT_ID": PID, "BOREALIS_PUBLISH": True, **overrides}
@@ -411,7 +410,7 @@ class UploadScriptTests(unittest.TestCase):
         self.assertEqual(out.getvalue().splitlines(), [header, row1, row2])
 
 
-class PreflightTests(unittest.TestCase):
+class PreflightTests(TestCase):
     SETTINGS = {"url": "https://borealis.example/dataverse/WELL", "token": TOKEN, "upload_pid": PID,
                 "sampling_pid": "doi:10.5683/SP3/WELLSAMPLE", "upload_alias": "WELL-sensors",
                 "sampling_alias": "WELL-sampling"}
@@ -451,4 +450,4 @@ class PreflightTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

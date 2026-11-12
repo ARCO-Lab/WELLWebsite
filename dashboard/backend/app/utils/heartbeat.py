@@ -15,6 +15,7 @@ SUFFIXES = {"success": "", "fail": "/fail", "start": "/start"}
 
 
 def heartbeat_url(name, env=None):
+    # The ping URL for job `name` from HEALTHCHECK_URL_<NAME>, or "" when unset.
     env = os.environ if env is None else env
     return (env.get(f"HEALTHCHECK_URL_{name.upper()}") or "").strip()
 

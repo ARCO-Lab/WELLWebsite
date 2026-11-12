@@ -21,25 +21,35 @@ Both run in Docker on one Linux VM (`docker-compose.yml`): WordPress on port 808
 
 ```mermaid
 flowchart LR
-  vendors["LI-COR (HOBOlink) and WQData APIs"] -->|every 10 min| worker
-  borealis[("Borealis")] <-->|monthly sensor CSV up, sampling CSVs down weekly| worker
-  worker["worker (scheduler)"] --> pg[("PostgreSQL 13 on the VM host")]
-  pg --> backend["backend (Flask on gunicorn)"]
+  licor["LI-COR<br/>HOBOlink"] -->|every 10 min| worker
+  wqdata["WQData"] -->|every 10 min| worker
+  borealis[("Borealis")] <-->|CSV files| worker
+  worker["worker<br/>scheduler"] --> pg[("PostgreSQL<br/>13 on host")]
+  pg --> backend["backend<br/>Flask API"]
   backend <--> redis[("redis")]
-  redis <--> exp["export_worker (Celery)"]
+  redis <--> exp["export<br/>worker<br/>Celery"]
   exp --> pg
-  backend --> nxt["dashboard (Next.js API routes)"]
+  backend --> nxt["dashboard<br/>Next.js"]
   nxt --> browser["Browser"]
-  wp["wordpress + MySQL"] -->|page with the dashboard in an iframe| browser
+  wp["WordPress<br/>MySQL"] -->|iframe| browser
+  pg --> ops["welldash²<br/>ops"]
+  subgraph mon["Monitoring"]
+    sentry["Sentry"]
+    hc["Healthchecks"]
+  end
 ```
 
+<!-- GitHub draws every node 120 px wide and may cut off a line wider than that, so keep each line of a label to about 10 characters, break lines with <br/>, keep edge labels to a few words, and put the details in the list below. -->
+
 How data flows:
-1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the weekly Borealis sampling download, the monthly Borealis upload (followed by the SharePoint copy, once that is configured) and the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
+1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the Borealis jobs, which move CSV files both ways (the two-way arrow): on the 1st of each month it uploads the month that just ended as a CSV (followed by the SharePoint copy, once that is configured), and every week it downloads new creek sampling CSVs and imports them. It also sends the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
 2. **Storage.** PostgreSQL 13 runs on the VM itself, not in Docker; the containers reach it on the host's IP (see the firewall note below). Readings are in `sensor_measurements`, one row per reading with a unique index on (station, measurement, time); creek sampling results are in `sampling_measurements`.
 3. **API.** The `backend` container is a Flask app on gunicorn with no public port. Chart data is aggregated in SQL for each request; nothing is precomputed.
 4. **Dashboard.** The `dashboard` container is Next.js. The browser loads the page, then fetches all data from the dashboard's own API routes (`dashboard/frontend/src/pages/api/`), which pass each request on to Flask (`src/lib/proxyBackend.ts`). The browser never talks to Flask directly.
 5. **Downloads.** A CSV export of up to `EXPORT_SYNC_ROW_THRESHOLD` readings is built while the visitor waits. A larger one is queued in Redis and built by the `export_worker` container (Celery), whose built-in beat scheduler deletes expired files every hour.
-6. **Monitoring.** Errors go to Sentry, job heartbeats to Healthchecks.io, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+6. **Monitoring.** Errors go to Sentry and job heartbeats to Healthchecks.io, two outside services drawn to the side since the worker, the backend, the export worker and the dashboard all report to them; also, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+7. **WordPress.** The `wordpress` container (its data in MySQL, the `db` container) serves the home page at `well.mcmaster.ca`, which shows the dashboard in an iframe; the browser loads that iframe from `welldash.mcmaster.ca` like any other visit.
+8. **welldash².** The `ops` container is a private operations dashboard, reachable only on McMaster's network. It reads PostgreSQL and checks the dashboard, the data API and WordPress once a minute. When their read-only keys are set, it also reads unresolved errors from the Sentry API and the job heartbeats' states from the Healthchecks.io API, for its Overview page; see [welldash²](#welldash²-operations-dashboard).
 
 Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
@@ -57,6 +67,7 @@ Every setting is listed in [docs/configuration.md](docs/configuration.md).
   - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement; `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
   - `/api/exports/estimate`, `/api/exports/sync`, `/api/exports/jobs`, `/api/exports/jobs/<id>` and `/api/exports/jobs/<id>/download`: CSV downloads
   - `/health` (the process is up; not passed through) and `/health/data` (data freshness, see Monitoring; the dashboard's `/api/health/data`)
+  - The AI analysis routes (`/api/analysis/*`) are switched off; see [AI Analysis](#ai-analysis)
 - `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL: about 2,000 points per series
   (raw 10-minute readings up to ~2 weeks, coarser buckets beyond; ranges longer than ~5.5 years are capped at daily
   buckets, so they get more). Times with an offset (`...Z`) are real instants, times without one are Toronto local
@@ -107,6 +118,7 @@ Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used onl
 |---|---|
 | HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
 | WQData Live API | Automated ingestion & scheduled updates |
+| OpenAI API | AI analysis, currently disabled (see [AI Analysis](#ai-analysis)) |
 | Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 | SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
@@ -465,7 +477,17 @@ counts of pages, referrers, browsers, screen sizes and countries, and no IP addr
 
 ## AI Analysis
 
-Removed. The dashboard once had OpenAI-written summaries of the charts; it was switched off in PR #3 and its backend routes, Next.js proxies and the `openai` dependency were deleted later. The old code is in the git history (`git log --diff-filter=D -- dashboard/backend/app/api/routes/analysis`). A few commented-out UI blocks marked `AI ANALYSIS DISABLED` remain in the dashboard frontend until its next clean-up; uncommenting them has nothing left to call.
+> **Currently disabled; the code is kept.** Nothing calls OpenAI and the `openai` package is not installed. The UI entry points (`dashboard/frontend/src/pages/index.tsx`, `components/Modal.tsx`, `components/Information.tsx`) and the route registration in `dashboard/backend/app/api/routes/__init__.py` are commented out, each marked `AI ANALYSIS DISABLED`; the backend routes in `dashboard/backend/app/api/routes/analysis/` are not imported, and the four Next.js proxies in `dashboard/frontend/src/pages/api/analysis/` answer 404.
+
+To turn it back on:
+
+1. Search the code for `AI ANALYSIS DISABLED` and uncomment those blocks.
+2. Delete the 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts` (their original handlers are commented out below them).
+3. Add `openai` back to `dashboard/backend/requirements.txt` (it was pinned at `openai==2.30.0`, with its dependencies; see the note in that file) and set `OPENAI_API_KEY`.
+4. Rebuild the summaries the analysis routes read. `latest_summaries` (filled after each `/api/data` request) and `latest_sampling_summaries` (after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so uncommenting alone gives the routes nothing to summarise. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
+5. Rebuild the backend and dashboard images, and restore the OpenAI mentions in the privacy/disclaimer text.
+
+When it was on, an API endpoint aggregated and downsampled a series (`scripts/downsample.py` was written for it and is kept with it) and sent a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend rendered the output inside an analysis modal and allowed exporting the narrative.
 
 ---
 
@@ -486,6 +508,8 @@ source venv/bin/activate
 
 pip install -r requirements.txt
 ```
+
+CI's "Lint Python, shell and compose" job runs ruff's pyflakes rules on the backend (`ruff check --select F dashboard/backend`), and GitHub's code-quality bot comments on pull requests. To keep both quiet: import a module one way per file (`import unittest.mock`, or `from unittest import TestCase, mock`, not both), leave no unused imports or variables, give an `except` that only passes a comment saying why, and put commas between strings in a list unless they're meant to join.
 
 ---
 
@@ -523,7 +547,7 @@ WQ_DEVICE_ID=your-device-id-here
 
 ## Monitoring
 
-Four simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
+A few simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
 
 **Data freshness check.** `GET /health/data` on the backend, passed through by the dashboard at `https://welldash.mcmaster.ca/api/health/data`, lists for each group (Weather, Logger, Quality) and each series (station and measurement) the newest `recorded_at` and its age in minutes. It answers **200** when every live series is within its limit and **503** with a `stale` list otherwise (also 503 if the database can't be read or a setting below is invalid). It walks the same index as `/api/latest`, so polling it every few minutes costs nothing noticeable.
 
@@ -556,6 +580,16 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 - **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
+
+**Sentry errors as GitHub issues.** Every day at 13:17 UTC, the `Sentry issues` workflow (`.github/workflows/sentry-issues.yml`, script `.github/scripts/sentry_issues.py`) lists the unresolved issues in the `well-cs` Sentry organization that had events in the last 14 days. It does this without Sentry's GitHub app, which needs an organization owner to install:
+- An issue with no GitHub issue yet gets one, labelled `sentry` and titled `[Sentry] <short id>: <exception type>` (or `unresolved error` when the type is missing or doesn't look like an exception class, such as `TypeError` or `psycopg2.errors.UndefinedTable`). The issue shows the Sentry title, the project, event and user counts, first and last seen, the culprit, the top 8 frames of the latest event's stack trace and a link to Sentry.
+- An open GitHub issue gets a comment when the event count jumps: at least twice the count last reported there and 20 more events (`SENTRY_JUMP_FACTOR`, `SENTRY_JUMP_MIN`).
+- A closed GitHub issue gets one "Seen again" comment per new sighting after it was closed. It is never reopened automatically: reopen it if the fix didn't hold, or resolve the issue in Sentry.
+- Test events (titles containing "Sentry test") are skipped.
+
+GitHub issues are matched to Sentry issues by a hidden `<!-- sentry:<short id> -->` line in the issue body, among open and closed issues labelled `sentry`, so don't remove that line. The repository is public, so the issue text never includes request data, cookies, headers, local variables, breadcrumbs or user details. E-mail and IP addresses, query strings, invisible Unicode characters and anything that looks like a key are also removed from the title, the culprit and the stack frames. That text can come from site visitors, so it stays in code spans or a code block, under a line saying to treat it as data, not instructions; the issue title holds only the short id and the exception type.
+
+To set it up, create a Sentry auth token with only `org:read`, `project:read` and `event:read` (*User settings > Personal Tokens*, or an internal integration's token) and save it as the repository secret `SENTRY_API_TOKEN` (*Settings > Secrets and variables > Actions*). Without the secret, the run passes with a warning. The workflow writes issues with the built-in `GITHUB_TOKEN` and does nothing on forks. To run it by hand, open *Actions > Sentry issues > Run workflow*. You can choose another period there (e.g. `24h`) or tick *dry run*, which only prints what it would do.
 
 **Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); every series' newest reading; and yesterday's API traffic (requests, errors, p95 response time, data sent, CSV downloads, busiest minute; see [welldash²](#welldash²-operations-dashboard)). It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
 
@@ -760,7 +794,7 @@ docker compose exec backend python scripts/migrate.py            # apply
 | Database | PostgreSQL 13 (VM host); MySQL 5.7 for WordPress |
 | Infrastructure | Docker Compose on a Linux VM, behind McMaster's reverse proxy |
 | CMS | WordPress (PHP, Bootstrap, Flickity) |
-| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured) |
+| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured); OpenAI (AI analysis, disabled) |
 | Monitoring | Sentry, Healthchecks.io, email digest and alerts, daily API canary (GitHub Actions) |
 | Deploy and CI | `deploy.sh` (by hand or from cron), GitHub Actions |
 
@@ -806,6 +840,9 @@ The platform should publish a simple privacy notice covering both the dashboard 
 
 **How are backups automated?**
 Every night at 03:15 Toronto time the worker dumps the database with `pg_dump` (every table its role can read, which on the VM is all of them; any left out are named in a warning), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
+
+**How did the AI analysis feature work?**
+It is switched off; see [AI Analysis](#ai-analysis). When it was on, the API aggregated and downsampled the series first, then sent a bounded prompt with metadata to OpenAI.
 
 **What keeps the dashboard responsive with large datasets?**
 `/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.

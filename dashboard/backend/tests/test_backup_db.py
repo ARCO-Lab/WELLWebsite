@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import types
-import unittest
 import unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"

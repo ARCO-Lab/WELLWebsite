@@ -64,6 +64,7 @@ class BackupError(Exception):
 
 
 def int_setting(name, default, minimum=0):
+    # A whole-number setting from the environment; a bad value stops the backup rather than being guessed.
     raw = os.getenv(name, "").strip()
     if not raw:
         return default

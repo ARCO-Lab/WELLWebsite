@@ -1,6 +1,6 @@
 """
-Use this script to CLEAR ALL sampling data from the database.
-Recommended: Only use this when real sampling data starts to be uploaded.
+Use this script to CLEAR ALL sampling data (the sampling_measurements table) from the database.
+It asks for confirmation, and refuses unless ALLOW_WIPE=1 is set for the run (utils/guards.py). Take a backup first.
 """
 
 import sys

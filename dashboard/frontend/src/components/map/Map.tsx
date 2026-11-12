@@ -94,6 +94,7 @@ const lookOf = (group: string) => GROUP_LOOK[group] ?? { color: "#475569", name:
 // (the water quality sensor sits ~4 m from Logger 3).
 const OVERLAP_METRES = 25;
 
+// Approximate distance between two sites in metres (flat-earth maths, accurate enough at this scale).
 function metresBetween(a: Site, b: Site) {
   const dy = (a.lat - b.lat) * 110_540;
   const dx = (a.lng - b.lng) * 111_320 * Math.cos((a.lat * Math.PI) / 180);

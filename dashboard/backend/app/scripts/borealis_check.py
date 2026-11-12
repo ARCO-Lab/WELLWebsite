@@ -183,6 +183,7 @@ def check_permissions(report, client, pid, role, needed):
 
 
 def check_upload_dataset(report, client, pid, with_token):
+    # The monthly upload's dataset (scripts/upload_data.py): readable, and in a state the next upload can publish.
     versions = check_dataset_common(report, client, pid, "upload")
     if versions is None:
         return
@@ -200,6 +201,7 @@ def check_upload_dataset(report, client, pid, with_token):
 
 
 def check_sampling_dataset(report, client, pid):
+    # The sampling dataset the weekly download reads (scripts/download_data.py): published, with files it can import.
     versions = check_dataset_common(report, client, pid, "sampling")
     if versions is None:
         return

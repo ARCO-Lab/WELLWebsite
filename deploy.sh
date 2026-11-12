@@ -20,7 +20,7 @@ for arg in "$@"; do
   case "$arg" in
     --auto) AUTO=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -41,6 +41,7 @@ log() {
   if [ "$DRY" = 1 ]; then echo "$*"; return 0; fi
   { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; } 2>/dev/null || true
 }
+# Pings DEPLOY_HEALTHCHECK_URL (if set) with the suffix in $1 ("" for success, /fail); a failed ping is ignored.
 ping_health() {
   if [ "$DRY" = 0 ] && [ -n "${DEPLOY_HEALTHCHECK_URL:-}" ]; then
     "$CURL" -fsS -m 10 --retry 3 -o /dev/null "$DEPLOY_HEALTHCHECK_URL$1" || true
@@ -69,6 +70,7 @@ trap 'on_err $? "$LINENO" "$BASH_COMMAND"' ERR
 # The last commit that was deployed and rolled back. Kept apart from $STATE (which `once` overwrites) so no other
 # problem can erase it; cleared by a healthy deploy or a deploy by hand.
 ROLLED_BACK=$STATE.rolled-back
+# Leaves NEW undeployed for a person (reason in $*): logs HELD once, pings /fail, and exits without an error.
 hold() {
   once "held $NEW"
   log "HELD $(git rev-parse --short "$NEW"): $* Deploy it by hand with ./deploy.sh once that's done."
@@ -152,6 +154,7 @@ if [ "$AUTO" = 1 ]; then
 fi
 
 SERVICES=()
+# Adds services to the rebuild list, once each. ALL means the whole stack.
 add() { local s; for s in "$@"; do [[ " ${SERVICES[*]-} " == *" $s "* ]] || SERVICES+=("$s"); done; }
 if grep -q '^dashboard/frontend/' <<<"$CHANGED"; then add dashboard; fi
 if grep -q '^dashboard/backend/' <<<"$CHANGED"; then
@@ -171,6 +174,7 @@ if grep -Eq '^wordpress/.*\.(conf|ini)$' <<<"$CHANGED"; then RECREATE=(wordpress
 summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}${RECREATE[*]:+; recreate: ${RECREATE[*]}}"
 if [ "$DRY" = 1 ]; then echo "Would deploy $summary"; exit 0; fi
 
+# Rebuilds and starts the services in SERVICES, and recreates those in RECREATE. Returns 1 if compose fails.
 rebuild() {
   if [[ " ${SERVICES[*]-} " == *" ALL "* ]]; then
     "$DOCKER" compose up -d --build || return 1
@@ -183,8 +187,9 @@ rebuild() {
 }
 
 # The site's pages. Returns 0, or sets PROBLEM to what's wrong and returns 1. $1: how many times to try
-# /api/latest and the WordPress home page (5 s apart), the slowest to come back after a rebuild or recreate. The checks set PROBLEM rather than print it so
-# they're called straight from `if`, where the ERR trap doesn't apply, not from a $(...) subshell.
+# /api/latest and the WordPress home page (5 s apart), the slowest to come back after a rebuild or recreate. The
+# checks set PROBLEM rather than print it so they're called straight from `if`, where the ERR trap doesn't apply,
+# not from a $(...) subshell.
 site_ok() {
   local code=000
   for _ in $(seq 1 "$1"); do
