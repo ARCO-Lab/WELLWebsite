@@ -126,6 +126,24 @@ class HourlyQuotaTests(ExportTestCase):
             self.add_job(f"old{n}", "failed", minutes_ago=70, fingerprint=mine)
         self.assertEqual(self.post("/api/exports/jobs", SAMPLING).status_code, 202)
 
+    def test_jobs_that_couldnt_be_queued_dont_count(self):
+        # While the queue (Redis) is down every job fails at once with EXPORT_QUEUE_DOWN_MESSAGE; a visitor who kept
+        # trying mustn't find their hour used up when it is back.
+        from kombu.exceptions import OperationalError
+        from api.services.exports import EXPORT_QUEUE_DOWN_MESSAGE, jobs_started_since
+        self.delay.side_effect = OperationalError("Error 111 connecting to redis:6379. Connection refused.")
+        for _ in range(Config.EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER + 2):
+            r = self.post("/api/exports/jobs", SAMPLING)
+            self.assertEqual(r.status_code, 503)
+            self.assertEqual(r.get_json()["error"], EXPORT_QUEUE_DOWN_MESSAGE)
+        hour_ago = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)
+        self.assertEqual(jobs_started_since(self.mine(), hour_ago), 0)
+        self.delay.side_effect = None
+        self.assertEqual(self.post("/api/exports/jobs", SAMPLING).status_code, 202)
+        # Jobs that failed for any other reason still count
+        self.add_job("broke", "failed", minutes_ago=5, fingerprint=self.mine(), error_message="Something else")
+        self.assertEqual(jobs_started_since(self.mine(), hour_ago), 2)
+
     def test_the_quota_includes_jobs_just_queued(self):
         with unittest.mock.patch.object(Config, "EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER", 3), \
                 unittest.mock.patch.object(Config, "EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER", 10):
