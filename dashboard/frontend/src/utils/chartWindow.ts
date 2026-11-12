@@ -267,8 +267,8 @@ export function bucketSpanLabel(startMs: number, bucketS: number): string {
 // Decimals a value is shown with, by unit: water levels in m asl to the millimetre, the rest to what the
 // sensors actually resolve.
 const DECIMALS: Record<string, number> = {
-  "m": 3, "m asl": 3, "m³/m³": 3, "g/L": 3, "PPT": 2, "mg/L": 2,
-  "°C": 1, "%": 1, "mbar": 1, "mm": 1, "m/s": 1, "NTU": 1, "uS/cm": 0, "W/m²": 0, "°": 0,
+  "m": 3, "m asl": 3, "m³/m³": 3, "g/L": 3, "PPT": 2, "ppt": 2, "mg/L": 2,
+  "°C": 1, "%": 1, "mbar": 1, "mm": 1, "m/s": 1, "NTU": 1, "uS/cm": 0, "µS/cm": 0, "W/m²": 0, "°": 0,
 };
 export function valueDecimals(unit: string): number {
   return DECIMALS[unit] ?? 2;

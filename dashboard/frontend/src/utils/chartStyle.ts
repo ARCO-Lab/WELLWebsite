@@ -23,14 +23,19 @@ export function measurementColor(name: string): string {
   return FALLBACK_COLORS[h % FALLBACK_COLORS.length];
 }
 
-// The unit each measurement is stored in, for axis titles and series names before the first data arrives (the data
+// Units as shown on the page. The database, the API and exports keep the stored spellings ("uS/cm", "PPT"); every
+// panel shows the usual ones instead, and pH, which has no unit, shows none.
+const UNIT_LABELS: Record<string, string> = { "uS/cm": "µS/cm", "μS/cm": "µS/cm", "PPT": "ppt", "pH units": "" };
+export const displayUnit = (unit: string): string => UNIT_LABELS[unit] ?? unit;
+
+// The unit each measurement is shown in (displayUnit of what it is stored in), for axis titles and series names before the first data arrives (the data
 // then names its own unit).
 export const UNITS: Record<string, string> = {
   "Water Surface Elevation": "m asl", "Water Temperature": "°C",
   "Air Temperature": "°C", "Dew Point": "°C", "Soil Temperature": "°C", "Relative Humidity": "%", "Pressure": "mbar",
   "Rain": "mm", "Wind Speed": "m/s", "Gust Speed": "m/s", "Wind Direction": "°", "Solar Radiation": "W/m²",
   "Water Content": "m³/m³",
-  "Conductivity": "uS/cm", "ODO": "mg/L", "ODOSat": "%", "Salinity": "PPT", "TDS": "g/L", "TSS": "mg/L", "Turbidity": "NTU",
+  "Conductivity": "µS/cm", "ODO": "mg/L", "ODOSat": "%", "Salinity": "ppt", "TDS": "g/L", "TSS": "mg/L", "Turbidity": "NTU",
 };
 
 /** How /api/series aggregates a measurement (what `avg` holds). */
@@ -53,6 +58,7 @@ export function compassLabel(deg: number): string {
 // they were fine. Keyed by "<group>|<measurement>".
 export const SERIES_NOTES: Record<string, { note: string; hidden?: boolean }> = {
   "Quality|ODO": { note: "suspect since Jun 2026" }, // reads about 0 since June 2026
+  "Quality|ODOSat": { note: "suspect since Jun 2026" }, // the same probe as ODO, so the same fault
   "Quality|TSS": { note: "sensor reads 0", hidden: true }, // has read 0 since it was installed
 };
 export const seriesNote = (group: string, measurement: string) => SERIES_NOTES[`${group}|${measurement}`];
