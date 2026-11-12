@@ -14,9 +14,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run. Never on main: deploy.sh --auto deploys a commit only once
+# its checks have passed, and a cancelled run counts as "CI didn't pass", so every push to main runs to the end.
+# Each main commit also gets its own group: in a shared group, a newer run would still replace one that is queued.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   backend:
@@ -24,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Starts while the image builds. The network is --internal: the test containers reach this database and
       # nothing else, so no test can call a vendor API.
@@ -91,10 +94,10 @@ jobs:
       run:
         working-directory: dashboard/frontend
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Same Node major as the dashboard image (node:26-alpine in dashboard/frontend/Dockerfile); change both together.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 26
           cache: npm
@@ -119,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # The image the VM builds, base image and all, so a Node or Alpine change is built and started before it ships.
       # The Sentry DSN stays at the Dockerfile's default so the Sentry code path is built as in production, but
@@ -151,7 +154,7 @@ jobs:
       E2E_DATABASE_URL: postgresql://postgres:e2e@127.0.0.1:5432/e2e
       E2E_BASE_URL: http://127.0.0.1:3000
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # America/New_York on the VM; UTC here on purpose, so any dependence on the session zone fails. recorded_at is
       # naive Toronto time, so code that writes it in the session's zone, or compares it with an aware time (which
@@ -161,7 +164,7 @@ jobs:
           docker run -d --name e2e-postgres -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=e2e -e POSTGRES_DB=e2e \
             -e TZ=UTC postgres:13 -c timezone=UTC
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 26
           cache: npm
@@ -221,7 +224,7 @@ jobs:
 
       - name: Keep the Playwright report (traces and screenshots)
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-report
           path: |
@@ -234,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Pyflakes rules only (F): undefined names, unused imports and variables, and the like. No style rules.
       - name: ruff (pyflakes rules) on the backend and the CI scripts
@@ -290,12 +293,22 @@ jobs:
           echo "$out"
           [ "$out" = ok ]
 
+      # The theme is live as soon as deploy.sh pulls it (home/ is bind-mounted), so a syntax error would take the
+      # site down. php -l in the same image, so the PHP version is production's.
+      - name: PHP syntax of the WordPress theme (php -l)
+        run: |
+          image=$(docker compose config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["wordpress"]["image"])')
+          docker run --rm -v "$PWD/home/wp-content/themes/well:/theme:ro" "$image" sh -c '
+            php -v | head -1; n=0; bad=0
+            for f in $(find /theme -name "*.php"); do n=$((n + 1)); php -l "$f" || bad=1; done
+            echo "$n files checked"; exit $bad'
+
   deploy-script:
     name: Deploy script
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: deploy.sh in a sandbox (fake remote, stub docker and curl)
         run: bash .github/scripts/test_deploy.sh

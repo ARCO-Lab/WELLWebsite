@@ -137,6 +137,7 @@ Details in [wordpress/README.md](../wordpress/README.md#backups).
 | `DEPLOY_HEALTHCHECK_URL` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure or a held commit. |
 | `DEPLOY_BRANCH`, `DEPLOY_REMOTE` | `main`, `origin` | What is deployed. |
 | `DEPLOY_LOG` | `deploy.log` next to the script | Log file. |
+| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported and the last commit rolled back. Earlier versions kept these in `/tmp`; the first run moves them here. |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
 ## Tests

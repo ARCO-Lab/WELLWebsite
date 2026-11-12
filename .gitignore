@@ -67,6 +67,9 @@ well-vm/
 # Nightly WordPress backups (wordpress/backup.sh)
 /wp-backups/
 
+# deploy.sh: its lock, the problem it last reported, and the last commit it rolled back
+/.deploy-state/
+
 # home/ is the WordPress site: core and plugins exactly as released (see .gitattributes). The
 # generic rules above (build/, logs, *.log, *.css.map, out/, ...) would hide release files there,
 # so re-include all of home/ and ignore only what is site state or secrets. Keep this block last.
