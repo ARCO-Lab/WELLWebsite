@@ -31,7 +31,7 @@ import { GraphFrame, LoadingOverlay } from "@/components/LoadingOverlay";
 // import AIAnalysis from "@/components/AIAnalysis";
 import { ChartPageContext, type ChartPage } from "@/hooks/useChartWindow";
 import {
-  clampToNow, dataStart, daysCovering, hourStart, pickedDaysRange, searchWithWindow, windowFromSearch, type Range,
+  clampToNow, daysCovering, hourStart, pickedDaysRange, searchWithWindow, windowFromSearch, type Range,
 } from "@/utils/chartWindow";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
@@ -167,35 +167,56 @@ export default function Dashboard() {
   // on with the hours.
   const [clock, setClock] = useState(() => hourStart(Date.now()));
   useEffect(() => {
-    const id = window.setInterval(() => setClock(hourStart(Date.now())), 60_000);
+    const id = window.setInterval(() => {
+      setClock(hourStart(Date.now()));
+      // Dates the user hasn't chosen follow the calendar: yesterday and today roll over at Toronto midnight
+      if (!datesChosen.current) {
+        const today = siteDay();
+        setEndDate((d) => (d && d.toDateString() === today.toDateString() ? d : today));
+        setStartDate((d) => (d && d.toDateString() === siteDay(-1).toDateString() ? d : siteDay(-1)));
+      }
+    }, 60_000);
     return () => window.clearInterval(id);
   }, []);
 
   // A shared link's window (?from=&to=, read once on load): it is where every chart starts and goes back to on
   // Reset, and the date pickers show the days it covers. Picking other days drops it.
   const [linkWindow, setLinkWindow] = useState<Range | null>(null);
-  const changeStartDate = useCallback((d: Date | null) => { setStartDate(d); setLinkWindow(null); }, []);
-  const changeEndDate = useCallback((d: Date | null) => { setEndDate(d); setLinkWindow(null); }, []);
+  // The user picked dates (or opened a link): they no longer roll over. State for rendering, a ref for the clock tick.
+  const [datesChosenState, setDatesChosen] = useState(false);
+  const datesChosen = useRef(false);
+  const chooseDates = useCallback(() => { datesChosen.current = true; setDatesChosen(true); }, []);
+  const changeStartDate = useCallback((d: Date | null) => { chooseDates(); setStartDate(d); setLinkWindow(null); }, [chooseDates]);
+  const changeEndDate = useCallback((d: Date | null) => { chooseDates(); setEndDate(d); setLinkWindow(null); }, [chooseDates]);
   const [urlRead, setUrlRead] = useState(false);
   useEffect(() => {
     const w = windowFromSearch(window.location.search, Date.now());
     if (w) {
       const { startDay, endDay } = daysCovering(w);
+      chooseDates();
       setStartDate(startDay);
       setEndDate(endDay);
       setLinkWindow(w);
     }
     setUrlRead(true);
-  }, []);
+  }, [chooseDates]);
 
-  const extentEnd = clock + 3_600_000;
+  // The charts' extent is the picked days, up to the next whole hour (so a page left open moves on with the hours);
+  // a shared link's window is shown as it is, otherwise each chart fits to where its data is within the days
+  const nowEnd = clock + 3_600_000;
   const picked = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), clock + 1) : null;
-  const defaultStart = linkWindow?.start ?? picked?.start ?? extentEnd - 2 * 86_400_000;
-  const defaultEnd = linkWindow?.end ?? picked?.end ?? extentEnd;
+  const extentStart = Math.min(picked?.start ?? nowEnd - 2 * 86_400_000, linkWindow?.start ?? Infinity);
+  const extentEnd = Math.max(picked?.end ?? nowEnd, linkWindow?.end ?? -Infinity);
+  const defaultStart = linkWindow?.start ?? extentStart;
+  const defaultEnd = linkWindow?.end ?? extentEnd;
   const chartPage = useMemo<ChartPage>(() => ({
     defaultWindow: { start: defaultStart, end: Math.max(defaultEnd, defaultStart + 3_600_000) },
-    extent: { start: dataStart(), end: extentEnd },
-  }), [defaultStart, defaultEnd, extentEnd]);
+    extent: { start: extentStart, end: Math.max(extentEnd, extentStart + 3_600_000) },
+    fit: !linkWindow,
+    // The user's choice; default days rolling over at midnight aren't one (a window the user moved stays put)
+    selection: linkWindow ? `link:${linkWindow.start}-${linkWindow.end}`
+      : datesChosenState ? `days:${startDate?.toDateString()}-${endDate?.toDateString()}` : "default",
+  }), [defaultStart, defaultEnd, extentStart, extentEnd, linkWindow, datesChosenState, startDate, endDate]);
 
   // The link keeps the charts' starting window: the picked days (when they aren't the default ones) or the link's
   // window. replaceState, so it adds no history entries.

@@ -5,10 +5,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TILE_BUCKETS, bucketFor, tileAt, tileRange, tilesFor, tileQuery, toWall, fromWall, cutIntoTiles, segmentsFor,
-  composeSeries, typicalFor, coarsestIn, tileSpanMs,
+  composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow,
 } from "../src/lib/seriesTiles.ts";
-import { SeriesLoader, MAX_BATCH } from "../src/lib/seriesLoader.ts";
-import { ChartController, clampWindow, OVERVIEW_BUCKET } from "../src/lib/chartController.ts";
+import { SeriesLoader, MAX_BATCH, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
+import { ChartController, clampWindow, overviewBucket } from "../src/lib/chartController.ts";
 
 const H = 3600 * 1000;
 const D = 24 * H;
@@ -343,7 +343,8 @@ test("clampWindow keeps a window inside the extent and at least an hour wide", (
   const tiny = clampWindow({ start: now - 60_000, end: now }, extent);
   assert.equal(tiny.end - tiny.start, H);
   assert.equal(tiny.end, now);
-  assert.equal(OVERVIEW_BUCKET, 86400);
+  assert.equal(overviewBucket(extent, 600, 1.5), 86400); // 18 months at 600 px: daily
+  assert.equal(overviewBucket(twoDays, 600, 1.5), 600); // two days: 10-minute readings
 });
 
 test("controller: a slow gesture sends nothing until it ends, however long its frames take", async () => {
@@ -489,4 +490,160 @@ test("loader: a failed refresh of a cached live tile shows no error and tries ag
   loader.want("d", [B], 600, [live], 0, () => {}); // never loaded: its failure is an error
   await srv.settle();
   assert.match(loader.error("d").message, /500/);
+});
+
+// ---- fitting the window to where the data is ----
+
+test("fitWindow: from the first bucket with data to the end of the last, inside the picked range", () => {
+  const range = { start: Date.parse("2026-11-10T05:00:00Z"), end: Date.parse("2026-11-12T05:00:00Z") }; // Nov 10-11 EST
+  // Data only on Nov 11 from 9:00 to 17:00 (10-minute readings: last bucket starts 16:50)
+  const w = fitWindow(range, Date.parse("2026-11-11T14:00:00Z"), Date.parse("2026-11-11T21:50:00Z"), 600, H);
+  assert.deepEqual(w, { start: Date.parse("2026-11-11T14:00:00Z"), end: Date.parse("2026-11-11T22:00:00Z") });
+  // Data that starts inside the range and runs past its end: cut at the range
+  const late = fitWindow(range, Date.parse("2026-11-11T20:00:00Z"), Date.parse("2026-11-12T08:00:00Z"), 600, H);
+  assert.deepEqual(late, { start: Date.parse("2026-11-11T20:00:00Z"), end: range.end });
+  // Data that started before the range and stops inside it
+  const early = fitWindow(range, Date.parse("2026-11-09T00:00:00Z"), Date.parse("2026-11-10T09:00:00Z"), 3600, H);
+  assert.deepEqual(early, { start: range.start, end: Date.parse("2026-11-10T10:00:00Z") });
+});
+
+test("fitWindow: no data is the whole range; one reading is an hour around it, inside the range", () => {
+  const range = { start: Date.parse("2026-11-10T05:00:00Z"), end: Date.parse("2026-11-12T05:00:00Z") };
+  assert.deepEqual(fitWindow(range, null, null, 600, H), range);
+  const one = Date.parse("2026-11-11T12:00:00Z");
+  const w = fitWindow(range, one, one, 600, H);
+  assert.equal(w.end - w.start, H);
+  assert.ok(w.start <= one && one + 600e3 <= w.end);
+  // At the very start of the range: the hour starts there, not before it
+  const atStart = fitWindow(range, range.start, range.start, 600, H);
+  assert.deepEqual(atStart, { start: range.start, end: range.start + H });
+  // At the very end
+  const lastSlot = range.end - 600e3;
+  assert.deepEqual(fitWindow(range, lastSlot, lastSlot, 600, H), { start: range.end - H, end: range.end });
+  // A range shorter than the minimum: the whole range
+  const short = { start: range.start, end: range.start + 30 * 60e3 };
+  assert.deepEqual(fitWindow(short, short.start, short.start, 600, H), short);
+});
+
+test("fitWindow: daily buckets on the days the clocks change end at the next local midnight", () => {
+  // Nov 1 2026 is 25 hours long in Toronto: a daily bucket starting at its midnight ends 25 h later
+  const range = { start: Date.parse("2026-10-25T04:00:00Z"), end: Date.parse("2026-11-08T05:00:00Z") };
+  const nov1 = Date.parse("2026-11-01T04:00:00Z");
+  assert.deepEqual(fitWindow(range, nov1, nov1, 86400, H), { start: nov1, end: nov1 + 25 * H });
+  // Mar 8 2026 is 23 hours long
+  const spring = { start: Date.parse("2026-03-01T05:00:00Z"), end: Date.parse("2026-03-15T04:00:00Z") };
+  const mar8 = Date.parse("2026-03-08T05:00:00Z");
+  assert.deepEqual(fitWindow(spring, mar8, mar8, 86400, H), { start: mar8, end: mar8 + 23 * H });
+});
+
+test("controller: opens on where the data is, keeps the navigator's extent, and stops fitting once the user moves", async () => {
+  // Readings only from 9:00 to 17:00 on the second day of a two-day range
+  const from = Date.parse("2026-10-21T13:00:00Z"), to = Date.parse("2026-10-21T21:00:00Z");
+  const fetchTiles = (req) => Promise.resolve(req.keys.map((k) => {
+    const [g, st, m] = k.split("|");
+    const s = fakeSeries(Math.max(from, tileRange(req.first, req.bucketS).start), Math.min(to, tileRange(req.last, req.bucketS).end), req.bucketS);
+    return { ...s, group_type: g, station_id: st, measurement_type: m };
+  }));
+  const loader = new SeriesLoader(fetchTiles);
+  const range = { start: Date.parse("2026-10-20T04:00:00Z"), end: Date.parse("2026-10-22T04:00:00Z") };
+  const c = new ChartController("weather", [A], range, range, loader, syncFrame, 10);
+  c.setAutoFit(true);
+  c.activate();
+  await sleep(80);
+  assert.equal(c.window.start, from);
+  assert.equal(c.window.end, to);
+  assert.deepEqual(c.extent, range); // the navigator still covers both days
+  assert.equal(c.ovB(), 600); // two days at 10-minute readings from the start
+  assert.equal(c.overview(A).filter((p) => p.y !== null).length, (to - from) / 600e3);
+  // Reset returns to the fitted window; after the user moves, new data doesn't move it
+  c.pan(-0.5, "key");
+  await sleep(40);
+  const moved = c.window;
+  c.setExtent({ start: range.start, end: range.end + H });
+  await sleep(60);
+  assert.equal(c.window.start, moved.start);
+  c.reset();
+  await sleep(20);
+  assert.equal(c.window.start, from);
+  c.dispose();
+});
+
+test("controller: a range with no readings keeps the whole range and says so", async () => {
+  const loader = new SeriesLoader((req) => Promise.resolve(req.keys.map((k) => {
+    const [g, st, m] = k.split("|");
+    return { group_type: g, station_id: st, measurement_type: m, unit: "m", agg: "mean", t: [], avg: [], min: [], max: [], n: [] };
+  })));
+  const range = { start: Date.parse("2026-10-20T04:00:00Z"), end: Date.parse("2026-10-22T04:00:00Z") };
+  const c = new ChartController("q", [A], range, range, loader, syncFrame, 10);
+  c.setAutoFit(true);
+  c.activate();
+  await sleep(80);
+  assert.deepEqual(c.window, range);
+  assert.equal(c.snapshot().hasData, false);
+  c.dispose();
+});
+
+test("controller: the hour moving on updates Reset's window but never moves a window the user moved", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const range = { start: Date.parse("2026-11-10T05:00:00Z"), end: Date.parse("2026-11-11T17:00:00Z") };
+  const c = new ChartController("w", [A], range, range, loader, syncFrame, 10);
+  c.activate();
+  await sleep(30);
+  await srv.settle();
+  // Untouched: the next hour's default is followed
+  const later = { start: range.start, end: range.end + H };
+  c.setExtent(later);
+  c.updateDefault(later);
+  await sleep(30);
+  assert.deepEqual(c.window, later);
+  // Moved by the user: the next hour changes only where Reset goes
+  c.zoom(0.25, undefined, "wheel");
+  await sleep(30);
+  const moved = c.window;
+  const evenLater = { start: range.start, end: range.end + 2 * H };
+  c.setExtent(evenLater);
+  c.updateDefault(evenLater);
+  await sleep(30);
+  assert.deepEqual(c.window, moved);
+  c.reset();
+  await sleep(20);
+  assert.deepEqual(c.window, evenLater);
+  // Other days picked: every chart goes there
+  const other = { start: Date.parse("2026-10-01T04:00:00Z"), end: Date.parse("2026-10-03T04:00:00Z") };
+  c.setExtent(other);
+  c.setDefault(other);
+  await sleep(30);
+  assert.deepEqual(c.window, other);
+  await srv.settle();
+  c.dispose();
+});
+
+test("fetchFromApi: a passing server error or dropped connection is retried in the same slot; a refusal is not", async () => {
+  const saved = globalThis.fetch;
+  const waits = [];
+  const wait = (ms) => { waits.push(ms); return Promise.resolve(); };
+  const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const req = { keys: [A], bucketS: 600, first: 10, last: 10 };
+  try {
+    let calls = 0;
+    globalThis.fetch = async () => (++calls < 3 ? reply(503, { error: "busy" }) : reply(200, { series: [] }));
+    assert.deepEqual(await fetchFromApi(req, wait), []);
+    assert.equal(calls, 3);
+    assert.deepEqual(waits, RETRY_DELAYS_MS);
+    calls = 0; waits.length = 0;
+    globalThis.fetch = async () => { calls++; return reply(400, { error: "bucket must be one of 600, ..." }); };
+    await assert.rejects(fetchFromApi(req, wait), /bucket must be/);
+    assert.equal(calls, 1); // a refusal isn't retried
+    calls = 0;
+    globalThis.fetch = async () => { calls++; return reply(504, { error: "The database took too long" }); };
+    await assert.rejects(fetchFromApi(req, wait), /took too long/);
+    assert.equal(calls, 1 + RETRY_DELAYS_MS.length);
+    calls = 0;
+    globalThis.fetch = async () => { calls++; if (calls === 1) throw new TypeError("network"); return reply(200, { series: [] }); };
+    assert.deepEqual(await fetchFromApi(req, wait), []);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = saved;
+  }
 });

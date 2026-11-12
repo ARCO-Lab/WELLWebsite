@@ -248,3 +248,23 @@ export function coarsestIn(segments: Segment[], window: Range): number | null {
   for (const g of segments) if (g.wallEnd > ws && g.wallStart < we) b = Math.max(b ?? 0, g.bucketS);
   return b;
 }
+
+/** The window a chart opens on: where its series have readings within the picked range. `first` and `last` are the
+ *  starts of the first and last buckets (of `bucketS`) holding a reading, or null when there are none (then the whole
+ *  range). The window runs from the first bucket's start to the last bucket's end (on the wall clock, so a daily
+ *  bucket on a day the clocks change ends at the next midnight), inside the range, and at least `minSpanMs` wide
+ *  (widened around the readings, still inside the range). */
+export function fitWindow(range: Range, first: number | null, last: number | null, bucketS: number, minSpanMs: number): Range {
+  if (first === null || last === null) return { ...range };
+  const end = fromWall(toWall(last) + bucketS * 1000);
+  let start = Math.max(range.start, Math.min(first, last));
+  let stop = Math.min(range.end, Math.max(end, start));
+  const total = range.end - range.start;
+  const want = Math.min(minSpanMs, total);
+  if (stop - start < want) {
+    const mid = (start + stop) / 2;
+    start = Math.min(Math.max(mid - want / 2, range.start), range.end - want);
+    stop = start + want;
+  }
+  return { start, end: stop };
+}

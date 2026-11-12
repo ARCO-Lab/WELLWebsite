@@ -341,23 +341,31 @@ export async function errorFrom(res: Response, what = "chart data"): Promise<Err
 
 export const UNREACHABLE = "Couldn't reach the data service. Please check your connection and try again.";
 
-export async function fetchFromApi(req: TileRequest): Promise<ApiSeries[]> {
+// Waits before trying a request again: a dropped connection, or a server error that may pass (502, 503: the backend
+// restarting or its database busy; 504: a query that ran out of time while the database was loaded)
+export const RETRY_DELAYS_MS = [1000, 3000];
+const PASSING = new Set([502, 503, 504]);
+
+/** One tile request. Tried up to RETRY_DELAYS_MS.length more times, within the same request slot (so retries never add
+ *  to the requests in flight), before the error is reported: one request can serve several charts, so a blip would
+ *  otherwise put an error on all of them. A refusal (4xx) is the server's answer and is reported at once. */
+export async function fetchFromApi(req: TileRequest, wait: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<ApiSeries[]> {
   const { start, end } = tileQuery(req.first, req.last, req.bucketS);
   const params = new URLSearchParams({ start, end, bucket: String(req.bucketS) });
   for (const k of req.keys) params.append("series", k);
-  let res: Response | null = null;
-  // A dropped connection is tried once more after a moment (one request can serve several charts, so one blip would
-  // otherwise put an error on all of them); an HTTP error is the server's answer and is reported as it is.
-  for (let attempt = 0; !res; attempt++) {
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
     try {
       res = await fetch(`/api/series?${params.toString()}`);
     } catch {
-      if (attempt >= 1) throw new Error(UNREACHABLE);
-      await new Promise((r) => setTimeout(r, 800));
+      if (attempt >= RETRY_DELAYS_MS.length) throw new Error(UNREACHABLE);
+      await wait(RETRY_DELAYS_MS[attempt]);
+      continue;
     }
+    if (res.ok) return ((await res.json()) as { series: ApiSeries[] }).series;
+    if (!PASSING.has(res.status) || attempt >= RETRY_DELAYS_MS.length) throw await errorFrom(res);
+    await wait(RETRY_DELAYS_MS[attempt]);
   }
-  if (!res.ok) throw await errorFrom(res);
-  return ((await res.json()) as { series: ApiSeries[] }).series;
 }
 
 let pageLoader: SeriesLoader | null = null;
