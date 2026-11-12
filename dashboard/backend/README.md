@@ -156,8 +156,9 @@ still going:
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of
 missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their
-headers explain how). The only cron job is the optional `deploy.sh --auto` line
-([docs/deploying.md](../../docs/deploying.md)).
+headers explain how). The only cron jobs are the optional `deploy.sh --auto` line
+([docs/deploying.md](../../docs/deploying.md)) and the WordPress backup
+([wordpress/README.md](../../wordpress/README.md#backups)).
 
 ## Exports
 
@@ -186,6 +187,31 @@ Borealis also carries data the other way. Creek **sampling** results are uploade
 ([how to upload](app/scripts/README.md)), and the weekly download (`scripts/download_data.py`, Sundays 00:00 by the
 container clock, UTC) checks each new file against [the sampling CSV format](../../docs/sampling-csv-format.md) and
 imports it into the Ancaster Watershed tab.
+
+### The monthly file's format
+
+`WELLWestCampus_<Mon><YYYY>.csv` is UTF-8 CSV with one row per time a reading was taken, in time order. The
+[golden files](tests/golden/README.md) pin it byte for byte.
+
+- **Columns**, left to right: `ID` (the row number), `Timestamp (America/Toronto)`, then a Weather block (`Group`,
+  `Latitude`, `Longitude`, then one column per measurement), a blank column, a Quality block laid out the same way,
+  a blank column, and a Logger block: `Group`, then for each logger `Sensor`, `Latitude`, `Longitude` and one column
+  per measurement. A measurement's header is `<name>: <unit>`, with the unit of its last reading that month. A file
+  has only the blocks, measurements and loggers that have readings that month; measurements are sorted by name and
+  loggers by id.
+- **Times** are local wall-clock time at the site, America/Toronto (EST or EDT, whichever was in effect), written as
+  ISO 8601 without an offset, e.g. `2026-10-01T00:10:00`; the header names the zone. In the hour repeated when the
+  clocks fall back (01:00-02:00 on the first Sunday of November) one reading per time is stored, so those rows
+  can't say whether they were EDT or EST. A month is the readings from 00:00 on the 1st up to, not including,
+  00:00 on the 1st of the next month, Toronto time.
+- **Values** are numbers as stored, unrounded (`0.30000000000000004`). A missing reading is an empty field (never
+  `nan`). Text that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, a tab or a carriage
+  return) gets a leading `'`, as in the dashboard's Download Data. Numbers are never changed.
+- If two readings share a cell (the same time and measurement from two stations of one group), the cell holds the
+  first by station id, so the same month always gives the same file.
+
+The dashboard's Download Data uses a similar layout without the `Latitude`/`Longitude` columns, and names its
+time column the same way; its sampling download names it `recorded_at (America/Toronto)`.
 
 ### How the Borealis jobs behave
 
@@ -540,6 +566,18 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
   2 h for the whole run. Only one backup runs at a time (a lock file, `.backup.lock`). If deleting old dumps fails
   after a good backup, the run still counts as a success and logs a `WARNING:` line, which also goes to Sentry as a
   warning.
+- **Row counts**: a dump of an emptied table still lists data for it, so before dumping, the job also counts the
+  rows of those tables (exactly for tables under a million rows; for larger ones, PostgreSQL's estimate right after
+  an `ANALYZE`, or the older estimate with a `WARNING:` line if `ANALYZE` waits more than 30 s for its lock) and compares them with the counts at the last good backup, kept in `backups/.row-counts.json`. If a
+  table is empty or has more than 5% fewer rows (`BACKUP_MAX_SHRINK_PCT`; these tables only grow, and 5% is well
+  above the estimate's error), the dump is still written and checked, but the run fails (`/fail` ping, Sentry) and
+  the counts aren't recorded, so the following nights fail too until someone looks. Retention doesn't run then, so
+  no good dump is deleted. Each failing dump is listed as such in `.row-counts.json`, and only those listed are
+  deleted by the next failing night, so just the newest failing dump is kept next to all the good ones and they
+  don't pile up. Every other successful dump is recorded as good, also while the comparison is off. If the rows
+  were removed on
+  purpose, run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it records the new
+  counts, with a `WARNING:` line naming what was accepted. `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off.
 - **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks
   (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only
   after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`)

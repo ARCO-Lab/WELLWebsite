@@ -2,7 +2,7 @@
 # by CI like any other pull request. Minor and patch bumps are grouped into one pull request per ecosystem; major
 # bumps come one per pull request, so each breaking change is reviewed on its own.
 #
-# Only the dashboard and the CI workflows are covered. WordPress core and plugins under home/ are updated through
+# The dashboard, the images docker-compose.yml runs and the CI workflows are covered. WordPress core and plugins under home/ are updated through
 # WordPress itself, not here, so no entry points at home/ (the package.json and composer.json files in there are
 # the plugin vendors' own build manifests and are never installed on the server).
 version: 2
@@ -86,7 +86,29 @@ updates:
         versions: ["~> 23.0", "~> 25.0"]
     assignees: [lukhsaankumar]
 
-  # Actions used in .github/workflows.
+  # The images docker-compose.yml runs as they are (MySQL, WordPress with its PHP and Apache, Redis). WordPress core
+  # itself comes from home/, so a wordpress image bump changes PHP and Apache, not WordPress. A docker-compose.yml
+  # change is held by deploy.sh --auto, so these are deployed by hand (./deploy.sh) after merging.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 3
+    groups:
+      compose-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # MySQL 8 converts the data directory on first start and can't go back to 5.7: an upgrade done by hand, with
+      # a backup, not a weekly pull request.
+      - dependency-name: mysql
+        update-types: ["version-update:semver-major"]
+    assignees: [lukhsaankumar]
+
+  # Actions used in .github/workflows. They are pinned to commit SHAs with the release in a comment; Dependabot
+  # updates both.
   - package-ecosystem: github-actions
     directory: /
     schedule:

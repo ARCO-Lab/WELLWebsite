@@ -6,12 +6,12 @@
 
 import logging
 import os
-from datetime import datetime
 
 from flask import request, jsonify
 
 from db.database import db
 from db.models import SensorMeasurement
+from utils.timezone import site_range
 
 log = logging.getLogger(__name__)
 
@@ -50,10 +50,10 @@ def register_data_route(app):
             return jsonify({"error": "Missing required parameters"}), 400
 
         try:
-            # Convert to datetime objects
-            start_dt = datetime.fromisoformat(start)
-            end_dt = datetime.fromisoformat(end)
-        except ValueError:
+            # As naive Toronto wall time, like recorded_at: a bound with an offset (...Z) is converted, one without
+            # is taken as local time (utils/timezone.site_range), so the session's TimeZone doesn't matter.
+            start_dt, end_dt = site_range(start, end)
+        except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
 
         filters = (

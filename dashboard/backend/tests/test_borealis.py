@@ -424,13 +424,35 @@ class UploadScriptTests(TestCase):
         ]
         out = io.StringIO()
         quiet(upload_data.build_csv_frontend_style, rows, out)
-        header = ("ID,Timestamp,Group,Latitude,Longitude,Rain: mm,,Group,Sensor,Latitude,Longitude,"
-                  "Water Temperature: C,Sensor,Latitude,Longitude,Water Temperature: C")
+        header = ("ID,Timestamp (America/Toronto),Group,Latitude,Longitude,Rain: mm,,Group,Sensor,Latitude,"
+                  "Longitude,Water Temperature: C,Sensor,Latitude,Longitude,Water Temperature: C")
         row1 = ("1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,1.5,,Logger,Logger 1,43.2671,-79.92883,8.25,"
                 "Logger 2,43.26639,-79.9294,")
         row2 = ("2,2026-10-01T00:10:00,Weather,43.26611,-79.92866,,,Logger,Logger 1,43.2671,-79.92883,,"
                 "Logger 2,43.26639,-79.9294,9.0")
         self.assertEqual(out.getvalue().splitlines(), [header, row1, row2])
+
+    def test_csv_has_no_nan_and_neutralizes_formulas(self):
+        # A missing value (None from the database, NaN once in pandas) is an empty field, not "nan", and text a
+        # spreadsheet would run gets a leading apostrophe, as in the dashboard download
+        rows = [
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "Rain", "value": None,
+             "unit": "mm", "recorded_at": "2026-10-01T00:00:00"},
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "Rain", "value": 0.5,
+             "unit": "mm", "recorded_at": "2026-10-01T00:10:00"},
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "=1+2",
+             "value": float("nan"), "unit": "", "recorded_at": "2026-10-01T00:10:00"},
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "-Wind", "value": -3.0,
+             "unit": "", "recorded_at": "2026-10-01T00:10:00"},
+        ]
+        out = io.StringIO()
+        quiet(upload_data.build_csv_frontend_style, rows, out)
+        self.assertNotIn("nan", out.getvalue().lower())
+        self.assertEqual(out.getvalue().splitlines(), [
+            "ID,Timestamp (America/Toronto),Group,Latitude,Longitude,'-Wind,'=1+2,Rain: mm",
+            "1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,,,",
+            "2,2026-10-01T00:10:00,Weather,43.26611,-79.92866,-3.0,,0.5",
+        ])
 
 
 class PreflightTests(TestCase):

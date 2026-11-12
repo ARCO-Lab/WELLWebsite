@@ -3,10 +3,16 @@
 
 import { Html, Head, Main, NextScript } from "next/document";
 
+// Runs before the page is first painted: inside a frame, marks <html> with "in-frame" so globals.css hides the
+// header and footer from the start. The WordPress site embeds /?embed=1, which has neither anyway (lib/embed.ts);
+// this covers any other framing. <html> is outside what React hydrates, so the class causes no mismatch.
+const FRAME_CHECK = `try{if(window.self!==window.top)document.documentElement.classList.add("in-frame")}catch(e){document.documentElement.classList.add("in-frame")}`;
+
 export default function Document() {
   return (
     <Html lang="en">
       <Head>
+        <script dangerouslySetInnerHTML={{ __html: FRAME_CHECK }} />
         {/* The headings' Poppins weights, fetched early so the title doesn't change font after it is drawn */}
         <link rel="preload" href="/fonts/poppins-700.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
         <link rel="preload" href="/fonts/poppins-600.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
