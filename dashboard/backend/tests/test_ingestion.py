@@ -21,7 +21,7 @@ from config import Config  # noqa: E402
 
 Config.SQLALCHEMY_DATABASE_URI = "sqlite://"   # another test module may have imported Config first
 
-from utils.fetching import BadVendorResponse, to_local  # noqa: E402
+from utils.fetching import BadVendorResponse, UnreadableRecords, to_local  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
 
 UTC = dt.timezone.utc
@@ -141,6 +141,7 @@ class LicorStartTests(IngestionTestCase):
         self.add("Logger", NOW - 30 * D)
         self.assertEqual(self.start(), NOW - 14 * D)   # no mark yet: as before, capped
         self.mark(NOW - 30 * D)
+        self.assertEqual(self.start(), NOW - 27 * H)
         self.assertEqual(self.left_out(), {"Weather": NOW - 14 * D, "Logger": NOW - 14 * D})
 
 
@@ -216,6 +217,64 @@ class LicorRunTests(IngestionTestCase):
                       "2 records", self.output)
         self.assertEqual(fetched_until("LI-COR"), NOW)
 
+    def test_a_station_back_after_days_offline_has_both_groups_caught_up(self):
+        # The whole station was offline (weather 3 days, loggers 4): each run read only the last 27 h, with both
+        # groups left out. The run that sees them again fetches from the older group's newest reading.
+        self.add("Weather", NOW - 3 * D)
+        self.add("Logger", NOW - 4 * D)
+        self.mark(NOW - 10 * dt.timedelta(minutes=1))
+
+        def fetch(get_page, lo, hi):
+            if hi == NOW:
+                return [licor("21948438-1", 5.0, "2026-11-11 18:40:00Z"),
+                        licor("22168654-3", 4.4, "2026-11-11 18:40:00Z")]
+            return [licor("21948438-1", 4.0, "2026-11-09 12:00:00Z"), licor("22168654-3", 4.1, "2026-11-08 12:00:00Z")]
+        stored = self.run_with(None, fetch=fetch)
+        self.assertEqual([c.args[1:] for c in self.fetch.call_args_list],
+                         [(NOW - 27 * H, NOW), (NOW - 4 * D - H, NOW - 27 * H)])
+        self.assertEqual(sorted(r["value"] for r in stored), [4.0, 4.1, 4.4, 5.0])
+        self.assertIn("[INFO] LI-COR: Logger, Weather reporting again", self.output)
+
+    def test_an_unreadable_gap_fails_the_run_and_is_retried(self):
+        # The gap's records are counted with the run's, and a gap none of whose records can be read fails the run
+        # like an unreadable answer: nothing stored, the mark kept, so the next run fetches the backlog again.
+        from utils.alert_state import fetched_until
+        self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
+        self.add("Logger", NOW - 2 * D)
+        self.mark(NOW - 10 * dt.timedelta(minutes=1))
+
+        def fetch(get_page, lo, hi):
+            if hi == NOW:
+                return [licor("22168654-3", 4.4, "2026-11-11 18:40:00Z"), licor("21948438-1", 5.0, None)]
+            return [licor("22168654-3", 4.1, "2026-11-10 06:00:00"), licor("22168654-3", 4.0, "2026-11-09 20:00:00")]
+        store = mock.Mock()
+        with self.assertRaises(UnreadableRecords) as caught:
+            self.run_with(None, fetch=fetch, store=store)
+        self.assertIn("a silent group's gap) could be read: 3 unreadable record(s)", str(caught.exception))
+        store.assert_not_called()
+        row = self.status("LI-COR")
+        self.assertEqual((row["consecutive_failures"], row["last_error_kind"]), (1, "unreadable"))
+        self.assertEqual(fetched_until("LI-COR"), NOW - 10 * dt.timedelta(minutes=1))
+        warnings = [line for line in self.output.splitlines() if line.startswith("[WARN]")]
+        self.assertEqual([w.split(",")[0] for w in warnings],
+                         ["[WARN] LI-COR: skipped 1 unreadable record(s)",
+                          "[WARN] LI-COR: skipped 3 unreadable record(s)"])
+
+    def test_skipped_gap_records_are_noted_with_the_runs(self):
+        self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
+        self.add("Logger", NOW - 2 * D)
+        self.mark(NOW - 10 * dt.timedelta(minutes=1))
+
+        def fetch(get_page, lo, hi):
+            if hi == NOW:
+                return [licor("22168654-3", 4.4, "2026-11-11 18:40:00Z")]
+            return [licor("22168654-3", 4.1, "2026-11-10 06:00:00Z"), licor("22168654-3", 4.0, None)]
+        stored = self.run_with(None, fetch=fetch)
+        self.assertEqual(sorted(r["value"] for r in stored), [4.1, 4.4])
+        row = self.status("LI-COR")
+        self.assertEqual((row["consecutive_failures"], row["last_skipped"]),
+                         (0, "1 unreadable record(s), e.g. unreadable timestamp None from sensor '22168654-3'"))
+
     def test_a_silent_group_still_silent_costs_no_second_fetch(self):
         self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
         self.add("Logger", NOW - 2 * D)
@@ -246,7 +305,6 @@ class LicorRunTests(IngestionTestCase):
 
     def test_nothing_readable_is_a_failed_call_and_keeps_the_mark(self):
         from utils.alert_state import fetched_until
-        from utils.fetching import UnreadableRecords
         self.mark(NOW - H)
         with self.assertRaises(UnreadableRecords) as caught:
             self.run_with([licor("21948438-1", 5.0, "2026-11-11 18:40:00"),
