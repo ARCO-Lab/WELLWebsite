@@ -96,6 +96,76 @@ test.describe("charts under stress", () => {
     test.skip(testInfo.project.name !== "toronto", "the same in every zone");
   });
 
+  test("a chart is drawn a few times while it loads, not once per series", async ({ page }) => {
+    // Count Chart.redraw per chart from the moment Highcharts loads (its bundle puts itself on window._Highcharts)
+    await page.addInitScript(() => {
+      type HC = { Chart: { prototype: { redraw: (...a: unknown[]) => unknown; container?: HTMLElement } } };
+      const counts: Record<string, number> = {};
+      (window as unknown as { __redraws: Record<string, number> }).__redraws = counts;
+      let H: HC | undefined;
+      Object.defineProperty(window, "_Highcharts", {
+        configurable: true,
+        get: () => H,
+        set(v: HC) {
+          H = v;
+          const original = v.Chart.prototype.redraw;
+          v.Chart.prototype.redraw = function (this: { container?: HTMLElement }, ...a: unknown[]) {
+            const id = this.container?.closest<HTMLElement>('[data-testid^="chart-"]')?.dataset.testid ?? "other";
+            counts[id] = (counts[id] ?? 0) + 1;
+            return original.apply(this, a);
+          };
+        },
+      });
+    });
+    const { net } = await open(page);
+    await settled(page, net);
+    const counts = await page.evaluate(() => (window as unknown as { __redraws: Record<string, number> }).__redraws);
+    console.log(`[perf] redraws while loading: ${JSON.stringify(counts)}`);
+    // The weather chart has 11 series: with per-point accessibility descriptions it was redrawn once per series
+    expect(counts["chart-weather"] ?? 0).toBeGreaterThan(0);
+    expect(counts["chart-weather"]).toBeLessThanOrEqual(5);
+  });
+
+  test("toggling sub-filters keeps exactly one navigator series per chart", async ({ page }) => {
+    await open(page);
+    for (let i = 0; i < 4; i++) {
+      await page.getByRole("checkbox", { name: "Dew Point", exact: true }).click();
+      await page.waitForTimeout(400);
+    }
+    await expect(chart(page, "weather").getByTestId("chart-resolution")).toBeVisible();
+    const navigators = await page.evaluate(() => {
+      type HChart = { container: HTMLElement; navigator?: { series?: unknown[] } };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      return (H?.charts ?? []).filter((c): c is HChart => !!c && !!c.container.closest('[data-testid^="chart-"]'))
+        .map((c) => c.navigator?.series?.length ?? 0);
+    });
+    expect(navigators.length).toBe(3); // one chart per card
+    expect(navigators).toEqual([1, 1, 1]);
+  });
+
+  test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
+    const { net } = await open(page);
+    const tab = (name: string) => page.getByRole("tab", { name, exact: true });
+    await tab("Ancaster Watershed").click();
+    await expect(tab("Ancaster Watershed")).toHaveAttribute("aria-selected", "true");
+    await page.waitForTimeout(500);
+    const n0 = net.requests.length;
+    // From the click to the next painted frame, with the charts already drawn (kept mounted, not rebuilt)
+    const ms = await page.evaluate(async () => {
+      const t = [...document.querySelectorAll('[role="tab"]')].find((el) => el.textContent?.trim() === "West Campus") as HTMLElement;
+      const t0 = performance.now();
+      t.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      t.click();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return performance.now() - t0;
+    });
+    await expect(chart(page, "logger").getByTestId("chart-resolution")).toBeVisible();
+    console.log(`[perf] tab back to West Campus: ${ms.toFixed(0)} ms to the next frame`);
+    expect(ms).toBeLessThan(500);
+    await settled(page, net);
+    expect(net.requests.length - n0).toBe(0);
+  });
+
   test("bursts of input send at most two requests, revisits none, and each chart keeps its own window", async ({ page }) => {
     const { net, errors } = await open(page);
     const logger = chart(page, "logger");
