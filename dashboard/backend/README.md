@@ -71,7 +71,10 @@ public port. The browser reaches each route through the dashboard's API route of
 Routes are in `app/api/routes/`:
 
 - `/api/series`: the sensor charts (below)
-- `/api/data`: raw readings for a range, used for the wind rose; capped by `DATA_MAX_ROWS` (413 beyond it)
+- `/api/windrose`: the wind rose, counted in PostgreSQL: how often the wind blew from each of 16 directions at each
+  speed class, for a range (details in `app/api/routes/windrose.py`)
+- `/api/data`: raw readings for a range; capped by `DATA_MAX_ROWS` (413 beyond it). The dashboard page no longer
+  calls it, but its API route still passes it through
 - `/api/latest`: the newest reading of every series (the Latest Data panel)
 - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement;
   `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
@@ -84,14 +87,16 @@ Routes are in `app/api/routes/`:
 **Chart data.** `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL for each request
 (nothing is precomputed): about 2,000 points per series (raw 10-minute readings up to ~2 weeks, coarser buckets beyond;
 ranges longer than ~5.5 years are capped at daily buckets, so they get more), using an index on (sensor group, time).
+A chart can also ask for one series at a fixed bucket size (`bucket=`, `series=`): the dashboard loads each chart in
+fixed tiles of a few hundred buckets, and a request for more than `MAX_BUCKETS` buckets per series gets a 400.
 Times with an offset (`...Z`) are real instants, times without one are Toronto local time. Each series has an `agg`
 field saying what its `avg` array holds: `mean` for most measurements, `sum` for Rain (the bucket total; `min`/`max`
 stay the smallest and largest single reading), and `vector_mean` for Wind Direction (350° and 10° average to 0°;
 `min`/`max` are null, since a linear min/max of angles means nothing). Details in `app/api/routes/series.py`.
 
 **Raw readings.** `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group, ~50 MB of JSON) is the most
-readings one `/api/data` request may return (the dashboard uses `/api/data` only for the wind rose; the charts use
-`/api/series`); a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each
+readings one `/api/data` request may return (the charts use `/api/series` and the wind rose `/api/windrose`); a
+larger range gets a 413 asking the user to narrow it or use Download. It is read once by each
 gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number
 logs a warning and uses the default. The cap matters because the backend can't tell when a browser gives up: the
 Next.js proxy stops waiting, but the backend thread stays busy until the query and JSON encoding finish.
@@ -108,11 +113,12 @@ not in `app/.env`, which they take precedence over):
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers for a short time (1 minute for a range that ends within the last hour, 5 minutes otherwise), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
-`/api/latest` and `/api/series` also tell browsers how long they may reuse an answer (`Cache-Control: public,
-max-age=60`, or 300 for `/api/series` ranges that ended over an hour ago; an answer from the Redis cache gets only the
-time it has left there, so a browser never holds an answer longer than the server would); the Next.js proxy passes that
+`/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public,
+max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that
+ended over a day ago may be reused for 3 hours (readings that old rarely change, so a chart panning back over them asks
+again only now and then; not longer, since a backfill or cleanup can still change them); the Next.js proxy passes that
 header through. There is no ETag and no proxy cache. Nothing on the server caches `/api/latest`, so the Latest Data
 panel is never more than a minute behind the database. If the backend hasn't started answering after 65 s, the proxy
 answers 504. How this holds up with many visitors at once is measured by the

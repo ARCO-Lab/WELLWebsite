@@ -1,16 +1,16 @@
 // This file defines the main dashboard page for the WELL project, including sensor and sampling tabs, filters, graphs, metrics, map, and AI analysis.
 // It manages all dashboard state, handles modal logic, and coordinates data fetching and UI layout.
-// The West Campus charts share one data source and one zoom window (useChartSeries, provided as ChartViewContext).
+// Each West Campus chart has its own zoom window and loads its own data (hooks/useChartWindow); the page gives them,
+// through ChartPageContext, the window they start at (the picked days, or a shared link's window) and the data's extent.
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import type MapComponent from "@/components/map/Map";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import FilterPanel from "@/components/filters/FilterPanel";
-import WeatherGraph, { canShowWindRose } from "@/components/graphs/WeatherGraph";
-import ChartWindowBar from "@/components/graphs/ChartWindowBar";
+import WeatherGraph from "@/components/graphs/WeatherGraph";
 import LoggerGraph from "@/components/graphs/LoggerGraph";
 import QualityGraph from "@/components/graphs/QualityGraph";
 import CreekGraph from "@/components/graphs/CreekGraph";
@@ -29,23 +29,20 @@ import StickyPanel from "@/components/StickyPanel";
 import { GraphFrame, LoadingOverlay } from "@/components/LoadingOverlay";
 // AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
 // import AIAnalysis from "@/components/AIAnalysis";
-import useFilteredData from "@/hooks/useFilteredData";
-import useChartSeries, { ChartViewContext } from "@/hooks/useChartSeries";
-import type { Range } from "@/utils/chartWindow";
+import { ChartPageContext, type ChartPage } from "@/hooks/useChartWindow";
+import {
+  clampToNow, dataStart, daysCovering, hourStart, pickedDaysRange, searchWithWindow, windowFromSearch, type Range,
+} from "@/utils/chartWindow";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
-import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
+import { SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
 import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 
 type ActiveFilters = { [key: string]: string[] };
 type SensorGroup = "weather" | "quality" | "gauges";
-
-// The wind rose's raw readings are weather-only; nothing is fetched while it isn't shown.
-const WEATHER_ONLY = { gauges: false, weather: true, quality: false };
-const NO_GROUPS = { gauges: false, weather: false, quality: false };
 
 // next/dynamic drops the map's generic props (sensor groups or creeks); keep them so both setters type-check.
 // Until MapLibre's code has loaded, a box of the map's size says so (the map then shows its own note until it draws).
@@ -165,20 +162,53 @@ export default function Dashboard() {
   const [previousActiveCount, setPreviousActiveCount] = useState(0);
   const [previousActiveCreekCount, setPreviousActiveCreekCount] = useState(0);
 
-  // The one zoom window every sensor chart shows (null: all the picked days). New days start unzoomed.
-  const [viewWindow, setViewWindow] = useState<Range | null>(null);
-  const changeStartDate = useCallback((d: Date | null) => { setStartDate(d); setViewWindow(null); }, []);
-  const changeEndDate = useCallback((d: Date | null) => { setEndDate(d); setViewWindow(null); }, []);
+  // The clock the charts go by: the start of the current hour, kept in state so rendering never reads the time. The
+  // data's extent ends at the next whole hour, and so do today's picked days (clampToNow), so a page left open moves
+  // on with the hours.
+  const [clock, setClock] = useState(() => hourStart(Date.now()));
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(hourStart(Date.now())), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
-  // Raw readings, only for the wind rose and only while it is shown, capped by /api/data's row limit.
-  // TODO: a /api/windrose endpoint that bins direction and speed in the database, so this needs no raw rows.
-  const windShown = activeGroups.weather && weatherTab === "windrose" && canShowWindRose(subFilters.weather);
-  const { data: windData, loading: windLoading, error: windError } = useFilteredData(
-    windShown ? WEATHER_ONLY : NO_GROUPS, startDate, endDate
-  );
-  const wind = useMemo(() => ({ data: windData, loading: windLoading, error: windError }), [windData, windLoading, windError]);
+  // A shared link's window (?from=&to=, read once on load): it is where every chart starts and goes back to on
+  // Reset, and the date pickers show the days it covers. Picking other days drops it.
+  const [linkWindow, setLinkWindow] = useState<Range | null>(null);
+  const changeStartDate = useCallback((d: Date | null) => { setStartDate(d); setLinkWindow(null); }, []);
+  const changeEndDate = useCallback((d: Date | null) => { setEndDate(d); setLinkWindow(null); }, []);
+  const [urlRead, setUrlRead] = useState(false);
+  useEffect(() => {
+    const w = windowFromSearch(window.location.search, Date.now());
+    if (w) {
+      const { startDay, endDay } = daysCovering(w);
+      setStartDate(startDay);
+      setEndDate(endDay);
+      setLinkWindow(w);
+    }
+    setUrlRead(true);
+  }, []);
 
-  const chartView = useChartSeries(activeGroups, startDate, endDate, viewWindow, setViewWindow, wind);
+  const extentEnd = clock + 3_600_000;
+  const picked = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), clock + 1) : null;
+  const defaultStart = linkWindow?.start ?? picked?.start ?? extentEnd - 2 * 86_400_000;
+  const defaultEnd = linkWindow?.end ?? picked?.end ?? extentEnd;
+  const chartPage = useMemo<ChartPage>(() => ({
+    defaultWindow: { start: defaultStart, end: Math.max(defaultEnd, defaultStart + 3_600_000) },
+    extent: { start: dataStart(), end: extentEnd },
+  }), [defaultStart, defaultEnd, extentEnd]);
+
+  // The link keeps the charts' starting window: the picked days (when they aren't the default ones) or the link's
+  // window. replaceState, so it adds no history entries.
+  const defaultDays = useRef({ start: startDate?.toDateString(), end: endDate?.toDateString() });
+  useEffect(() => {
+    if (!urlRead) return;
+    const isDefault = !linkWindow && startDate?.toDateString() === defaultDays.current.start
+      && endDate?.toDateString() === defaultDays.current.end;
+    const search = searchWithWindow(window.location.search, isDefault ? null : { start: defaultStart, end: defaultEnd });
+    if (search !== window.location.search) {
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
+    }
+  }, [urlRead, linkWindow, startDate, endDate, defaultStart, defaultEnd]);
   const { metrics: latestMetrics, loading: latestLoading, error: latestError, retrying: retryingLatest, retry: retryLatest } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
@@ -241,7 +271,7 @@ export default function Dashboard() {
   const sensorChartsReady = useCodeReady(loadMetricChart, activeCount > 0);
   const samplingChartsReady = useCodeReady(loadSampleChart, activeCreekCount > 0);
   const sensorGraph = (graph: React.ReactNode) => (
-    <GraphFrame busy={!sensorChartsReady || chartView.loading} waiting={!sensorChartsReady}>{graph}</GraphFrame>
+    <GraphFrame busy={!sensorChartsReady} waiting={!sensorChartsReady}>{graph}</GraphFrame>
   );
 
 
@@ -327,7 +357,7 @@ export default function Dashboard() {
   const modalSubtypes = !modalSpec ? [] : (modalIsSampling ? samplingSubFilters : subFilters)[modalSpec.key] || [];
   const modalData = modalIsSampling
     ? (analysisType === "recent" ? recentSamples : samplingData)
-    : (analysisType === "recent" ? latestMetrics : chartView.overview);
+    : (analysisType === "recent" ? latestMetrics : null);
   const modalType = modalSpec?.type ?? "weather";
 
   // Names for the "open in a larger view" buttons.
@@ -341,7 +371,7 @@ export default function Dashboard() {
 
       {/* Header is hidden in iframe mode */}
       {!inIframe && <Header />}
-      <ChartViewContext.Provider value={chartView}>
+      <ChartPageContext.Provider value={chartPage}>
       <main className="min-h-screen bg-background text-foreground">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
@@ -480,83 +510,33 @@ export default function Dashboard() {
                       <Information id={4} />
                     </h2>
                     
-                    {activeCount > 0 && <ChartWindowBar />}
                     {(() => {
-                      // --- START: NEW DYNAMIC LAYOUT LOGIC ---
-
-                      // 1. Calculate how many loggers are actually selected
-                      const loggerConfig = SENSOR_FILTER_CONFIG.gauges;
-                      const allLoggerIds = Object.keys(loggerConfig.sites);
-                      let selectedLoggerCount = 0;
-                      if (subFilters.gauges?.includes('All Loggers')) {
-                        selectedLoggerCount = allLoggerIds.length;
-                      } else {
-                        selectedLoggerCount = subFilters.gauges?.filter(id => allLoggerIds.includes(id)).length || 0;
-                      }
-
-                      // 2. Get the graph components that are currently active
-                      const loggerGraph = activeGroups.gauges ? cachedGraphs.gauges : null;
-                      const weatherGraph = activeGroups.weather ? cachedGraphs.weather : null;
-                      const qualityGraph = activeGroups.quality ? cachedGraphs.quality : null;
-
-                      if (!loggerGraph && !weatherGraph && !qualityGraph) {
+                      const graphs = [
+                        activeGroups.gauges ? cachedGraphs.gauges : null,
+                        activeGroups.weather ? cachedGraphs.weather : null,
+                        activeGroups.quality ? cachedGraphs.quality : null,
+                      ].filter((g): g is React.ReactElement => g !== null);
+                      if (graphs.length === 0) {
                         return <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its graphs.</EmptyState>;
                       }
-
-                      // 3. RENDER SPECIAL LAYOUT: If more than 2 loggers are selected
-                      if (selectedLoggerCount > 2) {
-                        const otherGraphs = [weatherGraph, qualityGraph].filter(Boolean);
-                        return (
-                          <div className="space-y-6">
-                            {/* Row 1: Logger Graph takes the full width */}
-                            {loggerGraph && (
-                              <ExpandableCard
-                                label="the water logger graphs"
-                                onOpen={() => openModal("gauges", "alltime", "logger")}
-                                className="p-4 animate-fade-in-up"
-                              >
-                                {sensorGraph(loggerGraph)}
-                              </ExpandableCard>
-                            )}
-                            {/* Row 2: Weather and Quality graphs in a responsive grid below */}
-                            <div className={`grid gap-6 ${getGraphGridClass(otherGraphs.length)}`}>
-                              {otherGraphs.map((comp) =>
-                                comp && (
-                                  <ExpandableCard
-                                    key={comp.key}
-                                    label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                    onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
-                                    className="p-4 animate-fade-in-up"
-                                  >
-                                    {sensorGraph(comp)}
-                                  </ExpandableCard>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      // 4. RENDER NORMAL LAYOUT: If 2 or fewer loggers are selected
-                      const allGraphs = [loggerGraph, weatherGraph, qualityGraph].filter(Boolean);
+                      // One card per group, full width, one under the other: each card lays out its own charts in
+                      // one to three columns, by its width
                       return (
-                        <div className={`grid gap-6 ${getGraphGridClass(allGraphs.length)}`}>
-                          {allGraphs.map((comp, index) => (
-                            comp ? (
-                              <ExpandableCard
-                                key={comp.key}
-                                label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
-                                className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
-                                style={{ animationDelay: `${index * 150}ms` }}
-                              >
-                                {sensorGraph(comp)}
-                              </ExpandableCard>
-                            ) : null
+                        <div className="space-y-6">
+                          {graphs.map((comp, index) => (
+                            <ExpandableCard
+                              key={comp.key}
+                              label={`the ${groupNames[comp.key as string] ?? ""} graphs`}
+                              onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
+                              openOnClick={false} // a tap on a chart shows its tooltip; only the button opens the larger view
+                              className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
+                              style={{ animationDelay: `${index * 150}ms` }}
+                            >
+                              {sensorGraph(comp)}
+                            </ExpandableCard>
                           ))}
                         </div>
                       );
-                      // --- END: NEW DYNAMIC LAYOUT LOGIC ---
                     })()}
                   </div>
 
@@ -809,15 +789,13 @@ export default function Dashboard() {
           type={modalType}
           subtypes={modalSubtypes}
           data={modalData}
-          header={modalSpec && !modalIsSampling && analysisType === "alltime" && !(modalSpec.key === "weather" && windShown)
-            ? <ChartWindowBar /> : null /* not over the wind rose, which shows all the picked days */}
           weatherTab={weatherTab}
           setWeatherTab={setWeatherTab}
         >
            {modalContent}
         </Modal>
       </main>
-      </ChartViewContext.Provider>
+      </ChartPageContext.Provider>
       {!inIframe && <Footer />}
     </>
   );

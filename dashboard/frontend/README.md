@@ -17,10 +17,14 @@ page. Its data comes from the [backend](../backend/README.md); its settings are 
 
 ## Charts
 
-The sensor charts read `/api/series`, which the backend aggregates to about 2,000 points per series for any range:
-raw 10-minute readings up to about two weeks, coarser buckets beyond. Each series says what its `avg` array holds
-(`mean`; `sum` for Rain; `vector_mean` for Wind Direction, whose `min`/`max` are null). The wind rose reads raw readings from `/api/data`, which is
-capped at `DATA_MAX_ROWS` readings (a larger range gets a 413 asking to narrow it or use Download). Picked days and
+Each chart zooms and pans on its own (`src/hooks/useChartWindow.ts`, `src/lib/chartController.ts`, with a slider and
+toolbar per chart). Charts read `/api/series` in fixed tiles of a few hundred buckets at the resolution they show
+(`src/lib/seriesTiles.ts`). One loader for the whole page (`src/lib/seriesLoader.ts`) caches tiles, asks for each
+missing tile once, batches neighbouring tiles and charts that need the same ones into one request, keeps at most two
+requests in flight (the visible charts first), drops queued requests no chart wants any more, and refetches a tile
+still filling with new readings after a minute. Each series says what its `avg` array holds (`mean`; `sum` for Rain;
+`vector_mean` for Wind Direction, whose `min`/`max` are null). The wind rose (`src/hooks/useWindRose.ts`) reads
+`/api/windrose`, which the backend counts in PostgreSQL, so any range is a few hundred numbers. Picked days and
 chart times are Toronto (site) time whatever the visitor's time zone (`src/utils/siteTime.ts` and
 `src/utils/chartWindow.ts`, tested by `scripts/*.test.mjs`).
 
@@ -31,7 +35,7 @@ cd dashboard/frontend
 npm ci
 FLASK_API_URL=http://localhost:5000 npm run dev    # FLASK_API_URL: your backend
 npx tsc --noEmit                                    # type check
-npm test                                            # unit tests: chart helpers, site time, the backend proxy
+npm test                                            # unit tests: chart helpers, site time, the tile loader, the backend proxy
 npm run lint
 npm run build
 ```
@@ -83,7 +87,10 @@ data and tooltip, in the Latest Data tiles and in the downloaded CSV. The CI job
 2. `ingest.py` runs the real 10-minute ingestion against the stub, at the times in `fixtures/expected.json`, into a
    throwaway PostgreSQL 13 in UTC (so any dependence on the session time zone fails).
 3. The backend image and the built dashboard (`next start`) are started, and Playwright (`data.spec.ts`) checks the
-   page in Toronto, Tokyo and London browsers, which must all see the same Toronto times.
+   page in Toronto, Tokyo and London browsers, which must all see the same Toronto times. `charts-stress.spec.ts`
+   (one browser zone) checks that fast zooming and panning, with `/api/series` slowed down, sends few requests, never
+   more than two at a time, and keeps charts independent; `STRESS_MINUTES=5 npx playwright test charts-stress
+   --project=toronto` runs a longer soak.
 
 `fixtures/expected.json` lists every expected row and tile, with notes on the cases they cover (the clocks going back,
 duplicates, re-reads, N/A values, readings near midnight). To run it yourself, start the same pieces as the CI job and

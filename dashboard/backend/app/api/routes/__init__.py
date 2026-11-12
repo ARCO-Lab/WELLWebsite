@@ -15,6 +15,7 @@ from .latest import register_latest_route
 # from .analysis.complete import register_analysis_complete_route
 from .samples import register_samples_route
 from .series import register_series_route
+from .windrose import register_windrose_route
 from .recent import register_recent_route
 from .exports import register_export_routes
 
@@ -23,6 +24,7 @@ def register_routes(app):
     register_latest_route(app)
     register_samples_route(app)
     register_series_route(app)
+    register_windrose_route(app)
     register_recent_route(app)
     register_export_routes(app)
     # AI ANALYSIS DISABLED: the shared state and OpenAI client the analysis routes take, and their registration.
