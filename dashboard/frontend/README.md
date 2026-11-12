@@ -35,7 +35,8 @@ cd dashboard/frontend
 npm ci
 FLASK_API_URL=http://localhost:5000 npm run dev    # FLASK_API_URL: your backend
 npx tsc --noEmit                                    # type check
-npm test                                            # unit tests: chart helpers, site time, the tile loader, the backend proxy
+npm test                                            # unit tests: chart helpers, site time, the tile loader, the backend proxy,
+                                                    # sampling fetches, export polling, shared-link ticks
 npm run lint
 npm run build
 ```
@@ -90,7 +91,9 @@ data and tooltip, in the Latest Data tiles and in the downloaded CSV. The CI job
    page in Toronto, Tokyo and London browsers, which must all see the same Toronto times. `charts-stress.spec.ts`
    (one browser zone) checks that fast zooming and panning, with `/api/series` slowed down, sends few requests, never
    more than two at a time, and keeps charts independent; `STRESS_MINUTES=5 npx playwright test charts-stress
-   --project=toronto` runs a longer soak.
+   --project=toronto` runs a longer soak. `sampling.spec.ts` answers every API call itself (no data needed, so it also
+   runs against `next dev` alone with `E2E_BASE_URL`): the sampling tab's charts and legend, replies arriving out of
+   order, a shared link's ticks, the Download button leaving its tab, and an axe accessibility scan of both tabs.
 
 `fixtures/expected.json` lists every expected row and tile, with notes on the cases they cover (the clocks going back,
 duplicates, re-reads, N/A values, readings near midnight). To run it yourself, start the same pieces as the CI job and
