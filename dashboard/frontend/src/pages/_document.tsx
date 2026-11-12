@@ -1,5 +1,5 @@
-// This file customizes the HTML document structure for the Next.js app.
-// It sets the language, injects global scripts, and applies global body classes.
+// This file customizes the HTML document Next.js renders around every page.
+// It sets the page language (lang="en", for screen readers and translation) and the body's global classes.
 
 import { Html, Head, Main, NextScript } from "next/document";
 

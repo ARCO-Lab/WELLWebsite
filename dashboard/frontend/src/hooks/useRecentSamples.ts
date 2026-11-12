@@ -12,6 +12,8 @@ export interface RecentSample {
   recorded_at: string;
 }
 
+/** The latest creek sampling results (/api/recent), refetched weekly (sampling is infrequent). Same `loading`,
+ *  `error` and `retry` contract as useLatestMetrics. */
 export default function useRecentSamples() {
   const [samples, setSamples] = useState<RecentSample[]>([]);
   const [loading, setLoading] = useState(true);

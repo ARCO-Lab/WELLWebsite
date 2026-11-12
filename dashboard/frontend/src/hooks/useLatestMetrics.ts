@@ -12,6 +12,9 @@ export interface Metric {
     recorded_at: string;
 }
 
+/** The newest reading of every series (/api/latest), refetched every 10 minutes. `loading` is true only until the
+ *  first reply; `error` is set while the last fetch failed (the previous values stay); `retry` fetches again now.
+ *  `recorded_at` is site (America/Toronto) wall time without a zone. */
 export default function useLatestMetrics() {
     const [metrics, setMetrics] = useState<Metric[]>([]);
     const [loading, setLoading] = useState(true);
