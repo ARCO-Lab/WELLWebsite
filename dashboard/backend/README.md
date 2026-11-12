@@ -156,8 +156,9 @@ still going:
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of
 missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their
-headers explain how). The only cron job is the optional `deploy.sh --auto` line
-([docs/deploying.md](../../docs/deploying.md)).
+headers explain how). The only cron jobs are the optional `deploy.sh --auto` line
+([docs/deploying.md](../../docs/deploying.md)) and the WordPress backup
+([wordpress/README.md](../../wordpress/README.md#backups)).
 
 ## Exports
 
