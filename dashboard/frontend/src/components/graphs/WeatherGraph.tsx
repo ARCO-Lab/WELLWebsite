@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
 import { Tabs, TabsList, TabsTrigger } from "@/components/animations/tabs";
 import { useChartView } from "@/hooks/useChartSeries";
+import type { SensorData } from "@/hooks/useFilteredData";
 
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 const WindRose = dynamic(() => import("@/components/graphs/highcharts/WindRose"), { ssr: false });
@@ -38,11 +39,11 @@ export function canShowWindRose(weatherLabels: string[]): boolean {
 }
 
 // Helper to pair direction and speed by timestamp
-function getWindRoseData(data: any[], speedType: "Wind Speed" | "Gust Speed") {
+function getWindRoseData(data: SensorData[], speedType: "Wind Speed" | "Gust Speed") {
   if (!Array.isArray(data)) return [];
   // Group by recorded_at
   const byTime: Record<string, { direction?: number; speed?: number }> = {};
-  data.forEach((d: any) => {
+  data.forEach((d) => {
     if (!d.recorded_at) return;
     if (!byTime[d.recorded_at]) byTime[d.recorded_at] = {};
     if (d.measurement_type === "Wind Direction") byTime[d.recorded_at].direction = d.value;

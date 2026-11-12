@@ -712,7 +712,7 @@ export default function Dashboard() {
                     
                     {(() => {
                       const count = samplingGraphComponents.length;
-                      const creekGraphCard = (comp: React.ReactElement<any>, key: React.Key) => (
+                      const creekGraphCard = (comp: React.ReactElement<React.ComponentProps<typeof CreekGraph>>, key: React.Key) => (
                         <ExpandableCard
                           key={key}
                           label={`the ${SAMPLING_FILTER_CONFIG[comp.props.creekKey as keyof typeof SAMPLING_FILTER_CONFIG]?.label ?? "creek"} graphs`}

@@ -105,8 +105,10 @@ const useFilteredData = (
                     }
                 }
                 setData(json);
-            } catch (err: any) {
-                if (stale || err?.name === "AbortError") return;
+            } catch (err) {
+                // An aborted fetch rejects with an error named AbortError (a DOMException in browsers)
+                const aborted = typeof err === "object" && err !== null && "name" in err && err.name === "AbortError";
+                if (stale || aborted) return;
                 setData([]); // don't leave the previous range's charts up as if they were this range
                 setError(err instanceof Error ? err : new Error(String(err)));
             } finally {

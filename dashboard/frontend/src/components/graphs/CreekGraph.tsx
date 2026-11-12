@@ -4,6 +4,7 @@
 import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
 import { SAMPLING_METRICS, SAMPLING_FILTER_CONFIG } from '@/components/config/filters';
+import type { SampledData } from '@/hooks/useSampledData';
 
 const SampleChart = dynamic(() => import("@/components/graphs/highcharts/SampleChart"), {
   ssr: false,
@@ -15,9 +16,9 @@ interface Props {
   startDate: Date | null;
   endDate: Date | null;
   modalOpen?: boolean;
-  data: any[];
+  data: SampledData[];
   loading?: boolean;
-  error?: any;
+  error?: Error | null;
 }
 
 const CreekGraph = ({
@@ -65,7 +66,7 @@ const CreekGraph = ({
         if (!acc[siteId]) acc[siteId] = [];
         acc[siteId].push(curr);
         return acc;
-    }, {} as Record<string, any[]>);
+    }, {} as Record<string, SampledData[]>);
   }, [data]);
 
   return (
