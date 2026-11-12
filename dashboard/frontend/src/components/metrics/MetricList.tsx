@@ -7,7 +7,7 @@
 // Old readings say when they were taken, so a value from last night or from last year doesn't look current.
 
 import React, { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { AlertTriangle, Clock } from "lucide-react";
+import { AlertTriangle, Clock, Pause, Play } from "lucide-react";
 import { displayUnit } from "@/utils/chartStyle";
 
 export interface Reading {
@@ -301,9 +301,16 @@ function rowsFor(height: number, tile: number, tiles: number, gap: number): numb
 // When the tiles don't all fit, a second copy follows the first and the strip wraps by exactly one copy's width,
 // so the loop is seamless (by hand too). It pauses where it is while a mouse is over it or it has keyboard focus,
 // and for 2.5 s after a touch. A tap is not a hover, and focus from a click or a closing modal pauses it only once
-// a scrolling key is pressed. It doesn't auto-scroll at all for people who ask their system for reduced motion, and
-// its animation frames stop whenever it isn't moving: paused, off screen, or with nothing to scroll.
-function Ticker({ title, children }: { title: string; children: React.ReactNode }) {
+// a scrolling key is pressed. Its group's Pause button stops it until Play is pressed (WCAG 2.2.2). It doesn't
+// auto-scroll at all for people who ask their system for reduced motion, and its animation frames stop whenever it
+// isn't moving: paused, off screen, or with nothing to scroll. It tells its group whether it would scroll
+// (onCanScroll), so the group shows the Pause button only then.
+function Ticker({ title, stopped, onCanScroll, children }: {
+  title: string;
+  stopped: boolean; // paused with the group's Pause button
+  onCanScroll: (canScroll: boolean) => void;
+  children: React.ReactNode;
+}) {
   const scroller = useRef<HTMLDivElement>(null);
   const firstCopy = useRef<HTMLDivElement>(null);
   const paused = useRef(false);
@@ -316,7 +323,9 @@ function Ticker({ title, children }: { title: string; children: React.ReactNode 
   const [atStart, setAtStart] = useState(true);
   const tileCount = React.Children.count(children);
   const reduceMotion = usePrefersReducedMotion();
-  const moving = overflowing && !reduceMotion;
+  const canScroll = overflowing && !reduceMotion;
+  const moving = canScroll && !stopped;
+  useEffect(() => onCanScroll(canScroll), [canScroll, onCanScroll]);
 
   // Rows from the slot's height (set by the card, not by the tiles) and a rendered tile's height (every tile has
   // the tallest one's height, so this follows the text size), and scroll (with the second copy) only when the tiles
@@ -475,6 +484,9 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
     section.rows.map((row) => ({ row, caption: section.title, stale: isStale(row, staleAfterHours) }))
   );
   const titleId = useId();
+  // The Pause button: shown while the strip would scroll, and kept until pressed again.
+  const [stopped, setStopped] = useState(false);
+  const [canScroll, setCanScroll] = useState(false);
   const tiles = items.map(({ row, caption, stale }) =>
     ticker
       ? <StripTile key={row.key} row={row} caption={caption} stale={stale} />
@@ -495,13 +507,25 @@ const MetricGroup: React.FC<MetricGroupProps> = ({
             {showsClockTime(newest, dateOnly) && <abbr title="Eastern Time, the sites' local time" className="no-underline"> ET</abbr>}
           </p>
         )}
+        {ticker && !loading && (canScroll || stopped) && (
+          <button
+            type="button"
+            onClick={() => setStopped((s) => !s)}
+            aria-label={stopped ? `Play the ${title} strip` : `Pause the ${title} strip`}
+            title={stopped ? "Play" : "Pause"}
+            className="relative ml-2 inline-flex h-5 items-center gap-1 rounded px-1 align-top text-[0.6875rem] text-muted hover:bg-black/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-sm:after:absolute max-sm:after:-inset-2.5 max-sm:after:content-['']"
+          >
+            {stopped ? <Play aria-hidden className="h-3 w-3" /> : <Pause aria-hidden className="h-3 w-3" />}
+            {stopped ? "Play" : "Pause"}
+          </button>
+        )}
       </div>
       {loading ? (
         <div className="h-[3.75rem] animate-pulse rounded-lg bg-black/5" aria-hidden />
       ) : tiles.length === 0 ? (
         <p className="text-xs text-muted">{emptyHint}</p>
       ) : ticker ? (
-        <Ticker title={title}>{tiles}</Ticker>
+        <Ticker title={title} stopped={stopped} onCanScroll={setCanScroll}>{tiles}</Ticker>
       ) : (
         <div role="list" className="flex flex-wrap gap-3">{tiles}</div>
       )}
