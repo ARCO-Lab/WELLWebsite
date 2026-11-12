@@ -7,9 +7,9 @@ import json
 import os
 import sys
 import unittest
+import unittest.mock
 import urllib.error
 from contextlib import redirect_stdout
-from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -341,7 +341,7 @@ class RunTest(unittest.TestCase):
         url = "https://sentry.io/api/0/organizations/well-cs/issues/?query=is%3Aunresolved"
         for exc in [urllib.error.URLError("Name or service not known"), TimeoutError("timed out"),
                     ConnectionResetError("reset")]:
-            with self.subTest(exc=exc), mock.patch("urllib.request.urlopen", side_effect=exc):
+            with self.subTest(exc=exc), unittest.mock.patch("urllib.request.urlopen", side_effect=exc):
                 with self.assertRaises(si.HttpError) as caught:
                     si.http_request("GET", url, {"Authorization": "Bearer sntry-test-token"})
                 self.assertEqual(caught.exception.status, 0)
