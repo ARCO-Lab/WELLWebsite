@@ -200,6 +200,19 @@ class BadRecords(unittest.TestCase):
         self.assertEqual(len(out.splitlines()), 1)
         self.assertNotIn("values", out)   # an example names the problem and the time, never the whole record
 
+    def test_one_bad_reading_keeps_the_other_readings_of_its_time(self):
+        entry = {"timestamp": "2026-11-09 02:00:00", "values": [
+            {"parameterId": 125001, "value": "8.5"}, {"value": "1.0"}, "garbage", {"parameterId": [1], "value": "2"},
+            {"parameterId": 125008, "value": "1.5"}]}
+        rows, skipped, out = self.rows(parsers.quality_rows, [entry], "4501", UTC, "WQData")
+        self.assertEqual(sorted((k[1], r["value"]) for k, r in rows.items()),
+                         [("Turbidity", 1.5), ("Water Temperature", 8.5)])
+        self.assertEqual(skipped.count, 3)   # each bad reading counted
+        self.assertEqual(skipped.sample, "malformed record (KeyError) at '2026-11-09 02:00:00'")
+        self.assertEqual(len(out.splitlines()), 1)
+        # Called directly (no counter), the bad readings are still skipped.
+        self.assertEqual(len(parsers.parse_quality_entry(entry, "4501")), 2)
+
     def test_nothing_skipped_says_nothing(self):
         skipped = parsers.SkippedRecords("WQData")
         self.assertIsNone(skipped.summary())

@@ -109,6 +109,11 @@ class BadRecord(ValueError):
     shortened copy of the offending field, never the whole record."""
 
 
+# What a malformed record raises when it is read: a missing or bad field (BadRecord is a ValueError), a field of the
+# wrong type, or a record that isn't an object.
+RECORD_ERRORS = (ValueError, TypeError, KeyError, AttributeError)
+
+
 def short(value, limit=40):
     # A field's repr, cut to `limit` characters, for log lines and alert text.
     text = repr(value)
@@ -213,14 +218,20 @@ def parse_logger_entry(entry):
     return None
 
 
-def parse_quality_entry(entry, station_id):
+def parse_quality_entry(entry, station_id, skipped=None):
     # Parse a single quality data entry into a list of SensorMeasurement objects.
-    # WQData timestamps are UTC without an offset.
+    # WQData timestamps are UTC without an offset. An entry without a readable timestamp raises; a single malformed
+    # reading (not an object, no parameterId) is skipped and counted in `skipped`, keeping the entry's other readings.
     timestamp = datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     results = []
     for reading in entry["values"]:
-        param_id = reading["parameterId"]
-        if param_id not in QUALITY_PARAM_ID_MAP:
+        try:
+            param_id = reading["parameterId"]
+            if param_id not in QUALITY_PARAM_ID_MAP:
+                continue
+        except RECORD_ERRORS as e:
+            if skipped is not None:
+                skipped.add(e, entry)
             continue
         value = reading_value(reading.get("value"))
         if value is None:
@@ -241,11 +252,6 @@ def to_row(obj, tz):
     key = (str(obj.station_id), obj.measurement_type, to_local(obj.recorded_at, tz))
     return key, {"station_id": key[0], "group_type": obj.group_type, "measurement_type": key[1],
                  "value": obj.value, "unit": obj.unit, "recorded_at": key[2]}
-
-
-# What a malformed record raises when it is read: a missing or bad field (BadRecord is a ValueError), a field of the
-# wrong type, or a record that isn't an object.
-RECORD_ERRORS = (ValueError, TypeError, KeyError, AttributeError)
 
 
 def licor_rows(records, groups, weather_station, tz, skipped=None) -> dict:
@@ -282,13 +288,13 @@ def licor_rows(records, groups, weather_station, tz, skipped=None) -> dict:
 
 
 def quality_rows(entries, station_id, tz, skipped=None) -> dict:
-    """Rows from WQData entries, keyed by unique key. An entry that can't be read (no or a garbled timestamp, a
-    reading without a parameterId) is skipped whole, counted in `skipped` and reported in one [WARN] line."""
+    """Rows from WQData entries, keyed by unique key. An entry without a readable timestamp is skipped whole, a
+    malformed reading (no parameterId, say) on its own; each is counted in `skipped` and reported in one [WARN] line."""
     rows = {}
     skipped = SkippedRecords("WQData") if skipped is None else skipped
     for entry in entries:
         try:
-            objs = parse_quality_entry(entry, station_id)
+            objs = parse_quality_entry(entry, station_id, skipped)
         except RECORD_ERRORS as e:
             skipped.add(e, entry)
             continue
