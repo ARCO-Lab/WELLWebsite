@@ -411,7 +411,7 @@ To turn it back on:
 2. Delete the 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts` (their original handlers are commented out below them).
 3. Add `openai` back to `dashboard/backend/requirements.txt` (it was pinned at `openai==2.30.0`, with its dependencies; see the note in that file) and set `OPENAI_API_KEY`.
 4. Rebuild the summaries the analysis routes read. `latest_summaries` (filled after each `/api/data` request) and `latest_sampling_summaries` (after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so uncommenting alone gives the routes nothing to summarise. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
-5. Rebuild the backend and dashboard images.
+5. Rebuild the backend and dashboard images, and restore the OpenAI mentions in the privacy/disclaimer text.
 
 When it was on, an API endpoint aggregated and downsampled a series (`scripts/downsample.py` was written for it and is kept with it) and sent a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend rendered the output inside an analysis modal and allowed exporting the narrative.
 
@@ -708,7 +708,7 @@ docker compose exec backend python scripts/migrate.py            # apply
 | Database | PostgreSQL 13 (VM host); MySQL 5.7 for WordPress |
 | Infrastructure | Docker Compose on a Linux VM, behind McMaster's reverse proxy |
 | CMS | WordPress (PHP, Bootstrap, Flickity) |
-| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured) |
+| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured); OpenAI (AI analysis, disabled) |
 | Monitoring | Sentry, Healthchecks.io, email digest and alerts, daily API canary (GitHub Actions) |
 | Deploy and CI | `deploy.sh` (by hand or from cron), GitHub Actions |
 
