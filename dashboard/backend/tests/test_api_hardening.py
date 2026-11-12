@@ -19,7 +19,7 @@ from sqlalchemy.exc import OperationalError  # noqa: E402
 
 from config import Config, parse_timeout_ms  # noqa: E402
 import server  # noqa: E402
-from db.database import db, engine_options  # noqa: E402
+from db.database import CONNECT_ARGS as CONNECT, db, engine_options  # noqa: E402
 from api.routes.series import MAX_AGE_PAST, MAX_AGE_RECENT, MAX_AGE_SETTLED, cache_key, max_age, snap_range  # noqa: E402
 from utils import response_cache  # noqa: E402
 
@@ -46,17 +46,26 @@ class TimeoutSettingTests(TestCase):
 class EngineOptionsTests(TestCase):
     def test_postgres_gets_the_timeout_at_connect(self):
         self.assertEqual(engine_options("postgresql://u:p@h/db", 25000),
-                         {"pool_pre_ping": True, "connect_args": {"options": "-c statement_timeout=25000"}})
+                         {"pool_pre_ping": True, "connect_args": {**CONNECT, "options": "-c statement_timeout=25000"}})
 
     def test_no_timeout_when_zero(self):
-        self.assertEqual(engine_options("postgresql://u:p@h/db", 0), {"pool_pre_ping": True})
+        self.assertEqual(engine_options("postgresql://u:p@h/db", 0), {"pool_pre_ping": True, "connect_args": CONNECT})
+
+    def test_postgres_connections_fail_fast_and_are_kept_alive(self):
+        # An unreachable database (packets dropped) fails a connection attempt in 5 s instead of about two minutes,
+        # and a connection whose server stopped answering is dropped by TCP keepalives.
+        args = engine_options("postgresql+psycopg2://u:p@h/db")["connect_args"]
+        self.assertEqual((args["connect_timeout"], args["keepalives"]), (5, 1))
+        self.assertLessEqual(args["keepalives_idle"] + args["keepalives_interval"] * args["keepalives_count"], 120)
+        args["connect_timeout"] = 99   # each engine gets its own copy
+        self.assertEqual(CONNECT["connect_timeout"], 5)
 
     def test_sqlite_never_gets_postgres_options(self):
         self.assertEqual(engine_options("sqlite://", 25000), {"pool_pre_ping": True})
 
     def test_postgres_connections_are_named(self):
         self.assertEqual(engine_options("postgresql://u:p@h/db", 0, "well-export_worker"),
-                         {"pool_pre_ping": True, "connect_args": {"application_name": "well-export_worker"}})
+                         {"pool_pre_ping": True, "connect_args": {**CONNECT, "application_name": "well-export_worker"}})
         self.assertEqual(engine_options("sqlite://", 0, "well-backend"), {"pool_pre_ping": True})
 
     def test_the_app_uses_them(self):
@@ -65,7 +74,7 @@ class EngineOptionsTests(TestCase):
                 mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", "postgresql://u:p@h/db"):
             app = server.create_app()
         self.assertEqual(app.config["SQLALCHEMY_ENGINE_OPTIONS"]["connect_args"],
-                         {"options": "-c statement_timeout=1234", "application_name": "well-test"})
+                         {**CONNECT, "options": "-c statement_timeout=1234", "application_name": "well-test"})
 
 
 class FakePgError(Exception):
