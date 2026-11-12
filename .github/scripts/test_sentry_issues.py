@@ -98,7 +98,6 @@ class Fake:
             if path.endswith("/events/latest/"):
                 return 200, {}, self.event
             page = int(query.get("cursor", ["0"])[0])
-            link = ""
             if page + 1 < len(self.sentry_pages):
                 link = f'<{SENTRY}/organizations/well-cs/issues/?cursor={page + 1}>; rel="next"; results="true"'
             else:
@@ -161,7 +160,7 @@ class ScrubTest(unittest.TestCase):
         self.assertEqual(si.scrub(text), text)
 
     def test_markdown_and_mentions_are_neutralized(self):
-        self.assertEqual(si.scrub("`x` <!-- sentry:FAKE --> @someone"), "'x' ‹!-- sentry:FAKE --› @​someone")
+        self.assertEqual(si.scrub("`x` <!-- sentry:FAKE --> @someone"), "'x' ‹!-- sentry:FAKE --› @\N{ZERO WIDTH SPACE}someone")
 
     def test_one_line_and_length_limit(self):
         self.assertEqual(si.scrub("a\n  b\tc"), "a b c")

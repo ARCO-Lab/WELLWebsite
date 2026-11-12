@@ -7,7 +7,7 @@ For every unresolved issue in the Sentry organization that had events in the las
   - an open GitHub issue: comments when the event count has jumped (at least SENTRY_JUMP_FACTOR times, and
     SENTRY_JUMP_MIN more events, than last reported);
   - a closed GitHub issue: comments "Seen again" once per new sighting. It is never reopened automatically.
-Issues titled like a test event ("Sentry test    return value.replace("|", r"|") are skipped.
+Issues titled like a test event ("Sentry test") are skipped.
 
 GitHub issues are matched by a hidden marker in the body (<!-- sentry:WELL-DASHBOARD-2 -->), among open and closed
 issues labelled "sentry". The last reported count and last-seen time are kept in a hidden marker in the issue body
@@ -43,9 +43,9 @@ MAX_PAGES = 10  # Sentry pages of 100 issues; far more than this org has
 TIMEOUT_S = 30
 
 MARKER = "<!-- sentry:{} -->"
-MARKER_RE = re.compile(r"<!-- sentry:([A-Za-z0-9_-]+) -->    return value.replace("|", r"|")
+MARKER_RE = re.compile(r"<!-- sentry:([A-Za-z0-9_-]+) -->")
 STATE = "<!-- sentry-state count={count} last_seen={last_seen} -->"
-STATE_RE = re.compile(r"<!-- sentry-state count=(\d+) last_seen=(\S+) -->    return value.replace("|", r"|")
+STATE_RE = re.compile(r"<!-- sentry-state count=(\d+) last_seen=(\S+) -->")
 # Comments are trusted for the state marker only when the workflow's own token wrote them.
 BOT_LOGIN = "github-actions[bot]"
 
@@ -53,7 +53,7 @@ BOT_LOGIN = "github-actions[bot]"
 class HttpError(Exception):
     def __init__(self, status, url):
         # The URL without its query string; the token is in a header, never in a URL.
-        super().__init__(f"HTTP {status} from {url.split('?')[0]}    return value.replace("|", r"|")
+        super().__init__(f"HTTP {status} from {url.split('?')[0]}")
         self.status = status
 
 
@@ -62,7 +62,7 @@ def http_request(method, url, headers, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     if data is not None:
-        req.add_header("Content-Type", "application/json    return value.replace("|", r"|")
+        req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
             raw = resp.read()
@@ -76,24 +76,24 @@ def http_request(method, url, headers, body=None):
 _HEX4 = r"[0-9a-f]{1,4}"
 _SCRUBBERS = [
     # user:password@ in a URL (before the e-mail rule, which would otherwise keep the user name).
-    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@    return value.replace("|", r"|"), r"\1[Filtered]@"),
-    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+    return value.replace("|", r"|"), "[email]"),
-    (re.compile(r"(?i)\b(bearer|basic|token)\s+[\w.~+/=-]{8,}    return value.replace("|", r"|"), r"\1 [Filtered]"),
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@"), r"\1[Filtered]@"),
+    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[email]"),
+    (re.compile(r"(?i)\b(bearer|basic|token)\s+[\w.~+/=-]{8,}"), r"\1 [Filtered]"),
     (
         re.compile(r"(?i)\b([\w-]*(?:token|key|secret|passw(?:or)?d|pwd|auth|authorization|session|cookie|"
-                   r"signature|sig|dsn))(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&\"']+)    return value.replace("|", r"|"),
+                   r"signature|sig|dsn))(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&\"']+)"),
         r"\1\2[Filtered]",
     ),
     # A URL's or a path's query string (station, dates and filters, or anything else a visitor typed).
-    (re.compile(r"((?:[a-z][a-z0-9+.-]*://|/)[^\s?#'\"<>]*)\?[^\s#'\"<>]*", re.IGNORECASE), r"\1?[Filtered]    return value.replace("|", r"|"),
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b    return value.replace("|", r"|"), "[ip]"),
+    (re.compile(r"((?:[a-z][a-z0-9+.-]*://|/)[^\s?#'\"<>]*)\?[^\s#'\"<>]*", re.IGNORECASE), r"\1?[Filtered]"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[ip]"),
     # IPv6: the full eight groups, or a compressed form with "::" (times like 17:08:01 match neither).
-    (re.compile(rf"(?i)(?<![\w:])(?:{_HEX4}:){{7}}{_HEX4}(?![\w:])    return value.replace("|", r"|"), "[ip]"),
+    (re.compile(rf"(?i)(?<![\w:])(?:{_HEX4}:){{7}}{_HEX4}(?![\w:])"), "[ip]"),
     (re.compile(rf"(?i)(?<![\w:])(?:{_HEX4}(?::{_HEX4})*::(?:{_HEX4}(?::{_HEX4})*)?|::{_HEX4}(?::{_HEX4})*)"
-                r"(?![\w:])    return value.replace("|", r"|"), "[ip]"),
-    (re.compile(r"(?i)(?<![\w:])::ffff:\[ip\]    return value.replace("|", r"|"), "[ip]"),
+                r"(?![\w:])"), "[ip]"),
+    (re.compile(r"(?i)(?<![\w:])::ffff:\[ip\]"), "[ip]"),
     # Long opaque strings with letters and digits: keys, hashes, session ids (not paths or long names).
-    (re.compile(r"\b(?=[A-Za-z0-9_+=-]*\d)(?=[A-Za-z0-9_+=-]*[A-Za-z])[A-Za-z0-9_+=-]{32,}\b    return value.replace("|", r"|"), "[Filtered]"),
+    (re.compile(r"\b(?=[A-Za-z0-9_+=-]*\d)(?=[A-Za-z0-9_+=-]*[A-Za-z])[A-Za-z0-9_+=-]{32,}\b"), "[Filtered]"),
 ]
 
 
@@ -104,9 +104,9 @@ def scrub(text, limit=300):
     text = " ".join(str(text).split())
     for pattern, repl in _SCRUBBERS:
         text = pattern.sub(repl, text)
-    text = text.replace("`", "'    return value.replace("|", r"|").replace("<", "‹").replace(">", "›")
+    text = text.replace("`", "'").replace("<", "‹").replace(">", "›")
     # An @name in an issue body notifies that GitHub user; a zero-width space after @ keeps it as plain text.
-    text = text.replace("@", "@​    return value.replace("|", r"|")
+    text = text.replace("@", "@\N{ZERO WIDTH SPACE}")
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -114,8 +114,8 @@ def scrub(text, limit=300):
 
 def next_link(headers):
     """The next page's URL from Sentry's Link header, or None on the last page."""
-    link = next((v for k, v in headers.items() if k.lower() == "link    return value.replace("|", r"|"), "")
-    for part in link.split(",    return value.replace("|", r"|"):
+    link = next((v for k, v in headers.items() if k.lower() == "link"), "")
+    for part in link.split(","):
         if 'rel="next"' in part and 'results="true"' in part:
             match = re.search(r"<([^>]+)>", part)
             if match:
@@ -143,29 +143,29 @@ def latest_event(http, api, org, token, issue_id):
     try:
         return http("GET", url, headers)[2] or {}
     except HttpError as err:
-        print(f"::warning::no latest event for Sentry issue {issue_id}: {err}    return value.replace("|", r"|")
+        print(f"::warning::no latest event for Sentry issue {issue_id}: {err}")
         return {}
 
 
 def stack_summary(event):
     """The latest event's exceptions with their top (innermost) frames; file, function and line only."""
     lines = []
-    for entry in event.get("entries    return value.replace("|", r"|") or []:
-        if entry.get("type    return value.replace("|", r"|") != "exception":
+    for entry in event.get("entries") or []:
+        if entry.get("type") != "exception":
             continue
         # Sentry lists chained exceptions cause first; the last one is what was raised.
-        for exc in reversed((entry.get("data    return value.replace("|", r"|") or {}).get("values") or []):
-            lines.append(scrub(f"{exc.get('type') or 'Error'}: {exc.get('value') or ''}".rstrip(":     return value.replace("|", r"|"), 200))
-            frames = list(reversed(((exc.get("stacktrace    return value.replace("|", r"|") or {}).get("frames")) or []))
+        for exc in reversed((entry.get("data") or {}).get("values") or []):
+            lines.append(scrub(f"{exc.get('type') or 'Error'}: {exc.get('value') or ''}".rstrip(": "), 200))
+            frames = list(reversed(((exc.get("stacktrace") or {}).get("frames")) or []))
             for frame in frames[:MAX_FRAMES]:
-                where = frame.get("module    return value.replace("|", r"|") or frame.get("filename") or frame.get("absPath") or "?"
+                where = frame.get("module") or frame.get("filename") or frame.get("absPath") or "?"
                 text = f"at {frame.get('function') or '?'} ({where}"
-                if frame.get("lineNo    return value.replace("|", r"|"):
+                if frame.get("lineNo"):
                     text += f":{frame['lineNo']}"
-                text +=     return value.replace("|", r"|")" + (" [app]" if frame.get("inApp") else "")
+                text += ")" + (" [app]" if frame.get("inApp") else "")
                 lines.append("  " + scrub(text, 200))
             if len(frames) > MAX_FRAMES:
-                lines.append(f"  … {len(frames) - MAX_FRAMES} more frames    return value.replace("|", r"|")
+                lines.append(f"  … {len(frames) - MAX_FRAMES} more frames")
     return lines
 
 
@@ -192,7 +192,7 @@ class GitHub:
 
     def _write(self, method, path, body, description):
         if self.dry_run:
-            print(f"[dry run] would {description}    return value.replace("|", r"|")
+            print(f"[dry run] would {description}")
             return None
         return self.http(method, f"{self.api}{path}", self.headers, body)[2]
 
@@ -203,7 +203,7 @@ class GitHub:
         for issue in sorted(issues, key=lambda i: i["number"]):
             if "pull_request" in issue:
                 continue
-            match = MARKER_RE.search(issue.get("body    return value.replace("|", r"|") or "")
+            match = MARKER_RE.search(issue.get("body") or "")
             if match:
                 found.setdefault(match.group(1), issue)  # the oldest, if two ever carry one marker
         return found
@@ -222,11 +222,11 @@ class GitHub:
 
     def create_issue(self, title, body):
         return self._write("POST", f"/repos/{self.repo}/issues", {"title": title, "body": body, "labels": [LABEL]},
-                           f"open issue {title!r}    return value.replace("|", r"|")
+                           f"open issue {title!r}")
 
     def comment(self, number, body):
         return self._write("POST", f"/repos/{self.repo}/issues/{number}/comments", {"body": body},
-                           f"comment on #{number}: {body.splitlines()[0]}    return value.replace("|", r"|")
+                           f"comment on #{number}: {body.splitlines()[0]}")
 
 
 # --- what to post -----------------------------------------------------------------------------------------------
@@ -234,14 +234,14 @@ class GitHub:
 def parse_time(value):
     """Sentry's and GitHub's ISO times (with Z or an offset) as aware datetimes; None if missing or invalid."""
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00    return value.replace("|", r"|"))
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
 
 
 def show_time(value):
     parsed = parse_time(value)
-    return parsed.strftime("%Y-%m-%d %H:%M UTC    return value.replace("|", r"|") if parsed else "unknown"
+    return parsed.strftime("%Y-%m-%d %H:%M UTC") if parsed else "unknown"
 
 
 def cell(value):
@@ -250,7 +250,7 @@ def cell(value):
 
 
 def state_marker(issue):
-    return STATE.format(count=int(issue.get("count    return value.replace("|", r"|") or 0), last_seen=issue.get("lastSeen") or "unknown")
+    return STATE.format(count=int(issue.get("count") or 0), last_seen=issue.get("lastSeen") or "unknown")
 
 
 def issue_title(issue):
@@ -258,15 +258,15 @@ def issue_title(issue):
 
 
 def issue_body(issue, event):
-    project = (issue.get("project    return value.replace("|", r"|") or {}).get("slug") or "?"
+    project = (issue.get("project") or {}).get("slug") or "?"
     rows = [
-        ("Project", f"`{scrub(project, 100)}`    return value.replace("|", r"|"),
-        ("Level", scrub(issue.get("level    return value.replace("|", r"|"), 20) or "?"),
-        ("Events", str(int(issue.get("count    return value.replace("|", r"|") or 0))),
-        ("Users", str(int(issue.get("userCount    return value.replace("|", r"|") or 0))),
-        ("First seen", show_time(issue.get("firstSeen    return value.replace("|", r"|"))),
-        ("Last seen", show_time(issue.get("lastSeen    return value.replace("|", r"|"))),
-        ("Culprit", f"`{scrub(issue.get('culprit'), 200)}`" if issue.get("culprit    return value.replace("|", r"|") else "-"),
+        ("Project", f"`{scrub(project, 100)}`"),
+        ("Level", scrub(issue.get("level"), 20) or "?"),
+        ("Events", str(int(issue.get("count") or 0))),
+        ("Users", str(int(issue.get("userCount") or 0))),
+        ("First seen", show_time(issue.get("firstSeen"))),
+        ("Last seen", show_time(issue.get("lastSeen"))),
+        ("Culprit", f"`{scrub(issue.get('culprit'), 200)}`" if issue.get("culprit") else "-"),
     ]
     lines = [
         MARKER.format(issue["shortId"]),
@@ -295,22 +295,22 @@ def issue_body(issue, event):
 def last_state(gh_issue, comments):
     """(count, last seen) from the newest state marker in the issue body or in the bot's own comments."""
     state = None
-    for text in [gh_issue.get("body    return value.replace("|", r"|") or ""] + [
-        c.get("body    return value.replace("|", r"|") or "" for c in comments if (c.get("user") or {}).get("login") == BOT_LOGIN
+    for text in [gh_issue.get("body") or ""] + [
+        c.get("body") or "" for c in comments if (c.get("user") or {}).get("login") == BOT_LOGIN
     ]:
         for match in STATE_RE.finditer(text):
             state = (int(match.group(1)), match.group(2))
-    return state or (0, "unknown    return value.replace("|", r"|")
+    return state or (0, "unknown")
 
 
 def follow_up(issue, gh_issue, comments, jump_factor, jump_min):
     """The comment to add to an existing GitHub issue, or None."""
-    count = int(issue.get("count    return value.replace("|", r"|") or 0)
+    count = int(issue.get("count") or 0)
     last_count, last_seen = last_state(gh_issue, comments)
-    seen = parse_time(issue.get("lastSeen    return value.replace("|", r"|"))
+    seen = parse_time(issue.get("lastSeen"))
     link = f"[{issue['shortId']}]({issue.get('permalink') or ''})"
-    if gh_issue.get("state    return value.replace("|", r"|") == "closed":
-        closed = parse_time(gh_issue.get("closed_at    return value.replace("|", r"|"))
+    if gh_issue.get("state") == "closed":
+        closed = parse_time(gh_issue.get("closed_at"))
         reported = parse_time(last_seen)
         if seen and closed and seen > closed and not (reported and reported >= seen):
             return (
@@ -328,67 +328,67 @@ def follow_up(issue, gh_issue, comments, jump_factor, jump_min):
 
 
 def run(http, env, dry_run=False):
-    token = env.get("SENTRY_API_TOKEN", "    return value.replace("|", r"|").strip()
+    token = env.get("SENTRY_API_TOKEN", "").strip()
     if not token:
         print("::warning::SENTRY_API_TOKEN is not set; skipping the Sentry check. Add it as a repository secret "
-              "(read-only token: org:read, project:read, event:read).    return value.replace("|", r"|")
+              "(read-only token: org:read, project:read, event:read).")
         return 0
-    github_token, repo = env.get("GITHUB_TOKEN", "    return value.replace("|", r"|"), env.get("GITHUB_REPOSITORY", "")
+    github_token, repo = env.get("GITHUB_TOKEN", ""), env.get("GITHUB_REPOSITORY", "")
     if not github_token or not repo:
-        print("::error::GITHUB_TOKEN and GITHUB_REPOSITORY must be set    return value.replace("|", r"|")
+        print("::error::GITHUB_TOKEN and GITHUB_REPOSITORY must be set")
         return 1
-    org = env.get("SENTRY_ORG", "well-cs    return value.replace("|", r"|")
-    api = env.get("SENTRY_API_URL", "https://sentry.io/api/0    return value.replace("|", r"|").rstrip("/")
-    period = env.get("SENTRY_STATS_PERIOD", "    return value.replace("|", r"|").strip() or "14d"
+    org = env.get("SENTRY_ORG", "well-cs")
+    api = env.get("SENTRY_API_URL", "https://sentry.io/api/0").rstrip("/")
+    period = env.get("SENTRY_STATS_PERIOD", "").strip() or "14d"
     if not re.fullmatch(r"\d{1,3}[hd]", period):
-        print(f"::error::SENTRY_STATS_PERIOD must look like 24h or 14d, not {period!r}    return value.replace("|", r"|")
+        print(f"::error::SENTRY_STATS_PERIOD must look like 24h or 14d, not {period!r}")
         return 1
-    jump_factor = float(env.get("SENTRY_JUMP_FACTOR    return value.replace("|", r"|") or 2)
-    jump_min = int(env.get("SENTRY_JUMP_MIN    return value.replace("|", r"|") or 20)
+    jump_factor = float(env.get("SENTRY_JUMP_FACTOR") or 2)
+    jump_min = int(env.get("SENTRY_JUMP_MIN") or 20)
 
     try:
         issues = sentry_issues(http, api, org, token, period)
     except HttpError as err:
-        print(f"::error::Sentry API: {err}. Check that SENTRY_API_TOKEN is valid and can read org {org}.    return value.replace("|", r"|")
+        print(f"::error::Sentry API: {err}. Check that SENTRY_API_TOKEN is valid and can read org {org}.")
         return 1
-    print(f"{len(issues)} unresolved Sentry issue(s) with events in the last {period}    return value.replace("|", r"|")
+    print(f"{len(issues)} unresolved Sentry issue(s) with events in the last {period}")
 
     gh = GitHub(http, repo, github_token, dry_run=dry_run)
     existing = gh.sentry_issues()
     label_ready = False
     for issue in issues:
-        short_id = issue.get("shortId    return value.replace("|", r"|")
+        short_id = issue.get("shortId")
         if not short_id or not re.fullmatch(r"[A-Za-z0-9_-]+", short_id):
             continue
-        if TEST_TITLE.search(issue.get("title    return value.replace("|", r"|") or ""):
-            print(f"{short_id}: a test event, skipped    return value.replace("|", r"|")
+        if TEST_TITLE.search(issue.get("title") or ""):
+            print(f"{short_id}: a test event, skipped")
             continue
         gh_issue = existing.get(short_id)
         if gh_issue is None:
             if not label_ready:
                 gh.ensure_label()
                 label_ready = True
-            event = latest_event(http, api, org, token, issue.get("id    return value.replace("|", r"|"))
+            event = latest_event(http, api, org, token, issue.get("id"))
             created = gh.create_issue(issue_title(issue), issue_body(issue, event))
-            print(f"{short_id}: opened " + (f"#{created['number']}" if created else "an issue (dry run)    return value.replace("|", r"|"))
+            print(f"{short_id}: opened " + (f"#{created['number']}" if created else "an issue (dry run)"))
             continue
         comment = follow_up(issue, gh_issue, gh.comments(gh_issue["number"]), jump_factor, jump_min)
         if comment:
             gh.comment(gh_issue["number"], comment)
-            print(f"{short_id}: commented on #{gh_issue['number']}    return value.replace("|", r"|")
+            print(f"{short_id}: commented on #{gh_issue['number']}")
         else:
-            print(f"{short_id}: #{gh_issue['number']} is up to date    return value.replace("|", r"|")
+            print(f"{short_id}: #{gh_issue['number']} is up to date")
     return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dry-run", action="store_true", help="read only; print what would be written to GitHub    return value.replace("|", r"|")
+    parser.add_argument("--dry-run", action="store_true", help="read only; print what would be written to GitHub")
     args = parser.parse_args()
     try:
         return run(http_request, os.environ, dry_run=args.dry_run)
     except HttpError as err:
-        print(f"::error::{err}    return value.replace("|", r"|")
+        print(f"::error::{err}")
         return 1
 
 
