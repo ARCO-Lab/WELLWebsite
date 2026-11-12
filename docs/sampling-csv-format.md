@@ -105,7 +105,9 @@ replicates`). Two samples taken at different times on one day are different read
 Re-importing a file adds nothing: readings already stored with the same value are skipped. A row whose value (or
 unit) differs from the stored one is a **correction and is applied**: the stored reading takes the file's value, and
 the import log has one `[CORRECTED]` line per change with the old and new value. Files are imported oldest first, so
-the newest upload's value is the one kept. A stored reading that the file covers (same site, parameter and a date
+the newest upload's value is the one kept. A file imported after a newer one (an older upload whose import failed
+and is retried, or one re-imported by hand) doesn't change readings the newer file covers: those differences are
+reported as "corrections not applied" instead. A stored reading that the file covers (same site, parameter and a date
 between the file's first and last) but no longer has is **kept**, not deleted: the log reports "N rows present in
 the DB but not in the latest file" with the rows and an example `DELETE`, so a maintainer can remove them if the
 file withdrew them on purpose.

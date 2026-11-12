@@ -4,6 +4,7 @@ failure. Run from dashboard/backend: python -m unittest discover -s tests -t .""
 import contextlib
 import datetime as dt
 import io
+import json
 import pathlib
 import subprocess
 import sys
@@ -42,8 +43,8 @@ class BookkeepingTests(TestCase):
         out = ("[INFO] Inserted 2 new sampling records.\n[INFO] Corrected 3 stored sampling records (the file's value "
                "replaced the stored one).\n[CORRECTED] site 1 E. coli on 2026-10-06 09:40: 1200.0 -> 120.0\n"
                "[WARN] 4 rows present in the DB but not in the latest file (same sites, ...)\n")
-        self.assertEqual(download_data.import_counts(out), {"inserted": 2, "corrected": 3, "withdrawn": 4})
-        self.assertEqual(download_data.import_counts(""), {"inserted": 0, "corrected": 0, "withdrawn": 0})
+        self.assertEqual(download_data.import_counts(out), {"inserted": 2, "corrected": 3, "withdrawn": 4, "held": 0})
+        self.assertEqual(download_data.import_counts(""), {"inserted": 0, "corrected": 0, "withdrawn": 0, "held": 0})
 
     def test_run_status(self):
         self.assertEqual(download_data.run_status(2, 0, 0), "PROCESSED_2_FILES")
@@ -70,6 +71,25 @@ class BookkeepingTests(TestCase):
         self.assertEqual(choose([NEW, BAD, OLD], state, [OLD["filename"]], force=True), [OLD, NEW])
         self.assertEqual(choose([NEW, BAD, OLD], state, ["2"]), [NEW])        # naming needs --force
 
+    def test_same_day_uploads_are_imported_in_upload_order(self):
+        # Same create_date: the Dataverse id, which only grows, decides (as a number: 9 before 10)
+        first, second, third = dataset_file(9, 4), dataset_file(10, 4), dataset_file(11, 4)
+        self.assertEqual(download_data.choose_files([third, second, first], empty_state()), [first, second, third])
+
+    def test_newer_files_are_the_processed_ones_with_a_higher_id(self):
+        state = empty_state()
+        download_data.record(state, OLD, "processed", scope={"sites": ["1"]})
+        download_data.record(state, NEW, "processed", scope={"sites": ["2"]})
+        state["processed_files"].append({"filename": "legacy.csv", "id": 7, "create_date": "2026-05-07T00:00:00"})
+        self.assertEqual(download_data.newer_files(state, BAD), [
+            {"file": "WELLAncasterWatershed_3.csv (ID: 3)", "scope": {"sites": ["2"]}},
+            {"file": "legacy.csv (ID: 7)", "scope": None}])   # recorded before scopes: unknown, covers everything
+        self.assertEqual(download_data.newer_files(state, dataset_file(8, 9)), [])
+
+    def test_import_scope(self):
+        self.assertEqual(download_data.import_scope('[INFO] x\n[SCOPE] {"sites": ["1"]}\n'), {"sites": ["1"]})
+        self.assertIsNone(download_data.import_scope("[INFO] Inserted 1 new sampling records.\n"))
+
 
 class MainTests(TestCase):
     def run_main(self, state, outcomes, *argv, files=(OLD, BAD, NEW)):
@@ -77,7 +97,7 @@ class MainTests(TestCase):
         saved = []
 
         def importer(cmd, **kwargs):
-            file_id = int(pathlib.Path(cmd[-1]).stem)
+            file_id = int(pathlib.Path(cmd[2]).stem)   # python, inject_sampling.py, the file, [--newer ...]
             code, out = outcomes[file_id]
             return subprocess.CompletedProcess(cmd, code, out, "")
 
@@ -138,11 +158,38 @@ class MainTests(TestCase):
         code, out, _, _ = self.run_main(empty_state(), {1: clean, 3: changed}, files=(OLD, NEW))
         self.assertEqual(code, 0)   # applied corrections and kept rows don't fail the run
         self.assertIn("OUTPUT: PROCESSED_2_FILES", out)
-        self.assertIn("SUMMARY: 5 new, 3 corrected, 3 rows present in the DB but not in the latest file", out)
+        self.assertIn("SUMMARY: 5 new, 3 corrected, 0 corrections not applied (a newer file covers them), 3 rows "
+                      "present in the DB but not in the latest file", out)
         attention = [line for line in out.splitlines() if line.startswith("ATTENTION:")]
         self.assertEqual(len(attention), 1, out)
         self.assertIn("WELLAncasterWatershed_3.csv (ID: 3): 3 rows present in the DB but not in the latest file",
                       attention[0])
+
+    def test_an_older_file_retried_after_a_newer_one_gets_the_newer_files_scope(self):
+        # OLD's import failed last week; NEW (a higher id) was imported. This week OLD is retried.
+        state = empty_state()
+        scope = {"sites": ["3"], "measurement_types": ["E. coli"], "start": "2026-10-06T00:00:00",
+                 "end": "2026-10-07T00:00:00"}
+        download_data.record(state, NEW, "processed", scope=scope)
+        held = (0, "[INFO] Inserted 0 new sampling records.\n[INFO] Corrected 0 stored sampling records (...)\n"
+                   "[WARN] 1 corrections not applied: a newer file, already imported, covers these readings\n"
+                   '[SCOPE] {"sites": ["3"]}\n')
+        code, out, saved, run = self.run_main(state, {1: held}, files=(OLD, NEW))
+        self.assertEqual(code, 0)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[3], "--newer")
+        self.assertEqual(json.loads(cmd[4]), [{"file": "WELLAncasterWatershed_3.csv (ID: 3)", "scope": scope}])
+        self.assertIn("SUMMARY: 0 new, 0 corrected, 1 corrections not applied", out)
+        self.assertIn("ATTENTION: WELLAncasterWatershed_1.csv (ID: 1): 1 corrections not applied", out)
+        self.assertEqual({f["id"]: f["scope"] for f in saved[-1]["processed_files"]},
+                         {3: scope, 1: {"sites": ["3"]}})
+
+    def test_files_imported_in_order_see_no_newer_file(self):
+        ok = (0, "[INFO] Inserted 1 new sampling records.\n")
+        code, _, _, run = self.run_main(empty_state(), {1: ok, 3: ok}, files=(NEW, OLD))
+        self.assertEqual(code, 0)
+        self.assertEqual([c.args[0][2] for c in run.call_args_list], ["/tmp/1.xlsx", "/tmp/3.xlsx"])
+        self.assertTrue(all(len(c.args[0]) == 3 for c in run.call_args_list))   # no --newer
 
     def test_a_failed_import_is_retried_and_fails_the_run(self):
         code, out, saved, _ = self.run_main(empty_state(), {1: (1, ""), 2: (1, ""), 3: (1, "")})

@@ -7,7 +7,8 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from utils.sampling_rows import (  # noqa: E402
-    KEY, correction_lines, file_scope, row_key, split_rows, withdrawn, withdrawn_lines,
+    KEY, correction_lines, covers, file_scope, held_lines, hold_back, row_key, scope_from_json, scope_json, split_rows,
+    withdrawn, withdrawn_lines,
 )
 
 
@@ -52,6 +53,41 @@ class SplitRowsTests(unittest.TestCase):
         lines = correction_lines(split_rows(self.rows, self.stored)[1])
         self.assertEqual(lines, ["[CORRECTED] site 1 E. coli on 2025-07-01 00:00: 1200.0 CFU/100 mL -> "
                                  "120.0 CFU/100 mL"])
+
+
+class HoldBackTests(unittest.TestCase):
+    """A file imported after a newer one never undoes the newer file's values."""
+
+    def setUp(self):
+        self.inside = row(site="3", when=dt.datetime(2026, 10, 6, 9, 40), value=120.0)
+        self.outside = row(site="4", when=dt.datetime(2026, 10, 6, 9, 40), value=7.0)
+        self.scope = file_scope([row(site="3", when=dt.datetime(2026, 10, 6, 12))])
+
+    def test_scope_json_round_trip(self):
+        text = scope_json(self.scope)
+        self.assertEqual(text["start"], "2026-10-06T00:00:00")
+        self.assertEqual(scope_from_json(text), self.scope)
+        self.assertIsNone(scope_from_json(None))
+
+    def test_covers(self):
+        self.assertTrue(covers(self.scope, self.inside))
+        self.assertFalse(covers(self.scope, self.outside))
+        self.assertFalse(covers(self.scope, row(site="3", when=dt.datetime(2026, 10, 7))))   # the day after
+        self.assertTrue(covers(None, self.outside))   # unknown scope: covers everything
+
+    def test_a_newer_file_holds_back_only_what_it_covers(self):
+        corrections = [(self.inside, 1200.0, "CFU/100 mL"), (self.outside, 70.0, "CFU/100 mL")]
+        apply, held = hold_back(corrections, [("WELLAncasterWatershed_Oct2026.csv (ID: 9)", self.scope)])
+        self.assertEqual(apply, [(self.outside, 70.0, "CFU/100 mL")])
+        self.assertEqual(held, [(self.inside, 1200.0, "CFU/100 mL", "WELLAncasterWatershed_Oct2026.csv (ID: 9)")])
+        self.assertEqual(hold_back(corrections, []), (corrections, []))
+        self.assertEqual(hold_back(corrections, [("legacy.csv (ID: 7)", None)])[0], [])
+        lines = held_lines(held)
+        self.assertIn("[WARN] 1 corrections not applied: a newer file, already imported, covers these readings",
+                      lines[0])
+        self.assertEqual(lines[1], "[WARN]   site 3 E. coli on 2026-10-06 09:40: stored 1200.0 CFU/100 mL, this "
+                                   "file 120.0 CFU/100 mL (newer: WELLAncasterWatershed_Oct2026.csv (ID: 9))")
+        self.assertEqual(held_lines([]), [])
 
 
 class WithdrawnTests(unittest.TestCase):

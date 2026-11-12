@@ -9,9 +9,13 @@
 # INVALID_FILE_EXIT (3). Any other failure exits 1. To only check a file: scripts/check_sampling_csv.py.
 # A stored reading whose value (or unit) the file changes is updated, with one [CORRECTED] line each: the file
 # imported last is taken as the lab's latest word (scripts/download_data.py imports the dataset's files oldest
-# first). Stored readings the file covers (same sites, parameters and days) but no longer has are kept and reported
+# first). download_data.py passes --newer '<json>', the scopes of the files already imported that are newer than
+# this one, and a correction to a reading one of them covers is held back and reported instead ([WARN] lines), so a
+# file retried or re-imported out of order never undoes a newer file's value. A successful import prints the file's
+# own scope on a [SCOPE] line, which download_data.py records. Stored readings the file covers (same sites, parameters and days) but no longer has are kept and reported
 # in [WARN] lines, "N rows present in the DB but not in the latest file", for a person to decide.
 
+import json
 import sys
 import pathlib
 from sqlalchemy import func, select, tuple_, update
@@ -22,8 +26,8 @@ from server import create_app
 from db.database import db
 from db.models import SamplingMeasurement
 from utils.sampling_csv import INVALID_FILE_EXIT, validate_file
-from utils.sampling_rows import (KEY, correction_lines, file_scope, row_key, split_rows, withdrawn,
-                                 withdrawn_lines)
+from utils.sampling_rows import (KEY, correction_lines, file_scope, held_lines, hold_back, row_key, scope_from_json,
+                                 scope_json, split_rows, withdrawn, withdrawn_lines)
 
 app = create_app()
 
@@ -81,17 +85,19 @@ def fetch_stored(session, keys):
     return stored
 
 
-def apply_rows(session, rows):
-    """Insert the file's new rows and update the stored ones whose value or unit it changes. Returns (keys
-    inserted, corrections as (row, old value, old unit)). The caller commits."""
-    new_rows, corrections = split_rows(rows, fetch_stored(session, [row_key(r) for r in rows]))
+def apply_rows(session, rows, newer=()):
+    """Insert the file's new rows and update the stored ones whose value or unit it changes, except those a file in
+    `newer` covers (utils/sampling_rows.hold_back). Returns (keys inserted, corrections applied as (row, old value,
+    old unit), corrections held back as (row, old value, old unit, newer file)). The caller commits."""
+    new_rows, changed = split_rows(rows, fetch_stored(session, [row_key(r) for r in rows]))
+    corrections, held = hold_back(changed, newer)
     inserted_keys = store_rows(session, new_rows)
     table = SamplingMeasurement.__table__
     for row, _, _ in corrections:
         session.execute(update(table)
                         .where(*(table.c[k] == row[k] for k in KEY))
                         .values(value=row["value"], unit=row["unit"], creek_id=row["creek_id"]))
-    return inserted_keys, corrections
+    return inserted_keys, corrections, held
 
 
 def find_withdrawn(session, rows):
@@ -109,40 +115,51 @@ def find_withdrawn(session, rows):
     return withdrawn(rows, stored)
 
 
-def inject_new_sampling_data(file_path, return_only=False, session=None):
+def parse_newer(text):
+    """--newer's JSON, a list of {"file": name, "scope": scope_json or null}, as hold_back()'s (name, scope) pairs."""
+    return [(entry["file"], scope_from_json(entry.get("scope"))) for entry in json.loads(text)]
+
+
+def inject_new_sampling_data(file_path, return_only=False, session=None, newer=()):
     """
     Add every reading of a sampling file that isn't in the database yet, and apply its corrections.
 
     Rows are matched on the table's unique key (site, measurement, sampling date and time), so re-importing a file
     changes nothing, and a file with older dates (a backfill, or a creek reported late) adds exactly the missing
     rows. A stored reading with a different value in the file is updated (one [CORRECTED] line each). Stored rows
-    the file covers but no longer has are kept and reported ([WARN] lines).
+    the file covers but no longer has are kept and reported ([WARN] lines), and so are corrections to readings that
+    a file in `newer` ((name, scope) of each newer file already imported) covers: those aren't applied.
 
     Args:
         file_path: Path to the file on disk
         return_only: If True, return the parsed rows without inserting them
         session: the database session (default: the app's)
+        newer: the newer files already imported, as (name, scope) pairs (parse_newer)
     """
     rows = load_valid_rows(file_path)
     if return_only:
         return rows
     session = session or db.session
     try:
-        inserted_keys, corrections = apply_rows(session, rows)
+        inserted_keys, corrections, held = apply_rows(session, rows, newer)
         gone = find_withdrawn(session, rows)
         session.commit()
     except Exception:
         session.rollback()
         raise
-    # download_data.py reads the Inserted, Corrected and "rows present in the DB" lines for its run summary (and
-    # Inserted to decide that a file counts as processed)
+    # download_data.py reads the Inserted, Corrected, "corrections not applied" and "rows present in the DB" lines
+    # for its run summary (and Inserted to decide that a file counts as processed), and records the [SCOPE] line
     print(f"[INFO] Inserted {len(inserted_keys)} new sampling records.")
     print(f"[INFO] Corrected {len(corrections)} stored sampling records (the file's value replaced the stored one).")
     for line in correction_lines(corrections):
         print(line)
-    print(f"[INFO] {len(rows) - len(inserted_keys) - len(corrections)} were already stored with the same value.")
+    for line in held_lines(held):
+        print(line)
+    print(f"[INFO] {len(rows) - len(inserted_keys) - len(corrections) - len(held)} were already stored with the "
+          f"same value.")
     for line in withdrawn_lines(gone):
         print(line)
+    print(f"[SCOPE] {json.dumps(scope_json(file_scope(rows)))}")
     return rows
 
 
@@ -174,12 +191,15 @@ def replace_all(session, file_path, allow_shrink=False):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("[ERROR] Usage: python inject_sampling.py <file_path> [--full-reload [--allow-shrink]]")
+        print("[ERROR] Usage: python inject_sampling.py <file_path> [--full-reload [--allow-shrink]] "
+              "[--newer '<json>']")
         print("  --full-reload: Replace all existing data (default: incremental)")
+        print("  --newer: newer files already imported, whose readings this file's corrections must not change")
         sys.exit(1)
 
     file_path = sys.argv[1]
     full_reload = "--full-reload" in sys.argv
+    newer = parse_newer(sys.argv[sys.argv.index("--newer") + 1]) if "--newer" in sys.argv else []
 
     with app.app_context():
         try:
@@ -188,7 +208,7 @@ if __name__ == "__main__":
                 replace_all(db.session, file_path, allow_shrink="--allow-shrink" in sys.argv)
             else:
                 print("[INFO] Incremental mode - adding only new records...")
-                inject_new_sampling_data(file_path)
+                inject_new_sampling_data(file_path, newer=newer)
         except InvalidFile as e:
             print(f"[ERROR] {e}")
             sys.exit(INVALID_FILE_EXIT)
