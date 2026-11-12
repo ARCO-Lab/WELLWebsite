@@ -346,6 +346,29 @@ class SettingsTests(TestCase):
         with self.assertRaises(ValueError):
             borealis.base_url("borealisdata.ca")
 
+    def test_the_server_used_is_logged_once(self):
+        logged = []
+        with mock.patch.object(borealis, "_logged_servers", set()):
+            for url in ("https://borealisdata.ca/dataverse/WELL", "https://borealisdata.ca/",
+                        "https://demo.borealisdata.ca"):
+                self.assertEqual(borealis.api_base(url, log=logged.append), borealis.base_url(url))
+            borealis.api_base("https://borealisdata.ca/dataverse/WELL", log=logged.append)
+        self.assertEqual(logged, [
+            ("Borealis: using the API at https://borealisdata.ca (BOREALIS_URL is the page of collection WELL; "
+             "the API is at the server root)"),
+            "Borealis: using the API at https://demo.borealisdata.ca",
+        ])
+
+    def test_the_upload_uses_the_server_root_of_a_collection_url(self):
+        with mock.patch.multiple(upload_data.Config, BOREALIS_URL="https://borealis.example/dataverse/WELL",
+                                 BOREALIS_API_TOKEN=TOKEN, BOREALIS_UPLOAD_PERSISTENT_ID=PID), \
+                mock.patch.object(borealis, "_logged_servers", set()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            url, _, _ = upload_data.borealis_settings()
+        self.assertEqual(url, SERVER)
+        self.assertIn(f"Borealis: using the API at {SERVER}", out.getvalue())
+        self.assertNotIn(TOKEN, out.getvalue())
+
     def test_demo(self):
         self.assertTrue(borealis.is_demo("https://demo.borealisdata.ca"))
         self.assertTrue(borealis.is_demo(persistent_id="doi:10.80240/FK2/WHEXLR"))
