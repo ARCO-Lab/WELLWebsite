@@ -47,6 +47,7 @@ def vendor_statuses():
 
 
 def open_incidents():
+    # The incidents not resolved yet, oldest first.
     return (AlertIncident.query.filter(AlertIncident.resolved_at.is_(None))
             .order_by(AlertIncident.opened_at, AlertIncident.id).all())
 

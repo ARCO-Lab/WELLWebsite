@@ -22,6 +22,8 @@ _cache_lock = threading.Lock()
 
 
 def cached(key, fetch, clock=time.monotonic):
+    """fetch()'s result, reused for CACHE_TTL_S. A failure is cached as {"error": ...} for ERROR_TTL_S instead of
+    raising, so one failing service shows an error in its own section only."""
     now = clock()
     with _cache_lock:
         hit = _cache.get(key)

@@ -174,6 +174,8 @@ def parse_site(text):
 
 
 def parse_date(text):
+    """A sampling date, accepted only as YYYY-MM-DD: 03/04/2025 could be either day/month or month/day, so it is
+    refused rather than guessed."""
     text = str(text).strip()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         try:
@@ -462,6 +464,7 @@ def _cell_text(value):
 
 
 def _cell_time(value):
+    # The HH:MM of an Excel date cell that has a time, or "" for a date alone (read as midnight).
     if hasattr(value, "to_pydatetime"):
         value = value.to_pydatetime()
     return value.strftime("%H:%M") if isinstance(value, datetime) and value.time() != time(0, 0) else ""

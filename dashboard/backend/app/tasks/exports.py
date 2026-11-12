@@ -1,3 +1,6 @@
+# This file defines the export worker's Celery tasks: building one queued CSV export (generate_export_job), and
+# the hourly cleanup of expired, stuck and orphaned exports. Job times (created_at, expires_at...) are naive
+# America/Toronto wall time, from utils/timezone.py.
 import os
 import shutil
 import time
@@ -24,9 +27,9 @@ from utils.timezone import est_after, est_now
 
 logger = get_task_logger(__name__)
 
-# EXPORT_FAILED_MESSAGE and EXPORT_TOO_SLOW_MESSAGE (api/services/exports.py) are the other failure messages.
-# For a job whose task was started before and didn't finish (its worker process died, most likely of running out
-# of memory). It isn't run again, since it would likely die the same way.
+# The error_message for a job whose task was started before and didn't finish (its worker process died, most likely
+# of running out of memory). It isn't run again, since it would likely die the same way. The other failure messages
+# are EXPORT_FAILED_MESSAGE and EXPORT_TOO_SLOW_MESSAGE (api/services/exports.py).
 EXPORT_INTERRUPTED_MESSAGE = "This export was interrupted. Try a shorter date range."
 
 # The Flask app the tasks of this worker process run in, made on its first task and kept. Each app has its own
@@ -76,6 +79,8 @@ def user_facing_error(exc: Exception) -> str:
 
 @celery_app.task(bind=True, name="exports.generate_export_job")
 def generate_export_job(self, job_id: str):
+    """Writes a queued job's CSV to EXPORTS_DIR/<job id>/, updating its progress as it goes, and marks it ready
+    (downloadable for EXPORT_FILE_TTL_MINUTES) or failed. Errors are re-raised so Celery and Sentry see them."""
     with worker_app().app_context():
         job = db.session.get(ExportJob, job_id)
         if not job:
@@ -109,6 +114,7 @@ def generate_export_job(self, job_id: str):
             # (cleaning up one job would delete the other's download).
             artifact_path = os.path.join(Config.EXPORTS_DIR, job_id, artifact_name)
 
+            # Called by write_export_csv as it writes, so the page's progress bar moves.
             def on_progress(produced_rows: int, total_rows: int):
                 progress = 100.0 if total_rows <= 0 else min(100.0, (produced_rows / total_rows) * 100.0)
                 progress_job = db.session.get(ExportJob, job_id)
@@ -199,6 +205,7 @@ def cleanup_expired_artifacts():
 
 
 def _fail_stuck_jobs():
+    # Step 1 of the cleanup: settle_if_stuck() decides, and marks the job failed.
     candidates = db.session.query(ExportJob).filter(ExportJob.status.in_(("queued", "running"))).all()
     stuck = [job for job in candidates if settle_if_stuck(job)]
     for job in stuck:
@@ -210,6 +217,7 @@ def _fail_stuck_jobs():
 
 
 def _expire_artifacts():
+    # Step 2 of the cleanup.
     cutoff = est_now() - DELETE_GRACE
     candidates = (
         db.session.query(ExportJob)
@@ -318,6 +326,7 @@ def _remove_job_folder(job_id):
 
 
 def _remove_empty_job_folder(path):
+    # Remove the job folder that held `path`, if it is now empty.
     folder = os.path.dirname(path)
     if os.path.abspath(folder) == os.path.abspath(Config.EXPORTS_DIR):
         return  # an older export stored directly in EXPORTS_DIR

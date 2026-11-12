@@ -35,6 +35,7 @@ MAX_KEYS = 20000            # a flush that keeps failing must not grow memory wi
 
 
 def bucket_index(ms):
+    # The latency histogram bucket a response time (ms) falls in; the last bucket is "slower than all bounds".
     for i, bound in enumerate(LATENCY_BUCKETS_MS):
         if ms <= bound:
             return i
@@ -113,6 +114,7 @@ ON CONFLICT (minute, endpoint, method, status_class) DO UPDATE SET
 
 
 def write_rows(engine, rows):
+    # Adds the rows to request_metrics, merging into an existing (minute, endpoint, method, status class) row.
     if not rows:
         return 0
     from sqlalchemy import text
@@ -198,6 +200,8 @@ class MetricsRecorder:
 
 
 def metrics_enabled(uri, env=None):
+    # Request metrics are recorded on PostgreSQL only (the upsert merges arrays with PostgreSQL-only SQL), unless
+    # REQUEST_METRICS is off.
     env = os.environ if env is None else env
     off = (env.get("REQUEST_METRICS") or "").strip().lower() in ("0", "false", "no", "off")
     return not off and (uri or "").startswith("postgresql")

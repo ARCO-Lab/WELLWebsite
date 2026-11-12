@@ -1,3 +1,6 @@
+# This file defines the Celery app the export worker runs (docker-compose.yml's export_worker service): the
+# Redis broker, the time and memory limits for exports, and the hourly cleanup schedule. The API imports it too,
+# to queue export jobs (api/routes/exports.py).
 from config import Config  # loads .env, so SENTRY_DSN is set before init_sentry reads it
 from utils.sentry import init_sentry
 
