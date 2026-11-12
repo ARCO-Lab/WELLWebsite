@@ -57,6 +57,7 @@ Every setting is listed in [docs/configuration.md](docs/configuration.md).
   - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement; `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
   - `/api/exports/estimate`, `/api/exports/sync`, `/api/exports/jobs`, `/api/exports/jobs/<id>` and `/api/exports/jobs/<id>/download`: CSV downloads
   - `/health` (the process is up; not passed through) and `/health/data` (data freshness, see Monitoring; the dashboard's `/api/health/data`)
+  - The AI analysis routes (`/api/analysis/*`) are switched off; see [AI Analysis](#ai-analysis)
 - `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL: about 2,000 points per series
   (raw 10-minute readings up to ~2 weeks, coarser buckets beyond; ranges longer than ~5.5 years are capped at daily
   buckets, so they get more). Times with an offset (`...Z`) are real instants, times without one are Toronto local
@@ -107,6 +108,7 @@ Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used onl
 |---|---|
 | HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
 | WQData Live API | Automated ingestion & scheduled updates |
+| OpenAI API | AI analysis, currently disabled (see [AI Analysis](#ai-analysis)) |
 | Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 | SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
@@ -401,7 +403,17 @@ addresses* on as a second guard.
 
 ## AI Analysis
 
-Removed. The dashboard once had OpenAI-written summaries of the charts; it was switched off in PR #3 and its backend routes, Next.js proxies and the `openai` dependency were deleted later. The old code is in the git history (`git log --diff-filter=D -- dashboard/backend/app/api/routes/analysis`). A few commented-out UI blocks marked `AI ANALYSIS DISABLED` remain in the dashboard frontend until its next clean-up; uncommenting them has nothing left to call.
+> **Currently disabled; the code is kept.** Nothing calls OpenAI and the `openai` package is not installed. The UI entry points (`dashboard/frontend/src/pages/index.tsx`, `components/Modal.tsx`, `components/Information.tsx`) and the route registration in `dashboard/backend/app/api/routes/__init__.py` are commented out, each marked `AI ANALYSIS DISABLED`; the backend routes in `dashboard/backend/app/api/routes/analysis/` are not imported, and the four Next.js proxies in `dashboard/frontend/src/pages/api/analysis/` answer 404.
+
+To turn it back on:
+
+1. Search the code for `AI ANALYSIS DISABLED` and uncomment those blocks.
+2. Delete the 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts` (their original handlers are commented out below them).
+3. Add `openai` back to `dashboard/backend/requirements.txt` (it was pinned at `openai==2.30.0`, with its dependencies; see the note in that file) and set `OPENAI_API_KEY`.
+4. Rebuild the summaries the analysis routes read. `latest_summaries` (filled after each `/api/data` request) and `latest_sampling_summaries` (after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so uncommenting alone gives the routes nothing to summarise. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
+5. Rebuild the backend and dashboard images.
+
+When it was on, an API endpoint aggregated and downsampled a series (`scripts/downsample.py` was written for it and is kept with it) and sent a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend rendered the output inside an analysis modal and allowed exporting the narrative.
 
 ---
 
@@ -741,6 +753,9 @@ The platform should publish a simple privacy notice covering both the dashboard 
 
 **How are backups automated?**
 Every night at 03:15 Toronto time the worker dumps the database with `pg_dump` (every table its role can read, which on the VM is all of them; any left out are named in a warning), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
+
+**How did the AI analysis feature work?**
+It is switched off; see [AI Analysis](#ai-analysis). When it was on, the API aggregated and downsampled the series first, then sent a bounded prompt with metadata to OpenAI.
 
 **What keeps the dashboard responsive with large datasets?**
 `/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.
