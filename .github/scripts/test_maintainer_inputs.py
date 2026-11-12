@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import maintainer_inputs as mi
 from maintainer_fakes import FakeTransport
-from maintainer_github import Client, next_link
+from maintainer_github import Client, HttpError, next_link
 
 REPO = "ARCO-Lab/WELLWebsite"
 NOW = datetime(2026, 11, 11, 11, 30, tzinfo=timezone.utc)
@@ -171,6 +171,13 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(Exception) as caught:
             client.get("api/0/x", {"token": "secret-value"})
         self.assertNotIn("secret-value", str(caught.exception))
+
+    def test_an_html_error_page_still_gives_the_status(self):
+        client = Client("https://api.github.com", "t", lambda *a: (502, {}, b"<html>Bad gateway</html>"))
+        with self.assertRaises(HttpError) as caught:
+            client.get("repos/x/pulls")
+        self.assertEqual(502, caught.exception.status)
+        self.assertEqual("HTTP 502 from https://api.github.com/repos/x/pulls", str(caught.exception))
 
     def test_next_link(self):
         self.assertIsNone(next_link({}))

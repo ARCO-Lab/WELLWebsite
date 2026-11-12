@@ -39,10 +39,10 @@ RISKY_PATHS = [
     r"(^|/)requirements[^/]*\.txt$", r"(^|/)package(-lock)?\.json$",
     r"^dashboard/backend/app/config\.py$",
     r"^dashboard/backend/app/tasks/",
-    r"^dashboard/backend/app/scripts/(inject_|licor_|wqdata_|clean_|clear_|upload_|download_|sharepoint_"
-    r"|scheduler_)",                                    # ingestion, backfills, uploads, the scheduler
-    r"^dashboard/backend/app/utils/(parsers|fetching|borealis|sharepoint|sampling_\w+|sensor_names|timezone"
-    r"|sentry|guards)\.py$",
+    # ingestion, backfills, uploads and the scheduler
+    r"^dashboard/backend/app/scripts/(inject|licor|wqdata|clean|clear|upload|download|sharepoint|scheduler)_",
+    r"^dashboard/backend/app/utils/(parsers|fetching|borealis|sharepoint|sampling_\w+|sensor_names|timezone)\.py$",
+    r"^dashboard/backend/app/utils/(sentry|guards)\.py$",   # error reporting and request guards
     r"^dashboard/frontend/src/lib/sentry\.ts$",
     r"^\.github/",                                       # workflows, Dependabot, and this maintainer
     r"^home/", r"^wordpress/",

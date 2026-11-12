@@ -39,6 +39,15 @@ def next_link(headers):
     return match.group(1) if match else None
 
 
+def error_message(raw):
+    """The "message" of a JSON error body (GitHub and Sentry both send one), or "" when the body has none."""
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        return ""   # an HTML error page, say: the status alone says enough
+    return str(data.get("message", ""))[:200] if isinstance(data, dict) else ""
+
+
 class Client:
     def __init__(self, base_url, token, transport=urllib_transport, auth_scheme="Bearer"):
         self.base_url = base_url.rstrip("/")
@@ -69,12 +78,7 @@ class Client:
         headers = self._headers({"Content-Type": "application/json"} if body else None)
         status, response_headers, raw = self.transport(method, url, headers, body)
         if status >= 400:
-            message = ""
-            try:
-                message = str(json.loads(raw or b"{}").get("message", ""))[:200]
-            except (ValueError, AttributeError):
-                pass
-            raise HttpError(status, url, message)
+            raise HttpError(status, url, error_message(raw))
         return (json.loads(raw) if raw else None), response_headers
 
     def get(self, path, params=None):
