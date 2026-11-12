@@ -34,12 +34,15 @@ from utils.borealis import base_url, is_demo
 WINDOW = timedelta(hours=6)    # recent enough to be cheap, long enough that a slow upload still shows data
 TIMEOUT = (10, 60)
 # Looking back for WQData's newest point, only after an empty window: one day per request (about 2,700 values, so
-# one page of WQData's ~5,000), newest day first, stopping at the first day with points. The shorter timeout keeps
-# a week of slow answers inside the workflow step's timeout.
+# usually one page of WQData's ~5,000), newest day first, stopping at the first day with points. The lookback stops
+# once LOOKBACK_BUDGET_S has passed, and no request may wait past it, so slow answers can't use up the workflow
+# step's timeout before Borealis is checked.
 LOOKBACK_DAYS = 7
 LOOKBACK_TIMEOUT = (10, 20)
+LOOKBACK_BUDGET_S = 90
 WQ_PAUSE_S = 3.5          # WQData throttles bursts of requests (as QualityService.PAGE_PAUSE_S)
 sleep = time.sleep        # replaced in tests
+monotonic = time.monotonic
 FMT = "%Y-%m-%d %H:%M:%S"
 
 # Copies of the values in utils/parsers.py, which can't be imported here without the database packages
@@ -240,18 +243,26 @@ def probe_wqdata(now):
 def last_reported(url, now):
     """When the device's newest point before the canary's window is from, as a phrase for the failure line."""
     end = now - WINDOW
+    deadline = monotonic() + LOOKBACK_BUDGET_S
     try:
-        for _ in range(LOOKBACK_DAYS):
+        for day in range(LOOKBACK_DAYS):
             start = end - timedelta(days=1)
             sleep(WQ_PAUSE_S)
-            _, body = get_json(url, timeout=LOOKBACK_TIMEOUT,
+            left = deadline - monotonic()
+            if left <= 1:
+                return (f"none in the {day} days checked before the canary's {LOOKBACK_BUDGET_S} s lookback "
+                        f"limit (WQData answered slowly)")
+            _, body = get_json(url, timeout=(LOOKBACK_TIMEOUT[0], min(LOOKBACK_TIMEOUT[1], left)),
                                params={"apiKey": Config.WQ_API_KEY, "from": start.strftime(FMT),
                                        "to": end.strftime(FMT)})
-            newest = newest_point(body)
+            newest, more = newest_point(body)
             if newest:
                 ago = (now - newest).total_seconds() / 3600
-                return (f"the device stopped reporting at {newest.strftime('%Y-%m-%d %H:%M')} UTC ({ago:.0f} h ago): "
-                        f"WQData answered normally, so check the sonde and its modem, not the API key")
+                # A cut-off page holds the day's oldest points, so the device reported later than its last one.
+                when = "at least as late as" if more else "at"
+                return (f"the device stopped reporting {when} {newest.strftime('%Y-%m-%d %H:%M')} UTC "
+                        f"({ago:.0f} h ago): WQData answered normally, so check the sonde and its modem, not the "
+                        f"API key")
             end = start
     except Exception as e:   # the window's answer already showed the API works; this is only the detail
         return f"couldn't look further back ({describe(e)})"
@@ -260,14 +271,18 @@ def last_reported(url, now):
 
 
 def newest_point(body):
-    """The latest timestamp among a WQData answer's points (UTC), or None when it has none."""
+    """(The latest timestamp among a WQData answer's points (UTC) or None, whether the answer was cut off with more
+    points after it). WQData pages run oldest first; info.more alone isn't reliable, so count < total counts too."""
     times = []
     for p in (body.get("data") if isinstance(body, dict) else None) or []:
         try:
             times.append(datetime.strptime(p.get("timestamp"), FMT).replace(tzinfo=timezone.utc))
         except (AttributeError, TypeError, ValueError):
             continue   # a malformed point; the shape check reports those when they are in the window
-    return max(times, default=None)
+    info = (body.get("info") if isinstance(body, dict) else None) or {}
+    count, total = info.get("count"), info.get("total")
+    cut_off = bool(info.get("more")) or (isinstance(count, int) and isinstance(total, int) and count < total)
+    return max(times, default=None), cut_off
 
 
 def probe_borealis(now):
@@ -339,7 +354,13 @@ def describe(e):
 PROBES = (("LI-COR", probe_licor), ("WQData", probe_wqdata), ("Borealis", probe_borealis))
 
 
-def run(probes=PROBES, now=None, out=print):
+def flushed_print(line):
+    # Each line is written out at once, so a run killed by the workflow step's timeout keeps the lines before it
+    # (the workflow also sets PYTHONUNBUFFERED; this covers runs by hand, piped elsewhere).
+    print(line, flush=True)
+
+
+def run(probes=PROBES, now=None, out=flushed_print):
     """Run each probe once; print one line each. Returns the names of the sources that failed."""
     now = now or datetime.now(timezone.utc)
     failed = []

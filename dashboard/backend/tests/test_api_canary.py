@@ -335,6 +335,31 @@ class WqdataStaleDevice(Canned):
                                   "(HTTPError (HTTP 500))")])
         self.assertEqual(len(calls), 2)
 
+    def test_a_cut_off_page_gives_a_lower_bound(self):
+        # Pages run oldest first, so a day cut off part-way has later points than the last one it holds.
+        for info in ({"count": 5000, "total": 7000, "more": False}, {"count": 5000, "total": 5000, "more": True}):
+            page = {"info": info, "data": [{**WQDATA["data"][0], "timestamp": "2026-11-09 12:00:00"}]}
+            with self.subTest(info=info):
+                _, lines, _ = self.run_with([Response(200, EMPTY_WQ), Response(200, page)], probes=WQDATA_ONLY)
+                self.assertIn("the device stopped reporting at least as late as 2026-11-09 12:00 UTC (23 h ago)",
+                              lines[0])
+
+    def test_the_lookback_stops_at_its_time_budget(self):
+        # Clock readings: the deadline is set at 0 s; before each request the time left is checked.
+        clock = iter([0, 10, 75, 95])
+        with mock.patch.object(canary, "monotonic", lambda: next(clock)):
+            failed, lines, calls = self.run_with([Response(200, EMPTY_WQ)] * 3, probes=WQDATA_ONLY)
+        self.assertEqual(failed, ["WQData"])
+        self.assertEqual(lines, [("FAIL WQData: no data points in the last 6 h; none in the 2 days checked before "
+                                  "the canary's 90 s lookback limit (WQData answered slowly)")])
+        # No request may wait past the budget: the second has only 15 s left.
+        self.assertEqual([c[1]["timeout"] for c in calls[1:]], [(10, 20), (10, 15)])
+
+    def test_lines_are_flushed_as_printed(self):
+        with mock.patch("builtins.print") as printed:
+            canary.run(probes=(("X", lambda now: (None, "not configured: X")),), now=NOW)
+        printed.assert_called_once_with("FAIL X: not configured: X", flush=True)
+
     def test_a_window_with_data_makes_no_extra_request(self):
         _, _, calls = self.run_with([Response(200, WQDATA)], probes=WQDATA_ONLY)
         self.assertEqual(len(calls), 1)
