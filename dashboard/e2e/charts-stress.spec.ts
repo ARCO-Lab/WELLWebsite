@@ -295,6 +295,31 @@ test.describe("chart performance budgets", () => {
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
 
+    test("a vertical swipe that starts on a scrollbar scrolls the page and leaves the chart alone", async ({ page }) => {
+      const { net } = await open(page);
+      const logger = chart(page, "logger-2577531");
+      const track = logger.getByRole("scrollbar");
+      await track.scrollIntoViewIfNeeded();
+      await page.evaluate(() => window.scrollBy(0, -200)); // room to scroll down
+      const box = (await track.boundingBox())!;
+      const before = await label(logger);
+      const n0 = net.requests.length;
+      const scrollY = await page.evaluate(() => window.scrollY);
+      const cdp = await page.context().newCDPSession(page);
+      const at = (y: number) => [{ x: box.x + box.width * 0.3, y, id: 1 }]; // on the track, away from the thumb
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at(box.y + box.height / 2) });
+      for (let i = 1; i <= 12; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(box.y + box.height / 2 - i * 15) });
+        await page.waitForTimeout(16);
+      }
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await page.waitForTimeout(600);
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollY + 50);
+      expect(await label(logger)).toBe(before); // not paged, not dragged
+      await settled(page, net);
+      expect(net.requests.length - n0).toBe(0);
+    });
+
     test("a two-finger pinch at 4x CPU keeps frames under 120 ms (p95)", async ({ page }) => {
       await open(page);
       const logger = chart(page, "logger-2577531");

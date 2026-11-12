@@ -63,9 +63,10 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
   const w = snap.window, ext = snap.extent, def = controller.defaultWindow;
   const atDefault = Math.abs(w.start - def.start) < 60_000 && Math.abs(w.end - def.end) < 60_000;
   const Heading = headingLevel;
-  // Announced once the window comes to rest, not on every frame of a drag
+  // Announced once the window comes to rest after the user moved it, not on every frame of a drag, and not when new
+  // picked days move every chart at once (twenty announcements of the same dates; the date pickers say it already)
   const status = snap.error ? `${title}: ${snap.error.message}`
-    : `${title}: ${windowLabel(snap.settled, ext.end)}, ${resolutionLabel(snap.wantedBucket, kind)}`;
+    : snap.settledByUser ? `${title}: ${windowLabel(snap.settled, ext.end)}, ${resolutionLabel(snap.wantedBucket, kind)}` : "";
   return (
     <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
       <Heading className="text-sm font-semibold text-gray-900">{title}</Heading>

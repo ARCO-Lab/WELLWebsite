@@ -11,9 +11,8 @@
 // with under half the readings its series usually has at that time of day (typicalCounts in utils/chartWindow).
 //
 // Input (handled here, not by Highcharts' zooming, so each gesture means one thing):
-// - mouse wheel: scrolls the page, and shows a hint. Ctrl/⌘ + wheel or a trackpad pinch zooms around the pointer.
-//   After a click on the chart, the plain wheel zooms too, until the pointer leaves it. Shift + wheel or a sideways
-//   swipe pans.
+// - mouse wheel: a plain (vertical) wheel always scrolls the page, and now and then shows a hint. Ctrl/⌘ + wheel or
+//   a trackpad pinch zooms around the pointer; Shift + wheel or a sideways swipe pans.
 // - drag pans; Shift + drag selects a span to zoom to.
 // - touch: one finger scrolls the page (a tap shows the tooltip); two fingers pinch to zoom and move to pan.
 // - keyboard, once the chart has focus: ← → pan, + − zoom, 0 resets.
@@ -49,6 +48,7 @@ export interface MetricChartProps {
 const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
 const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
+const HINT_EVERY_MS = 30_000; // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
 
 // What a series is, for the tooltip and legend.
 interface SeriesInfo { measurement: string; unit: string; agg: Agg; note?: string }
@@ -335,8 +335,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     const el = plotRef.current;
     if (!el) return;
     const chart = () => chartRef.current?.chart;
-    let active = false; // clicked: the plain wheel zooms until the pointer leaves
     let hintTimer = 0;
+    let hintShown = -Infinity;
     let wheelEnd = 0;
     const wheelGesture = () => { // a burst of wheel events is one gesture: it ends when they pause
       controller.beginGesture();
@@ -344,6 +344,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       wheelEnd = window.setTimeout(() => controller.endGesture(), WHEEL_GESTURE_END_MS);
     };
     const showHint = () => {
+      if (performance.now() - hintShown < HINT_EVERY_MS) return;
+      hintShown = performance.now();
       hintRef.current?.classList.add('opacity-100');
       window.clearTimeout(hintTimer);
       hintTimer = window.setTimeout(() => hintRef.current?.classList.remove('opacity-100'), 1200);
@@ -375,7 +377,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         controller.pan(delta / Math.max(c.plotWidth, 1), 'wheel');
         return;
       }
-      if (!ctrl && !active) {
+      if (!ctrl) {
         showHint(); // and let the page scroll
         return;
       }
@@ -389,12 +391,15 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     let drag: { x0: number; w0: { start: number; end: number }; mode: 'pan' | 'select'; moved: boolean; id: number } | null = null;
     const onDown = (e: PointerEvent) => {
       if (e.pointerType !== 'mouse' || e.button !== 0 || !inPlot(e.clientX, e.clientY)) return;
-      active = true;
-      el.focus({ preventScroll: true });
+      el.focus({ preventScroll: true }); // for the keys
       drag = { x0: e.clientX, w0: { ...controller.window }, mode: e.shiftKey ? 'select' : 'pan', moved: false, id: e.pointerId };
     };
     const onMove = (e: PointerEvent) => {
       if (!drag || e.pointerId !== drag.id) return;
+      if (e.buttons === 0) { // the button was released where we didn't hear it (outside the window, say)
+        onUp(e);
+        return;
+      }
       const c = chart();
       if (!c) return;
       const dx = e.clientX - drag.x0;
@@ -428,7 +433,13 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       drag = null;
       controller.endGesture();
     };
-    const onLeave = () => { if (!drag) active = false; };
+    // Capture lost (e.g. the window lost focus mid-drag): end the drag where it is; a selection is dropped
+    const onLost = (e: PointerEvent) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      if (selectRef.current) selectRef.current.style.display = 'none';
+      drag = null;
+      controller.endGesture();
+    };
 
     // The plot's left edge and width are measured once per pinch: reading them on every move forced a layout of the
     // whole page each time (the page doesn't scroll during a pinch). Two-finger events stop here, before Highcharts'
@@ -492,8 +503,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
     el.addEventListener('pointercancel', onUp);
-    el.addEventListener('pointerleave', onLeave);
-    el.addEventListener('blur', onLeave);
+    el.addEventListener('lostpointercapture', onLost);
     el.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
     el.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
     el.addEventListener('touchend', onTouchEnd);
@@ -508,8 +518,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
       el.removeEventListener('pointercancel', onUp);
-      el.removeEventListener('pointerleave', onLeave);
-      el.removeEventListener('blur', onLeave);
+      el.removeEventListener('lostpointercapture', onLost);
       el.removeEventListener('touchstart', onTouchStart, { capture: true });
       el.removeEventListener('touchmove', onTouchMove, { capture: true });
       el.removeEventListener('touchend', onTouchEnd);
@@ -544,7 +553,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         <div ref={selectRef} className="pointer-events-none absolute hidden bg-primary/10 outline outline-1 outline-primary/50" />
         <div ref={hintRef} aria-hidden="true" data-testid="chart-wheel-hint"
           className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-900/55 px-4 text-center text-sm text-white opacity-0 transition-opacity duration-200">
-          Hold Ctrl (⌘ on a Mac) and scroll to zoom, or click the chart first
+          Hold Ctrl (⌘ on a Mac) and scroll to zoom
         </div>
         {firstLoad && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/70" aria-hidden="true">

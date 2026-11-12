@@ -25,6 +25,7 @@ export class ChartLinkGroup {
   linked = false;
   private members = new Set<ChartController>();
   private moving = false;
+  private forwarding = false;
 
   add(c: ChartController): () => void {
     this.members.add(c);
@@ -37,8 +38,20 @@ export class ChartLinkGroup {
         this.moving = false;
       }
     });
+    // A gesture on one chart is a gesture on the ones following it too: they hold their requests and drop their
+    // bands and accessibility layer while it lasts, as the leader does
+    const offGesture = c.onGesture((active) => {
+      if (!this.linked || this.forwarding) return;
+      this.forwarding = true;
+      try {
+        for (const other of this.members) if (other !== c) (active ? other.beginGesture() : other.endGesture());
+      } finally {
+        this.forwarding = false;
+      }
+    });
     return () => {
       off();
+      offGesture();
       this.members.delete(c);
     };
   }
