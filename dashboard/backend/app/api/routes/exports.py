@@ -1,19 +1,29 @@
 # This file defines the /api/exports routes behind the dashboard's Download panel: a row estimate, a direct CSV
 # download for small exports, and background jobs (run by the Celery worker, tasks/exports.py) for large ones.
 # Job timestamps (created_at, expires_at) are naive America/Toronto wall time, like the sensor readings.
+#
+# Limits that keep exports from filling the disk the database shares: every export that writes a file is refused
+# (507) when the disk would drop below EXPORT_MIN_FREE_MB; each visitor may start
+# EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER jobs an hour (429); and a request for an export that is already ready gets
+# that job back instead of a new one.
 import hashlib
+import logging
 import os
 import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from flask import after_this_request, jsonify, request, send_file
 from sqlalchemy import text
 
 from api.services.exports import (
     default_export_filename,
+    disk_space_error,
     estimate_rows,
+    jobs_started_since,
     live_jobs,
     normalize_export_payload,
+    reusable_job,
     settle_if_stuck,
     write_export_csv,
 )
@@ -22,18 +32,33 @@ from db.database import db
 from db.models import ExportJob
 from utils.timezone import est_now, est_passed
 
+log = logging.getLogger(__name__)
+INSUFFICIENT_STORAGE = 507
+
+
+def _payload():
+    """The request's JSON body, or {} when there is none or it isn't JSON. Anything else that isn't an object (a
+    list, a string) is passed on as it is, so normalize_export_payload refuses it with a 400."""
+    payload = request.get_json(silent=True)
+    return {} if payload is None else payload
+
+
+def _low_disk(row_count):
+    """The 507 answer when the exports disk is too full for an export of row_count readings, else None."""
+    message = disk_space_error(row_count)
+    if message is None:
+        return None
+    log.warning("export refused: the exports disk is below EXPORT_MIN_FREE_MB")
+    return jsonify({"error": message}), INSUFFICIENT_STORAGE
+
 
 def register_export_routes(app):
     @app.route("/api/exports/estimate", methods=["POST"])
     def estimate_export_rows():
         """Counts the readings an export would contain and says whether to download it directly ("sync") or as a
         background job ("async"), so the page can choose before asking for the file."""
-        payload = request.get_json(silent=True) or {}
-        print(f"[EXPORT API] /api/exports/estimate received payload keys: {payload.keys()}")
-        print(f"[EXPORT API] /api/exports/estimate group_types: {payload.get('group_types', 'MISSING')}")
         try:
-            filters = normalize_export_payload(payload)
-            print(f"[EXPORT API] After normalization, group_types: {filters.get('group_types', 'MISSING')}")
+            filters = normalize_export_payload(_payload())
             row_count = estimate_rows(filters)
             mode = "sync" if row_count <= Config.EXPORT_SYNC_ROW_THRESHOLD else "async"
             return jsonify(
@@ -51,13 +76,8 @@ def register_export_routes(app):
     def export_sync():
         """Builds the CSV in this request and sends it as a download. Refuses (413) above
         EXPORT_SYNC_ROW_THRESHOLD readings, which must use a background job instead."""
-        payload = request.get_json(silent=True) or {}
-        print(f"[EXPORT API] /api/exports/sync received payload keys: {payload.keys()}")
-        print(f"[EXPORT API] /api/exports/sync group_types: {payload.get('group_types', 'MISSING')}")
-
         try:
-            filters = normalize_export_payload(payload)
-            print(f"[EXPORT API] After normalization, group_types: {filters.get('group_types', 'MISSING')}")
+            filters = normalize_export_payload(_payload())
             row_count = estimate_rows(filters)
             if row_count > Config.EXPORT_SYNC_ROW_THRESHOLD:
                 return (
@@ -71,6 +91,9 @@ def register_export_routes(app):
                     ),
                     413,
                 )
+            refused = _low_disk(row_count)
+            if refused:
+                return refused
 
             os.makedirs(Config.EXPORTS_DIR, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(prefix="sync_export_", suffix=".csv", dir=Config.EXPORTS_DIR)
@@ -94,14 +117,24 @@ def register_export_routes(app):
 
     @app.route("/api/exports/jobs", methods=["POST"])
     def create_export_job():
-        """Queues a background export (202 with the job id). Refuses exports above EXPORT_MAX_ROWS (413), and
-        new jobs when this visitor or the whole server already has too many running (429)."""
-        payload = request.get_json(silent=True) or {}
-
+        """Queues a background export (202 with the job id), or answers 200 with a ready job that already holds
+        exactly this export. Refuses exports above EXPORT_MAX_ROWS (413), new jobs when this visitor or the whole
+        server already has too many running or this visitor has started too many this hour (429), and exports the
+        disk has no room for (507)."""
         try:
-            filters = normalize_export_payload(payload)
+            filters = normalize_export_payload(_payload())
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+
+        ready = reusable_job(filters)
+        if ready is not None:
+            return jsonify({
+                "job_id": ready.id,
+                "status": ready.status,
+                "estimated_rows": ready.estimated_rows,
+                "poll_interval_seconds": Config.EXPORT_POLL_INTERVAL_SECONDS,
+                "reused": True,
+            }), 200
 
         row_count = estimate_rows(filters)
         if row_count > Config.EXPORT_MAX_ROWS:
@@ -118,6 +151,9 @@ def register_export_routes(app):
                 ),
                 413,
             )
+        refused = _low_disk(row_count)
+        if refused:
+            return refused
 
         job_id = str(uuid.uuid4())
         requester_fingerprint = _request_fingerprint()
@@ -141,6 +177,14 @@ def register_export_routes(app):
                     }
                 ),
                 429,
+            )
+        hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        if jobs_started_since(requester_fingerprint, hour_ago) >= Config.EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER:
+            db.session.rollback()
+            return (
+                jsonify({"error": "You've started a lot of exports in the last hour. Please try again later."}),
+                429,
+                {"Retry-After": "600"},
             )
         if len(live) >= Config.EXPORT_MAX_ACTIVE_JOBS:
             db.session.rollback()

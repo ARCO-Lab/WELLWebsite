@@ -77,6 +77,13 @@ class Config:
     EXPORT_MAX_ROWS = int(os.getenv("EXPORT_MAX_ROWS", "5000000"))
     EXPORT_MAX_ACTIVE_JOBS = int(os.getenv("EXPORT_MAX_ACTIVE_JOBS", "6"))
     EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER = int(os.getenv("EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER", "2"))
+    # How many jobs one visitor may start in an hour, finished ones included, so a loop that queues a new export as
+    # soon as the last one finishes can't keep filling the disk. An identical export that is still ready is reused
+    # and doesn't count.
+    EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER = int(os.getenv("EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER", "6"))
+    # Free space (MB) to leave on the exports disk after an export's estimated size; exports that would go below it
+    # are refused (507). The database shares this disk on the VM.
+    EXPORT_MIN_FREE_MB = int(os.getenv("EXPORT_MIN_FREE_MB", "2048"))
     # How long one export may run, in seconds: past the soft limit it is stopped and marked failed; the hard
     # limit kills its worker process if it didn't stop.
     EXPORT_SOFT_TIME_LIMIT_SECONDS = int(os.getenv("EXPORT_SOFT_TIME_LIMIT_SECONDS", str(15 * 60)))
