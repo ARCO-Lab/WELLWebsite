@@ -459,3 +459,34 @@ test("loader: a tile still filling in is fetched again after a minute; older til
   loader.want("c", [A], 600, [old], 0, () => {});
   assert.equal(srv.calls.length, n0 + 1); // a past tile stays cached
 });
+
+test("loader: a failed refresh of a cached live tile shows no error and tries again; a new tile's failure does", async () => {
+  let failing = false;
+  const srv = fakeServer({ fail: () => failing });
+  let clock = Date.parse("2026-11-11T17:00:00Z");
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+  const live = tileAt(clock - 3600e3, 600);
+  loader.want("c", [A], 600, [live], 0, () => {});
+  await srv.settle();
+  const rev = loader.revision(A);
+  failing = true;
+  clock += 61_000;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    loader.want("c", [A], 600, [live], 0, () => {});
+    await srv.settle();
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(loader.error("c"), null); // the old copy is still drawn
+  assert.ok(loader.has(A, 600, live));
+  assert.equal(loader.revision(A), rev); // nothing replaced
+  const n = srv.calls.length;
+  loader.want("c", [A], 600, [live], 0, () => {});
+  assert.equal(srv.calls.length, n + 1); // tried again
+  await srv.settle();
+  loader.want("d", [B], 600, [live], 0, () => {}); // never loaded: its failure is an error
+  await srv.settle();
+  assert.match(loader.error("d").message, /500/);
+});

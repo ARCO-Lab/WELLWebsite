@@ -215,7 +215,9 @@ export class SeriesLoader {
 
   private put(key: string, bucketS: number, index: number, tile: TileSeries): void {
     const tk = tileKey(key, bucketS, index);
-    this.revisions.set(key, this.revision(key) + 1);
+    // A replaced tile (the latest hour, fetched again) changes the series' revision, so charts using it redraw; a new
+    // tile needs no bump (it changes which tiles a chart draws, which charts notice already)
+    if (this.cache.has(tk)) this.revisions.set(key, this.revision(key) + 1);
     if (tileRange(index, bucketS).end > this.now() - LIVE_WINDOW_MS) this.liveSince.set(tk, this.now());
     else this.liveSince.delete(tk);
     this.cache.delete(tk);
@@ -300,7 +302,11 @@ export class SeriesLoader {
       .catch((err: unknown) => {
         this.stats.failed++;
         const error = err instanceof Error ? err : new Error(String(err));
-        for (const w of job.wanters) this.errors.set(w, error);
+        // Only refreshing tiles already cached (the latest hour): the charts still draw the old copy, so no error
+        // box; the tiles stay stale, and the next wish for them tries again
+        const refreshOnly = job.tiles.every((i) => [...job.keys].every((k) => this.cache.has(tileKey(k, job.bucketS, i))));
+        if (refreshOnly) console.warn("[charts] refreshing the latest hour failed; trying again later:", error.message);
+        else for (const w of job.wanters) this.errors.set(w, error);
       })
       .finally(() => {
         this.unpend(job);
