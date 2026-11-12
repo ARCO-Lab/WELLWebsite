@@ -372,7 +372,7 @@ export default function Dashboard() {
       {/* Header is hidden in iframe mode */}
       {!inIframe && <Header />}
       <ChartPageContext.Provider value={chartPage}>
-      <main className="min-h-screen bg-background text-foreground">
+      <main id="main-content" tabIndex={-1} className="min-h-screen bg-background text-foreground focus:outline-none">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
           {/* Title and tab triggers */}
