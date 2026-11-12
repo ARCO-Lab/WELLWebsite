@@ -147,7 +147,8 @@ function well_theme_enqueue_assets() {
     // js/video_slider.js is not loaded: it is for YouTube hero videos this site doesn't have, and
     // it loaded the YouTube player API on every page before stopping with an error.
     $js_files = [
-        'popper.min', 'theme.min', 'ekko-lightbox.min', 'header_footer',
+        'popper.min', 'theme.min', 'ekko-lightbox.min',
+        // 'header_footer', // off: it reads a directory_uri variable the theme never sets (an error on every page), and working it would load hfcopy.js twice and add McMaster header markup the site has never shown.
         'hfcopy', 'mcmaster', 'countdown-timer',
         'wp-form-name-fields', 'comm100-wrapper'
     ];
