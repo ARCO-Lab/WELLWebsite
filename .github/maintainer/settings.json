@@ -31,12 +31,14 @@
     ],
     "deny": [
       "Bash(git push * main)", "Bash(git push * refs/heads/main*)", "Bash(git push *:*)",
+      "Bash(git push * maint/* *)", "Bash(git push *HEAD*)", "Bash(git push *--all*)",
       "Bash(git push --force*)", "Bash(git push -f*)",
       "Bash(git push * --force*)", "Bash(git push * -f*)", "Bash(git push * +*)", "Bash(git push * --delete*)",
       "Bash(git push * --mirror*)", "Bash(git rebase *)", "Bash(git commit --amend*)", "Bash(git commit * --amend*)",
       "Bash(git remote *)", "Bash(git config *)", "Bash(git credential *)",
 
-      "Bash(gh pr merge*)", "Bash(gh pr close*)", "Bash(gh pr review*)", "Bash(gh pr comment*)",
+      "Bash(gh pr edit * --base*)", "Bash(gh pr merge*)",
+      "Bash(gh pr close*)", "Bash(gh pr review*)", "Bash(gh pr comment*)",
       "Bash(gh pr ready*)", "Bash(gh secret*)", "Bash(gh variable*)", "Bash(gh auth*)", "Bash(gh repo*)",
       "Bash(gh release*)", "Bash(gh workflow enable*)", "Bash(gh workflow disable*)", "Bash(gh run cancel*)",
       "Bash(gh run delete*)", "Bash(gh api *merge*)", "Bash(gh api * -X *)", "Bash(gh api * --method *)",
