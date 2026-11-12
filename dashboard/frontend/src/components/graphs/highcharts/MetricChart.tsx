@@ -1,7 +1,8 @@
 // This file defines the MetricChart component: one West Campus sensor chart (a group, or one water logger),
 // drawn with Highcharts from the series /api/series returns (see hooks/useChartSeries). It has one Y-axis per unit,
-// shown in the cards too (small labels there), and each axis scales on its own (alignTicks off), so one unit's
-// outlier doesn't squash the others. Each measurement keeps its own colour wherever it appears.
+// each scaling on its own (alignTicks off), so one unit's outlier doesn't squash the others. The axes are labelled
+// only in the expanded (modal) view; the small cards keep just the shapes, with one faint grid. Each measurement
+// keeps its own colour wherever it appears.
 //
 // Averaged buckets are drawn at their middle; the tooltip names the span they cover and the resolution
 // ("Oct 1, 2026 18:00–24:00 · 6-h mean"), with the smallest and largest reading in it. Points the line alone
@@ -239,16 +240,23 @@ const MetricChart: React.FC<MetricChartProps> = ({
         yAxis: unitIndex.get(s.unit)!,
       };
     });
-    // Each axis names its unit once, in a title along it, so the labels stay narrow; both are in the colour of the
-    // axis' only series (grey when it has several) and small in the cards. Only the first axis draws grid lines: with
-    // ticks no longer aligned, more would criss-cross. Past maxAxes (narrow screens) axes are hidden.
-    const axes = Array.from(unitIndex.keys()).map((unit, index) => {
+    // In the modal, each axis names its unit once, in a title along it, so the labels stay narrow; both are in the
+    // colour of the axis' only series (grey when it has several). Only the first axis draws grid lines: with ticks
+    // no longer aligned, more would criss-cross. Past maxAxes (narrow screens) axes are hidden.
+    // The cards show no axis labels or titles, so the small plot keeps its width: the first axis keeps only its
+    // faint grid lines (they help read the shape), the rest are hidden. A hidden axis still scales its own series.
+    const axes = Array.from(unitIndex.keys()).map((unit, index): Highcharts.YAxisOptions => {
+      if (!modalOpen) {
+        return index === 0
+          ? { title: { text: undefined }, labels: { enabled: false }, gridLineWidth: 1, gridLineColor: '#f0f0f0', visible: true, opposite: false }
+          : { visible: false, opposite: index % 2 === 1 };
+      }
       const colors = unitColors.get(unit) ?? [];
       const color = colors.length === 1 ? colors[0] : '#4b5563';
-      const style = { fontFamily: FONT, fontSize: modalOpen ? '11px' : '9px', color, whiteSpace: 'nowrap' };
+      const style = { fontFamily: FONT, fontSize: '11px', color, whiteSpace: 'nowrap' };
       return {
         title: { text: unit, margin: 4, style },
-        labels: { style },
+        labels: { enabled: true, style },
         gridLineWidth: index === 0 ? 1 : 0,
         visible: index < maxAxes,
         opposite: index % 2 === 1,

@@ -108,9 +108,10 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |
+| `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` | build arg | `https://well.goatcounter.com/count` | Where page views are counted (README, "Visitor counts"). Counts are sent only from welldash.mcmaster.ca, whatever the value; empty leaves counting out of the build. |
 
 `docker-compose.yml` passes only two build args, `FLASK_API_URL` (from `BACKEND_INTERNAL_URL`) and
-`NEXT_PUBLIC_FLASK_API_URL`. The other three come from the `ARG` defaults in `dashboard/frontend/Dockerfile`. To change
+`NEXT_PUBLIC_FLASK_API_URL`. The other four come from the `ARG` defaults in `dashboard/frontend/Dockerfile`. To change
 one, edit that default, build by hand with `docker build --build-arg NAME=value dashboard/frontend`, or add it under
 the dashboard's `build: args:` in `docker-compose.yml`. Env files are kept out of the image build (`.dockerignore`),
 so `.env.local` can't set any of them.

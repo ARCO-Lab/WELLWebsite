@@ -62,6 +62,9 @@ wordpress_backup.sql
 # Local snapshot of the VM (not tracked)
 well-vm/
 
+# Nightly database dumps (scripts/backup_db.py), bind-mounted into the worker
+/backups/
+
 # home/ is the WordPress site: core and plugins exactly as released (see .gitattributes). The
 # generic rules above (build/, logs, *.log, *.css.map, out/, ...) would hide release files there,
 # so re-include all of home/ and ignore only what is site state or secrets. Keep this block last.
