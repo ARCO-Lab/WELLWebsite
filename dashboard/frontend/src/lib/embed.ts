@@ -13,12 +13,21 @@
 //     in iframe pixels), on scroll and resize. globals.css places the dialogs (an enlarged chart) in that part:
 //     a dialog fixed to the middle of a 3000 px tall iframe would otherwise open out of sight. The dashboard
 //     answers the first of these with its height again, in case the page wasn't listening yet when it sent it.
-// Messages only go to the WordPress site's origin (NEXT_PUBLIC_WP_HOME), the same site the CSP frame-ancestors allows.
+//     StickyPanel uses it too (getEmbedView, subscribeEmbedView) to keep the Filters panel in view, since the
+//     iframe itself no longer scrolls.
+// Messages are only exchanged with the WordPress site (PARENT_ORIGINS), the sites the CSP frame-ancestors allows.
 
 import { useEffect, type RefObject } from "react";
 
-/** Origin of the WordPress site, the only page the dashboard sends its height to. */
-export const PARENT_ORIGIN = new URL(process.env.NEXT_PUBLIC_WP_HOME || "https://well.mcmaster.ca").origin;
+/**
+ * Origins of the WordPress site, the only pages the dashboard talks to: well.mcmaster.ca with and without www, and
+ * NEXT_PUBLIC_WP_HOME's origin if that is another one (a test site).
+ */
+export const PARENT_ORIGINS: readonly string[] = [...new Set([
+  "https://well.mcmaster.ca",
+  "https://www.well.mcmaster.ca",
+  new URL(process.env.NEXT_PUBLIC_WP_HOME || "https://well.mcmaster.ca").origin,
+])];
 
 export const HEIGHT_MESSAGE = "well-embed:height";
 export const VIEWPORT_MESSAGE = "well-embed:viewport";
@@ -32,10 +41,23 @@ export function inFrame(): boolean {
   }
 }
 
-/** Whether the parent page is the WordPress site, where the browser says (Chrome, Safari); otherwise assumed. */
-function parentIsSite(): boolean {
+/** The parent page's origin, where the browser says (Chrome, Safari); null where it doesn't (Firefox). */
+function parentOrigin(): string | null {
   const ancestors = window.location.ancestorOrigins;
-  return !ancestors || ancestors.length === 0 || ancestors[0] === PARENT_ORIGIN;
+  return ancestors && ancestors.length > 0 ? ancestors[0] : null;
+}
+
+/** The part of the iframe in the WordPress page's window, in iframe pixels (null until the page has said). */
+export type EmbedView = { top: number; height: number };
+let view: EmbedView | null = null;
+const viewListeners = new Set<() => void>();
+
+export const getEmbedView = (): EmbedView | null => view;
+
+/** Calls `listener` whenever the WordPress page reports a new part in view; returns the unsubscribe function. */
+export function subscribeEmbedView(listener: () => void): () => void {
+  viewListeners.add(listener);
+  return () => { viewListeners.delete(listener); };
 }
 
 /**
@@ -46,7 +68,16 @@ function parentIsSite(): boolean {
 export function useEmbedFrame(root: RefObject<HTMLElement | null>, enabled: boolean) {
   useEffect(() => {
     const el = root.current;
-    if (!enabled || !el || !inFrame() || !parentIsSite()) return;
+    if (!enabled || !el || !inFrame()) return;
+    const known = parentOrigin();
+    if (known !== null && !PARENT_ORIGINS.includes(known)) return;
+
+    // Where messages go: the parent's origin once known (from the browser, or from its first message); until then
+    // each trusted origin, of which only the parent's actually receives it.
+    let target = known;
+    const post = (message: object) => {
+      for (const origin of target ? [target] : PARENT_ORIGINS) window.parent.postMessage(message, origin);
+    };
 
     let last = -1;
     const send = () => {
@@ -54,7 +85,7 @@ export function useEmbedFrame(root: RefObject<HTMLElement | null>, enabled: bool
       const height = Math.ceil(el.getBoundingClientRect().height);
       if (height === last) return;
       last = height;
-      window.parent.postMessage({ type: HEIGHT_MESSAGE, height }, PARENT_ORIGIN);
+      post({ type: HEIGHT_MESSAGE, height });
     };
     const observer = new ResizeObserver(send);
     observer.observe(el);
@@ -62,12 +93,14 @@ export function useEmbedFrame(root: RefObject<HTMLElement | null>, enabled: bool
 
     const html = document.documentElement;
     const onMessage = (e: MessageEvent) => {
-      if (e.origin !== PARENT_ORIGIN || e.source !== window.parent) return;
+      if (!PARENT_ORIGINS.includes(e.origin) || e.source !== window.parent) return;
       const d = e.data as { type?: unknown; top?: unknown; height?: unknown } | null;
       if (!d || d.type !== VIEWPORT_MESSAGE) return;
       const top = Number(d.top);
       const height = Number(d.height);
       if (!Number.isFinite(top) || !Number.isFinite(height) || top < 0 || height <= 0) return;
+      target = e.origin; // reply to the page that wrote
+      view = { top, height };
       html.style.setProperty("--embed-view-top", `${Math.round(top)}px`);
       html.style.setProperty("--embed-view-height", `${Math.round(height)}px`);
       // The first one is also the page's way of asking for the height, in case it wasn't listening yet
@@ -76,12 +109,14 @@ export function useEmbedFrame(root: RefObject<HTMLElement | null>, enabled: bool
         last = -1;
         send();
       }
+      viewListeners.forEach((listener) => listener());
     };
     window.addEventListener("message", onMessage);
 
     return () => {
       observer.disconnect();
       window.removeEventListener("message", onMessage);
+      view = null;
     };
   }, [root, enabled]);
 }

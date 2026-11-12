@@ -2,6 +2,7 @@
 //   - The server HTML of /?embed=1 has no header or footer, so they can't flash before the page's scripts run.
 //   - Framed by a stand-in for the WordPress Dashboard page, with the theme's real js/dashboard-embed.js, the iframe
 //     is sized to the dashboard's content (no scrollbar inside it) through the two pages' messages.
+//     As that page scrolls, the Filters panel stays in view (the iframe itself no longer scrolls).
 //   - Framed without ?embed=1 (an old link), <html> is marked "in-frame" before first paint and the header is hidden.
 // The stand-in page is served by the test itself (page.route) at the WordPress site's origin: nothing is fetched from
 // the real site.
@@ -72,6 +73,31 @@ test("embedded, the iframe is sized to the dashboard's content", async ({ page, 
   await expect(frame.locator("html")).toHaveClass(/embed-sized/);
   await expect(frame.locator("header")).toHaveCount(0);
   await expect(frame.locator("footer")).toHaveCount(0);
+});
+
+test("embedded, the Filters panel stays in view as the WordPress page scrolls", async ({ page, baseURL }) => {
+  const frame = await openFramed(page, baseURL!, "/?embed=1");
+  const iframe = page.locator("#well-dashboard-frame");
+  const filters = frame.getByRole("heading", { level: 2, name: "Filters" }).first();
+
+  // A tall block beside the panel, standing in for open graphs, makes the row (and the iframe) much taller
+  await filters.evaluate((h) => {
+    const row = h.closest(".lg\\:sticky")!.parentElement!.parentElement!;
+    const spacer = document.createElement("div");
+    spacer.style.height = "2500px";
+    row.lastElementChild!.appendChild(spacer);
+  });
+  await expect.poll(async () => (await iframe.boundingBox())!.height).toBeGreaterThan(3000);
+
+  // Scroll the WordPress page well past the panel's own place: the panel follows, inside the window
+  const viewport = page.viewportSize()!;
+  for (const by of [1200, 2000]) {
+    await page.evaluate((y) => window.scrollTo(0, y), by);
+    await expect.poll(async () => {
+      const box = (await filters.boundingBox())!;
+      return box.y >= 0 && box.y + box.height <= viewport.height;
+    }).toBe(true);
+  }
 });
 
 test("framed without ?embed=1, the header is hidden from the first paint", async ({ page, baseURL }) => {
