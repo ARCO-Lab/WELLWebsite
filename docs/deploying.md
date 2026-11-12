@@ -9,9 +9,9 @@ The VM runs `main`. On the VM, `./deploy.sh`:
     public, so it never rolls the site back;
   - `docker-compose.yml` → everything;
   - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress`
-    container is recreated, since Apache and PHP read them only at start;
+    container is recreated, since Apache and PHP read them only at start (`--auto` holds these for a person);
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's
-    live once pulled.
+    live once pulled (which is why `--auto` holds its PHP files for a person).
 - checks the site: `/api/latest`, the dashboard home page (both on port 8081) and the WordPress home page (port 8080).
   If `worker` or `export_worker` was rebuilt, it also checks a minute later that the container is still running and
   hasn't restarted (compose restarts crashing workers, so "running" alone proves nothing);
@@ -35,7 +35,11 @@ still running, so nothing deploys until both match. It holds changes that need a
 for you:
 - a new database migration;
 - `docker-compose.yml`;
-- a WordPress core update, which needs its database update run from wp-admin.
+- a WordPress core update, which needs its database update run from wp-admin;
+- anything under `.github/` (a changed workflow could also make a bad change pass CI), `deploy.sh` itself, PHP under
+  `home/`, `wp-config*`, `.htaccess`, and the Apache/PHP config in `wordpress/` (`HOLD_PATHS` in `deploy.sh`). These
+  are live as soon as they are pulled, with no rebuild or test, so a merged pull request alone doesn't put them on the
+  VM: a person looks at the change and runs `./deploy.sh`.
 
 Deploy those with `./deploy.sh`. `--auto` reports each problem once, not every 5 minutes: a held commit, failed CI,
 local edits, a non-fast-forward or a merge git refuses, a GitHub API error or unreadable reply, a fetch error, an

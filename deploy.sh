@@ -5,8 +5,9 @@
 #   ./deploy.sh            deploy now (asks nothing; you're there)
 #   ./deploy.sh --auto     for cron: only deploy a commit whose CI checks all passed, and hold (log, don't
 #                          deploy) changes that need a person: DB migrations, docker-compose.yml, a WordPress
-#                          core update. Each problem is reported once, not on every run; a rolled-back commit
-#                          isn't retried. Prints nothing when there's nothing to do.
+#                          core update, and code CI can't vouch for (HOLD_PATHS). Each problem is reported once,
+#                          not on every run; a rolled-back commit isn't retried. Prints nothing when there's
+#                          nothing to do.
 #   ./deploy.sh --dry-run  show what would happen, change nothing (no log, state or pings)
 #
 # Settings (environment, all optional): DEPLOY_BRANCH (main), DEPLOY_REMOTE (origin), DEPLOY_LOG
@@ -20,7 +21,7 @@ for arg in "$@"; do
   case "$arg" in
     --auto) AUTO=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -34,6 +35,11 @@ REPO=${GITHUB_REPO:-ARCO-Lab/WELLWebsite}
 API=${GITHUB_API:-https://api.github.com}
 DOCKER=${DOCKER:-docker}
 CURL=${CURL:-curl}
+# --auto holds these for a person to deploy with ./deploy.sh: CI and the automation (.github/, which could also make
+# a bad change pass CI), this script, WordPress PHP under home/ (live the moment it is pulled, with no rebuild or
+# test), wp-config, .htaccess, and the Apache/PHP config in wordpress/. A merged pull request alone is not enough
+# for these, so a change that got past review can't go live unattended.
+HOLD_PATHS='^\.github/|^deploy\.sh$|^home/.*\.php$|(^|/)wp-config[^/]*$|(^|/)\.htaccess$|^wordpress/.*\.(conf|ini)$'
 REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Dashboard image" "Deploy script" "End-to-end data (vendors to browser)")  # job names in .github/workflows/ci.yml
 
 # Best effort: an unwritable deploy.log must never stop a deploy halfway (tee still prints the line either way)
@@ -151,6 +157,9 @@ if [ "$AUTO" = 1 ]; then
   if grep -q '^dashboard/backend/app/db/migrations/' <<<"$CHANGED"; then hold "it adds or changes a database migration, which must be applied by hand first."; fi
   if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then hold "it changes docker-compose.yml, which can restart or re-network the whole stack."; fi
   if grep -qx 'home/wp-includes/version.php' <<<"$CHANGED"; then hold "it updates WordPress core, which needs its database update run from wp-admin."; fi
+  if held=$(grep -E "$HOLD_PATHS" <<<"$CHANGED"); then
+    hold "it changes files a person must deploy (CI, deploy.sh, WordPress PHP or config): $(head -5 <<<"$held" | tr '\n' ' ')"
+  fi
 fi
 
 SERVICES=()
@@ -169,7 +178,7 @@ if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then add ALL; fi
 RECREATE=()
 if grep -Eq '^wordpress/.*\.(conf|ini)$' <<<"$CHANGED"; then RECREATE=(wordpress); fi
 # Everything else needs no rebuild: WordPress is the stock wordpress image with home/ bind-mounted, so home/ is
-# live once merged; docs, tests and CI aren't deployed.
+# live once merged (which is why --auto holds its PHP, HOLD_PATHS); docs, tests and CI aren't deployed.
 
 summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}${RECREATE[*]:+; recreate: ${RECREATE[*]}}"
 if [ "$DRY" = 1 ]; then echo "Would deploy $summary"; exit 0; fi

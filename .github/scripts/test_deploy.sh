@@ -166,8 +166,21 @@ check "by hand, docker-compose.yml change: rebuilds everything, checks both work
 sync_vm; change README.md; deploy
 check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! ran "compose"'
 
-sync_vm; change wordpress/zz-performance.conf; ci success success; deploy --auto
-check "--auto, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
+# HOLD_PATHS: code a merged pull request alone mustn't put live. Each is held by --auto even with CI green.
+for path in .github/workflows/ci.yml home/index.php home/wp-content/plugins/p/p.php home/.htaccess \
+  home/wp-config.php wp-config-extra.php wordpress/apache-hardening.conf wordpress/php-hardening.ini; do
+  sync_vm; change "$path"; ci success success; deploy --auto
+  check "--auto, $path changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "a person must deploy" && said "$path" && ! ran "compose"'
+done
+# deploy.sh itself: a comment line, so the VM's copy still runs once a later test pulls it
+sync_vm; (cd "$T/work" && echo "# edited" >> deploy.sh && git commit -qam "edit deploy.sh" && git push -q origin HEAD:main)
+ci success success; deploy --auto
+check "--auto, deploy.sh changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "deploy.sh"'
+sync_vm; change home/wp-content/themes/t/style.css; ci success success; deploy --auto
+check "--auto, non-PHP files under home/: deployed" 'rc 0 && head_is_remote && ! said "HELD"'
+
+sync_vm; change wordpress/zz-performance.conf; deploy
+check "by hand, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
 
 sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change wordpress/php-hardening.ini
 WP_BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
