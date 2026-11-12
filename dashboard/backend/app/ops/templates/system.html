@@ -54,7 +54,8 @@
     <li>Running since {{ started_at | site_time }} ({{ started_at | ago(now) }})</li>
     <li>Uptime checks: {% if settings.probe_interval_s > 0 %}every {{ settings.probe_interval_s }} s{% else %}off{% endif %}{% if probes.probes %}, last {{ (probes.probes | map(attribute='checked_at') | max) | ago(now) }}{% endif %}</li>
     <li>Keeps uptime checks and request counts for {{ settings.retention_days }} days</li>
-    <li>Session cookie: {{ 'HTTPS only' if settings.cookie_secure else 'sent over HTTP too (OPS_COOKIE_SECURE=0)' }}</li>
+    <li>Published on {{ settings.bind }} (OPS_BIND)</li>
+    <li>Session cookie: {{ 'HTTPS only (OPS_COOKIE_SECURE=1)' if settings.cookie_secure else 'marked Secure when the request is HTTPS (OPS_COOKIE_SECURE unset)' }}</li>
   </ul>
   <p class="muted">Container states and disk space aren't shown: reading them would need the Docker socket, which would give
   this service control of the VM. The uptime checks and job heartbeats cover what matters.</p>

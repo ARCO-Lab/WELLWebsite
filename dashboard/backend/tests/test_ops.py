@@ -1,7 +1,9 @@
-"""welldash² (ops/): it refuses to start without its secrets, the login (password, CSRF, failed-login limit, 8-hour
-sessions, sign-out), that every page needs the session and only login/logout accept POST, the uptime check, the
-password helper, and, with TEST_POSTGRES_URL set (as in CI), every page rendered from empty and from populated
-tables, the probe's rows and the 90-day cleanup. No network: the outside services are replaced by stubs.
+"""welldash² (ops/): it refuses to start without its secrets or with OPS_BIND unset or every address, the login
+(password, CSRF and the failed-login limit checked before the hash, no global lock-out, the cookie Secure over
+HTTPS, 8-hour sessions, sign-out revoking the session on the server), that every page needs the session and only
+login/logout accept POST, the uptime check, the password helper, and, with TEST_POSTGRES_URL set (as in CI), every
+page rendered from empty and from populated tables, the probe's rows and the 90-day cleanup.
+No network: the outside services are replaced by stubs.
 Run from dashboard/backend: python -m unittest discover -s tests -t ."""
 import datetime as dt
 import os
@@ -25,15 +27,15 @@ from config import Config  # noqa: E402
 
 Config.SQLALCHEMY_DATABASE_URI = "sqlite://"   # another test module may have imported Config first
 
-from ops import external, hashpw, probe  # noqa: E402
+from ops import auth, external, hashpw, probe  # noqa: E402
 from ops.app import create_app  # noqa: E402
-from ops.auth import LoginLimiter  # noqa: E402
 from ops.settings import ConfigError, load_settings  # noqa: E402
 
 UTC = dt.timezone.utc
 PASSWORD = "correct horse battery staple"    # a test value only
 HASH = generate_password_hash(PASSWORD, method="pbkdf2:sha256:1000")   # cheap to check, for speed
-ENV = {"OPS_PASSWORD_HASH": HASH, "OPS_SECRET_KEY": "k" * 40, "OPS_DATABASE_URL": "sqlite://"}
+ENV = {"OPS_PASSWORD_HASH": HASH, "OPS_SECRET_KEY": "k" * 40, "OPS_DATABASE_URL": "sqlite://",
+       "OPS_BIND": "127.0.0.1"}
 STUBS = {"github_ci": {"runs": [{"name": "CI", "status": "completed", "conclusion": "success", "sha": "abc1234",
                                  "created_at": "2026-11-10T12:00:00Z", "url": "https://github.com/x", "event": "push"}]},
          "sentry_issues": {"configured": False}, "healthchecks": {"configured": False},
@@ -50,9 +52,11 @@ def make_app(env=None, engine=None):
 
 
 def sign_in(client, settings, at=None):
-    """A valid session without going through the form (the form itself is tested in LoginTests)."""
+    """A valid session without going through the form (the form itself is tested in LoginTests), with its id
+    registered in the app's session store as a login would."""
+    sid = client.application.extensions["ops_sessions"].start()
     with client.session_transaction() as s:
-        s["auth"] = {"at": at if at is not None else time.time(), "v": settings.password_version}
+        s["auth"] = {"at": at if at is not None else time.time(), "v": settings.password_version, "sid": sid}
         s["csrf"] = "csrf-token"
 
 
@@ -85,20 +89,43 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((s.retention_days, s.probe_interval_s), (90, 60))
         self.assertTrue(load_settings({**ENV, "OPS_COOKIE_SECURE": "1"}).cookie_secure)
 
+    def test_ops_bind_is_required_and_not_every_address(self):
+        for bind in (None, "", "0.0.0.0", "::", "[::]"):
+            env = {k: v for k, v in ENV.items() if k != "OPS_BIND"}
+            if bind is not None:
+                env["OPS_BIND"] = bind
+            with self.assertRaises(ConfigError) as caught:
+                load_settings(env)
+            self.assertIn("OPS_BIND", str(caught.exception))
+            with self.assertRaises(ConfigError), self.assertLogs("ops", "CRITICAL"):
+                create_app(env=env, engine=create_engine("sqlite://"), start_background=False)
+        with self.assertRaises(ConfigError) as caught:
+            load_settings({**ENV, "OPS_BIND": "well.cas.mcmaster.ca"})   # Docker publishes on addresses only
+        self.assertIn("must be an IP address", str(caught.exception))
+        for bind in ("127.0.0.1", "130.113.68.63", "::1"):
+            self.assertEqual(load_settings({**ENV, "OPS_BIND": bind}).bind, bind)
+        # Every address only when that is said on purpose
+        for bind in ("0.0.0.0", "::"):
+            self.assertEqual(load_settings({**ENV, "OPS_BIND": bind, "OPS_ALLOW_ANY_ADDRESS": "1"}).bind, bind)
+        with self.assertRaises(ConfigError):
+            load_settings({**ENV, "OPS_BIND": "0.0.0.0", "OPS_ALLOW_ANY_ADDRESS": "0"})
+
 
 class LoginTests(unittest.TestCase):
     def setUp(self):
         self.app = make_app()
         self.client = self.app.test_client()
 
-    def csrf(self):
-        self.client.get("/login")
-        with self.client.session_transaction() as s:
+    def csrf(self, client=None):
+        client = client or self.client
+        client.get("/login")
+        with client.session_transaction() as s:
             return s["csrf"]
 
-    def login(self, password, csrf=None, ip="192.0.2.10"):
-        return self.client.post("/login", data={"password": password, "csrf_token": csrf or self.csrf()},
-                                environ_base={"REMOTE_ADDR": ip})
+    def login(self, password, csrf=None, ip="192.0.2.10", client=None):
+        client = client or self.client
+        return client.post("/login", data={"password": password, "csrf_token": csrf or self.csrf(client)},
+                           environ_base={"REMOTE_ADDR": ip})
 
     def test_login_page_has_one_password_field_and_csrf(self):
         page = self.client.get("/login")
@@ -115,15 +142,22 @@ class LoginTests(unittest.TestCase):
         cookie = response.headers["Set-Cookie"]
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
-        self.assertNotIn("Secure", cookie)   # OPS_COOKIE_SECURE is off by default (HTTP on the VPN)
+        self.assertNotIn("Secure", cookie)   # plain HTTP (an SSH tunnel) and OPS_COOKIE_SECURE unset
         with stub_external():
             self.assertEqual(self.client.get("/system").status_code, 200)
         secure = make_app({"OPS_COOKIE_SECURE": "1"}).test_client()
-        secure.get("/login")
-        with secure.session_transaction() as s:
+        self.assertIn("Secure", self.login(PASSWORD, client=secure).headers["Set-Cookie"])
+
+    def test_cookie_is_secure_whenever_the_request_is_https(self):
+        client = self.app.test_client()
+        client.get("/login", base_url="https://localhost")
+        with client.session_transaction(base_url="https://localhost") as s:
             token = s["csrf"]
-        cookie = secure.post("/login", data={"password": PASSWORD, "csrf_token": token}).headers["Set-Cookie"]
-        self.assertIn("Secure", cookie)
+        response = client.post("/login", base_url="https://localhost",
+                               data={"password": PASSWORD, "csrf_token": token})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("Secure", response.headers["Set-Cookie"])
+        self.assertNotIn("Secure", self.client.get("/login").headers["Set-Cookie"])   # the same app over HTTP
 
     def test_wrong_password_and_bad_csrf(self):
         self.assertEqual(self.login("wrong").status_code, 401)
@@ -136,6 +170,17 @@ class LoginTests(unittest.TestCase):
         fresh = make_app().test_client()   # no session at all, so no token to match
         self.assertEqual(fresh.post("/login", data={"password": PASSWORD, "csrf_token": ""}).status_code, 400)
 
+    def test_password_is_hashed_only_after_the_limit_and_csrf_pass(self):
+        with mock.patch.object(auth, "check_password_hash", wraps=auth.check_password_hash) as check:
+            for _ in range(5):
+                self.assertEqual(self.login(PASSWORD, csrf="forged").status_code, 400)
+            self.assertEqual(check.call_count, 0)   # a bad CSRF token never reaches the hash
+            refused = self.login(PASSWORD)          # and counts as a failure: this address is now refused
+            self.assertEqual(refused.status_code, 429)
+            self.assertEqual(check.call_count, 0)
+            self.assertEqual(self.login(PASSWORD, ip="192.0.2.99").status_code, 302)
+            self.assertEqual(check.call_count, 1)
+
     def test_failed_logins_are_limited_per_address(self):
         for _ in range(5):
             self.assertEqual(self.login("wrong").status_code, 401)
@@ -144,20 +189,45 @@ class LoginTests(unittest.TestCase):
         self.assertIn("Too many failed attempts", blocked.get_data(as_text=True))
         self.assertEqual(self.login(PASSWORD, ip="192.0.2.99").status_code, 302)   # another address isn't blocked
 
-    def test_limiter_window_and_total(self):
+    def test_many_addresses_failing_cannot_lock_the_owner_out(self):
+        for i in range(60):   # more than the 50 that used to lock login for everyone
+            self.assertEqual(self.login("wrong", ip=f"198.51.100.{i}").status_code, 401)
+        self.assertEqual(self.login(PASSWORD, ip="192.0.2.50").status_code, 302)
+
+    def test_limiter_per_address_window_and_global_slowdown(self):
         now = [1000.0]
-        limiter = LoginLimiter(per_client=5, total=8, window_s=900, clock=lambda: now[0])
+        limiter = auth.LoginLimiter(per_client=5, slowdown_after=8, slowdown_gap_s=60, window_s=900,
+                                    clock=lambda: now[0])
         for _ in range(5):
-            limiter.failed("a")
-        self.assertTrue(limiter.blocked("a"))
-        self.assertFalse(limiter.blocked("b"))
+            self.assertIsNone(limiter.attempt("a"))   # counted before the password is checked
+        self.assertEqual(limiter.attempt("a"), "client")
+        self.assertIsNone(limiter.attempt("b"))
         now[0] += 899
-        self.assertTrue(limiter.blocked("a"))
+        self.assertEqual(limiter.attempt("a"), "client")
         now[0] += 1
-        self.assertFalse(limiter.blocked("a"))   # 15 minutes later
+        self.assertIsNone(limiter.attempt("a"))   # 15 minutes after its first failures
         for client in "cdefghij":
-            limiter.failed(client)
-        self.assertTrue(limiter.blocked("someone-new"))   # 8 failures from all addresses together
+            self.assertIsNone(limiter.attempt(client))
+        # 9 failures in the window: a new address still gets in, one that just failed waits a minute
+        self.assertIsNone(limiter.attempt("someone-new"))
+        self.assertEqual(limiter.attempt("c"), "slowdown")
+        now[0] += 60
+        self.assertIsNone(limiter.attempt("c"))
+        # The right password clears that address and takes its attempt off the total
+        total = len(limiter.all)
+        limiter.succeeded("someone-new")
+        self.assertNotIn("someone-new", limiter.by_client)
+        self.assertEqual(len(limiter.all), total - 1)
+
+    def test_limiter_forgets_addresses_whose_failures_are_old(self):
+        now = [1000.0]
+        limiter = auth.LoginLimiter(window_s=900, clock=lambda: now[0])
+        for i in range(100):
+            limiter.attempt(f"203.0.113.{i}")
+        now[0] += 900
+        limiter.attempt("192.0.2.1")
+        self.assertEqual(list(limiter.by_client), ["192.0.2.1"])
+        self.assertEqual(len(limiter.all), 1)
 
     def test_session_expires_after_8_hours_and_on_password_change(self):
         settings = self.app.extensions["ops_settings"]
@@ -172,8 +242,9 @@ class LoginTests(unittest.TestCase):
             other_client = other.test_client()
             with self.client.session_transaction() as s:
                 old_session = dict(s)
+            other.extensions["ops_sessions"].started[old_session["auth"]["sid"]] = time.time()
             with other_client.session_transaction() as s:
-                s.update(old_session)   # same secret key, but made with the old password
+                s.update(old_session)   # same secret key and a known session id, but made with the old password
             self.assertEqual(other_client.get("/visitors").status_code, 302)
 
     def test_logout_needs_csrf_and_ends_the_session(self):
@@ -185,6 +256,42 @@ class LoginTests(unittest.TestCase):
         response = self.client.post("/logout", data={"csrf_token": "csrf-token"})
         self.assertEqual((response.status_code, response.headers["Location"]), (302, "/login"))
         self.assertEqual(self.client.get("/visitors").status_code, 302)
+
+    def test_logout_revokes_the_session_on_the_server(self):
+        """A copy of the cookie taken before sign-out (as someone reading plain HTTP could) stops working."""
+        self.assertEqual(self.login(PASSWORD).status_code, 302)
+        with self.client.session_transaction() as s:
+            captured = dict(s)
+        thief = self.app.test_client()
+        with thief.session_transaction() as s:
+            s.update(captured)
+        with stub_external():
+            self.assertEqual(thief.get("/visitors").status_code, 200)
+            self.assertEqual(self.client.post("/logout", data={"csrf_token": captured["csrf"]}).status_code, 302)
+            self.assertEqual(thief.get("/visitors").status_code, 302)
+        # A restart forgets every session: a cookie signed with the same key isn't enough on its own
+        sign_in(self.client, self.app.extensions["ops_settings"])
+        with self.client.session_transaction() as s:
+            still_valid = dict(s)
+        restarted = make_app().test_client()
+        with restarted.session_transaction() as s:
+            s.update(still_valid)
+        self.assertEqual(restarted.get("/visitors").status_code, 302)
+
+    def test_session_store(self):
+        now = [1000.0]
+        store = auth.SessionStore(lifetime_s=100, clock=lambda: now[0])
+        first, second = store.start(), store.start()
+        self.assertNotEqual(first, second)
+        self.assertTrue(store.alive(first) and store.alive(second))
+        store.end(first)
+        self.assertFalse(store.alive(first))
+        self.assertTrue(store.alive(second))
+        self.assertFalse(store.alive(None) or store.alive("made-up"))
+        now[0] += 100
+        self.assertFalse(store.alive(second))
+        store.start()   # drops the expired ones
+        self.assertNotIn(second, store.started)
 
 
 class RouteProtectionTests(unittest.TestCase):

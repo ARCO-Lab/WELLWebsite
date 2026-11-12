@@ -196,7 +196,12 @@ services:
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-${BACKEND_DATABASE_URL}}
       OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:-}
       OPS_SECRET_KEY: ${OPS_SECRET_KEY:-}
-      OPS_COOKIE_SECURE: ${OPS_COOKIE_SECURE:-0}
+      # Unset: the session cookie is marked Secure whenever the request is HTTPS (ops/app.py). 1: always.
+      OPS_COOKIE_SECURE: ${OPS_COOKIE_SECURE:-}
+      # Passed in as well as used below, so welldash² refuses to start when it is unset or every address
+      # (ops/settings.py); OPS_ALLOW_ANY_ADDRESS=1 accepts 0.0.0.0 on purpose.
+      OPS_BIND: ${OPS_BIND:-}
+      OPS_ALLOW_ANY_ADDRESS: ${OPS_ALLOW_ANY_ADDRESS:-}
       OPS_LOGS_DIR: /ops/logs
       OPS_GITHUB_TOKEN: ${OPS_GITHUB_TOKEN:-}
       SENTRY_API_TOKEN: ${OPS_SENTRY_API_TOKEN:-}
@@ -206,9 +211,10 @@ services:
       OPS_GOATCOUNTER_CODE: ${OPS_GOATCOUNTER_CODE:-}
       OPS_GOATCOUNTER_TOKEN: ${OPS_GOATCOUNTER_TOKEN:-}
     ports:
-      # Set OPS_BIND to the VM's campus address (README): Docker's published ports bypass the host firewall, and
-      # 0.0.0.0 publishes it on every address the VM has.
-      - "${OPS_BIND:-0.0.0.0}:${OPS_PORT:-8090}:8090"
+      # OPS_BIND is required (ops README): 127.0.0.1 for an SSH tunnel, or the VM's campus address. Docker's published
+      # ports bypass the host firewall, so 0.0.0.0 would publish it on every address the VM has. The loopback
+      # fallback only matters while the service refuses to start for want of OPS_BIND.
+      - "${OPS_BIND:-127.0.0.1}:${OPS_PORT:-8090}:8090"
     extra_hosts:
       - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself
     depends_on:
