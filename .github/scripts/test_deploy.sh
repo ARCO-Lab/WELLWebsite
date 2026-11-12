@@ -172,6 +172,11 @@ for path in .github/workflows/ci.yml home/index.php home/wp-content/plugins/p/p.
   sync_vm; change "$path"; ci success success; deploy --auto
   check "--auto, $path changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "a person must deploy" && said "$path" && ! ran "compose"'
 done
+# Names git prints quoted ("home/a\".php") match none of the patterns, so they're held whatever they are
+for path in 'home/a".php' 'home/b\c.php' "docs/tab	name.md"; do
+  sync_vm; change "$path"; ci success success; deploy --auto
+  check "--auto, a name git quotes ($path): held" 'rc 0 && ! head_is_remote && said "HELD" && said "quotes, backslashes or control characters" && ! ran "compose"'
+done
 # deploy.sh itself: a comment line, so the VM's copy still runs once a later test pulls it
 sync_vm; (cd "$T/work" && echo "# edited" >> deploy.sh && git commit -qam "edit deploy.sh" && git push -q origin HEAD:main)
 ci success success; deploy --auto

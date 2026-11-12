@@ -154,6 +154,9 @@ fi
 # --no-renames: a moved file counts at both its old and new path, so the services on both sides rebuild
 CHANGED=$(git -c core.quotePath=false diff --name-only --no-renames "$OLD" "$NEW")
 if [ "$AUTO" = 1 ]; then
+  # git prints a name with a quote, backslash or control character quoted and escaped ("home/a\".php"), which none
+  # of the patterns below would match, so such a change is held whatever it is.
+  if grep -q '^"' <<<"$CHANGED"; then hold "it changes a file whose name has quotes, backslashes or control characters: $(grep -m 3 '^"' <<<"$CHANGED" | tr '\n' ' ')"; fi
   if grep -q '^dashboard/backend/app/db/migrations/' <<<"$CHANGED"; then hold "it adds or changes a database migration, which must be applied by hand first."; fi
   if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then hold "it changes docker-compose.yml, which can restart or re-network the whole stack."; fi
   if grep -qx 'home/wp-includes/version.php' <<<"$CHANGED"; then hold "it updates WordPress core, which needs its database update run from wp-admin."; fi

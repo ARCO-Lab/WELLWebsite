@@ -75,7 +75,9 @@ class PublishTests(unittest.TestCase):
         return git(self.claude, "rev-parse", "HEAD").strip()
 
     def make_bundle(self):
-        git(self.claude, "bundle", "create", "-q", self.bundle, "--branches=maint/*")
+        # As the workflow makes it: only the commits that aren't on main.
+        git(self.claude, "fetch", "-q", "origin")
+        git(self.claude, "bundle", "create", "-q", self.bundle, "--branches=maint/*", "--not", "origin/main")
 
     def remote(self, name):
         out = git(self.publisher, "ls-remote", "origin", f"refs/heads/{name}").split()
@@ -133,6 +135,28 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(all("only a person may change" in r["reason"] for r in out["refused"]))
         self.assertIsNone(self.remote("maint/ci"))
         self.assertEqual([], [c for c in transport.calls if c["method"] == "POST"])
+
+    def test_names_git_would_quote_are_refused(self):
+        # Built with plumbing in a separate index, so the names never touch the file system (Windows forbids " and
+        # a backslash in names).
+        env = {**os.environ, "GIT_INDEX_FILE": os.path.join(self.tmp.name, "odd.index")}
+
+        def plumb(*args, stdin=None):
+            # protectNTFS off: Git for Windows otherwise refuses these names even in the index.
+            return subprocess.run(["git", *IDENTITY, "-c", "core.protectNTFS=false", *args], cwd=self.claude,
+                                  env=env, input=stdin, check=True, capture_output=True, text=True).stdout.strip()
+
+        blob = plumb("hash-object", "-w", "--stdin", stdin="<?php\n")
+        for branch, name in (("maint/quote", 'home/a".php'), ("maint/backslash", "home/b\\c.php"),
+                             ("maint/tab", "docs/tab\tname.md")):
+            plumb("read-tree", "origin/main")
+            plumb("update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
+            commit = plumb("commit-tree", plumb("write-tree"), "-p", "origin/main", "-m", branch)
+            plumb("update-ref", f"refs/heads/{branch}", commit)
+        out, _ = self.publish([description(b) for b in ("maint/quote", "maint/backslash", "maint/tab")])
+        self.assertEqual({"maint/quote", "maint/backslash", "maint/tab"}, {r["branch"] for r in out["refused"]})
+        self.assertTrue(all("quotes, backslashes or control characters" in r["reason"] for r in out["refused"]))
+        self.assertIsNone(self.remote("maint/quote"))
 
     def test_size_limits(self):
         self.branch("maint/many-files", {f"docs/f{i}.md": "x\n" for i in range(4)})

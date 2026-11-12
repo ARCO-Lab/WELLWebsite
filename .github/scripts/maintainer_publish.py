@@ -7,7 +7,8 @@ write token.
 A branch is refused (not pushed) when:
 - its name isn't maint/<lowercase-words> (BRANCH_RE), or the report has no valid description for it;
 - it changes nothing, or more than MAX_FILES files or MAX_LINES lines (added plus deleted) against main;
-- it adds or changes a binary file, a symlink or a submodule;
+- it adds or changes a binary file, a symlink or a submodule, or a file whose name has a quote, a backslash or a
+  control character (git prints such names quoted, where path patterns, deploy.sh's included, miss them);
 - it touches REFUSED_PATHS (CI, the automation and Claude's own settings: a person changes those);
 - a branch of that name exists and the new commit doesn't build on it (only fast-forwards are pushed; nothing is
   ever force-pushed), or an open pull request from it isn't the maintainer's own;
@@ -38,6 +39,7 @@ BRANCH_RE = re.compile(r"maint/[a-z0-9][a-z0-9-]{0,59}")
 # settings.
 REFUSED_PATHS = [r"^\.github/", r"^\.claude/"]
 BUNDLE_REFS = "refs/maint-bundle/"
+ODD_NAME_RE = re.compile(r'["\\\x00-\x1f\x7f]')
 MAX_TITLE = 120
 MAX_BODY = 20000
 LABELS = {
@@ -129,6 +131,9 @@ def check_diff(git, sha, max_files, max_lines):
         modes = meta.lstrip(":").split()
         if len(modes) > 1 and modes[1] in ("120000", "160000"):
             raise Refused(f"adds a symlink or submodule: {clean_line(path, 200)}")
+        # Such a name is printed quoted by git elsewhere (deploy.sh, git diff --name-only), where path patterns miss it.
+        if ODD_NAME_RE.search(path):
+            raise Refused(f"has a file name with quotes, backslashes or control characters: {path!r:.200}")
         files.append(path)
     for record in git(["diff", "--numstat", "-z", "--no-renames", base, sha]).split("\0"):
         if not record:
@@ -248,9 +253,10 @@ def publish(env, transport=urllib_transport, git=run_git, gh_cli=run_gh):
     described, errors = descriptions(result if isinstance(result, dict) else None)
     out = {"published": [], "refused": [], "errors": errors}
     try:
-        branches = bundle_branches(git, env.get("BUNDLE"))
-        if branches:
+        # main first: the bundle holds only the commits that aren't on main, and needs main's to be read.
+        if env.get("BUNDLE") and os.path.exists(env["BUNDLE"]):
             git(["fetch", "--no-tags", "--quiet", "origin", "main"])
+        branches = bundle_branches(git, env.get("BUNDLE"))
     except GitError as error:
         out["errors"].append(f"reading the branches failed: {error}")
         return out
