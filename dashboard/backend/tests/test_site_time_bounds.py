@@ -40,9 +40,12 @@ class SiteRangeTests(unittest.TestCase):
         # 05:30Z is 01:30 EDT and 06:10Z is 01:10 EST: forty minutes whose wall times run backwards
         self.assertEqual(site_range("2026-11-01T05:30:00Z", "2026-11-01T06:10:00Z"),
                          (T(2026, 11, 1, 1, 10), T(2026, 11, 1, 1, 30)))
-        # A range that really is backwards stays backwards, and matches nothing
+        # The same instants the wrong way round stay backwards, and match nothing
         self.assertEqual(site_range("2026-11-01T06:10:00Z", "2026-11-01T05:30:00Z"),
-                         (T(2026, 11, 1, 1, 10), T(2026, 11, 1, 1, 30))[::-1])
+                         (T(2026, 11, 1, 1, 30), T(2026, 11, 1, 1, 10)))
+        # As does any backwards pair of instants
+        self.assertEqual(site_range("2026-11-02T05:00:00Z", "2026-11-01T04:00:00Z"),
+                         (T(2026, 11, 2, 0, 0), T(2026, 11, 1, 0, 0)))
 
     def test_bad_input(self):
         with self.assertRaises(ValueError):
