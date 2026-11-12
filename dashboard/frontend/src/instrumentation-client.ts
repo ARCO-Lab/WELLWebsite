@@ -2,19 +2,26 @@
 // app's own code.
 //
 // The SDK (about 95 KB compressed) is loaded once the page has drawn and the browser is idle, in a chunk of its own,
-// so it doesn't hold up the first paint. An error thrown before then isn't reported. Without a DSN (next dev, CI)
-// it isn't loaded at all.
+// so it doesn't hold up the first paint. Errors thrown before then are kept (up to 10, lib/earlyErrors.ts) and
+// reported once it has started. Without a DSN (next dev, CI) it isn't loaded at all.
 import { sentryOptions } from "@/lib/sentry";
-
-function startSentry() {
-  import("@sentry/nextjs")
-    .then((Sentry) => Sentry.init(sentryOptions))
-    .catch(() => {
-      // The chunk failed to load (offline, blocked): the dashboard works without error reporting.
-    });
-}
+import { bufferEarlyErrors } from "@/lib/earlyErrors";
 
 if (sentryOptions.dsn && typeof window !== "undefined") {
+  const early = bufferEarlyErrors(window, 10);
+
+  const startSentry = () => {
+    import("@sentry/nextjs")
+      .then((Sentry) => {
+        Sentry.init(sentryOptions);
+        early.flush((error) => Sentry.captureException(error));
+      })
+      .catch(() => {
+        // The chunk failed to load (offline, blocked): the dashboard works without error reporting.
+        early.flush(() => {});
+      });
+  };
+
   const whenIdle = () => {
     if ("requestIdleCallback" in window) window.requestIdleCallback(startSentry, { timeout: 5000 });
     else setTimeout(startSentry, 2000);
