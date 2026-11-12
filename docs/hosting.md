@@ -30,10 +30,11 @@ the dashboard's API routes. The data is public and read-only; nothing on the das
 **The embedded page.** The WordPress Dashboard page (`page-dashboard.php`) frames `/?embed=1`, which the dashboard
 serves from a static page without its header and footer, so they never flash in the frame. The two pages exchange
 `postMessage` messages, each checking the other's origin: the dashboard sends its height and the theme's
-`js/dashboard-embed.js` sizes the iframe to it, so there is no scrollbar inside the frame. The dashboard only sends to
-the origin of `NEXT_PUBLIC_WP_HOME` (a build argument, `https://well.mcmaster.ca` by default), and the theme only
-listens to the origin of `DASHBOARD_URL`. Any other framing (an old link without `?embed=1`) still hides the header
-and footer, from a check that runs before the first paint. Details are in `dashboard/frontend/src/lib/embed.ts`.
+`js/dashboard-embed.js` sizes the iframe to it, so there is no scrollbar inside the frame. The dashboard only talks to
+`https://well.mcmaster.ca`, `https://www.well.mcmaster.ca` and the origin of `NEXT_PUBLIC_WP_HOME` (a build argument),
+and the theme only listens to the origin of `DASHBOARD_URL`. Any other framing (an old link without `?embed=1`)
+still hides the header and footer, from a check that runs before the first paint. Details are in
+`dashboard/frontend/src/lib/embed.ts`.
 
 ## Storage
 
