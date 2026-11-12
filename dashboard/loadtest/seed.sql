@@ -2,7 +2,8 @@
 --
 -- The layout is the real one (utils/parsers.py): the weather station's 11 measurements, 8 water-quality
 -- measurements, and 5 water-level loggers with an elevation and a water temperature each: 29 series, one reading
--- every 10 minutes, as ingestion stores them (naive America/Toronto wall-clock time, in time order).
+-- every 10 minutes, as ingestion stores them (instants, timestamptz, in time order; the daily and seasonal cycles
+-- follow America/Toronto wall-clock time).
 -- `years` of history up to now: 29 series x 52,560 readings a year = about 1.52M rows a year, so the default 4
 -- years is about 6.1M rows, more than the site holds (its data starts in May 2025): a pessimistic table size.
 -- The values follow plausible seasonal and daily cycles plus noise; their exact shape doesn't matter for load.
@@ -56,18 +57,21 @@ SELECT l.station_id, l.group_type, l.measurement_type,
            WHEN 'Rain' THEN CASE WHEN random() < 0.03 THEN round((random() * 2)::numeric, 2)::float8 ELSE 0 END
            WHEN 'Wind Direction' THEN floor(random() * 360)
            WHEN 'Solar Radiation'
-               THEN greatest(0, l.base * sin(pi() * (extract(hour FROM t) + extract(minute FROM t) / 60 - 6) / 12))
+               THEN greatest(0, l.base * sin(pi() * (extract(hour FROM lt) + extract(minute FROM lt) / 60 - 6) / 12))
            ELSE l.base
-                - l.seasonal * cos(2 * pi() * (extract(doy FROM t) - 20) / 365.25)
-                + l.diurnal * sin(2 * pi() * (extract(hour FROM t) - 9) / 24)
+                - l.seasonal * cos(2 * pi() * (extract(doy FROM lt) - 20) / 365.25)
+                + l.diurnal * sin(2 * pi() * (extract(hour FROM lt) - 9) / 24)
                 + l.noise * (random() - 0.5)
        END,
        l.unit, t
+-- Every 10 minutes of real time (Toronto's offsets are whole hours, so these are also its 10-minute marks), from
+-- local midnight `years` ago up to now; lt is the site's wall-clock time of each, for the cycles above.
 FROM generate_series(
-         date_trunc('day', now() AT TIME ZONE 'America/Toronto') - make_interval(years => :years),
-         date_trunc('minute', now() AT TIME ZONE 'America/Toronto')
-             - make_interval(mins => (extract(minute FROM now() AT TIME ZONE 'America/Toronto'))::int % 10),
+         (date_trunc('day', now() AT TIME ZONE 'America/Toronto') - make_interval(years => :years))
+             AT TIME ZONE 'America/Toronto',
+         date_trunc('minute', now()) - make_interval(mins => (extract(minute FROM now()))::int % 10),
          interval '10 minutes') AS t
+CROSS JOIN LATERAL (SELECT t AT TIME ZONE 'America/Toronto' AS lt) AS w
 CROSS JOIN layout AS l
 ORDER BY t, l.station_id, l.measurement_type;
 

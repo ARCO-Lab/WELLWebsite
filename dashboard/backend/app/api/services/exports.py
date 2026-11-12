@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, or_, select
 from config import Config
 from db.database import db
 from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
-from utils.timezone import EST_TZ, est_now
+from utils.timezone import EST_TZ, as_utc, est_now, parse_instant, site_wall_time
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
 
@@ -54,6 +54,11 @@ def _streaming_connection():
 
 def _iso(value) -> str:
     return value.isoformat() if value else ""
+
+
+def _site_iso(value) -> str:
+    """A sensor reading's instant as site wall time, without an offset: the format exports have always had."""
+    return site_wall_time(value).isoformat() if value else ""
 
 
 # A queued job that hasn't started after this long has lost its task (Redis restarted, say), and a running job
@@ -151,11 +156,15 @@ def normalize_export_payload(payload: Dict) -> Dict:
     except ValueError as exc:
         raise ValueError("Invalid ISO datetime in start/end") from exc
 
-    # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in the
-    # session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone the export
-    # would be hours off. So aware times become site wall-clock time here, before they are compared (comparing an
-    # aware with a naive time raises TypeError).
-    start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+    # Both bounds in one form before they are compared (comparing an aware with a naive time raises TypeError), and
+    # the form each table's recorded_at holds. sensor_measurements stores instants (timestamptz): the bounds become
+    # UTC instants, a time without an offset being site wall time, so a range inside the repeated fall-back hour
+    # stays exact. sampling_measurements stores naive America/Toronto wall-clock time: aware bounds become site wall
+    # time, which doesn't depend on the database session's time zone.
+    if domain == "sensor":
+        start_dt, end_dt = as_utc(start_dt), as_utc(end_dt)
+    else:
+        start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
 
     if start_dt > end_dt:
         raise ValueError("start must be before end")
@@ -317,7 +326,7 @@ def iter_export_rows(filters: Dict) -> Iterable[Dict]:
         for r in conn.execute(statement):
             yield {
                 "domain": filters["domain"],
-                "recorded_at": _iso(r.recorded_at),
+                "recorded_at": _site_iso(r.recorded_at) if sensor else _iso(r.recorded_at),
                 "group_type": (r.group_type or "") if sensor else "",
                 "station_id": (r.station_id or "") if sensor else "",
                 "creek_id": "" if sensor else (r.creek_id or ""),
@@ -337,8 +346,9 @@ def _sampling_query(filters: Dict):
 
 
 def _sensor_conditions(filters: Dict) -> List:
-    start_dt = datetime.fromisoformat(filters["start"])
-    end_dt = datetime.fromisoformat(filters["end"])
+    # Real instants (the dashboard sends ...Z); a time without an offset is site wall time, as before
+    start_dt = parse_instant(filters["start"])
+    end_dt = parse_instant(filters["end"])
 
     conditions = [
         SensorMeasurement.recorded_at.between(start_dt, end_dt),
@@ -594,14 +604,16 @@ def _write_sensor_csv(
         writer.writerow(headers)
 
         # The readings of one timestamp: metric -> value for Weather and Quality, (station, metric) -> value for
-        # loggers. Rows arrive ordered by time, so a new timestamp means the previous one is complete.
+        # loggers. Rows arrive ordered by time, so a new timestamp means the previous one is complete. Rows are
+        # keyed by the instant, so the two copies of the hour repeated when clocks fall back stay two rows; the
+        # Timestamp column shows site wall time.
         current = None
         weather_data, quality_data, logger_data = {}, {}, {}
         for recorded_at, group_type, station_id, measurement_type, value in conn.execute(readings):
             if records == 0 or recorded_at != current:
                 if records:
                     row_num += 1
-                    writer.writerow(csv_row(row_num, _iso(current), weather_data, quality_data, logger_data))
+                    writer.writerow(csv_row(row_num, _site_iso(current), weather_data, quality_data, logger_data))
                 current = recorded_at
                 weather_data, quality_data, logger_data = {}, {}, {}
 
@@ -619,7 +631,7 @@ def _write_sensor_csv(
 
         if records:
             row_num += 1
-            writer.writerow(csv_row(row_num, _iso(current), weather_data, quality_data, logger_data))
+            writer.writerow(csv_row(row_num, _site_iso(current), weather_data, quality_data, logger_data))
 
     return records
 

@@ -6,10 +6,12 @@
 #     "series": [{"group_type", "station_id", "measurement_type", "unit", "agg",
 #                 "t": [epoch ms, UTC], "avg": [...], "min": [...], "max": [...], "n": [...]}, ...]}
 #
-# start/end: an ISO time with an offset (e.g. ...Z) is a real instant; one without is local wall-clock time.
-# recorded_at is stored as naive America/Toronto wall-clock time (utils/timezone.py), so buckets follow local time
-# (daily buckets are local days) and `t` is each bucket start converted to a real instant. The zone is named in the
-# SQL, so the result doesn't depend on the database session's TimeZone setting.
+# start/end: an ISO time with an offset (e.g. ...Z) is a real instant; one without is local wall-clock time
+# (utils.timezone.parse_instant). recorded_at is an instant (timestamptz); readings are bucketed on its America/Toronto
+# wall-clock time from 3-hour buckets up, so those follow local time (daily buckets are local days); buckets of up to an
+# hour are on real time, which gives the same edges (Toronto's offsets are whole hours) and keeps the two readings of
+# the hour repeated when clocks fall back apart. `t` is each bucket's start as a real instant. The zone is named in
+# the SQL, so the result doesn't depend on the session's TimeZone setting.
 #
 # `agg` says what each series' `avg` holds:
 #   "mean"        the mean of the readings in the bucket; min/max are the smallest and largest reading.
@@ -26,22 +28,23 @@
 # minutes apart share one cache key. The answer is kept in Redis (utils/response_cache.py) for 5 minutes for a
 # range that ended over an hour ago, 1 minute otherwise, and browsers may reuse it for what is left of that time.
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import current_app, jsonify, request
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from db.database import db
+from db.models import Instant
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ
+from utils.timezone import EST_TZ, parse_instant
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
 LADDER = (600, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600)
 MAX_POINTS = 2000
 GROUPS = {"Weather", "Quality", "Logger"}
 AGG = {"Rain": "sum", "Wind Direction": "vector_mean"}  # every other measurement: "mean"
-LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the zone recorded_at is stored in
+LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the site's zone
 SNAP = timedelta(minutes=10)
 RECENT = timedelta(hours=1)  # a range ending less long ago than this is still filling in, so reuse it briefly
 MAX_AGE_RECENT, MAX_AGE_PAST = 60, 300  # seconds a response may be reused, by the cache and by browsers
@@ -49,13 +52,18 @@ MAX_AGE_RECENT, MAX_AGE_PAST = 60, 300  # seconds a response may be reused, by t
 SQL = text(f"""
 WITH b AS (
   SELECT group_type, station_id, measurement_type, unit, value,
-         to_timestamp(floor(extract(epoch FROM recorded_at) / :b) * :b) AT TIME ZONE 'UTC' AS bucket_local
+         -- Up to an hour, buckets on real time: Toronto's offsets are whole hours, so the edges are the same as on
+         -- the wall clock, and the two copies of the hour repeated when clocks fall back stay apart. From 3 h,
+         -- buckets on the wall clock, so they start at local 00:00, 03:00, ... (daily buckets are local days).
+         CASE WHEN :b <= 3600 THEN to_timestamp(floor(extract(epoch FROM recorded_at) / :b) * :b)
+              ELSE (to_timestamp(floor(extract(epoch FROM (recorded_at AT TIME ZONE '{LOCAL_ZONE}')) / :b) * :b)
+                    AT TIME ZONE 'UTC') AT TIME ZONE '{LOCAL_ZONE}' END AS bucket
   FROM sensor_measurements
   WHERE recorded_at BETWEEN :s AND :e AND group_type = ANY(:g) AND value IS NOT NULL
         AND value > {SENTINEL_MAX} AND value < 'Infinity'::float8  -- PostgreSQL sorts NaN above Infinity
 )
 SELECT group_type, station_id, measurement_type, unit,
-       (extract(epoch FROM (bucket_local AT TIME ZONE '{LOCAL_ZONE}')) * 1000)::bigint AS t,
+       (extract(epoch FROM bucket) * 1000)::bigint AS t,
        CASE WHEN measurement_type = 'Rain' THEN sum(value)
             WHEN measurement_type = 'Wind Direction'
               THEN mod((degrees(atan2(avg(sin(radians(value))), avg(cos(radians(value))))) + 360)::numeric, 360)::float
@@ -64,9 +72,9 @@ SELECT group_type, station_id, measurement_type, unit,
        CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE max(value) END AS hi,
        count(value) AS n
 FROM b
-GROUP BY group_type, station_id, measurement_type, unit, bucket_local
-ORDER BY group_type, station_id, measurement_type, unit, bucket_local
-""")
+GROUP BY group_type, station_id, measurement_type, unit, bucket
+ORDER BY group_type, station_id, measurement_type, unit, bucket
+""").bindparams(bindparam("s", type_=Instant), bindparam("e", type_=Instant))  # the bounds as instants
 
 
 def pick_bucket(span_seconds, max_points=MAX_POINTS):
@@ -82,7 +90,7 @@ def pick_bucket(span_seconds, max_points=MAX_POINTS):
 
 
 def floor_mark(t):
-    """`t` rounded down to a 10-minute mark."""
+    """`t` rounded down to a 10-minute mark (the same marks in UTC and in Toronto: its offsets are whole hours)."""
     return t - timedelta(minutes=t.minute % 10, seconds=t.second, microseconds=t.microsecond)
 
 
@@ -99,27 +107,15 @@ def snap_range(start, end):
 
 
 def max_age(end, now):
-    """How long an answer for a range ending at `end` may be reused; both are naive local times."""
+    """How long an answer for a range ending at `end` may be reused; both are instants (aware UTC)."""
     return MAX_AGE_PAST if end < now - RECENT else MAX_AGE_RECENT
 
 
 def cache_key(bucket, start, end, groups):
-    """Everything the answer depends on: the query's parameters, after snap_range."""
-    return f"series:v2:{bucket}:{start.isoformat()}:{end.isoformat()}:{','.join(sorted(set(groups)))}"
-
-
-def parse_iso(value):
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def local_naive(parsed):
-    """A parsed time as naive local wall-clock time, to compare with recorded_at: aware times are converted to
-    America/Toronto, naive ones are taken as local already."""
-    return parsed.astimezone(EST_TZ).replace(tzinfo=None) if parsed.tzinfo else parsed
-
-
-def to_local_naive(value):
-    return local_naive(parse_iso(value))
+    """Everything the answer depends on: the query's parameters, after snap_range. The bounds are instants, so the
+    two copies of the hour repeated when clocks fall back have different keys (v3: recorded_at became timestamptz,
+    so nothing cached before that change is reused)."""
+    return f"series:v3:{bucket}:{start.isoformat()}:{end.isoformat()}:{','.join(sorted(set(groups)))}"
 
 
 def _num(x):
@@ -153,25 +149,16 @@ def register_series_route(app):
         if not start or not end or not groups:
             return jsonify({"error": "Missing required parameters: start, end and at least one group_type"}), 400
         try:
-            start_in, end_in = parse_iso(start), parse_iso(end)
-            start_dt, end_dt = local_naive(start_in), local_naive(end_in)
-        except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no local time
+            # Real instants, compared as such even inside the repeated fall-back hour (05:30Z then 06:10Z is
+            # 01:30 EDT then 01:10 EST: later, though its wall clock reads earlier)
+            start_dt, end_dt = parse_instant(start), parse_instant(end)
+        except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no UTC time
             return jsonify({"error": "Invalid date format"}), 400
-        if start_in.tzinfo and end_in.tzinfo:
-            # Two real instants: compare those. Their wall-clock times can run backwards inside the hour repeated
-            # when clocks fall back (05:30Z -> 01:30 EDT, 06:10Z -> 01:10 EST), so the naive bounds are put in
-            # order for the query. recorded_at keeps one naive 01:xx per reading, so that hour is approximate.
-            if end_in <= start_in:
-                return jsonify({"error": "end must be after start"}), 400
-            span = (end_in - start_in).total_seconds()
-            start_dt, end_dt = min(start_dt, end_dt), max(start_dt, end_dt)
-        else:
-            if end_dt <= start_dt:
-                return jsonify({"error": "end must be after start"}), 400
-            span = (end_dt - start_dt).total_seconds()
+        if end_dt <= start_dt:
+            return jsonify({"error": "end must be after start"}), 400
 
-        bucket = pick_bucket(span)
-        age = max_age(end_dt, datetime.now(EST_TZ).replace(tzinfo=None))
+        bucket = pick_bucket((end_dt - start_dt).total_seconds())
+        age = max_age(end_dt, datetime.now(timezone.utc))
         start_dt, end_dt = snap_range(start_dt, end_dt)
         key = cache_key(bucket, start_dt, end_dt, groups)
         hit = response_cache.get(key)

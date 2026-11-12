@@ -129,7 +129,8 @@ def oldest_fresh(now_local, limit):
 
 
 def as_site_time(recorded_at):
-    """recorded_at is stored as naive site (Toronto) wall-clock time; make it aware for real-time arithmetic."""
+    """A reading time made aware for real-time arithmetic: an aware datetime (recorded_at as the database returns
+    it) is kept; a naive one or a string without an offset (/api/latest's format) is site (Toronto) wall time."""
     if isinstance(recorded_at, str):
         recorded_at = datetime.fromisoformat(recorded_at)
     return recorded_at if recorded_at.tzinfo else recorded_at.replace(tzinfo=EST_TZ)
@@ -176,7 +177,7 @@ def assess_freshness(latest, now, env=None):
         series = {
             "station_id": str(row["station_id"]),
             "measurement_type": row["measurement_type"],
-            "newest": newest.replace(tzinfo=None).isoformat(),
+            "newest": newest.astimezone(EST_TZ).replace(tzinfo=None).isoformat(),
             "age_minutes": age_minutes(newest, now),
             "status": status,
         }

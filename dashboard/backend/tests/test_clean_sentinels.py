@@ -28,7 +28,7 @@ class CleanSentinelsTests(unittest.TestCase):
         self.table = SensorMeasurement.__table__
         self.engine = create_engine(os.environ["TEST_POSTGRES_URL"])
         self.table.create(self.engine, checkfirst=True)
-        t = dt.datetime(2026, 6, 12, 11, 10)
+        t = dt.datetime(2026, 6, 12, 11, 10)   # site wall time; stored as the instant it names (15:10Z)
         rows = [("4501", "Quality", "ODO", -100000.0, "mg/L", t),
                 ("4501", "Quality", "TSS", -100000.0, "mg/L", t),
                 ("4501", "Quality", "ODO", 8.2, "mg/L", t + dt.timedelta(minutes=10)),
@@ -77,7 +77,8 @@ class CleanSentinelsTests(unittest.TestCase):
         with open(path, newline="", encoding="utf-8") as f:
             backup = list(csv.DictReader(f))
         self.assertEqual(sorted((r["measurement_type"], float(r["value"]), r["recorded_at"]) for r in backup),
-                         [("ODO", -100000.0, "2026-06-12 11:10:00"), ("TSS", -100000.0, "2026-06-12 11:10:00")])
+                         [("ODO", -100000.0, "2026-06-12 15:10:00+00:00"),   # 11:10 EDT, as an instant
+                          ("TSS", -100000.0, "2026-06-12 15:10:00+00:00")])
         code, out = self.run_main("--apply")  # nothing left: no second backup
         self.assertIn("0 stored value(s)", out)
         self.assertEqual(len(os.listdir(self.logs.name)), 1)

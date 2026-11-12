@@ -79,6 +79,56 @@ class DataRouteTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/data?start=x&end=y&group_type=Weather").status_code, 400)
 
 
+class FallBackNightTests(unittest.TestCase):
+    """2026-11-01, when 01:00-01:59 happened twice: readings every 10 minutes from 04:00Z to 08:00Z (00:00 EDT to
+    03:00 EST), stored as instants. The response keeps its format (site wall time, no offset)."""
+    START = dt.datetime(2026, 11, 1, 4, 0, tzinfo=dt.timezone.utc)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = create_app()
+        cls.ctx = cls.app.app_context()
+        cls.ctx.push()
+        db.create_all()
+        for i in range(25):
+            db.session.add(SensorMeasurement(station_id="22051538", group_type="Weather", measurement_type="Air Temperature",
+                                             value=i, unit="°C", recorded_at=cls.START + dt.timedelta(minutes=10 * i)))
+        db.session.commit()
+        cls.client = cls.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.drop_all()
+        cls.ctx.pop()
+
+    def get(self, start, end):
+        r = self.client.get(f"/api/data?start={start}&end={end}&group_type=Weather")
+        self.assertEqual(r.status_code, 200)
+        return r.get_json()
+
+    def test_both_copies_of_the_repeated_hour_are_returned_as_wall_time(self):
+        rows = self.get("2026-11-01T04:00:00.000Z", "2026-11-01T07:59:59.999Z")
+        self.assertEqual(len(rows), 24)   # four hours of real time, not three
+        times = [r["recorded_at"] for r in rows]
+        self.assertEqual(times[:7], [f"2026-11-01T00:{m}0:00" for m in range(6)] + ["2026-11-01T01:00:00"])
+        self.assertEqual(times.count("2026-11-01T01:30:00"), 2)   # 05:30Z (EDT) and 06:30Z (EST)
+        self.assertEqual([r["value"] for r in rows], list(range(24)))   # in real-time order
+        self.assertEqual(times[-1], "2026-11-01T02:50:00")
+
+    def test_range_bounds_are_instants(self):
+        # 06:00Z-06:59Z is the second 01:00-01:59 (EST) only
+        rows = self.get("2026-11-01T06:00:00Z", "2026-11-01T06:59:59Z")
+        self.assertEqual([r["value"] for r in rows], list(range(12, 18)))
+        # with an offset other than Z
+        rows = self.get("2026-11-01T01:00:00-05:00", "2026-11-01T01:20:00-05:00")
+        self.assertEqual([r["value"] for r in rows], [12, 13, 14])
+
+    def test_a_bound_without_an_offset_is_site_wall_time(self):
+        # as before the change; an ambiguous wall time means its first occurrence
+        rows = self.get("2026-11-01T00:00:00", "2026-11-01T01:00:00")
+        self.assertEqual([r["value"] for r in rows], list(range(7)))
+
+
 class MaxRowsSettingTests(unittest.TestCase):
     """DATA_MAX_ROWS is parsed once at import; a bad value falls back to the default instead of failing requests."""
 

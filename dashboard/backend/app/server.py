@@ -15,6 +15,7 @@ from sqlalchemy.exc import OperationalError  # noqa: E402
 from api.routes import register_routes  # noqa: E402
 from api.routes.health import register_health_routes  # noqa: E402
 from db.database import db, engine_options  # noqa: E402
+from db.models import check_schema  # noqa: E402
 from utils.traffic import init_request_metrics  # noqa: E402
 
 # PostgreSQL's error code for a statement it cancelled, here because it ran past DB_STATEMENT_TIMEOUT_MS.
@@ -36,6 +37,10 @@ def create_app():
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options(
         app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"],
         app.config["DB_APPLICATION_NAME"])
+    # Before serving anything: this code reads recorded_at as instants, so it must not run on the pre-0002
+    # schema, where it would show every reading time 4-5 hours off. Raises (the process doesn't start) if so.
+    check_schema(app.config.get("SQLALCHEMY_DATABASE_URI"), app.config.get("SQLALCHEMY_ENGINE_OPTIONS"),
+                 log=app.logger.warning)
     db.init_app(app)
     CORS(app)
     register_routes(app)

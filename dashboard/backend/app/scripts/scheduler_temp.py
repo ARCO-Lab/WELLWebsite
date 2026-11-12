@@ -55,7 +55,7 @@ UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
 sharepoint_uploaded_months_path = "logs/sharepoint_uploaded_months.json"
 SHAREPOINT_FIRST_MONTH = os.getenv("SHAREPOINT_UPLOAD_FIRST_MONTH", UPLOAD_FIRST_MONTH)
 
-# Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
+# Site time. Monthly uploads cover Toronto calendar months (the CSV shows Toronto time), so months start and end there, not in UTC
 # (the container's clock).
 SITE_TZ = ZoneInfo("America/Toronto")
 

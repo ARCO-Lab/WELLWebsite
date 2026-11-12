@@ -28,11 +28,13 @@ writes floats, unrounded), the hour repeated when clocks fall back on 2026-11-01
 at midnight on November 1 is in November's file only), and both ends of a download's date range: the dashboard
 sends the picked days' bounds in UTC, so readings at 01:00 on the first day are in the file, and readings at 03:00
 the day after the last (sensor) or 04:30 (sampling), before the end bound read as wall-clock time, are not. Times
-are America/Toronto wall clock time with no offset, as stored.
+are America/Toronto wall clock time with no offset, as the downloads have always shown them (sensor readings are
+stored as instants, `timestamptz`, and shown in site time; sampling times are stored as naive site time).
 
-For the fall-back hour the fixture holds a single naive `01:30` row per sensor and metric, which is all ingestion's
-unique key (station, metric, naive time) can store of that hour, so the files show it once. How ingestion collapses
-the two `01:30` readings isn't tested here; the files show what is stored.
+For the fall-back hour the fixture holds a single `01:30` row per sensor and metric, given as naive site time and
+so stored as its first occurrence (EDT), so the files show it once. With both copies stored (the instants 05:30Z
+and 06:30Z), a download shows two lines reading `01:30`, in time order; that case is tested in
+test_timestamptz_postgres.py, test_data_route.py and the end-to-end check (dashboard/e2e), not here.
 
 No value is a vendor "no reading" sentinel such as `-100000`: these files pin the format, not how sentinels are
 filtered.

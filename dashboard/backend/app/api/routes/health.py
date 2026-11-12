@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from flask import jsonify
 
-from api.routes.latest import query_latest_per_series
+from api.routes.latest import latest_rows
 from db.database import db
 from utils.alert_state import alerts_report
 from utils.monitoring import assess_freshness
@@ -19,7 +19,7 @@ def register_health_routes(app):
     def health_data():
         now = datetime.now(timezone.utc)
         try:
-            report = assess_freshness(query_latest_per_series(), now)
+            report = assess_freshness(latest_rows(), now)   # aware instants, so the repeated fall-back hour reads right
         except ValueError as e:   # a bad HEALTH_* setting; red, so someone looks
             return jsonify({"status": "error", "error": f"bad monitoring setting: {e}"}), 503
         except Exception as e:    # database unreachable, etc.; the type only, never connection details

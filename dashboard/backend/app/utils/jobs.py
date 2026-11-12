@@ -118,7 +118,7 @@ def months_due_for_upload(now, uploaded, first_month):
     That is every month from `first_month` (a (year, month) pair) through the month before `now` that isn't in
     `uploaded` (keys like "2026-10"). So a month that keeps failing is tried again each day, even after later
     months have ended, and it doesn't hold them up; months before `first_month` are never sent. `now` is site
-    time (America/Toronto), the same wall clock recorded_at is stored in, so a month counts as over only once
+    time (America/Toronto), the clock the monthly files use, so a month counts as over only once
     it has ended there. Empty outside UPLOAD_HOUR.
     """
     if now.hour != UPLOAD_HOUR:

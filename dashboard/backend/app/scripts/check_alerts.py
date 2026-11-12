@@ -26,7 +26,6 @@ from utils.alerts import (  # noqa: E402
 )
 from utils.digest import parse_alert_emails, smtp_settings  # noqa: E402
 from utils.monitoring import assess_freshness  # noqa: E402
-from utils.timezone import EST_TZ  # noqa: E402
 
 RECENT_SQL = """
 SELECT station_id, measurement_type, recorded_at, value FROM sensor_measurements
@@ -36,12 +35,14 @@ ORDER BY station_id, measurement_type, recorded_at
 
 
 def read_recent(db, groups, since_utc):
-    """{(station_id, measurement_type): [(recorded_at, value)]} since `since_utc` for these groups."""
-    since = since_utc.astimezone(EST_TZ).replace(tzinfo=None)   # recorded_at is naive site time
-    query = db.text(RECENT_SQL).columns(recorded_at=db.DateTime)
+    """{(station_id, measurement_type): [(recorded_at, value)]} since `since_utc` for these groups. recorded_at is
+    an instant (timestamptz): the bound and the results are aware UTC, whatever the session's TimeZone."""
+    from sqlalchemy import bindparam
+    from db.models import Instant
+    query = db.text(RECENT_SQL).bindparams(bindparam("since", type_=Instant)).columns(recorded_at=Instant)
     recent = {}
     for group in groups:
-        for r in db.session.execute(query, {"group": group, "since": since}):
+        for r in db.session.execute(query, {"group": group, "since": since_utc}):
             recent.setdefault((str(r.station_id), r.measurement_type), []).append((r.recorded_at, r.value))
     return recent
 
@@ -49,10 +50,10 @@ def read_recent(db, groups, since_utc):
 def find_conditions(now, env, settings):
     """Every alert condition now, and the key prefixes that can't be judged this run: ({key: Condition}, held)."""
     from db.database import db
-    from api.routes.latest import query_latest_per_series
+    from api.routes.latest import latest_rows
     from utils.alert_state import vendor_statuses
 
-    freshness = assess_freshness(query_latest_per_series(), now, freshness_env(env))
+    freshness = assess_freshness(latest_rows(), now, freshness_env(env))   # aware instants, as /health/data
     vendors = vendor_statuses()
     recent = read_recent(db, freshness["groups"], now - settings.suspect_window) if settings.suspect_values else {}
     conditions, held = {}, set()

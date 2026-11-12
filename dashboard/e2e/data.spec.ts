@@ -8,7 +8,7 @@ import path from "node:path";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { Client } from "pg";
 
-type Row = { group_type: string; station_id: string; measurement_type: string; unit: string; recorded_at: string; value: number };
+type Row = { group_type: string; station_id: string; measurement_type: string; unit: string; recorded_at: string; recorded_at_utc: string; value: number };
 type Tile = { label: string; caption?: string; value: string; unit: string; last_reading?: string };
 type Section = { as_of: string; tiles: Tile[]; no_data?: string[]; no_data_captions?: string[] };
 
@@ -34,7 +34,7 @@ function expectSameValues(actual: Map<string, number>, expected: Map<string, num
   }
 }
 
-/** An instant as Toronto wall-clock time, "YYYY-MM-DDTHH:MM:SS", as recorded_at stores it. */
+/** An instant as Toronto wall-clock time, "YYYY-MM-DDTHH:MM:SS", as the API and the download show it. */
 function torontoWallClock(ms: number): string {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Toronto", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
@@ -64,7 +64,19 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-const expectedValues = () => new Map(ROWS.map((r) => [key(r), r.value]));
+// The database and the charts' data hold instants: keyed by recorded_at_utc, the two copies of the hour repeated
+// when clocks go back (the same wall-clock time) are two keys.
+const expectedByInstant = () => new Map(ROWS.map((r) => [key({ ...r, recorded_at: r.recorded_at_utc }), r.value]));
+
+/** An instant as "YYYY-MM-DDTHH:MM:SSZ", the form of recorded_at_utc. */
+const utcSeconds = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+/** Which line of the download holds this row among the lines with its wall-clock time: the download has one line
+ * per instant, in time order, so in the repeated hour 0 is the EDT copy and 1 the EST one. */
+function occurrence(r: Row): number {
+  const instants = [...new Set(ROWS.filter((x) => x.recorded_at === r.recorded_at).map((x) => x.recorded_at_utc))].sort();
+  return instants.indexOf(r.recorded_at_utc);
+}
 
 // --- the database: checked once, not per browser ---
 
@@ -75,10 +87,10 @@ test("the database holds exactly the expected readings", async ({}, testInfo) =>
   try {
     const { rows } = await client.query(`
       SELECT group_type, station_id::text AS station_id, measurement_type, unit,
-             to_char(recorded_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS recorded_at, value
+             to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS recorded_at, value
       FROM sensor_measurements`);
     expect(rows.length).toBe(ROWS.length);
-    expectSameValues(new Map(rows.map((r) => [key(r), Number(r.value)])), expectedValues(), 1e-9);
+    expectSameValues(new Map(rows.map((r) => [key(r), Number(r.value)])), expectedByInstant(), 1e-9);
   } finally {
     await client.end();
   }
@@ -141,10 +153,11 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     for (const s of body.series) {
       s.t.forEach((t: number, i: number) => {
         if (s.avg[i] === null) return;
-        points.set(key({ ...s, station_id: String(s.station_id), recorded_at: torontoWallClock(t) }), s.avg[i]);
+        // 10-minute buckets are on real time, so each reading of the repeated hour is its own point
+        points.set(key({ ...s, station_id: String(s.station_id), recorded_at: utcSeconds(t) }), s.avg[i]);
       });
     }
-    expectSameValues(points, expectedValues(), 1e-4); // the API rounds to 4 decimals
+    expectSameValues(points, expectedByInstant(), 1e-4); // the API rounds to 4 decimals
   });
 
   await test.step("the air temperature tooltip shows Toronto time", async () => {
@@ -209,18 +222,21 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
     const [header, ...lines] = parseCsv(fs.readFileSync((await download.path())!, "utf-8"));
     // Columns run Group, metrics..., (blank), Group, ..., and for loggers Sensor, metrics... per logger.
     const cells = new Map<string, number>();
+    const linesAt = new Map<string, number>(); // lines seen so far per Timestamp
     for (const line of lines) {
       if (line.length === 1 && line[0] === "") continue;
+      const nth = linesAt.get(line[1]) ?? 0;
+      linesAt.set(line[1], nth + 1);
       let group = "", station = "";
       header.forEach((name, i) => {
         if (name === "Group") { group = line[i]; station = ""; return; }
         if (name === "Sensor") { station = line[i]; return; }
         if (!name || name === "ID" || name === "Timestamp" || line[i] === "") return;
-        cells.set(`${group} | ${station} | ${name} | ${line[1]}`, Number(line[i]));
+        cells.set(`${group} | ${station} | ${name} | ${line[1]} #${nth}`, Number(line[i]));
       });
     }
     const expected = new Map(ROWS.map((r) => [
-      `${r.group_type} | ${r.group_type === "Logger" ? LOGGER_NAMES[r.station_id] : ""} | ${r.measurement_type}: ${r.unit.replace(" asl", "")} | ${r.recorded_at}`,
+      `${r.group_type} | ${r.group_type === "Logger" ? LOGGER_NAMES[r.station_id] : ""} | ${r.measurement_type}: ${r.unit.replace(" asl", "")} | ${r.recorded_at} #${occurrence(r)}`,
       r.value,
     ]));
     expectSameValues(cells, expected, 1e-9);

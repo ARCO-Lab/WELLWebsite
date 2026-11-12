@@ -683,6 +683,8 @@ docker compose exec backend python scripts/migrate.py            # apply
 - Never rename or renumber a file once it has been applied: the runner identifies migrations by file name and would run it again. Two files with the same number are refused.
 - Dated files such as `2026-11-10_swap_air_soil_temperature.sql` are one-off data fixes, run by hand with `psql` as their comments describe; the runner ignores them.
 - When a migration changes the schema, change `db/models.py` to match, so a fresh database built by `create_all()` gets the same result.
+- `0002_sensor_measurements_recorded_at_timestamptz.sql` is not online: it rewrites `sensor_measurements` (`recorded_at` becomes `timestamptz`, a real instant, so both copies of the hour repeated when clocks fall back can be stored) and locks the table for about 10-15 s. The new code and the old schema don't mix, in either direction, so stop `backend`, `worker`, `export_worker` and `ops` (if it runs), migrate with the new image (`docker compose run --rm --no-deps -e DB_STATEMENT_TIMEOUT_MS=0 backend python scripts/migrate.py`; production applied 0003 before 0002 existed there, and `migrate.py` applies every file not yet recorded, whatever its number), then start them. Started on the old schema, the new backend and workers refuse to start ("run scripts/migrate.py"), so a deploy before the migration fails its health check instead of showing times 4-5 h off. Its comments explain the conversion; `db/migrations/down/` holds the rollback.
+- `recorded_at` is stored as an instant, but the API (`/api/data`, `/api/latest`) and the CSV files show it as Toronto wall-clock time without an offset, as before (`utils/timezone.py`). In the repeated fall-back hour, two readings therefore show the same time.
 
 ---
 

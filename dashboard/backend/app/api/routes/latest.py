@@ -4,6 +4,8 @@
 
 from flask import jsonify
 from db.database import db
+from db.models import Instant
+from utils.timezone import site_wall_time
 
 # Walks the (station_id, measurement_type, recorded_at) unique index instead of reading the whole table:
 # the recursive part hops from one series to the next (one index probe per series), and the final join
@@ -40,22 +42,18 @@ JOIN sensor_measurements m
         SELECT max(x.recorded_at) FROM sensor_measurements x
         WHERE x.station_id = s.station_id AND x.measurement_type = s.measurement_type)
 ORDER BY m.station_id, m.measurement_type
-""").columns(recorded_at=db.DateTime)  # typed so SQLite (tests) also returns datetimes
+""").columns(recorded_at=Instant)  # typed so both databases return aware UTC datetimes
+
+
+def latest_rows():
+    """Newest row of each (station_id, measurement_type), as dicts with recorded_at an aware UTC datetime."""
+    return [dict(r._mapping) for r in db.session.execute(LATEST_PER_SERIES_SQL)]
 
 
 def query_latest_per_series():
-    """Newest row of each (station_id, measurement_type), as dicts in the /api/latest response shape."""
-    return [
-        {
-            "station_id": r.station_id,
-            "group_type": r.group_type,
-            "measurement_type": r.measurement_type,
-            "value": r.value,
-            "unit": r.unit,
-            "recorded_at": r.recorded_at.isoformat(),
-        }
-        for r in db.session.execute(LATEST_PER_SERIES_SQL)
-    ]
+    """Newest row of each (station_id, measurement_type), as dicts in the /api/latest response shape, with
+    recorded_at as site wall-clock time without an offset, as it has always been."""
+    return [{**r, "recorded_at": site_wall_time(r["recorded_at"]).isoformat()} for r in latest_rows()]
 
 
 def register_latest_route(app):

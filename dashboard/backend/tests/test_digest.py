@@ -213,6 +213,30 @@ class ReadGroupsTests(unittest.TestCase):
         self.assertEqual(gaps[0][1], utc(wall[0]))
         self.assertEqual(len(groups["Weather"]["timestamps"]), 18)
 
+    def test_fall_back_night_counts_both_copies_of_the_repeated_hour(self):
+        # Clocks fell back at 02:00 on 2026-11-01. Stored as instants, 00:00 EDT to 03:00 EST is 4 hours: 24 slots.
+        import daily_digest
+        from server import create_app
+        from db.database import db
+        from db.models import SensorMeasurement
+        start = dt.datetime(2026, 11, 1, 4, 0, tzinfo=dt.timezone.utc)
+        times = [start + dt.timedelta(minutes=10 * i) for i in range(24)]
+        app = create_app()
+        with app.app_context():
+            db.create_all()
+            try:
+                db.session.add_all([SensorMeasurement(station_id="22051538", group_type="Weather", measurement_type="Rain",
+                                                      value=0.0, unit="mm", recorded_at=t) for t in times])
+                db.session.commit()
+                freshness = {"groups": {"Weather": {"series": [
+                    {"station_id": "22051538", "measurement_type": "Rain", "status": "ok"}]}}}
+                groups, _ = daily_digest.read_groups(db, freshness, times[-1] + dt.timedelta(minutes=10))
+            finally:
+                db.drop_all()
+        self.assertEqual(groups["Weather"]["rows"], 24)
+        self.assertEqual(groups["Weather"]["timestamps"], times)
+        self.assertEqual([g[1] for g in groups["Weather"]["gaps"]], [times[0]])   # only before the first reading
+
 
 class WqdataTests(unittest.TestCase):
     def test_one_request_power_and_last_point(self):

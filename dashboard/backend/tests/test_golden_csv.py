@@ -68,7 +68,8 @@ def json_bytes(value) -> bytes:
     return (json.dumps(value, indent=1, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
 
 
-# Sensor readings as ingestion stores them: naive America/Toronto wall time. The same readings feed the dashboard
+# Sensor readings, given as naive America/Toronto wall time (Instant stores each as the instant it names; an
+# ambiguous time as its first occurrence). The same readings feed the dashboard
 # export and the monthly file. Hand-checkable on purpose: three groups, two configured loggers and one that isn't
 # configured, readings and whole groups missing, one stored NULL, a unit change (Turbidity FNU, then NTU), " asl"
 # in a unit, numbers in several shapes, and these times:

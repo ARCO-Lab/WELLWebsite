@@ -6,7 +6,7 @@ import math
 from datetime import datetime, timezone
 
 from db.models import SensorMeasurement
-from utils.fetching import to_local
+from utils.timezone import as_utc
 from utils.sensor_names import weather_measurement_name
 
 # Water-level loggers report through the weather station; every sensor whose serial starts with
@@ -182,14 +182,15 @@ def parse_quality_entry(entry, station_id):
     return results
 
 
-def to_row(obj, tz):
-    """(unique key, insertable row) for a SensorMeasurement, with recorded_at as stored (local wall-clock time)."""
-    key = (str(obj.station_id), obj.measurement_type, to_local(obj.recorded_at, tz))
+def to_row(obj):
+    """(unique key, insertable row) for a SensorMeasurement, with recorded_at as stored: an aware UTC instant, so
+    the two readings of the hour repeated when clocks fall back get different keys."""
+    key = (str(obj.station_id), obj.measurement_type, as_utc(obj.recorded_at))
     return key, {"station_id": key[0], "group_type": obj.group_type, "measurement_type": key[1],
                  "value": obj.value, "unit": obj.unit, "recorded_at": key[2]}
 
 
-def licor_rows(records, groups, weather_station, tz) -> dict:
+def licor_rows(records, groups, weather_station) -> dict:
     """Rows from LI-COR records for the given groups ("Weather" and/or "Logger"), keyed by unique key.
     Prints one [ERROR] line per sensor whose records were skipped for an unexpected unit."""
     rows = {}
@@ -204,7 +205,7 @@ def licor_rows(records, groups, weather_station, tz) -> dict:
             continue
         obj = parse_logger_entry(entry) if is_logger else parse_weather_entry(entry, weather_station)
         if obj is not None:
-            key, row = to_row(obj, tz)
+            key, row = to_row(obj)
             rows.setdefault(key, row)
     for (sensor_sn, unit, expected), count in sorted(wrong_units.items(), key=str):
         print(f"[ERROR] LI-COR sensor {sensor_sn} reports {unit!r}, not {expected!r}: skipped its {count} "
@@ -215,11 +216,11 @@ def licor_rows(records, groups, weather_station, tz) -> dict:
     return rows
 
 
-def quality_rows(entries, station_id, tz) -> dict:
+def quality_rows(entries, station_id) -> dict:
     """Rows from WQData entries, keyed by unique key."""
     rows = {}
     for entry in entries:
         for obj in parse_quality_entry(entry, station_id):
-            key, row = to_row(obj, tz)
+            key, row = to_row(obj)
             rows.setdefault(key, row)
     return rows

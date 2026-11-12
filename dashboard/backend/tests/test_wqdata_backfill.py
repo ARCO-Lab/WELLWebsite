@@ -16,14 +16,6 @@ UTC = dt.timezone.utc
 KEY = "SECRET-KEY-123"
 
 
-def toronto():
-    try:
-        from zoneinfo import ZoneInfo
-        return ZoneInfo("America/Toronto")
-    except Exception:
-        raise unittest.SkipTest("no time zone database on this machine")
-
-
 def point(ts, *params):
     return {"timestamp": ts, "values": [{"parameterId": p, "value": "1.5"} for p in params]}
 
@@ -164,7 +156,7 @@ class Paging(unittest.TestCase):
         points = bf.fetch_points(get_page, self.start, self.end)
         self.assertEqual(calls, ["2026-11-09 05:00:00", "2026-11-09 05:10:00"])
         # The point split across the pages is read whole; the repeat merges into one row per key.
-        rows = quality_rows(points, "4501", UTC)
+        rows = quality_rows(points, "4501")
         self.assertEqual(len(rows), 4)
 
     def test_more_false_with_values_left_keeps_paging(self):
@@ -180,7 +172,7 @@ class Paging(unittest.TestCase):
             return pages[frm]
         points = bf.fetch_points(get_page, self.start, self.end)
         self.assertEqual(calls, ["2026-11-09 05:00:00", "2026-11-09 05:10:00"])
-        self.assertEqual(len(quality_rows(points, "4501", UTC)), 3)
+        self.assertEqual(len(quality_rows(points, "4501")), 3)
 
     def test_paging_that_doesnt_advance_stops(self):
         def get_page(frm, to):
@@ -191,39 +183,38 @@ class Paging(unittest.TestCase):
 
 class Days(unittest.TestCase):
     def test_local_days_ending_at_end(self):
-        tz = toronto()
         end = dt.datetime(2026, 11, 10, 18, 5, tzinfo=UTC)   # 13:05 EST
-        self.assertEqual(bf.day_windows(end, 3, tz), [
-            (dt.date(2026, 11, 8), dt.datetime(2026, 11, 8), dt.datetime(2026, 11, 9)),
-            (dt.date(2026, 11, 9), dt.datetime(2026, 11, 9), dt.datetime(2026, 11, 10)),
-            (dt.date(2026, 11, 10), dt.datetime(2026, 11, 10), dt.datetime(2026, 11, 10, 13, 5)),
+        self.assertEqual(bf.day_windows(end, 3), [   # local midnight to local midnight, as UTC instants
+            (dt.date(2026, 11, 8), dt.datetime(2026, 11, 8, 5, tzinfo=UTC), dt.datetime(2026, 11, 9, 5, tzinfo=UTC)),
+            (dt.date(2026, 11, 9), dt.datetime(2026, 11, 9, 5, tzinfo=UTC), dt.datetime(2026, 11, 10, 5, tzinfo=UTC)),
+            (dt.date(2026, 11, 10), dt.datetime(2026, 11, 10, 5, tzinfo=UTC), end),
         ])
 
     def test_end_at_midnight_closes_the_day_before(self):
-        tz = toronto()
         end = dt.datetime(2026, 11, 10, 5, tzinfo=UTC)   # midnight EST
-        self.assertEqual(bf.day_windows(end, 1, tz), [(dt.date(2026, 11, 9), dt.datetime(2026, 11, 9), dt.datetime(2026, 11, 10))])
+        self.assertEqual(bf.day_windows(end, 1), [(dt.date(2026, 11, 9), dt.datetime(2026, 11, 9, 5, tzinfo=UTC), end)])
 
     def test_day_clocks_go_back_is_25_hours_of_utc(self):
-        tz = toronto()
-        (day, lo, hi), = [w for w in bf.day_windows(dt.datetime(2026, 11, 3, tzinfo=UTC), 5, tz) if w[0] == dt.date(2026, 11, 1)]
-        self.assertEqual((bf.to_utc(lo, tz), bf.to_utc(hi, tz)),
-                         (dt.datetime(2026, 11, 1, 4, tzinfo=UTC), dt.datetime(2026, 11, 2, 5, tzinfo=UTC)))
+        (day, lo, hi), = [w for w in bf.day_windows(dt.datetime(2026, 11, 3, tzinfo=UTC), 5) if w[0] == dt.date(2026, 11, 1)]
+        self.assertEqual((lo, hi), (dt.datetime(2026, 11, 1, 4, tzinfo=UTC), dt.datetime(2026, 11, 2, 5, tzinfo=UTC)))
+
+    def test_day_clocks_go_forward_is_23_hours_of_utc(self):
+        (day, lo, hi), = [w for w in bf.day_windows(dt.datetime(2026, 3, 10, tzinfo=UTC), 5) if w[0] == dt.date(2026, 3, 8)]
+        self.assertEqual((lo, hi), (dt.datetime(2026, 3, 8, 5, tzinfo=UTC), dt.datetime(2026, 3, 9, 4, tzinfo=UTC)))
 
 
 class Compare(unittest.TestCase):
     def test_missing_extra_and_changed_values(self):
-        tz = toronto()
         points = [point("2026-11-09 05:00:00", 125001, 125002),
                   point("2026-11-09 05:10:00", 115219),            # power only: never stored, so never missing
                   point("2026-11-09 05:20:00", 125001)]
-        rows = quality_rows(points, "4501", tz)
-        stored = {("4501", "Water Temperature", dt.datetime(2026, 11, 9, 0, 0)): 1.5,
-                  ("4501", "Conductivity", dt.datetime(2026, 11, 9, 0, 0)): 9.0,         # value differs
-                  ("4501", "Water Temperature", dt.datetime(2026, 11, 8, 23, 50)): 1.0}  # not at WQData
+        rows = quality_rows(points, "4501")
+        stored = {("4501", "Water Temperature", dt.datetime(2026, 11, 9, 5, 0, tzinfo=UTC)): 1.5,
+                  ("4501", "Conductivity", dt.datetime(2026, 11, 9, 5, 0, tzinfo=UTC)): 9.0,         # value differs
+                  ("4501", "Water Temperature", dt.datetime(2026, 11, 9, 4, 50, tzinfo=UTC)): 1.0}  # not at WQData
         missing, extra, differ = bf.compare(rows, stored)
         self.assertEqual([(r["measurement_type"], r["recorded_at"], r["value"], r["unit"]) for r in missing],
-                         [("Water Temperature", dt.datetime(2026, 11, 9, 0, 20), 1.5, "°C")])
+                         [("Water Temperature", dt.datetime(2026, 11, 9, 5, 20, tzinfo=UTC), 1.5, "°C")])
         self.assertEqual((extra, differ), (1, 1))
 
     def test_same_value(self):
@@ -234,18 +225,26 @@ class Compare(unittest.TestCase):
 
 
 class FallBackHour(unittest.TestCase):
-    def test_repeated_hour_shares_keys_with_the_first(self):
-        # 2026-11-01 05:00-06:00Z is 01:00-02:00 EDT and 06:00-07:00Z is 01:00-02:00 EST again: the naive
-        # stored times repeat, so the second hour merges into the first (its reading kept), as in the table.
-        tz = toronto()
-        points = [{"timestamp": ts, "values": [{"parameterId": 125001, "value": v}]}
-                  for ts, v in (("2026-11-01 05:00:00", "1"), ("2026-11-01 05:30:00", "2"),
-                                ("2026-11-01 06:00:00", "3"), ("2026-11-01 06:30:00", "4"))]
-        rows = quality_rows(points, "4501", tz)
-        self.assertEqual({k[2]: r["value"] for k, r in rows.items()},
-                         {dt.datetime(2026, 11, 1, 1, 0): 1.0, dt.datetime(2026, 11, 1, 1, 30): 2.0})
-        missing, extra, differ = bf.compare(rows, {k: r["value"] for k, r in rows.items()})
-        self.assertEqual((missing, extra, differ), ([], 0, 0))   # the repeat isn't reported missing
+    points = [{"timestamp": ts, "values": [{"parameterId": 125001, "value": v}]}
+              for ts, v in (("2026-11-01 05:00:00", "1"), ("2026-11-01 05:30:00", "2"),
+                            ("2026-11-01 06:00:00", "3"), ("2026-11-01 06:30:00", "4"))]
+
+    def test_both_copies_of_the_repeated_hour_are_kept(self):
+        # 2026-11-01 05:00-06:00Z is 01:00-02:00 EDT and 06:00-07:00Z is 01:00-02:00 EST again. Stored as instants,
+        # the four readings have four keys.
+        rows = quality_rows(self.points, "4501")
+        self.assertEqual({k[2]: r["value"] for k, r in rows.items()}, {
+            dt.datetime(2026, 11, 1, 5, 0, tzinfo=UTC): 1.0, dt.datetime(2026, 11, 1, 5, 30, tzinfo=UTC): 2.0,
+            dt.datetime(2026, 11, 1, 6, 0, tzinfo=UTC): 3.0, dt.datetime(2026, 11, 1, 6, 30, tzinfo=UTC): 4.0})
+
+    def test_a_table_with_only_the_first_hour_misses_the_second(self):
+        # What the table held before: the EDT hour. The backfill finds the EST hour missing and inserts it.
+        rows = quality_rows(self.points, "4501")
+        first_hour = {k: r["value"] for k, r in rows.items() if k[2].hour == 5}
+        missing, extra, differ = bf.compare(rows, first_hour)
+        self.assertEqual(sorted(r["recorded_at"] for r in missing),
+                         [dt.datetime(2026, 11, 1, 6, 0, tzinfo=UTC), dt.datetime(2026, 11, 1, 6, 30, tzinfo=UTC)])
+        self.assertEqual((extra, differ), (0, 0))
 
 
 class Backfill(unittest.TestCase):
@@ -256,8 +255,7 @@ class Backfill(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.ids_path = pathlib.Path(self.dir.name) / "wqdata-backfill-test.ids"
         self.ids_path.touch()   # main() creates it up front
-        self.tz = toronto()
-        self.days = bf.day_windows(dt.datetime(2026, 11, 11, 5, tzinfo=UTC), 2, self.tz)   # Nov 9 and 10, local
+        self.days = bf.day_windows(dt.datetime(2026, 11, 11, 5, tzinfo=UTC), 2)   # Nov 9 and 10, local
         self.log = []
 
     def tearDown(self):
@@ -282,12 +280,12 @@ class Backfill(unittest.TestCase):
             record_ids(ids)
             events.append(("commit", self.ids_path.read_text().split()))   # the file's ids at commit time
             return ids
-        code = bf.backfill(self.days, self.tz, "4501", get_page, lambda lo, hi: dict(stored or {}),
+        code = bf.backfill(self.days, "4501", get_page, lambda lo, hi: dict(stored or {}),
                            insert_rows, self.ids_path, check, log=self.log.append, window=window)
         return code, events
 
     def test_days_are_read_a_window_at_a_time_and_compared_per_day(self):
-        self.days = bf.day_windows(dt.datetime(2026, 11, 20, 5, tzinfo=UTC), 9, self.tz)   # Nov 11-19, local
+        self.days = bf.day_windows(dt.datetime(2026, 11, 20, 5, tzinfo=UTC), 9)   # Nov 11-19, local
         code, events = self.run_backfill()
         self.assertEqual(code, 0)
         self.assertEqual(self.requests, [("2026-11-11 05:00:00", "2026-11-18 04:59:59"),    # 7 days

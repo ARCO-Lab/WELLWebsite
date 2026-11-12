@@ -18,14 +18,6 @@ def licor(sn, value, ts="2026-11-10 04:00:00Z", kind="Temperature", unit="°C"):
     return {"logger_sn": STATION, "sensor_sn": sn, "sensor_measurement_type": kind, "timestamp": ts, "unit": unit, "value": value}
 
 
-def ny():
-    try:
-        from zoneinfo import ZoneInfo
-        return ZoneInfo("America/New_York")
-    except Exception:
-        raise unittest.SkipTest("no time zone database on this machine")
-
-
 class SensorNames(unittest.TestCase):
     def test_air_and_soil_are_not_swapped(self):
         # 21948438 is the temperature/RH/dew-point sensor (air); 22154270 is the soil probe.
@@ -78,9 +70,9 @@ class Quality(unittest.TestCase):
         self.assertEqual([(r.measurement_type, r.value, r.unit) for r in rows], [("Water Temperature", 8.5, "°C")])
         self.assertEqual(rows[0].recorded_at, dt.datetime(2026, 11, 9, 2, tzinfo=UTC))   # WQData times are UTC
 
-    def test_rows_are_stored_in_local_time(self):
-        rows = parsers.quality_rows([self.entry, self.entry], "4501", ny())
-        self.assertEqual(list(rows), [("4501", "Water Temperature", dt.datetime(2026, 11, 8, 21))])
+    def test_rows_are_stored_as_utc_instants(self):
+        rows = parsers.quality_rows([self.entry, self.entry], "4501")
+        self.assertEqual(list(rows), [("4501", "Water Temperature", dt.datetime(2026, 11, 9, 2, tzinfo=UTC))])
 
 
 class LicorRows(unittest.TestCase):
@@ -88,16 +80,16 @@ class LicorRows(unittest.TestCase):
                licor("22154270-1", 9.1), licor("22051538-B", 12.9),
                licor("22168653-3", 4.4, kind="Water Temperature"), licor("22168657-4", 99.0)]
 
-    def test_groups_and_local_time(self):
-        tz = ny()
-        both = parsers.licor_rows(self.records, {"Weather", "Logger"}, STATION, tz)
+    def test_groups_and_utc_instants(self):
+        both = parsers.licor_rows(self.records, {"Weather", "Logger"}, STATION)
+        at = dt.datetime(2026, 11, 10, 4, tzinfo=UTC)   # 23:00 EST on Nov 9 at the site
         self.assertEqual(sorted(both), [
-            ("22051538", "Air Temperature", dt.datetime(2026, 11, 9, 23)),
-            ("22051538", "Soil Temperature", dt.datetime(2026, 11, 9, 23)),
-            ("2577531", "Water Temperature", dt.datetime(2026, 11, 9, 23)),
+            ("22051538", "Air Temperature", at),
+            ("22051538", "Soil Temperature", at),
+            ("2577531", "Water Temperature", at),
         ])
-        self.assertEqual(len(parsers.licor_rows(self.records, {"Logger"}, STATION, tz)), 1)
-        self.assertEqual(len(parsers.licor_rows(self.records, {"Weather"}, STATION, tz)), 2)
+        self.assertEqual(len(parsers.licor_rows(self.records, {"Logger"}, STATION)), 1)
+        self.assertEqual(len(parsers.licor_rows(self.records, {"Weather"}, STATION)), 2)
 
 
 class BadValues(unittest.TestCase):
@@ -129,7 +121,7 @@ class BadValues(unittest.TestCase):
     def test_one_bad_record_keeps_the_rest(self):
         records = [licor("21948438-1", None), licor("22154270-1", 9.1), licor("22168653-3", float("nan")),
                    licor("22168654-3", 4.4, kind="Water Temperature")]
-        rows = parsers.licor_rows(records, {"Weather", "Logger"}, STATION, UTC)
+        rows = parsers.licor_rows(records, {"Weather", "Logger"}, STATION)
         self.assertEqual(sorted((k[0], k[1]) for k in rows),
                          [("22051538", "Soil Temperature"), ("2577532", "Water Temperature")])
 
@@ -188,7 +180,7 @@ class Units(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rows = parsers.licor_rows([licor(f"2216865{n}-1", 0.4, kind="Sensor Depth", unit="meters") for n in (3, 4, 5, 6)],
-                                      {"Logger"}, STATION, UTC)
+                                      {"Logger"}, STATION)
         self.assertEqual(sorted(k[0] for k in rows), ["2577531", "2577532", "2577533", "2577534"])
         self.assertEqual({r["unit"] for r in rows.values()}, {"m asl"})
         self.assertEqual(out.getvalue(), "")
@@ -209,7 +201,7 @@ class Units(unittest.TestCase):
                    licor("22154270-1", 9.1), licor("22168653-1", 1.3, kind="Sensor Depth", unit="ft")]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rows = parsers.licor_rows(records, {"Weather"}, STATION, UTC)   # the logger isn't asked for: not reported
+            rows = parsers.licor_rows(records, {"Weather"}, STATION)   # the logger isn't asked for: not reported
         self.assertEqual([k[1] for k in rows], ["Soil Temperature"])
         lines = out.getvalue().splitlines()
         self.assertEqual(len(lines), 1)

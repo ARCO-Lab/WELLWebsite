@@ -10,7 +10,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
-from api.routes.series import LADDER, MAX_POINTS, columnar, pick_bucket, to_local_naive  # noqa: E402
+from api.routes.series import LADDER, MAX_POINTS, columnar, pick_bucket  # noqa: E402
+from utils.timezone import UTC, parse_instant  # noqa: E402
 
 DAY = 86400
 
@@ -35,19 +36,18 @@ class PickBucketTests(unittest.TestCase):
         self.assertGreater(3000 * DAY / pick_bucket(3000 * DAY), MAX_POINTS)
 
 
-class ToLocalNaiveTests(unittest.TestCase):
-    def test_aware_times_become_toronto_wall_clock(self):
-        self.assertEqual(to_local_naive("2026-11-01T04:20:00Z"), dt.datetime(2026, 11, 1, 0, 20))  # EDT
-        self.assertEqual(to_local_naive("2026-11-02T05:00:00+00:00"), dt.datetime(2026, 11, 2, 0, 0))  # EST
-        self.assertEqual(to_local_naive("2026-07-01T12:00:00-04:00"), dt.datetime(2026, 7, 1, 12, 0))
+class BoundsTests(unittest.TestCase):
+    """The route reads start/end with utils.timezone.parse_instant: an offset is an instant, none is Toronto time."""
+
+    def test_aware_times_are_instants(self):
+        self.assertEqual(parse_instant("2026-11-01T04:20:00Z"), dt.datetime(2026, 11, 1, 4, 20, tzinfo=UTC))
+        self.assertEqual(parse_instant("2026-07-01T12:00:00-04:00"), dt.datetime(2026, 7, 1, 16, 0, tzinfo=UTC))
 
     def test_naive_times_are_taken_as_local(self):
-        self.assertEqual(to_local_naive("2026-11-01T00:20:00"), dt.datetime(2026, 11, 1, 0, 20))
+        self.assertEqual(parse_instant("2026-11-01T00:20:00"), dt.datetime(2026, 11, 1, 4, 20, tzinfo=UTC))  # EDT
 
     def test_mixed_naive_and_aware_compare(self):
-        start, end = to_local_naive("2026-11-01T00:20:00"), to_local_naive("2026-11-01T05:00:00Z")
-        self.assertIsNone(start.tzinfo)
-        self.assertIsNone(end.tzinfo)
+        start, end = parse_instant("2026-11-01T00:20:00"), parse_instant("2026-11-01T05:00:00Z")
         self.assertLess(start, end)  # comparing a naive with an aware time was a TypeError, and a 500
 
 
@@ -112,7 +112,7 @@ class SeriesSqlTests(unittest.TestCase):
         def add(measurement, unit, when, value, group="Weather", station="22051538"):
             db.session.add(SensorMeasurement(station_id=station, group_type=group, measurement_type=measurement,
                                              unit=unit, value=value, recorded_at=when))
-        t0 = dt.datetime(2026, 11, 1, 0, 0)  # naive Toronto wall-clock time, as ingestion stores it (EDT here)
+        t0 = dt.datetime(2026, 11, 1, 0, 0)  # naive: Toronto wall-clock time (EDT here), stored as its instant
         for i, mm in enumerate((0.2, 0.4, 0.0, 1.0, 0.0, 0.2)):  # one hour of 10-minute rain readings
             add("Rain", "mm", t0 + dt.timedelta(minutes=10 * i), mm)
         add("Wind Direction", "°", t0, 350.0)
@@ -175,8 +175,7 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertEqual(self.utc(air["t"][0]), dt.datetime(2026, 11, 1, 4, 0, tzinfo=dt.timezone.utc))
 
     def test_z_suffixed_range_is_converted_to_local_time(self):
-        # 04:20Z-05:00Z is 00:20-01:00 in Toronto (EDT): the last four readings. Bound as aware times, PostgreSQL
-        # would have read them in the session zone (UTC here) and matched nothing.
+        # 04:20Z-05:00Z is 00:20-01:00 in Toronto (EDT): the last four readings, compared as instants.
         body, by = self.series("2026-11-01T04:20:00Z", "2026-11-01T05:00:00Z", "Weather")
         air = by["Air Temperature"]
         self.assertEqual(air["avg"], [12.0, 13.0, 14.0, 15.0])
@@ -207,18 +206,45 @@ class SeriesSqlTests(unittest.TestCase):
             _, by = self.series(start, end, "Weather")
             self.assertEqual(by["Air Temperature"]["avg"], [12.0, 13.0, 14.0, 15.0], (start, end))
 
-    def test_aware_range_inside_the_fall_back_hour(self):
-        # 05:30Z is 01:30 EDT and 06:10Z is 01:10 EST: a 40-minute range whose wall-clock times run backwards.
-        # It's valid (compared as instants) and queries the naive 01:10-01:30 readings.
-        self.add_readings("Air Temperature", "°C", dt.datetime(2026, 11, 1, 1, 0), (20.0, 21.0, 22.0, 23.0))
+    def test_both_copies_of_the_fall_back_hour_are_kept_apart(self):
+        # 01:00-01:30 happened twice on 2026-11-01: 05:00Z-05:30Z (EDT) and 06:00Z-06:30Z (EST). recorded_at holds both,
+        # and 10-minute buckets are on real time, so each reading is its own bucket at its own instant.
+        edt = dt.datetime(2026, 11, 1, 5, 0, tzinfo=UTC)
+        self.add_readings("Air Temperature", "°C", edt, (20.0, 21.0, 22.0, 23.0))
+        self.add_readings("Air Temperature", "°C", edt + dt.timedelta(hours=1), (30.0, 31.0, 32.0, 33.0))
         try:
-            body, by = self.series("2026-11-01T05:30:00Z", "2026-11-01T06:10:00Z", "Weather")
+            start, end = edt, edt + dt.timedelta(hours=2)
+            body, by = self.series("2026-11-01T05:00:00Z", "2026-11-01T07:00:00Z", "Weather")
             self.assertEqual(body["bucket_seconds"], 600)
-            self.assertEqual(by["Air Temperature"]["avg"], [21.0, 22.0, 23.0])
+            air = by["Air Temperature"]
+            self.assertEqual(air["avg"], [20.0, 21.0, 22.0, 23.0, 30.0, 31.0, 32.0, 33.0])
+            self.assertEqual([self.utc(t) for t in air["t"]],
+                             [edt + dt.timedelta(minutes=m) for m in (0, 10, 20, 30, 60, 70, 80, 90)])
+            self.assertTrue(all(start <= self.utc(t) <= end for t in air["t"]))
+            # A 40-minute range whose wall-clock times run backwards (01:30 EDT to 01:10 EST) is valid: it is
+            # compared as instants, and holds 05:30Z, 06:00Z and 06:10Z, in that order.
+            body, by = self.series("2026-11-01T05:30:00Z", "2026-11-01T06:10:00Z", "Weather")
+            self.assertEqual(by["Air Temperature"]["avg"], [23.0, 30.0, 31.0])
+            self.assertEqual([self.utc(t) for t in by["Air Temperature"]["t"]],
+                             [edt + dt.timedelta(minutes=m) for m in (30, 60, 70)])
             r = self.client.get("/api/series?start=2026-11-01T06:10:00Z&end=2026-11-01T05:30:00Z&group_type=Weather")
             self.assertEqual(r.status_code, 400)
         finally:
-            self.delete_readings("Air Temperature", dt.datetime(2026, 11, 1, 1, 0))
+            self.delete_readings("Air Temperature", edt)
+
+    def test_real_time_buckets_match_wall_clock_buckets_on_ordinary_days(self):
+        # Buckets of up to an hour are on real time; on any day without a clock change (summer, winter, and the days
+        # either side of the change) their edges are exactly the wall-clock ones, because the offsets are whole hours.
+        from sqlalchemy import text
+        mismatches = self.db.session.execute(text("""
+            SELECT count(*) FROM unnest(ARRAY[timestamptz '2026-07-01 04:00Z', '2026-01-15 05:00Z',
+                                              '2026-10-31 04:00Z', '2026-11-02 05:00Z']) AS day,
+                 generate_series(day, day + interval '1 day' - interval '1 minute', interval '1 minute') AS t,
+                 unnest(ARRAY[600, 1800, 3600]) AS b
+            WHERE to_timestamp(floor(extract(epoch FROM t) / b) * b)
+               <> (to_timestamp(floor(extract(epoch FROM (t AT TIME ZONE 'America/Toronto')) / b) * b)
+                   AT TIME ZONE 'UTC') AT TIME ZONE 'America/Toronto'""")).scalar()
+        self.assertEqual(mismatches, 0)
 
     def test_rain_is_summed_and_wind_direction_is_a_vector_mean(self):
         # 30 days -> 30-minute buckets: 00:00 holds the first three readings, 00:30 the next three
@@ -274,7 +300,8 @@ class SeriesSqlTests(unittest.TestCase):
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=300")
             (key, body), = bodies.items()
             self.assertEqual(ttls[key], 300)
-            self.assertIn(":2026-11-01T00:10:00:2026-11-01T00:50:00:Weather", key)  # rounded inward to 10-min marks
+            # rounded inward to 10-min marks, and keyed by instant: 00:10 and 00:50 EDT
+            self.assertIn(":2026-11-01T04:10:00+00:00:2026-11-01T04:50:00+00:00:Weather", key)
             self.assertEqual(body, r.get_data())
             self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])  # as unrounded
 

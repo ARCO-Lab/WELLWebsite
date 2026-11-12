@@ -6,12 +6,12 @@
 
 import logging
 import os
-from datetime import datetime
 
 from flask import request, jsonify
 
 from db.database import db
 from db.models import SensorMeasurement
+from utils.timezone import parse_instant, site_wall_time
 
 log = logging.getLogger(__name__)
 
@@ -50,10 +50,10 @@ def register_data_route(app):
             return jsonify({"error": "Missing required parameters"}), 400
 
         try:
-            # Convert to datetime objects
-            start_dt = datetime.fromisoformat(start)
-            end_dt = datetime.fromisoformat(end)
-        except ValueError:
+            # Real instants: the dashboard sends ...Z; a time without an offset is site wall time, as before
+            start_dt = parse_instant(start)
+            end_dt = parse_instant(end)
+        except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
 
         filters = (
@@ -94,7 +94,7 @@ def register_data_route(app):
                 "measurement_type": r.measurement_type,
                 "value": r.value,
                 "unit": r.unit,
-                "recorded_at": r.recorded_at.isoformat(),
+                "recorded_at": site_wall_time(r.recorded_at).isoformat(),   # site wall time, without an offset, as always
             }
             for r in rows
         ]
