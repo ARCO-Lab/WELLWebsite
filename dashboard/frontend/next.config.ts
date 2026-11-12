@@ -10,7 +10,8 @@ import { withSentryConfig } from "@sentry/nextjs/config";
 // small inline script in every page that loads its chunks, whose content (so its hash) changes with each build, and
 // the page is static, so there is no per-request nonce to give it. Scripts from any other site are still refused.
 // MapLibre's worker comes from our own origin. frame-ancestors lets only this site and the WordPress site (whose
-// dashboard page embeds this one in an iframe, home/wp-content/themes/well/page-dashboard.php) frame it. In next dev,
+// dashboard page embeds this one in an iframe, home/wp-content/themes/well/page-dashboard.php) frame it: the same
+// origins as PARENT_ORIGINS in src/lib/embed.ts, NEXT_PUBLIC_WP_HOME's included (a test site). In next dev,
 // localhost may frame it too (a local WordPress), and scripts may use eval (React's development build needs it).
 const dev = process.env.NODE_ENV !== "production";
 
@@ -26,8 +27,13 @@ function originOf(url: string | undefined, fallback: string): string {
 const goatCounter = originOf(process.env.NEXT_PUBLIC_GOATCOUNTER_ENDPOINT, "https://*.goatcounter.com");
 const sentry = originOf(process.env.NEXT_PUBLIC_SENTRY_DSN, "https://*.ingest.us.sentry.io");
 const mapHosts = "https://tiles.openfreemap.org https://server.arcgisonline.com https://tile.openstreetmap.org";
-const frameAncestors = ["'self'", "https://well.mcmaster.ca", "https://www.well.mcmaster.ca"]
-  .concat(dev ? ["http://localhost:*", "http://127.0.0.1:*"] : []);
+const frameAncestors = [...new Set([
+  "'self'",
+  "https://well.mcmaster.ca",
+  "https://www.well.mcmaster.ca",
+  originOf(process.env.NEXT_PUBLIC_WP_HOME, "https://well.mcmaster.ca"),
+  ...(dev ? ["http://localhost:*", "http://127.0.0.1:*"] : []),
+])];
 
 const csp = [
   "default-src 'self'",
