@@ -280,18 +280,18 @@ class BorealisDiagnosis(Canned):
         failed, lines, _ = self.run_with([Response(200, ME), Response(200, BOREALIS), Response(404)],
                                          probes=BOREALIS_ONLY)
         self.assertEqual(failed, ["Borealis"])
-        self.assertEqual(lines, ["FAIL Borealis: token OK on borealis.invalid; the upload dataset "
-                                 "(BOREALIS_UPLOAD_PERSISTENT_ID) was not found or isn't shared with this token "
-                                 "(HTTP 404)"])
+        self.assertEqual(lines, [("FAIL Borealis: token OK on borealis.invalid; the upload dataset "
+                                  "(BOREALIS_UPLOAD_PERSISTENT_ID) was not found or isn't shared with this token "
+                                  "(HTTP 404)")])
         self.assertTrue(all("doi:" not in line for line in lines))   # a secret in CI: named, never printed
 
     def test_a_demo_id_on_the_production_server_is_pointed_out(self):
         _, lines, _ = self.run_with([Response(200, ME), Response(403)], probes=BOREALIS_ONLY,
                                     BOREALIS_URL="https://borealisdata.ca/dataverse/WELL",
                                     BOREALIS_SAMPLING_PERSISTENT_ID="doi:10.80240/FK2/ABCDEF")
-        self.assertEqual(lines, ["FAIL Borealis: token OK on borealisdata.ca; the download dataset "
-                                 "(BOREALIS_SAMPLING_PERSISTENT_ID) was not found or isn't shared with this token "
-                                 "(HTTP 403); its id is a demo-server id, not one on borealisdata.ca"])
+        self.assertEqual(lines, [("FAIL Borealis: token OK on borealisdata.ca; the download dataset "
+                                  "(BOREALIS_SAMPLING_PERSISTENT_ID) was not found or isn't shared with this token "
+                                  "(HTTP 403); its id is a demo-server id, not one on borealisdata.ca")])
 
     def test_a_token_from_the_other_server_names_the_host(self):
         _, lines, calls = self.run_with([Response(401)], probes=BOREALIS_ONLY,
@@ -313,9 +313,9 @@ class WqdataStaleDevice(Canned):
         failed, lines, calls = self.run_with([Response(200, EMPTY_WQ), Response(200, EMPTY_WQ), Response(200, older)],
                                              probes=WQDATA_ONLY)
         self.assertEqual(failed, ["WQData"])
-        self.assertEqual(lines, ["FAIL WQData: no data points in the last 6 h; the device stopped reporting at "
-                                 "2026-11-08 20:40 UTC (39 h ago): WQData answered normally, so check the sonde and "
-                                 "its modem, not the API key"])
+        self.assertEqual(lines, [("FAIL WQData: no data points in the last 6 h; the device stopped reporting at "
+                                  "2026-11-08 20:40 UTC (39 h ago): WQData answered normally, so check the sonde and "
+                                  "its modem, not the API key")])
         # Back one day per request from the window's start, newest day first, with the shorter timeout.
         self.assertEqual([(c[1]["params"]["from"], c[1]["params"]["to"]) for c in calls[1:]],
                          [("2026-11-09 05:17:00", "2026-11-10 05:17:00"),
@@ -331,8 +331,8 @@ class WqdataStaleDevice(Canned):
 
     def test_a_failed_lookback_still_reports_the_empty_window(self):
         _, lines, calls = self.run_with([Response(200, EMPTY_WQ), Response(500)], probes=WQDATA_ONLY)
-        self.assertEqual(lines, ["FAIL WQData: no data points in the last 6 h; couldn't look further back "
-                                 "(HTTPError (HTTP 500))"])
+        self.assertEqual(lines, [("FAIL WQData: no data points in the last 6 h; couldn't look further back "
+                                  "(HTTPError (HTTP 500))")])
         self.assertEqual(len(calls), 2)
 
     def test_a_window_with_data_makes_no_extra_request(self):

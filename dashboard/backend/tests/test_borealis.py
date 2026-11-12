@@ -354,8 +354,8 @@ class SettingsTests(TestCase):
                 self.assertEqual(borealis.api_base(url, log=logged.append), borealis.base_url(url))
             borealis.api_base("https://borealisdata.ca/dataverse/WELL", log=logged.append)
         self.assertEqual(logged, [
-            "Borealis: using the API at https://borealisdata.ca (BOREALIS_URL is the page of collection WELL; "
-            "the API is at the server root)",
+            ("Borealis: using the API at https://borealisdata.ca (BOREALIS_URL is the page of collection WELL; "
+             "the API is at the server root)"),
             "Borealis: using the API at https://demo.borealisdata.ca",
         ])
 
