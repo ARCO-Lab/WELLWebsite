@@ -56,6 +56,12 @@ services:
       WP_SITEURL: ${WP_SITEURL}
       # External dashboard base URL for theme template embedding
       DASHBOARD_URL: ${DASHBOARD_URL}
+      # Run by wp-config.php (the wordpress image writes it from wp-config-docker.php, which evaluates this variable;
+      # the VM's copy was made that way). Turns off editing theme and plugin PHP from wp-admin, so an administrator
+      # login alone can't run code. Plugin and core updates from wp-admin still work (DISALLOW_FILE_MODS would
+      # block them). Takes effect when the container is recreated.
+      WORDPRESS_CONFIG_EXTRA: |
+        defined('DISALLOW_FILE_EDIT') || define('DISALLOW_FILE_EDIT', true);
 
   # --- Flask backend (Gunicorn), no public port ---
   backend:

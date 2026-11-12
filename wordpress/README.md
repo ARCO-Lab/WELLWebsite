@@ -21,6 +21,12 @@ in it can be fetched from the site.
   (`apache-hardening.conf`, `zz-performance.conf`, `php-hardening.ini`; each file's comments explain its rules), and
   `theme-images.mjs` (run from the repository root after changing a photo:
   `npm install --no-save sharp && node wordpress/theme-images.mjs`, then commit the files it writes).
+- **Hardening.** `apache-hardening.conf` refuses `xmlrpc.php`, `readme.html`, `license.txt` and
+  `wp-config-sample.php`, and never runs PHP from `wp-content/uploads`. The must-use plugin
+  `home/wp-content/mu-plugins/well-hide-users.php` answers 401 to anonymous requests for the REST API's user list
+  (`/wp-json/wp/v2/users`), and `WORDPRESS_CONFIG_EXTRA` in `docker-compose.yml` sets `DISALLOW_FILE_EDIT`, which
+  turns off the theme and plugin editors in wp-admin. `DISALLOW_FILE_MODS` is deliberately not set, so plugins and
+  core can still be updated from wp-admin.
 
 ## Settings
 
