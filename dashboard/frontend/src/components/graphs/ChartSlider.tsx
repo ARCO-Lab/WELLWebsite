@@ -14,6 +14,7 @@ import { MIN_RANGE_MS, TIME_ZONE } from "@/utils/chartWindow";
 import { windowLabel } from "@/components/graphs/ChartToolbar";
 
 const PAGE_REPEAT_MS = 300;
+const MIN_THUMB_PX = 24;
 
 interface Props {
   controller: ChartController;
@@ -64,12 +65,15 @@ const ChartSlider: React.FC<Props> = ({ controller, sparkKey, color, label, cont
   useEffect(() => {
     const place = () => {
       const e = controller.extent, w = controller.window, total = e.end - e.start;
-      const l = ((w.start - e.start) / total) * 100, r = ((w.end - e.start) / total) * 100;
-      if (thumb.current) {
-        thumb.current.style.left = `${l}%`;
-        thumb.current.style.width = `${Math.max(r - l, 0.3)}%`;
-      }
       const el = track.current;
+      if (thumb.current && el) {
+        // In pixels, so a thumb kept at its smallest grabbable width (MIN_THUMB_PX) still lies wholly inside the track
+        const W = el.clientWidth;
+        const width = Math.max(((w.end - w.start) / total) * W, MIN_THUMB_PX);
+        const left = Math.min(Math.max(((w.start - e.start) / total) * W, 0), W - width);
+        thumb.current.style.left = `${left}px`;
+        thumb.current.style.width = `${width}px`;
+      }
       if (el) {
         const room = total - (w.end - w.start);
         el.setAttribute("aria-valuenow", String(room > 0 ? Math.round(((w.start - e.start) / room) * 100) : 0));
@@ -81,7 +85,9 @@ const ChartSlider: React.FC<Props> = ({ controller, sparkKey, color, label, cont
     describe();
     const offFrame = controller.onFrame(place);
     const offSnap = controller.subscribe(() => { place(); describe(); }); // extent changes, and the end of a gesture
-    return () => { offFrame(); offSnap(); };
+    const resized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place); // pixels: follow the width
+    if (track.current) resized?.observe(track.current);
+    return () => { offFrame(); offSnap(); resized?.disconnect(); };
   }, [controller]);
 
   // Dragging the thumb (or its edges, to resize), and paging: a press on the track moves the window a whole width
@@ -194,7 +200,7 @@ const ChartSlider: React.FC<Props> = ({ controller, sparkKey, color, label, cont
       >
         <div ref={spark} className="pointer-events-none absolute inset-x-2 inset-y-0 opacity-60" />
         <div ref={thumb} data-thumb data-testid="chart-slider-window"
-          className="absolute inset-y-0.5 min-w-6 cursor-grab rounded-full border border-primary/60 bg-primary/20 shadow-sm active:cursor-grabbing">
+          className="absolute inset-y-0.5 cursor-grab rounded-full border border-primary/60 bg-primary/20 shadow-sm active:cursor-grabbing">
           {/* Grip lines in the middle, so it reads as something to drag */}
           <span className="pointer-events-none absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 gap-0.5">
             <span className="h-3 w-px bg-primary/70" /><span className="h-3 w-px bg-primary/70" /><span className="h-3 w-px bg-primary/70" />
