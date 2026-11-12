@@ -59,10 +59,10 @@ async function open(page: Page) {
   const net = await slowSeries(page);
   await page.clock.setFixedTime(NOW);
   await page.goto("/");
-  for (const group of ["Water Loggers", "Weather Station"]) {
+  for (const group of ["Water Loggers", "Weather Station", "Water Quality"]) {
     await page.getByRole("checkbox", { name: group, exact: true }).click();
   }
-  await expect(chart(page, "logger-2577531").getByTestId("chart-resolution")).toBeVisible();
+  await expect(chart(page, "logger").getByTestId("chart-resolution")).toBeVisible();
   await settled(page, net);
   return { net, errors };
 }
@@ -80,6 +80,9 @@ async function ctrlWheelBurst(c: Locator, share: number, deltaY: number, count: 
   }, { x: p.x, y: p.y, dy: deltaY, n: count });
 }
 
+/** The navigator's window under a chart (Highcharts Stock): dragging it moves the chart's window. */
+const navigatorWindow = (c: Locator) => c.locator(".highcharts-navigator-mask-inside");
+
 /** A point in a chart's plot area, as a share of its width and height. */
 async function at(c: Locator, x: number, y = 0.4) {
   const plot = c.getByRole("group", { name: /chart\. Arrow keys/ });
@@ -95,8 +98,8 @@ test.describe("charts under stress", () => {
 
   test("bursts of input send at most two requests, revisits none, and each chart keeps its own window", async ({ page }) => {
     const { net, errors } = await open(page);
-    const logger = chart(page, "logger-2577531");
-    const weather = chart(page, "weather-temperature");
+    const logger = chart(page, "logger");
+    const weather = chart(page, "weather");
     const weatherWindow = await label(weather);
 
     await test.step("a plain wheel scrolls the page and only shows the zoom hint", async () => {
@@ -110,12 +113,14 @@ test.describe("charts under stress", () => {
       expect(await label(logger)).toBe(before);
     });
 
-    await test.step("80 Ctrl+wheel events zooming out: at most 2 requests", async () => {
+    await test.step("80 Ctrl+wheel events zooming out to the whole picked range: at most 2 requests", async () => {
       const n0 = net.requests.length;
       await ctrlWheelBurst(logger, 0.7, 60, 80);
       await settled(page, net);
       expect(net.requests.length - n0).toBeLessThanOrEqual(2);
-      await expect(logger.getByTestId("chart-resolution")).toHaveText(/daily|12-h/);
+      // As far out as the picked range (the navigator's extent), which is two days: still 10-minute readings
+      await expect(logger.getByTestId("chart-window-label")).toHaveText("Oct 31 00:00 – Nov 1 04:00");
+      await expect(logger.getByTestId("chart-resolution")).toHaveText("10-min readings");
     });
 
     await test.step("80 Ctrl+wheel events zooming in somewhere new: at most 2 requests", async () => {
@@ -127,7 +132,7 @@ test.describe("charts under stress", () => {
 
     await test.step("a slider drag of 120 moves: at most 2 requests", async () => {
       const n0 = net.requests.length;
-      const handle = logger.getByTestId("chart-slider-window");
+      const handle = navigatorWindow(logger);
       await handle.scrollIntoViewIfNeeded();
       const box = (await handle.boundingBox())!;
       const x0 = box.x + box.width / 2, y = box.y + box.height / 2;
@@ -154,7 +159,7 @@ test.describe("charts under stress", () => {
       await logger.getByRole("button", { name: /^Reset/ }).click();
       await settled(page, net);
       expect(net.requests.length - n0).toBe(0);
-      await expect(logger.getByTestId("chart-window-label")).toHaveText("Oct 31 00:00 – Nov 1 04:00");
+      await expect(logger.getByTestId("chart-window-label")).toHaveText("Nov 1 01:00 – Nov 1 02:50"); // fitted to its readings
     });
 
     await test.step("the other charts never moved, and nothing went wrong", async () => {
@@ -174,7 +179,7 @@ test.describe("charts under stress", () => {
       await cdp.send("HeapProfiler.collectGarbage");
       return ((await cdp.send("Runtime.getHeapUsage")) as { usedSize: number }).usedSize / 1e6;
     };
-    const ids = ["logger-2577531", "weather-temperature", "weather-humidity"];
+    const ids = ["logger", "weather", "quality"];
     const end = Date.now() + minutes * 60_000;
     let first = 0, peakHeap = 0, actions = 0;
     while (Date.now() < end) {
@@ -256,7 +261,7 @@ test.describe("chart performance budgets", () => {
 
   test("80 Ctrl+wheel events at full speed: under 500 ms of long tasks", async ({ page }) => {
     await open(page);
-    const logger = chart(page, "logger-2577531");
+    const logger = chart(page, "logger");
     await at(logger, 0.5);
     const stop = await record(page);
     await ctrlWheelBurst(logger, 0.6, 60, 80);
@@ -268,13 +273,13 @@ test.describe("chart performance budgets", () => {
 
   test("a slider drag at 4x CPU sends at most 2 requests", async ({ page }) => {
     const { net } = await open(page);
-    const logger = chart(page, "logger-2577531");
+    const logger = chart(page, "logger");
     // Zoom in first, so the drag crosses many tiles
     await ctrlWheelBurst(logger, 0.5, -60, 30);
     await settled(page, net);
     await cpu(page, 4);
     const n0 = net.requests.length;
-    const handle = logger.getByTestId("chart-slider-window");
+    const handle = navigatorWindow(logger);
     await handle.scrollIntoViewIfNeeded();
     const box = (await handle.boundingBox())!;
     const x0 = box.x + box.width / 2, y = box.y + box.height / 2;
@@ -295,10 +300,10 @@ test.describe("chart performance budgets", () => {
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
 
-    test("a vertical swipe that starts on a scrollbar scrolls the page and leaves the chart alone", async ({ page }) => {
+    test("a vertical swipe that starts on the navigator scrolls the page and leaves the chart alone", async ({ page }) => {
       const { net } = await open(page);
-      const logger = chart(page, "logger-2577531");
-      const track = logger.getByRole("scrollbar");
+      const logger = chart(page, "logger");
+      const track = logger.locator(".highcharts-navigator-outline");
       await track.scrollIntoViewIfNeeded();
       await page.evaluate(() => window.scrollBy(0, -200)); // room to scroll down
       const box = (await track.boundingBox())!;
@@ -322,7 +327,7 @@ test.describe("chart performance budgets", () => {
 
     test("a two-finger pinch at 4x CPU keeps frames under 120 ms (p95)", async ({ page }) => {
       await open(page);
-      const logger = chart(page, "logger-2577531");
+      const logger = chart(page, "logger");
       const p = await at(logger, 0.5, 0.35);
       const cdp = await cpu(page, 4);
       const touch = (type: string, spread: number) => cdp.send("Input.dispatchTouchEvent", {
