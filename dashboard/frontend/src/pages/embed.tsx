@@ -9,8 +9,9 @@ export default function EmbeddedDashboard() {
   return (
     <>
       <Head>
-        {/* The full page (/) is the one to index */}
+        {/* The full page (/) is the one to index, and the one search engines should credit */}
         <meta name="robots" content="noindex" />
+        <link rel="canonical" href="https://welldash.mcmaster.ca/" />
       </Head>
       <Dashboard embedded />
     </>
