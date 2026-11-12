@@ -6,7 +6,8 @@ import pathlib
 from flask import request, jsonify, send_file
 from db.database import db
 from db.models import SamplingMeasurement
-from datetime import datetime
+from db.ordering import sampling_order
+from utils.timezone import site_range
 
 SAMPLING_TEMPLATE = pathlib.Path(__file__).resolve().parents[2] / "sampling_template.csv"
 
@@ -22,8 +23,9 @@ CREEK_ID_MAP = {
 def register_samples_route(app):
     @app.route("/api/samples", methods=["GET"])
     def get_filtered_samples():
-        """Sampling rows with recorded_at between start and end (ISO, inclusive, naive America/Toronto wall time),
-        ordered by time. Creek flags (?ancaster=true&...) narrow it to those creeks; with none set, every creek."""
+        """Sampling rows with recorded_at between start and end (ISO, inclusive). A time with an offset (...Z) is a
+        real instant; one without is America/Toronto wall time, like recorded_at (utils/timezone.site_range).
+        Ordered by time, then site, then parameter (db/ordering.py). Creek flags (?ancaster=true&...) narrow it to those creeks; with none set, every creek."""
         # Parse query parameters for date range and selected creeks
         start = request.args.get("start")
         end = request.args.get("end")
@@ -38,9 +40,8 @@ def register_samples_route(app):
             return jsonify({"error": "Missing required parameters: start and end"}), 400
 
         try:
-            start_dt = datetime.fromisoformat(start)
-            end_dt = datetime.fromisoformat(end)
-        except ValueError:
+            start_dt, end_dt = site_range(start, end)
+        except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
 
         # Query the database for matching sampling measurements
@@ -61,7 +62,7 @@ def register_samples_route(app):
                 "unit": r.unit,
                 "recorded_at": r.recorded_at.isoformat()
             }
-            for r in query.order_by(SamplingMeasurement.recorded_at).all()
+            for r in query.order_by(*sampling_order(db.engine.dialect.name)).all()
         ]
 
         return jsonify(data)
