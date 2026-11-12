@@ -20,15 +20,14 @@ Both run in Docker on one Linux VM (`docker-compose.yml`): WordPress on port 808
 ## Architecture
 
 ```mermaid
-%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart LR
   licor["LI-COR<br/>HOBOlink"] -->|every 10 min| worker
   wqdata["WQData"] -->|every 10 min| worker
   borealis[("Borealis")] <-->|CSV files| worker
-  worker["worker<br/>scheduler"] --> pg[("PostgreSQL 13<br/>VM host")]
-  pg --> backend["backend<br/>Flask, gunicorn"]
+  worker["worker<br/>scheduler"] --> pg[("PostgreSQL<br/>13 on host")]
+  pg --> backend["backend<br/>Flask API"]
   backend <--> redis[("redis")]
-  redis <--> exp["export_worker<br/>Celery"]
+  redis <--> exp["export<br/>worker<br/>Celery"]
   exp --> pg
   backend --> nxt["dashboard<br/>Next.js"]
   nxt --> browser["Browser"]
@@ -36,11 +35,11 @@ flowchart LR
   ops["welldash²<br/>ops"] --> pg
   subgraph mon["Monitoring"]
     sentry["Sentry"]
-    hc["Healthchecks.io"]
+    hc["Healthchecks"]
   end
 ```
 
-<!-- Keep the diagram's labels short, with <br/> for line breaks, and drawn as plain SVG text (htmlLabels: false): GitHub's renderer cuts off longer HTML labels. Details belong in the list below. -->
+<!-- GitHub draws every node 120 px wide and may cut off a line wider than that, so keep each line of a label to about 10 characters, break lines with <br/>, keep edge labels to a few words, and put the details in the list below. -->
 
 How data flows:
 1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the Borealis jobs, which move CSV files both ways (the two-way arrow): on the 1st of each month it uploads the month that just ended as a CSV (followed by the SharePoint copy, once that is configured), and every week it downloads new creek sampling CSVs and imports them. It also sends the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
