@@ -38,6 +38,13 @@ class BookkeepingTests(TestCase):
         self.assertEqual(download_data.import_outcome(INVALID_FILE_EXIT, REFUSED_OUT), ("refused", 7))
         self.assertEqual(download_data.import_outcome(1, "psycopg2.OperationalError"), ("failed", None))
 
+    def test_import_counts(self):
+        out = ("[INFO] Inserted 2 new sampling records.\n[INFO] Corrected 3 stored sampling records (the file's value "
+               "replaced the stored one).\n[CORRECTED] site 1 E. coli on 2026-10-06 09:40: 1200.0 -> 120.0\n"
+               "[WARN] 4 rows present in the DB but not in the latest file (same sites, ...)\n")
+        self.assertEqual(download_data.import_counts(out), {"inserted": 2, "corrected": 3, "withdrawn": 4})
+        self.assertEqual(download_data.import_counts(""), {"inserted": 0, "corrected": 0, "withdrawn": 0})
+
     def test_run_status(self):
         self.assertEqual(download_data.run_status(2, 0, 0), "PROCESSED_2_FILES")
         self.assertEqual(download_data.run_status(0, 0, 0), "NO_FILES_PROCESSED")
@@ -124,6 +131,19 @@ class MainTests(TestCase):
         self.assertEqual((code, run.call_count), (0, 1))
         self.assertEqual(saved[-1]["refused_files"], [])
 
+    def test_corrections_and_withdrawn_rows_are_summed_and_flagged(self):
+        changed = (0, "[INFO] Inserted 1 new sampling records.\n[INFO] Corrected 2 stored sampling records (...)\n"
+                      "[WARN] 3 rows present in the DB but not in the latest file (...)\n")
+        clean = (0, "[INFO] Inserted 4 new sampling records.\n[INFO] Corrected 1 stored sampling records (...)\n")
+        code, out, _, _ = self.run_main(empty_state(), {1: clean, 3: changed}, files=(OLD, NEW))
+        self.assertEqual(code, 0)   # applied corrections and kept rows don't fail the run
+        self.assertIn("OUTPUT: PROCESSED_2_FILES", out)
+        self.assertIn("SUMMARY: 5 new, 3 corrected, 3 rows present in the DB but not in the latest file", out)
+        attention = [line for line in out.splitlines() if line.startswith("ATTENTION:")]
+        self.assertEqual(len(attention), 1, out)
+        self.assertIn("WELLAncasterWatershed_3.csv (ID: 3): 3 rows present in the DB but not in the latest file",
+                      attention[0])
+
     def test_a_failed_import_is_retried_and_fails_the_run(self):
         code, out, saved, _ = self.run_main(empty_state(), {1: (1, ""), 2: (1, ""), 3: (1, "")})
         self.assertEqual(code, 1)
@@ -171,6 +191,17 @@ class SchedulerTests(TestCase):
         logs, pings = self.run_job("OUTPUT: REJECTED_1_FILES\n", 1)
         self.assertIn("[ERROR] download_data.py finished with status REJECTED_1_FILES", logs)
         self.assertEqual(pings, [("download", "fail")])
+
+    def test_attention_lines_go_to_sentry_as_warnings(self):
+        line = "ATTENTION: WELLAncasterWatershed_3.csv (ID: 3): 3 rows present"
+        # Also when another file of the same run was refused (the run then exits 1)
+        for code, status in ((0, "PROCESSED_1_FILES"), (1, "REJECTED_1_FILES")):
+            with self.subTest(code=code), mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+                self.run_job(f"{line}\nOUTPUT: {status}\n", code)
+                warn.assert_called_once_with(line)
+        with mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+            self.assertEqual(self.run_job("OUTPUT: PROCESSED_1_FILES\n", 0)[1], [("download", "success")])
+            warn.assert_not_called()
 
     def test_success_and_nothing_new(self):
         self.assertEqual(self.run_job("OUTPUT: PROCESSED_2_FILES\n", 0)[1], [("download", "success")])
