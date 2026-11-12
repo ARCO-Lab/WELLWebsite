@@ -23,6 +23,7 @@ from api.services.exports import (  # noqa: E402
     SENSOR_FILTER_CONFIG,
     _get_logger_label,
     _sensor_query,
+    csv_cell,
     normalize_export_payload,
     safe_csv_cell,
     write_export_csv,
@@ -32,8 +33,8 @@ from db.models import SensorMeasurement  # noqa: E402
 
 def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
     """The sensor export as it was before streaming (every reading loaded with .all()), kept as the reference the
-    streamed output must match. Copied unchanged apart from the def line, this docstring and an unused loop
-    variable renamed to _."""
+    streamed output must match. Copied unchanged apart from the def line, this docstring, an unused loop
+    variable renamed to _ and the time column's header, which now names the zone."""
     requested_groups = set(filters.get("group_types", []))
 
     query = _sensor_query(filters)
@@ -103,7 +104,7 @@ def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
         effective_logger_stations.extend(extras)
 
     # Build header row - ALWAYS include requested groups in the output order: Weather, Quality, Logger
-    headers = ["ID", "Timestamp"]
+    headers = ["ID", export_service.TIMESTAMP_HEADER]
 
     # Weather section: Include if requested (even if no data)
     if include_weather:
@@ -355,6 +356,12 @@ class FormulaInjectionTests(unittest.TestCase):
     def test_numbers_and_ordinary_text_are_unchanged(self):
         for value in (-3.2, -1, 0, 5.5, None, "", "Logger 1", "2026-11-01T01:30:00", "pH", "Water Level: m"):
             self.assertEqual(safe_csv_cell(value), value)
+
+    def test_a_missing_value_is_an_empty_field(self):
+        for value in (None, float("nan")):
+            self.assertEqual(csv_cell(value), "")
+        for value in (0.0, -2.5, float("inf"), "=1+1"):
+            self.assertEqual(csv_cell(value), safe_csv_cell(value))
 
 
 class SamplingExportTests(unittest.TestCase):

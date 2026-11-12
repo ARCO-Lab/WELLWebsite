@@ -3,12 +3,14 @@
 // counted path starts with the site's host ("welldash.mcmaster.ca/"), which keeps the two sites' "/" apart.
 //
 // Counting runs only in a production build, with NEXT_PUBLIC_GOATCOUNTER_ENDPOINT set (the Dockerfile sets it), and
-// only on welldash.mcmaster.ca, so local, preview, CI and e2e runs never send counts. Query strings (?from=&to=) are
-// left out of the path, and a change of query alone isn't counted as a new page view.
+// only on welldash.mcmaster.ca, so local, preview, CI and e2e runs never send counts. Views inside a frame (the
+// WordPress site's Dashboard page, already counted as that page) aren't counted either; count.js skips them too.
+// Query strings (?from=&to=) are left out of the path, and a change of query alone isn't counted as a new page view.
 
 import Script from "next/script";
 import { useRouter } from "next/router";
 import { useEffect, useSyncExternalStore } from "react";
+import { inFrame } from "@/lib/embed";
 
 const ENDPOINT = process.env.NEXT_PUBLIC_GOATCOUNTER_ENDPOINT || "";
 const COUNTED_HOST = "welldash.mcmaster.ca";
@@ -29,7 +31,7 @@ function count(url: string) {
 
 // Whether this page counts. The host is only known in the browser, so the server render (and hydration) says no.
 const shouldCount = () =>
-  process.env.NODE_ENV === "production" && ENDPOINT !== "" && window.location.hostname === COUNTED_HOST;
+  process.env.NODE_ENV === "production" && ENDPOINT !== "" && window.location.hostname === COUNTED_HOST && !inFrame();
 const noSubscription = () => () => {};
 
 export default function VisitorCount() {

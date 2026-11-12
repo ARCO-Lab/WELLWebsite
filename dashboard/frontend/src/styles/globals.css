@@ -480,3 +480,29 @@ html, body {
 .dashboard-container {
   height: auto !important;
 }
+/* Inside a frame (the "in-frame" class, set before first paint by _document.tsx) the site's own header and footer
+   are left out: the page around the frame has its own. The WordPress site embeds /?embed=1, rendered without them. */
+html.in-frame [data-site-chrome] {
+  display: none !important;
+}
+
+/* Embedded and sized to its content (lib/embed.ts), the iframe can be far taller than the window, so dialogs go in
+   the part of it the WordPress page says is in view rather than in the middle of the whole iframe. */
+html.embed-sized .dialog-overlay {
+  top: var(--embed-view-top);
+  bottom: auto;
+  height: var(--embed-view-height);
+}
+
+html.embed-sized .dialog-content {
+  top: calc(var(--embed-view-top) + var(--embed-view-height) / 2);
+  max-height: calc(var(--embed-view-height) * 0.95);
+}
+
+@media (max-width: 639.98px) {
+  /* Phones: the dialog fills the part in view (it fills the window when not embedded) */
+  html.embed-sized .dialog-content {
+    height: var(--embed-view-height);
+    max-height: none;
+  }
+}

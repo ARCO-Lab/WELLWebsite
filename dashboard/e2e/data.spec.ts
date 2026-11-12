@@ -252,7 +252,7 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
       header.forEach((name, i) => {
         if (name === "Group") { group = line[i]; station = ""; return; }
         if (name === "Sensor") { station = line[i]; return; }
-        if (!name || name === "ID" || name === "Timestamp" || line[i] === "") return;
+        if (!name || name === "ID" || name.startsWith("Timestamp") || line[i] === "") return;
         cells.set(`${group} | ${station} | ${name} | ${line[1]}`, Number(line[i]));
       });
     }
