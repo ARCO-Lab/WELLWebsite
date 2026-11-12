@@ -1,10 +1,10 @@
-# This script initializes the database tables for the WELL backend using SQLAlchemy.
-# It imports the Flask app and models, then creates all tables in the current app context.
+# This script creates the WELL backend's tables that don't exist yet, with SQLAlchemy's create_all() (CI and a new
+# database use it). It never changes a table that already exists: changes go in db/migrations/ (scripts/migrate.py).
 
 import sys
 import pathlib
 
-# Add backend/app/ to sys.path so we can import main and db
+# Add backend/app/ to sys.path so server and db can be imported
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 
 from server import create_app

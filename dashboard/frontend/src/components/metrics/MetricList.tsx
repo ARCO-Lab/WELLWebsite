@@ -47,6 +47,8 @@ interface MetricGroupProps {
 
 const SITE_TIME_ZONE = "America/Toronto";
 
+// A site wall-clock time ("2025-11-08T21:10:00", no zone) as milliseconds on a UTC clock, so it can be compared
+// with siteNowMs() without any time zone maths. null if it isn't in that form.
 function wallClockMs(value: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
   if (!m) return null;
@@ -54,6 +56,7 @@ function wallClockMs(value: string): number | null {
   return Date.UTC(y, mo - 1, d, h, mi, s || 0);
 }
 
+// The site's current wall-clock time, on the same UTC clock as wallClockMs().
 function siteNowMs(): number {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: SITE_TIME_ZONE, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
@@ -82,6 +85,7 @@ export function formatSiteTime(value: string | null | undefined, dateOnly = fals
   return new Intl.DateTimeFormat("en-CA", { ...options, timeZone: "UTC" }).format(at);
 }
 
+// How many hours ago a reading was taken, by the site's clock; null if there is no usable time.
 function hoursOld(value: string | null | undefined): number | null {
   const ms = value ? wallClockMs(value) : null;
   return ms == null ? null : (siteNowMs() - ms) / 3_600_000;

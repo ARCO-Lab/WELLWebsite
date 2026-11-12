@@ -11,6 +11,7 @@ from utils.sampling_csv import validate_file  # noqa: E402
 
 
 def check(path):
+    # Prints the notes and problems of one file; True if it would import.
     try:
         result = validate_file(path)
     except OSError as e:

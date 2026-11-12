@@ -35,12 +35,14 @@ class ConfigError(Exception):
 
 
 def flag(value, default=False):
+    # An on/off setting: 1/true/yes/on (any case) is on; unset or empty gives the default.
     if value is None or not str(value).strip():
         return default
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def whole_number(env, name, default):
+    # A whole-number setting; anything that isn't digits stops the app (ConfigError) rather than being guessed.
     raw = (env.get(name) or "").strip()
     if not raw:
         return default

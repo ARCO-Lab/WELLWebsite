@@ -132,4 +132,6 @@ so `.env.local` can't set any of them.
 | `TEST_POSTGRES_URL`, `MIGRATE_TEST_DATABASE_URL` | Throwaway PostgreSQL databases for the backend tests that need one; without them those tests are skipped locally (CI fails if they are skipped). |
 | `E2E_DATABASE_URL`, `E2E_BASE_URL` | Database and dashboard address for the end-to-end tests in `dashboard/e2e/`. |
 
-The API canary's GitHub repository secrets are listed in the README's "API canary" section.
+The API canary's GitHub repository secrets are listed in the README's "API canary" section, and the daily maintainer's
+(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `WELL_MAINTAINER_PAT`, `SENTRY_API_TOKEN`, the SMTP settings and
+`ALERT_EMAILS`, and the `MAINTAINER_MODEL` variable) in its "Daily maintainer" section.

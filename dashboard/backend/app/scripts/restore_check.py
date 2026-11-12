@@ -59,6 +59,7 @@ class RestoreCheckError(Exception):
 
 
 def latest_dump(directory):
+    # The newest welldb-*.dump in the backup folder (dumps_in() lists them newest first).
     dumps = dumps_in(os.listdir(directory))
     if not dumps:
         raise RestoreCheckError(f"no welldb-*.dump files in {directory}")

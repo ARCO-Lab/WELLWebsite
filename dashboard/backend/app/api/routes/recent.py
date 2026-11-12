@@ -1,5 +1,6 @@
-# This file defines the /api/recent route for retrieving the most recent sampling measurement for each measurement type.
-# It queries the database for the latest values from creek/point sampling data.
+# This file defines the /api/recent route: the latest creek sampling results, for the dashboard's sampling cards.
+# For each measurement type it returns every row taken at that type's latest recorded_at (usually one sampling day,
+# so one row per site). recorded_at is naive America/Toronto wall time.
 
 from flask import jsonify
 from db.database import db

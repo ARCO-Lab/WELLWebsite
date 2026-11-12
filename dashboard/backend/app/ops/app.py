@@ -27,6 +27,8 @@ CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src '
 
 
 def site_time(ts, with_date=True):
+    """Template filter: a time as site (America/Toronto) time, "YYYY-MM-DD HH:MM" or "HH:MM". Accepts ISO strings
+    (a trailing Z means UTC) and datetimes; naive ones are taken as site time already."""
     if ts is None:
         return "never"
     if isinstance(ts, str):
@@ -39,6 +41,7 @@ def site_time(ts, with_date=True):
 
 
 def ago(ts, now=None):
+    """Template filter: how long ago a time was ("12 min ago", "3.5 h ago"). Same inputs as site_time()."""
     if ts is None:
         return "never"
     if isinstance(ts, str):
@@ -63,6 +66,7 @@ def pct(value):
 
 
 def ms(value):
+    """Template filter: a duration in milliseconds, shown in seconds from 1 s up."""
     if value is None:
         return "n/a"
     return f"{value:.0f} ms" if value < 1000 else f"{value / 1000:.1f} s"

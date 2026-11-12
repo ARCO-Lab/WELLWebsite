@@ -10,6 +10,7 @@ from datetime import datetime
 
 SAMPLING_TEMPLATE = pathlib.Path(__file__).resolve().parents[2] / "sampling_template.csv"
 
+# Query flag -> creek_id stored with each sample (the same IDs utils/sampling_csv.py assigns on import).
 CREEK_ID_MAP = {
     "ancaster": "19431905",
     "tiffany": "20962187",
@@ -21,6 +22,8 @@ CREEK_ID_MAP = {
 def register_samples_route(app):
     @app.route("/api/samples", methods=["GET"])
     def get_filtered_samples():
+        """Sampling rows with recorded_at between start and end (ISO, inclusive, naive America/Toronto wall time),
+        ordered by time. Creek flags (?ancaster=true&...) narrow it to those creeks; with none set, every creek."""
         # Parse query parameters for date range and selected creeks
         start = request.args.get("start")
         end = request.args.get("end")

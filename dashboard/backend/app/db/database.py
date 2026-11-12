@@ -1,5 +1,5 @@
-# This file initializes the SQLAlchemy database instance for use with Flask.
-# The 'db' object is used throughout the project for ORM operations.
+# This file defines the shared Flask-SQLAlchemy instance (db), bound to the app in server.py, and the engine options
+# every process uses. The 'db' object is used throughout the project for ORM operations.
 
 from flask_sqlalchemy import SQLAlchemy
 
