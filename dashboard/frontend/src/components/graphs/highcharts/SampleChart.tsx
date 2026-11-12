@@ -122,7 +122,8 @@ const SampleChart: React.FC<SampleChartProps> = ({
         color: style.color,
         dashStyle: style.dash,
         lineWidth: 2,
-        marker: { enabled: true, radius: 3.5, symbol: style.marker },
+        // Markers show while points are sparse enough (Highcharts hides them on dense lines)
+        marker: { radius: 3.5, symbol: style.marker },
         visible: !hiddenMetrics.includes(s.measurement),
         yAxis: unitMap.get(s.unit), // Associate each series with its corresponding Y-axis
       };
