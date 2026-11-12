@@ -16,14 +16,17 @@ export interface CreekSelection {
   spencer: boolean;
 }
 
+const NO_ROWS: SampledData[] = [];
+
 const useSampledData = (
   activeCreeks: CreekSelection,
   startDate: Date | null,
   endDate: Date | null
 ) => {
-  const [data, setData] = useState<SampledData[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  // The last rows fetched (kept on screen, under a spinner, while the next selection loads or after it fails), and
+  // the last selection that was answered, with its error if it failed.
+  const [data, setData] = useState<SampledData[]>(NO_ROWS);
+  const [done, setDone] = useState<{ key: string; error: Error | null }>({ key: "", error: null });
 
   const fetcher = useRef<SampleFetcher | null>(null);
 
@@ -38,30 +41,18 @@ const useSampledData = (
     });
     return { key: `${start}|${end}|${JSON.stringify(activeCreeks)}`, url: `/api/samples?${params.toString()}` };
   }, [activeCreeks, startDate, endDate]);
-  const wantedKey = wanted?.key ?? "";
-
-  // The last selection whose reply was shown. Until it is the wanted one the data is not this selection's yet, so the
-  // hook reports loading: right after a creek is ticked, before the request has even started, an empty list must not
-  // read as "no samples in this range".
-  const [doneKey, setDoneKey] = useState("");
 
   useEffect(() => {
     const f = (fetcher.current ??= new SampleFetcher());
     if (!wanted) {
-      f.cancel();
-      setData([]);
-      setLoading(false); // a request that was in flight never answers now
+      f.cancel(); // a request in flight never answers now
       return;
     }
     let live = true;
-    setLoading(true);
-    setError(null);
     f.load(wanted.key, wanted.url).then((result) => {
       if (!result || !live) return; // superseded by a newer selection, whose reply will answer
-      if (result.error) setError(result.error);
-      else setData(result.data ?? []);
-      setLoading(false);
-      setDoneKey(result.key);
+      if (result.data) setData(result.data);
+      setDone({ key: result.key, error: result.error });
     });
     // A newer selection (or leaving the page) aborts this request.
     return () => {
@@ -70,7 +61,14 @@ const useSampledData = (
     };
   }, [wanted]);
 
-  return { data, loading: loading || (wantedKey !== "" && doneKey !== wantedKey), error };
+  // Until the wanted selection is answered the data is not its own yet, so the hook reports loading: right after a
+  // creek is ticked, before the request has even started, an empty list must not read as "no samples in this range".
+  const answered = wanted !== null && done.key === wanted.key;
+  return {
+    data: wanted ? data : NO_ROWS,
+    loading: wanted !== null && !answered,
+    error: answered ? done.error : null,
+  };
 };
 
 export default useSampledData;
