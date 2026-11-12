@@ -1,10 +1,10 @@
 // This file defines the useRecentSamples React hook for fetching the most recent sampling measurements from the API.
-// It auto-refreshes every 7 days and manages loading state.
+// It auto-refreshes every 7 days and reports loading, error and retrying state, with a retry().
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface RecentSample {
-  site_id: number;
+  site_id: string; // the backend stores and returns it as text, e.g. "3"
   creek_id: string;
   measurement_type: string;
   value: number;
@@ -13,7 +13,7 @@ export interface RecentSample {
 }
 
 /** The latest creek sampling results (/api/recent), refetched weekly (sampling is infrequent). Same `loading`,
- *  `error` and `retry` contract as useLatestMetrics. */
+ *  `error`, `retrying` and `retry` contract as useLatestMetrics. */
 export default function useRecentSamples() {
   const [samples, setSamples] = useState<RecentSample[]>([]);
   const [loading, setLoading] = useState(true);
