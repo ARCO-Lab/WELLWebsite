@@ -5,7 +5,7 @@
 // page while it waits (switching tabs unmounts it), it stops polling, and when it comes back it says the export was
 // left unfinished and Download Data picks the same job up again. A line under the button says which days it exports.
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Download as DownloadIcon, X } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import {
@@ -27,6 +27,9 @@ const request = (input: string, init: RequestInit | undefined, signal: AbortSign
 // it up when it comes back (as long as the filters and dates are still the same).
 interface PendingJob { jobId: string; pollIntervalSeconds: number; selectionKey: string }
 const leftUnfinished: Record<"sensor" | "sampling", PendingJob | null> = { sensor: null, sampling: null };
+
+// For useSyncExternalStore's "is this the browser yet" (true in the browser, false on the server and in hydration)
+const noSubscription = () => () => {};
 
 interface DownloadProps {
   activeGroups: {
@@ -405,8 +408,10 @@ const Download: React.FC<DownloadProps> = ({
       }
     })();
 
-  // The days the export covers, in words: the picked days, not what a zoomed chart shows.
-  const rangeText = startDate && endDate
+  // The days the export covers, in words: the picked days, not what a zoomed chart shows. Only once mounted: the page
+  // is prerendered at build time with that day's default dates, and the browser's first render must match it.
+  const mounted = useSyncExternalStore(noSubscription, () => true, () => false);
+  const rangeText = mounted && startDate && endDate
     ? (dayStamp(startDate) === dayStamp(endDate)
       ? format(startDate, "MMM d, yyyy")
       : `${format(startDate, startDate.getFullYear() === endDate.getFullYear() ? "MMM d" : "MMM d, yyyy")} – ${format(endDate, "MMM d, yyyy")}`)
