@@ -21,3 +21,9 @@ def sampling_order(dialect_name):
     m = SamplingMeasurement
     return (m.recorded_at, func.length(m.site_id), bytewise(m.site_id, dialect_name),
             bytewise(m.measurement_type, dialect_name))
+
+
+def sampling_sort_key(row):
+    """sampling_order()'s order in Python, for rows already loaded (e.g. picked from a larger query): a sort key for
+    objects with recorded_at, site_id and measurement_type. Comparing UTF-8 bytes matches COLLATE "C"."""
+    return (row.recorded_at, len(row.site_id), row.site_id.encode(), row.measurement_type.encode())

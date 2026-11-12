@@ -6,8 +6,18 @@
 # A file that fails validation is recorded as refused (logs/processed.json, by Dataverse file id), its problems are
 # logged once, and it isn't retried: a corrected upload gets a new id. A run that refused or failed to import a file
 # reports OUTPUT: REJECTED_<n>_FILES or FAILED_<n>_FILES and exits 1, so the scheduler reports it as a failure.
+# Files are imported oldest first (by upload date, then Dataverse file id, which only grows, so same-day uploads keep
+# their upload order), so when a newer file has a different value for a stored reading, the newer value is the one
+# kept (inject_sampling.py applies it and logs a [CORRECTED] line). A file imported after a newer one (an older file
+# whose import failed and is retried, or one re-imported with --force) gets the newer files' scopes (what each
+# covers, recorded in logs/processed.json) and doesn't change the readings they cover: those corrections are held
+# back and reported. Held corrections and stored readings a file covers but no longer has get an ATTENTION: line,
+# which the scheduler sends to Sentry as a warning, and the run's SUMMARY: line counts them with the new and
+# corrected rows.
 #   python scripts/download_data.py                          import every new file
 #   python scripts/download_data.py --force --file 57195     import that file again, even if processed or refused
+#                                                            (its corrections apply, except to readings that a
+#                                                            newer imported file covers)
 #   python scripts/download_data.py --list-files             list the dataset's files only
 
 import os
@@ -68,9 +78,11 @@ def save_state(state):
     """Save the state file (see load_state)."""
     print(f"DEBUG: Saving {len(state['processed_files'])} processed and {len(state['refused_files'])} refused files")
     try:
-        with open(STATE_FILE, "w") as f:
+        # Written to a temporary file and renamed, so a crash or a full disk leaves the previous state intact
+        with open(STATE_FILE + ".tmp", "w") as f:
             json.dump({"processed_files": state["processed_files"], "refused_files": state["refused_files"]}, f,
                       indent=2)
+        os.replace(STATE_FILE + ".tmp", STATE_FILE)
         print(f"DEBUG: Saved state to {STATE_FILE}")
     except Exception as e:
         print(f"ERROR: Failed to save {STATE_FILE}: {e}")
@@ -229,11 +241,21 @@ def choose_files(all_files, state, names=(), force=False):
     """
     done = {pf["id"] for pf in state["processed_files"]} | {rf["id"] for rf in state["refused_files"]}
     chosen = [f for f in all_files if f["id"] not in done or (force and is_named(f, names))]
-    return sorted(chosen, key=lambda f: f["create_date"])
+    # Dataverse file ids only grow, so they order same-day uploads (whose create_date can tie)
+    return sorted(chosen, key=lambda f: (f["create_date"], int(f["id"])))
 
 
-def record(state, file_info, outcome, errors=0):
-    """Record a file as "processed" or "refused", replacing any earlier entry for its id."""
+def newer_files(state, file_info):
+    """The processed files newer (higher Dataverse id) than `file_info`, as inject_sampling.py's --newer list:
+    {"file": name and id, "scope": what it covers, or None if unknown (processed before scopes were recorded),
+    which counts as covering everything}."""
+    return [{"file": f"{pf['filename']} (ID: {pf['id']})", "scope": pf.get("scope")}
+            for pf in state["processed_files"] if int(pf["id"]) > int(file_info["id"])]
+
+
+def record(state, file_info, outcome, errors=0, scope=None):
+    """Record a file as "processed" (with `scope`, what it covers) or "refused", replacing any earlier entry for its
+    id."""
     entry = {"filename": file_info["filename"], "id": file_info["id"],
              "create_date": file_info["create_date"].isoformat()}
     for key in ("processed_files", "refused_files"):
@@ -242,6 +264,7 @@ def record(state, file_info, outcome, errors=0):
         entry.update(errors=errors, refused_at=datetime.now().isoformat(timespec="seconds"))
         state["refused_files"].append(entry)
     else:
+        entry["scope"] = scope
         state["processed_files"].append(entry)
 
 
@@ -258,6 +281,36 @@ def import_outcome(returncode, stdout):
     return "failed", None
 
 
+# The lines inject_sampling.py prints for a stored file, and the count each one gives
+_COUNT_LINES = {
+    "inserted": r"^\[INFO\] Inserted (\d+) new sampling records\.",
+    "corrected": r"^\[INFO\] Corrected (\d+) stored sampling records",
+    "withdrawn": r"^\[WARN\] (\d+) rows present in the DB but not in the latest file",
+    "held": r"^\[WARN\] (\d+) corrections not applied",
+}
+
+
+def import_counts(stdout):
+    """{"inserted", "corrected", "withdrawn", "held"} row counts from a successful inject_sampling.py run's output (0
+    for a line it didn't print)."""
+    counts = {}
+    for name, pattern in _COUNT_LINES.items():
+        match = re.search(pattern, stdout or "", flags=re.MULTILINE)
+        counts[name] = int(match.group(1)) if match else 0
+    return counts
+
+
+def import_scope(stdout):
+    """The file's scope from inject_sampling.py's [SCOPE] line (JSON), or None if it printed none."""
+    match = re.search(r"^\[SCOPE\] (.+)$", stdout or "", flags=re.MULTILINE)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except ValueError:
+        return None
+
+
 def run_status(processed, refused, failed):
     """The OUTPUT status for the scheduler. A refused or failed file also makes the run exit 1."""
     if refused:
@@ -267,23 +320,30 @@ def run_status(processed, refused, failed):
     return f"PROCESSED_{processed}_FILES" if processed else "NO_FILES_PROCESSED"
 
 
-def import_file(file_info, inject_script):
-    """Download one file and run inject_sampling.py on it. Returns import_outcome()'s pair."""
+def import_file(file_info, inject_script, newer=()):
+    """Download one file and run inject_sampling.py on it, with `newer` (newer_files) as --newer. Returns
+    import_outcome()'s pair, the run's import_counts() and the file's import_scope()."""
     tmp_file_path = None
     try:
         tmp_file_path = process_single_file(file_info)
         print(f"DEBUG: Running inject_sampling.py for {file_info['filename']}")
-        result = subprocess.run([sys.executable, inject_script, tmp_file_path], capture_output=True, text=True)
+        cmd = [sys.executable, inject_script, tmp_file_path]
+        if newer:
+            cmd += ["--newer", json.dumps(newer)]
+            print(f"DEBUG: {len(newer)} newer files are already imported; their readings keep their values")
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.stdout:
             print("inject_sampling.py stdout:", result.stdout)
         if result.stderr:
             print("inject_sampling.py stderr:", result.stderr)
         if result.returncode not in (0, INVALID_FILE_EXIT):
             print(f"ERROR: inject_sampling.py failed with return code {result.returncode}")
-        return import_outcome(result.returncode, result.stdout)
+        outcome, number = import_outcome(result.returncode, result.stdout)
+        ok = result.returncode == 0
+        return outcome, number, import_counts(result.stdout if ok else ""), import_scope(result.stdout) if ok else None
     except Exception as e:
         print(f"ERROR: Failed to process {file_info['filename']}: {e}")
-        return "failed", None
+        return "failed", None, import_counts(""), None
     finally:
         if tmp_file_path:
             try:
@@ -353,14 +413,26 @@ def main():
         print(f"DEBUG: Will process {len(files_to_process)} files in chronological order")
         inject_script = os.path.join(os.path.dirname(__file__), "inject_sampling.py")
         counts = {"processed": 0, "refused": 0, "failed": 0}
+        rows = import_counts("")
         for i, file_info in enumerate(files_to_process, 1):
             print(f"\nDEBUG: === Processing file {i}/{len(files_to_process)} ===")
-            outcome, number = import_file(file_info, inject_script)
+            outcome, number, file_rows, scope = import_file(file_info, inject_script, newer_files(state, file_info))
             counts[outcome] += 1
             if outcome == "processed":
                 # Recorded even when every row was already stored: importing it again would add nothing
-                record(state, file_info, "processed")
-                print(f"DEBUG: Successfully processed {file_info['filename']} (Inserted {number} records)")
+                record(state, file_info, "processed", scope=scope)
+                rows = {name: rows[name] + file_rows[name] for name in rows}
+                print(f"DEBUG: Successfully processed {file_info['filename']} (Inserted {number} records, corrected "
+                      f"{file_rows['corrected']})")
+                # The scheduler sends ATTENTION: lines to Sentry: these rows need a person's decision
+                if file_rows["withdrawn"]:
+                    print(f"ATTENTION: {file_info['filename']} (ID: {file_info['id']}): {file_rows['withdrawn']} rows "
+                          f"present in the DB but not in the latest file were kept; see the [WARN] lines above and "
+                          f"delete them by hand if the file withdrew them.")
+                if file_rows["held"]:
+                    print(f"ATTENTION: {file_info['filename']} (ID: {file_info['id']}): {file_rows['held']} corrections "
+                          f"not applied, because a newer file already imported covers those readings; see the [WARN] "
+                          f"lines above.")
             elif outcome == "refused":
                 record(state, file_info, "refused", number)
                 print(f"ERROR: {file_info['filename']} (ID: {file_info['id']}) was refused: {number} problems, listed "
@@ -372,6 +444,9 @@ def main():
         print("\nDEBUG: === Processing Complete ===")
         print(f"DEBUG: {counts['processed']} processed, {counts['refused']} refused, {counts['failed']} failed, "
               f"out of {len(files_to_process)} files")
+        print(f"SUMMARY: {rows['inserted']} new, {rows['corrected']} corrected, {rows['held']} corrections not "
+              f"applied (a newer file covers them), {rows['withdrawn']} rows present in the DB but not in the latest "
+              f"file")
         # The scheduler reads this line (utils/jobs.download_status)
         print(f"OUTPUT: {run_status(counts['processed'], counts['refused'], counts['failed'])}")
         if counts["refused"] or counts["failed"]:
