@@ -85,6 +85,15 @@ class DatabaseErrorHandlerTests(TestCase):
 
         cls.client = cls.app.test_client()
 
+    def test_no_cors_headers_for_other_sites(self):
+        # Only the dashboard's server calls the backend, so no browser on another site may read its answers.
+        r = self.client.get("/health", headers={"Origin": "https://example.com"})
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", r.headers)
+        r = self.client.open("/health", method="OPTIONS", headers={
+            "Origin": "https://example.com", "Access-Control-Request-Method": "GET"})
+        self.assertNotIn("Access-Control-Allow-Origin", r.headers)
+
     def test_a_cancelled_query_is_a_504_with_a_message(self):
         with self.assertLogs(self.app.logger, "WARNING"):
             r = self.client.get("/_test/fail/57014")
