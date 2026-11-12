@@ -4,7 +4,7 @@ Required:
   OPS_PASSWORD_HASH    werkzeug hash of the one shared password (python -m ops.hashpw prints it)
   OPS_SECRET_KEY       random string, at least 32 characters, that signs the session cookie
 Optional:
-  OPS_DATABASE_URL     database to read (default DATABASE_URL); ideally a read-only role, see the README
+  OPS_DATABASE_URL     database to read (default DATABASE_URL); ideally a read-only role, see README.md here
   OPS_COOKIE_SECURE    1 to send the session cookie over HTTPS only (set it once the site has TLS; default 0)
   OPS_RETENTION_DAYS   days of request_metrics and uptime_probes to keep (default 90)
   OPS_PROBE_INTERVAL_S seconds between uptime checks (default 60; 0 turns the checks off)
@@ -89,7 +89,7 @@ def load_settings(env=None):
     password_hash = (env.get("OPS_PASSWORD_HASH") or "").strip().strip("'\"")
     if not password_hash:
         raise ConfigError("OPS_PASSWORD_HASH is not set. Run `python -m ops.hashpw` to make one and put it in the "
-                          "env file (see the README, welldash²). Refusing to start without a password.")
+                          "env file (see dashboard/backend/app/ops/README.md). Refusing to start without a password.")
     if not HASH_FORMAT.match(password_hash):
         raise ConfigError("OPS_PASSWORD_HASH doesn't look like a hash from `python -m ops.hashpw` (method$salt$hash). "
                           "If it was written without single quotes, Docker Compose may have read the $ signs as "

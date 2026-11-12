@@ -1,6 +1,6 @@
 # Checks the sensor data and the vendor APIs for problems someone has to act on, and emails them (rules and settings:
-# utils/alerts.py; the README's Monitoring section lists the alerts). scripts/scheduler_temp.py runs it after every
-# 10-minute ingestion run.
+# utils/alerts.py; dashboard/backend/README.md, "Email alerts", lists the alerts). scripts/scheduler_temp.py runs it
+# after every 10-minute ingestion run.
 #
 # Each problem is an incident in the alert_incidents table, so it is emailed once when it starts, again at most every
 # ALERT_REMINDER_HOURS (default 24) while it lasts, and once when it clears, with how long it lasted. Everything one

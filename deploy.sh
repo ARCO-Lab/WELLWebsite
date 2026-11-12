@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploys the latest `main` to this VM: pulls it, rebuilds only the services whose files changed, checks the
-# site is healthy, and rolls back if it isn't. See the README's "Deploying" section.
+# site is healthy, and rolls back if it isn't. See docs/deploying.md.
 #
 #   ./deploy.sh            deploy now (asks nothing; you're there)
 #   ./deploy.sh --auto     for cron: only deploy a commit whose CI checks all passed, and hold (log, don't

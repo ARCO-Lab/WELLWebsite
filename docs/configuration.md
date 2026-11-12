@@ -1,7 +1,7 @@
 # Configuration
 
 Every setting the code reads from the environment, where it goes, and its default. No env file is committed: on the
-VM they sit in the checkout, ignored by git. Longer explanations of some groups are in the README (linked below).
+VM they sit in the checkout, ignored by git. Longer explanations of some groups are in the folder READMEs (linked below).
 
 | File | Read by |
 |---|---|
@@ -25,7 +25,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `DEPLOYMENT` | `DEV` | `PROD` makes the WordPress theme force HTTPS URLs (`home/wp-content/themes/well/functions.php`). |
 | `WP_HOME`, `WP_SITEURL` | none | Passed into the `wordpress` container. The stock image doesn't apply them by itself; they only take effect if `home/wp-config.php` (not in the repository) reads them. |
 | `DASHBOARD_URL` | `https://welldash.mcmaster.ca` | The dashboard address the WordPress theme links to and embeds. |
-| `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see "Host firewall" in the README). |
+| `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see [Host firewall](hosting.md#host-firewall-required)). |
 | `BACKEND_PORT` | must be `5000` | Only feeds the backend's `expose:` line. Gunicorn always listens on 5000 (`dashboard/backend/Dockerfile`), so any other value breaks the stack. |
 | `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`, which is fixed when the image is built, so a change needs a dashboard rebuild. |
 | `NEXT_PUBLIC_FLASK_API_URL` | none | Passed to the dashboard build and container, but no code reads it. |
@@ -55,7 +55,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATA_MAX_ROWS` | `300000` | Most readings one `/api/data` request may return; more gets a 413 (see the README). |
+| `DATA_MAX_ROWS` | `300000` | Most readings one `/api/data` request may return; more gets a 413 (see [the backend README](../dashboard/backend/README.md#api)). |
 | `EXPORT_SYNC_ROW_THRESHOLD` | `100000` | Downloads up to this many readings are built while the visitor waits; larger ones are queued for `export_worker`. |
 | `EXPORT_MAX_ROWS` | `5000000` | Largest queued export, in readings. |
 | `EXPORT_MAX_ACTIVE_JOBS` | `6` | Queued or running exports at once, in total. |
@@ -65,7 +65,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `EXPORT_FILE_TTL_MINUTES` | `60` | How long a finished export can be downloaded before the hourly cleanup deletes it. |
 | `EXPORT_POLL_INTERVAL_SECONDS` | `3` | How often the API tells the dashboard to check on a queued export. |
 
-**Borealis and SharePoint** (details in the README's "Off-VM copies" section)
+**Borealis and SharePoint** (details in [the backend README](../dashboard/backend/README.md#off-vm-copies-borealis-and-sharepoint))
 
 `BOREALIS_URL` (the server, e.g. `https://borealisdata.ca`; a collection page such as
 `https://borealisdata.ca/dataverse/WELL` also works, and only its scheme and host are used for API calls),
@@ -78,13 +78,13 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 `SHAREPOINT_LIBRARY` (default `Documents`), `SHAREPOINT_FOLDER` (default `WELL sensor data`),
 `SHAREPOINT_UPLOAD_FIRST_MONTH` (default: the Borealis one).
 
-**Monitoring** (details in the README's "Monitoring" section; all off until set)
+**Monitoring** (details in [the backend README](../dashboard/backend/README.md#monitoring); all off until set)
 
 - Freshness check (`/health/data`): `HEALTH_MAX_AGE_HOURS` (default `3`), `HEALTH_MAX_AGE_HOURS_<GROUP>`,
   `HEALTH_QUIET_HOURS_<GROUP>` (Quality `18-12`, others off), `HEALTH_QUIET_MARGIN_HOURS_<GROUP>` (default `1`),
   `HEALTH_EXCLUDED_SERIES` (default `2577535:*`). `<GROUP>` is `WEATHER`, `LOGGER` or `QUALITY`.
 - Heartbeats (Healthchecks.io ping URLs): `HEALTHCHECK_URL_INGESTION`, `_UPLOAD`, `_SHAREPOINT`, `_DOWNLOAD`,
-  `_DIGEST`, `_ALERTS`. `HEALTHCHECK_URL_BACKUP` is for a backup job on the host; no code here reads it.
+  `_DIGEST`, `_ALERTS`. `HEALTHCHECK_URL_BACKUP` is for the nightly database backup ([Database backups](../dashboard/backend/README.md#database-backups)).
 - Email (digest and alerts): `ALERT_EMAILS`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`,
   `DIGEST_HOUR` (default `7`, Toronto time).
 - Alert rules: `ALERT_STALE_HOURS`, `ALERT_STALE_HOURS_<GROUP>` (`3`, `3`, `2`), `ALERT_VENDOR_FAILURES` (`3`),
@@ -100,7 +100,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 |---|---|
 | `ALLOW_WIPE` | `1` lets a script that deletes every row of a table run (`clear_sampling_db.py`, `inject_sampling.py --full-reload`), e.g. `docker compose exec -e ALLOW_WIPE=1 worker python scripts/...`. Take a `pg_dump` first. |
 
-`OPENAI_API_KEY` is unused while the AI analysis is disabled; it is only needed if that feature is turned back on (see the README's "AI Analysis").
+`OPENAI_API_KEY` is unused while the AI analysis is disabled; it is only needed if that feature is turned back on (see [AI analysis](../dashboard/backend/README.md#ai-analysis-disabled)).
 
 ## Dashboard (Next.js)
 
@@ -111,7 +111,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |
-| `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` | build arg | `https://well.goatcounter.com/count` | Where page views are counted (README, "Visitor counts"). Counts are sent only from welldash.mcmaster.ca, whatever the value; empty leaves counting out of the build. |
+| `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` | build arg | `https://well.goatcounter.com/count` | Where page views are counted ([Visitor counts](../dashboard/frontend/README.md#visitor-counts-goatcounter)). Counts are sent only from welldash.mcmaster.ca, whatever the value; empty leaves counting out of the build. |
 
 `docker-compose.yml` passes only two build args, `FLASK_API_URL` (from `BACKEND_INTERNAL_URL`) and
 `NEXT_PUBLIC_FLASK_API_URL`. The other four come from the `ARG` defaults in `dashboard/frontend/Dockerfile`. To change
@@ -135,6 +135,7 @@ so `.env.local` can't set any of them.
 | `TEST_POSTGRES_URL`, `MIGRATE_TEST_DATABASE_URL` | Throwaway PostgreSQL databases for the backend tests that need one; without them those tests are skipped locally (CI fails if they are skipped). |
 | `E2E_DATABASE_URL`, `E2E_BASE_URL` | Database and dashboard address for the end-to-end tests in `dashboard/e2e/`. |
 
-The API canary's GitHub repository secrets are listed in the README's "API canary" section, and the daily maintainer's
-(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `WELL_MAINTAINER_PAT`, `SENTRY_API_TOKEN`, the SMTP settings and
-`ALERT_EMAILS`, and the `MAINTAINER_MODEL` variable) in its "Daily maintainer" section.
+The API canary's GitHub repository secrets are listed in [the API canary section](../.github/workflows/README.md#api-canary),
+and the daily maintainer's (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `WELL_MAINTAINER_PAT`, `SENTRY_API_TOKEN`,
+the SMTP settings and `ALERT_EMAILS`, and the `MAINTAINER_MODEL` variable) in [its section](../.github/workflows/README.md#daily-maintainer).
+welldash²'s `OPS_*` settings (root `.env`) are in [its README](../dashboard/backend/app/ops/README.md#settings).

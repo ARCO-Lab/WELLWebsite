@@ -117,7 +117,7 @@
 
 <section class="card">
   <h2>Deploys</h2>
-  {% if deploys.missing %}<p class="muted">deploy.log isn't in the logs folder, so deploys aren't shown. The README (welldash²) says how to point deploy.sh's log there.</p>
+  {% if deploys.missing %}<p class="muted">deploy.log isn't in the logs folder, so deploys aren't shown. dashboard/backend/app/ops/README.md ("Showing deploys") says how to point deploy.sh's log there.</p>
   {% elif deploys.error %}{{ failed(deploys, "deploy.log") }}
   {% elif not deploys.entries %}<p class="muted">No deploys in deploy.log yet.</p>
   {% else %}

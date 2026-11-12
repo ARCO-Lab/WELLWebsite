@@ -3,7 +3,7 @@
     docker compose exec backend python -m ops.hashpw     (on the VM, from ~/WELLWebsite; any container of the
                                                           backend image works, e.g. run --rm --no-deps ops)
 
-Prints two lines to add to the env file docker compose reads (see the README, welldash²):
+Prints two lines to add to the env file docker compose reads (see README.md in this folder, "Setting it up"):
     OPS_PASSWORD_HASH='scrypt:...'     single quotes keep compose from reading its $ signs as variables
     OPS_SECRET_KEY='...'               signs the session cookie; a new one signs everyone out
 --hash-only prints just the first line, to change the password and keep the secret key. (A new password signs

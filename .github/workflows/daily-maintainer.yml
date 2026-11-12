@@ -4,7 +4,8 @@
 # audits each one, and labels it. It is told never to merge, and its tool rules deny it. Then
 # .github/scripts/maintainer_summary.py emails what is ready to merge and what needs a person. The steps are in
 # maintainer-run.yml; its instructions are .github/maintainer/PROMPT.md, its tool rules
-# .github/maintainer/settings.json. See the README's "Daily maintainer" section for the secrets and how to pause it.
+# .github/maintainer/settings.json. See .github/workflows/README.md, "Daily maintainer", for the secrets and how to
+# pause it.
 name: Daily maintainer
 
 on:
