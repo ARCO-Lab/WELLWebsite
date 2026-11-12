@@ -45,6 +45,7 @@ class LoginLimiter:
             times.popleft()
 
     def blocked(self, client):
+        """Whether login is refused for this client: too many failures from it, or from everyone together."""
         now = self.clock()
         with self.lock:
             self._trim(self.all, now)
@@ -67,6 +68,7 @@ class LoginLimiter:
 
 
 def csrf_token():
+    """This session's CSRF token, created on first use and kept until the session is cleared."""
     token = session.get("csrf")
     if not token:
         token = session["csrf"] = secrets.token_urlsafe(32)
@@ -79,6 +81,7 @@ def csrf_ok():
 
 
 def logged_in(settings, now=None):
+    """Whether the session holds a login under SESSION_LIFETIME old, made with the current password hash."""
     auth = session.get("auth")
     if not isinstance(auth, dict):
         return False
@@ -90,6 +93,8 @@ def logged_in(settings, now=None):
 
 
 def install_auth(app, settings, limiter=None):
+    """Adds the login check before every request, the /login and /logout routes and the template's CSRF token.
+    Returns the limiter (tests pass their own)."""
     limiter = limiter or LoginLimiter()
     app.extensions["ops_login_limiter"] = limiter
 

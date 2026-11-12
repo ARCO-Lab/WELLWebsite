@@ -1,5 +1,5 @@
-# This file defines the QualityService class for fetching water quality data from an external API.
-# It handles API authentication, paginated data retrieval, and time range management.
+# This file defines the QualityService class for fetching the water quality sonde's readings from the WQData API.
+# It handles the API key, WQData's paging and throttling, and points split across pages. WQData times are UTC.
 
 import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
@@ -16,7 +16,7 @@ def describe_request_error(e):
     return f"{type(e).__name__} (HTTP {status})" if status else type(e).__name__
 
 def merge_point(points, point):
-    """Add a WQData point to  (timestamp -> point). A timestamp seen before (a point split across two
+    """Add a WQData point to `points` (timestamp -> point). A timestamp seen before (a point split across two
     pages) gets the values it didn't have yet, by parameterId, instead of a second entry."""
     ts = point.get("timestamp")
     seen = points.get(ts)
@@ -47,10 +47,10 @@ class QualityService:
         return {}  
 
     def get_default_time_range(self):
-        # Returns a default time range for data queries
+        # The range used when get_quality_data() is called without one (the example run at the bottom of this
+        # file; ingestion always passes its own): from the sonde's first readings to now, in UTC.
         now = datetime.now(timezone.utc)
         end_time = now.strftime("%Y-%m-%d %H:%M:%S")
-        # Adjust this to fit your project-specific time range
         start_time = "2025-05-08 11:00:00" # start_time = "2025-05-08 11:00:00"
         return start_time, end_time
 

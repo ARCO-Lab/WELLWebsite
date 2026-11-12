@@ -1,5 +1,6 @@
-# This file defines the Config dataclass for loading environment variables and application settings.
-# It centralizes configuration for API endpoints, tokens, device IDs, and database URI.
+# This file defines the Config class: the backend's settings, read once from the environment (and .env) at import.
+# It centralizes the vendor API endpoints and credentials, the database, Borealis, exports and Celery settings.
+# docs/configuration.md describes each variable.
 
 import logging
 import os
@@ -26,10 +27,12 @@ def parse_timeout_ms(name, value):
 
 @dataclass(frozen=True)
 class Config:
+    # LI-COR Cloud (formerly HOBOlink): the weather station and water-level loggers.
     HOBO_API_URL = os.getenv("HOBOLINK_API_URL")
     HOBO_API_TOKEN = os.getenv("HOBOLINK_API_TOKEN")
     HOBO_LOGGERS = os.getenv("HOBOLINK_LOGGERS")
 
+    # WQData: the water quality sonde.
     WQ_API_URL = os.getenv("WQ_API_URL")
     WQ_API_KEY = os.getenv("WQ_API_KEY")
     WQ_DEVICE_ID = os.getenv("WQ_DEVICE_ID")
@@ -62,6 +65,8 @@ class Config:
     # Publish each monthly upload (default). Off ("0"): the upload stays a draft for a curator to publish.
     BOREALIS_PUBLISH = os.getenv("BOREALIS_PUBLISH", "1").strip().lower() not in ("0", "false", "no", "off")
 
+    # CSV exports: where files are written, how long a finished job's file is kept, the largest export sent
+    # directly rather than as a background job (readings), and how often the page polls a job.
     EXPORTS_DIR = os.getenv("EXPORTS_DIR", "/app/app/exports")
     EXPORT_FILE_TTL_MINUTES = int(os.getenv("EXPORT_FILE_TTL_MINUTES", "60"))
     EXPORT_SYNC_ROW_THRESHOLD = int(os.getenv("EXPORT_SYNC_ROW_THRESHOLD", "100000"))

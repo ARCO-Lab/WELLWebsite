@@ -30,6 +30,7 @@ class MigrationError(Exception):
 
 
 def migration_files(directory=MIGRATIONS_DIR):
+    """The numbered migration files in order. Raises MigrationError if two share a number."""
     files = sorted(p for p in pathlib.Path(directory).iterdir() if NUMBERED.match(p.name))
     numbers = [NUMBERED.match(p.name).group(1) for p in files]
     duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
@@ -65,6 +66,8 @@ def mentions(sql, name):
 
 
 def apply(engine, path, log=print):
+    """Runs one migration file and records it in schema_migrations: in one transaction, or in autocommit when the
+    file starts with the no-transaction marker (and then only after checking its indexes were built)."""
     sql = read(path)
     record = text("INSERT INTO schema_migrations (version) VALUES (:version)")
     if not needs_autocommit(sql):
@@ -93,6 +96,8 @@ def apply(engine, path, log=print):
 
 
 def migrate(engine, directory=MIGRATIONS_DIR, log=print):
+    """Applies every pending migration in order, holding an advisory lock so two runs can't overlap. Returns the
+    versions applied."""
     migration_files(directory)   # fail on duplicate numbers before touching the database
     postgres = engine.dialect.name == "postgresql"
     # A second run refuses to start rather than wait: a session waiting for the lock holds a snapshot, and

@@ -1,5 +1,6 @@
-# This file defines the WeatherService class for fetching weather station data from an external API.
-# It handles authentication, logger selection, paging and retries.
+# This file defines the WeatherService class for fetching readings from the LI-COR Cloud (formerly HOBOlink) API:
+# the weather station and the water-level loggers. It handles the token, one request per time window, and retries;
+# utils/fetching.fetch_range splits longer periods into windows. LI-COR times are UTC.
 
 import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
@@ -31,8 +32,9 @@ class WeatherService:
         }
 
     def get_logger_id(self):
-        # Return the first logger ID (used for group queries)
-        return self.logger_ids[0]  # Extendable later
+        # The station serial sent as LI-COR's "loggers" parameter: the first in HOBOLINK_LOGGERS. One request
+        # returns the weather sensors and the water-level loggers together.
+        return self.logger_ids[0]
 
     def get_page(self, start, end):
         """One request for [start, end) (aware datetimes): (all records, whether LI-COR capped the response).
