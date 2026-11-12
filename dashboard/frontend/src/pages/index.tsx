@@ -40,6 +40,7 @@ import { SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
 import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
+import useSelectionLink from "@/hooks/useSelectionLink";
 
 type ActiveFilters = { [key: string]: string[] };
 type SensorGroup = "weather" | "quality" | "gauges";
@@ -148,6 +149,12 @@ export default function Dashboard() {
       return acc;
     }, {} as ActiveFilters);
 
+
+  // A shared link's ?tab=, ?groups= and ?creeks= tick what its sender had ticked, and the link follows the ticks
+  useSelectionLink({
+    activeTab, setActiveTab, activeGroups, setActiveGroups, setSubFilters, activeCreeks, setActiveCreeks,
+    setSamplingSubFilters, setOpen, setChevronState,
+  });
 
   // Dates are calendar days at the site (Toronto), whatever the viewer's time zone (utils/siteTime).
   // Dates for the SENSOR Tab: yesterday and today
