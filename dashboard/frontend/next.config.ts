@@ -5,8 +5,8 @@ import { withSentryConfig } from "@sentry/nextjs/config";
 //
 // Content-Security-Policy lists where the page may load things from: its own origin; GoatCounter's script and the
 // endpoint it counts to (components/VisitorCount.tsx); the host Sentry's DSN reports to (lib/sentry.ts); the map's
-// style, tiles and imagery (components/map/Map.tsx); and Google Fonts (pages/_app.tsx). Styles may be inline
-// because Highcharts, MUI (Emotion) and MapLibre set them in the page. Scripts may be inline too: the build puts a
+// style, tiles and imagery (components/map/Map.tsx). Fonts are our own (Poppins is served from public/fonts). Styles
+// may be inline because Highcharts and MapLibre set them in the page. Scripts may be inline too: the build puts a
 // small inline script in every page that loads its chunks, whose content (so its hash) changes with each build, and
 // the page is static, so there is no per-request nonce to give it. Scripts from any other site are still refused.
 // MapLibre's worker comes from our own origin. frame-ancestors lets only this site and the WordPress site (whose
@@ -38,8 +38,8 @@ const frameAncestors = [...new Set([
 const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' https://gc.zgo.at${dev ? " 'unsafe-eval'" : ""}`,
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self'",
   `img-src 'self' data: blob: ${mapHosts} ${goatCounter}`,
   `connect-src 'self' ${mapHosts} ${goatCounter} ${sentry}`,
   "worker-src 'self' blob:",

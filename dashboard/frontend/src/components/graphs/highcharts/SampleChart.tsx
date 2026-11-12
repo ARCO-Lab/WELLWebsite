@@ -1,5 +1,7 @@
 // This file defines the SampleChart component: one Ancaster Watershed sampling site's readings over time, drawn
-// from raw rows with Highcharts. It supports multiple Y-axes for different units. (The West Campus sensor charts
+// from raw rows with Highcharts. It supports multiple Y-axes for different units. Each measurement has its own colour,
+// line style and marker (utils/samplingStyle); the legend is the card's (CreekGraph), shared by its charts, so it
+// takes no room from the plots and can show or hide a measurement in all of them at once. (The West Campus sensor charts
 // use MetricChart, which draws aggregated series from /api/series and zooms.)
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -7,6 +9,8 @@ import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
 // Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
 import 'highcharts/modules/accessibility';
+import { displayUnit } from '@/utils/chartStyle';
+import { samplingStyle } from '@/utils/samplingStyle';
 
 interface SensorData {
   measurement_type: string;
@@ -16,8 +20,9 @@ interface SensorData {
 }
 
 interface SampleChartProps {
-  activeGroup: 'gauges' | 'weather' | 'quality';
+  siteName: string; // the chart's title: "<site> Data"
   subFilters: string[];
+  hiddenMetrics?: string[]; // measurements switched off in the card's legend
   height?: number;
   startDate: Date | null;
   endDate: Date | null;
@@ -25,16 +30,16 @@ interface SampleChartProps {
   loading: boolean;
   error: Error | null;
   modalOpen?: boolean;
-  showLegend?: boolean;
   // Small multiples (the logger charts) show one error message for the group instead of one each.
   showErrorBanner?: boolean;
 }
 
-const graphColors = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#88D1D9', '#7F488D', '#F1C232', '#CB2027'];
+const NONE: string[] = [];
 
 const SampleChart: React.FC<SampleChartProps> = ({
-  activeGroup,
+  siteName,
   subFilters,
+  hiddenMetrics = NONE,
   height = 500,
   startDate,
   endDate,
@@ -42,7 +47,6 @@ const SampleChart: React.FC<SampleChartProps> = ({
   loading,
   error,
   modalOpen= false,
-  showLegend = true,
   showErrorBanner = true,
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
@@ -83,15 +87,17 @@ const SampleChart: React.FC<SampleChartProps> = ({
     if (!data || loading) return;
 
     // Build chart options and series from data and subFilters
-    const seriesMap: Map<string, { name: string; unit: string; data: [number, number][] }> = new Map();
+    const seriesMap: Map<string, { measurement: string; name: string; unit: string; data: [number, number][] }> = new Map();
     const unitMap: Map<string, number> = new Map(); // To track the index of each unique unit
 
     data.forEach((item) => {
       if (subFilters.includes(item.measurement_type)) {
         const key = `${item.measurement_type}_${item.unit}`;
         if (!seriesMap.has(key)) {
+          const unit = displayUnit(item.unit);
           seriesMap.set(key, {
-            name: `${item.measurement_type} (${item.unit})`,
+            measurement: item.measurement_type,
+            name: unit ? `${item.measurement_type} (${unit})` : item.measurement_type,
             unit: item.unit,
             data: [],
           });
@@ -107,13 +113,21 @@ const SampleChart: React.FC<SampleChartProps> = ({
       }
     });
 
-    const series = Array.from(seriesMap.values()).map((s) => ({
-      type: 'line' as const,
-      name: s.name,
-      data: s.data.sort((a, b) => a[0] - b[0]),
-      color: graphColors[unitMap.get(s.unit)! % graphColors.length],
-      yAxis: unitMap.get(s.unit), // Associate each series with its corresponding Y-axis
-    }));
+    const series = Array.from(seriesMap.values()).map((s) => {
+      const style = samplingStyle(s.measurement);
+      return {
+        type: 'line' as const,
+        name: s.name,
+        data: s.data.sort((a, b) => a[0] - b[0]),
+        color: style.color,
+        dashStyle: style.dash,
+        lineWidth: 2,
+        // Markers show while points are sparse enough (Highcharts hides them on dense lines)
+        marker: { radius: 3.5, symbol: style.marker },
+        visible: !hiddenMetrics.includes(s.measurement),
+        yAxis: unitMap.get(s.unit), // Associate each series with its corresponding Y-axis
+      };
+    });
 
     const yAxes = Array.from(unitMap.keys()).map((unit, index) => ({
       // No axis title: Highcharts only draws one when the text is non-empty (its types don't allow null here)
@@ -121,7 +135,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
         text: '',
       },
       labels: {
-        format: `{value} ${unit}`, // Append the unit to the label
+        format: displayUnit(unit) ? `{value} ${displayUnit(unit)}` : '{value}', // Append the unit to the label
       },
       opposite: index % 2 === 1,
       visible: modalOpen, // make visible on modal open
@@ -134,16 +148,14 @@ const SampleChart: React.FC<SampleChartProps> = ({
         style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
       title: {
-        text: `${activeGroup.charAt(0).toUpperCase() + activeGroup.slice(1)} Data`,
+        text: `${siteName} Data`,
         style: { fontFamily: "Poppins, Arial, sans-serif", fontSize: "16px", color: "#333" }, // <-- Add this
       },
       credits: {
         enabled: false,
       },
-      legend: {
-        enabled: showLegend && series.length > 1,
-        itemStyle: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
-      },
+      // The card shows one legend for all its charts (CreekGraph), so no plot is squeezed by its own
+      legend: { enabled: false },
       tooltip: {
         shared: true,
         followPointer: true,
@@ -173,7 +185,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
       })),
       series,
     });
-  }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
+  }, [data, loading, siteName, subFilters, hiddenMetrics, resolvedHeight, modalOpen]);
 
   const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
     && chartOptions.series.every((s) => !('data' in s && Array.isArray(s.data) && s.data.length));

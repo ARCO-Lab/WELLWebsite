@@ -19,6 +19,7 @@
 import {
   cutIntoTiles, seriesKey, tileQuery, tileRange, type ApiSeries, type TileSeries,
 } from "./seriesTiles.ts";
+import { displayUnit } from "../utils/chartStyle.ts";
 
 export const MAX_ENTRIES = 3000;
 export const MAX_IN_FLIGHT = 2;
@@ -280,7 +281,7 @@ export class SeriesLoader {
           const had = byKey.get(k);
           if (!had) {
             byKey.set(k, s);
-            if (!this.meta.has(k)) this.meta.set(k, { unit: s.unit, agg: s.agg ?? "mean" });
+            if (!this.meta.has(k)) this.meta.set(k, { unit: displayUnit(s.unit), agg: s.agg ?? "mean" });
           } else {
             const t = [...had.t, ...s.t], avg = [...had.avg, ...s.avg], min = [...had.min, ...s.min];
             const max = [...had.max, ...s.max], n = [...(had.n ?? had.t.map(() => NaN)), ...(s.n ?? s.t.map(() => NaN))];

@@ -30,12 +30,13 @@ const DRAG_PX = 5;
 
 const ExpandButton = React.forwardRef<HTMLButtonElement, { label: string; onOpen: () => void; corner: boolean }>(
   ({ label, onOpen, corner }, ref) => (
-    // 28 px to look at; on phones 40 px to tap (the ::after, kept small to stay clear of its neighbours)
+    // 28 px to look at; on phones 40 px to tap (the ::after, kept small to stay clear of its neighbours). Full McMaster
+    // grey, about 7:1 on white (it was faded to about 2.6:1 until hovered).
     <button
       ref={ref}
       type="button"
       onClick={(e) => { e.stopPropagation(); onOpen(); }}
-      className={`${corner ? "absolute right-1.5 top-1.5 z-10" : "relative"} grid h-7 w-7 place-items-center max-sm:after:absolute max-sm:after:-inset-1.5 max-sm:after:content-[''] rounded-md text-muted opacity-60 transition-opacity hover:bg-black/5 hover:text-primary hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary group-hover:opacity-100`}
+      className={`${corner ? "absolute right-1.5 top-1.5 z-10" : "relative"} grid h-7 w-7 place-items-center max-sm:after:absolute max-sm:after:-inset-1.5 max-sm:after:content-[''] rounded-md text-muted transition-colors hover:bg-black/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
       aria-label={`Open ${label} in a larger view`}
       title="Open in a larger view"
     >

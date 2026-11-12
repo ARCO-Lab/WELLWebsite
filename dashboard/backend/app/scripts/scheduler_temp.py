@@ -150,6 +150,13 @@ def shut_down(jobs, log, wait_s=STOP_WAIT_S, grace_s=STOP_SUBPROCESS_GRACE_S, fi
     log(f"[shutdown] Exiting{'; abandoned: ' + ', '.join(left) if left else ''}")
     return left
 
+def report_attention(stdout):
+    """Send download_data.py's ATTENTION: lines (stored rows a newer file no longer has, kept for a person to
+    decide) to Sentry as warnings; the run itself still succeeded."""
+    for line in (stdout or "").splitlines():
+        if line.startswith("ATTENTION:"):
+            capture_job_warning(line)
+
 def run_download_data():
     """Run download_data.py. It downloads every new Borealis file and imports each one itself
     (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES or NO_NEW_FILES."""
@@ -160,6 +167,7 @@ def run_download_data():
         timestamped_print_download(f"download_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_download(f"download_data.py stderr: {result.stderr}")
+        report_attention(result.stdout)
         status = download_status(result.stdout)
         timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
         return status
@@ -171,6 +179,7 @@ def run_download_data():
     except subprocess.CalledProcessError as e:
         status = download_status(e.stdout)
         timestamped_print_download(f"download_data.py stdout: {e.stdout}")
+        report_attention(e.stdout)
         if e.stderr:
             timestamped_print_download(f"download_data.py stderr: {e.stderr}")
         if status and status.startswith(("REJECTED_", "FAILED_")):
@@ -368,7 +377,7 @@ def nightly_backup_check(log=None, run=None):
         if result.stderr:
             log(f"backup_db.py stderr: {result.stderr}")
         for line in (result.stderr or "").splitlines():
-            if line.startswith("WARNING:"):   # the backup worked, but deleting old dumps didn't
+            if line.startswith("WARNING:"):   # the backup worked, but e.g. deleting old dumps didn't
                 capture_job_warning(line)
         ok = True
     except subprocess.TimeoutExpired as e:

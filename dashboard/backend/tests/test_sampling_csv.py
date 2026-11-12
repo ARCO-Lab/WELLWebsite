@@ -358,6 +358,77 @@ class ImportIdempotenceTests(TestCase):
         self.assertIn("[ERROR] row 3: repeats row 2", out.getvalue())
         self.assertEqual(self.count(), 0)
 
+    # A newer file: its corrections are applied, and the stored rows it covers but no longer has are reported
+
+    def import_file(self, lines, newer=()):
+        """inject_new_sampling_data() on a CSV of `lines` (after the header). Returns its output."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "upload.csv"
+            path.write_text("date,time,site,parameter,value,unit\n" + "\n".join(lines) + "\n", encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()) as out, self.Session(self.engine) as session:
+                self.inject.inject_new_sampling_data(path, session=session, newer=newer)
+        return out.getvalue()
+
+    def stored(self):
+        with self.Session(self.engine) as session:
+            return {(r.site_id, r.measurement_type, r.recorded_at): r.value for r in session.query(self.model)}
+
+    def test_a_newer_file_corrects_values_and_reports_withdrawn_rows(self):
+        first = self.import_file([
+            "2026-04-01,09:00,1,E. coli,10,CFU/100 mL",            # an earlier visit, outside the newer file's days
+            "2026-05-06,09:40,1,E. coli,48,CFU/100 mL",
+            "2026-05-06,10:15,Maple Lane Pk,E. coli,30,CFU/100 mL",
+            "2026-05-06,10:15,Maple Lane Pk,pH,8.06,pH units",
+        ])
+        self.assertIn("[INFO] Inserted 4 new sampling records.", first)
+        self.assertIn("[INFO] Corrected 0 stored sampling records", first)
+        self.assertNotIn("present in the DB", first)
+        maple = "2"   # Maple Lane Pk
+        out = self.import_file([
+            "2026-05-06,09:40,1,E. coli,4.8,CFU/100 mL",           # corrected
+            "2026-05-06,10:15,Maple Lane Pk,pH,8.06,pH units",     # unchanged; Maple Lane's E. coli is gone
+            "2026-05-07,09:00,1,pH,7.5,pH units",                  # new
+        ])
+        self.assertIn("[INFO] Inserted 1 new sampling records.", out)
+        self.assertIn("[INFO] Corrected 1 stored sampling records", out)
+        self.assertIn("[CORRECTED] site 1 E. coli on 2026-05-06 09:40: 48.0 CFU/100 mL -> 4.8 CFU/100 mL", out)
+        self.assertIn("[INFO] 1 were already stored with the same value.", out)
+        self.assertIn("[WARN] 1 rows present in the DB but not in the latest file", out)
+        self.assertIn(f"site {maple} E. coli on 2026-05-06 10:15: stored 30.0", out)
+        self.assertEqual(download_counts(out), {"inserted": 1, "corrected": 1, "withdrawn": 1, "held": 0})
+        stored = self.stored()
+        self.assertEqual(stored[("1", "E. coli", dt.datetime(2026, 5, 6, 9, 40))], 4.8)
+        self.assertEqual(stored[(maple, "E. coli", dt.datetime(2026, 5, 6, 10, 15))], 30.0)   # kept, not deleted
+        self.assertEqual(stored[("1", "E. coli", dt.datetime(2026, 4, 1, 9))], 10.0)
+        self.assertEqual(len(stored), 5)
+        # Importing the same file again changes nothing, and still reports the row it doesn't have
+        again = self.import_file(["2026-05-06,09:40,1,E. coli,4.8,CFU/100 mL",
+                                  "2026-05-06,10:15,Maple Lane Pk,pH,8.06,pH units",
+                                  "2026-05-07,09:00,1,pH,7.5,pH units"])
+        self.assertEqual(download_counts(again), {"inserted": 0, "corrected": 0, "withdrawn": 1, "held": 0})
+        self.assertEqual(self.stored(), stored)
+
+    def test_an_older_file_imported_after_a_newer_one_does_not_undo_it(self):
+        newer = self.import_file(["2026-05-06,09:40,1,E. coli,4.8,CFU/100 mL",
+                                  "2026-05-06,10:15,Maple Lane Pk,pH,8.06,pH units"])
+        scope_line = next(line for line in newer.splitlines() if line.startswith("[SCOPE] "))
+        newer_files = self.inject.parse_newer(
+            '[{"file": "WELLAncasterWatershed_May2026.csv (ID: 9)", "scope": ' + scope_line[len("[SCOPE] "):] + '}]')
+        # The older file, retried after it: its 48 for site 1 is held back, its other differences apply
+        out = self.import_file(["2026-05-06,09:40,1,E. coli,48,CFU/100 mL",
+                                "2026-04-01,09:00,1,E. coli,10,CFU/100 mL"], newer=newer_files)
+        self.assertIn("[INFO] Inserted 1 new sampling records.", out)
+        self.assertIn("[WARN] 1 corrections not applied", out)
+        self.assertIn("site 1 E. coli on 2026-05-06 09:40: stored 4.8 CFU/100 mL, this file 48.0 CFU/100 mL "
+                      "(newer: WELLAncasterWatershed_May2026.csv (ID: 9))", out)
+        self.assertEqual(download_counts(out), {"inserted": 1, "corrected": 0, "withdrawn": 0, "held": 1})
+        self.assertEqual(self.stored()[("1", "E. coli", dt.datetime(2026, 5, 6, 9, 40))], 4.8)
+        # A newer file recorded before scopes were kept covers everything: nothing is corrected
+        out = self.import_file(["2026-04-01,09:00,1,E. coli,11,CFU/100 mL"],
+                               newer=self.inject.parse_newer('[{"file": "legacy.csv (ID: 7)", "scope": null}]'))
+        self.assertIn("[WARN] 1 corrections not applied", out)
+        self.assertEqual(self.stored()[("1", "E. coli", dt.datetime(2026, 4, 1, 9))], 10.0)
+
     # --full-reload (replace_all): it replaces the table in one transaction, or refuses and deletes nothing.
 
     def reload(self, path, allow_shrink=False):
@@ -408,6 +479,13 @@ class ImportIdempotenceTests(TestCase):
                 self.assertRaises(RuntimeError):
             self.reload(TEMPLATE, allow_shrink=True)
         self.assertEqual(self.count(), 6)
+
+
+def download_counts(output):
+    """The row counts scripts/download_data.py reads from an import's output."""
+    sys.path.insert(0, str(APP / "scripts"))
+    import download_data
+    return download_data.import_counts(output)
 
 
 if __name__ == "__main__":

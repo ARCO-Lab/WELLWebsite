@@ -1,6 +1,31 @@
 @import "tailwindcss";
 @plugin "tailwindcss-animate";
 
+/* Poppins, served with the site (public/fonts, SIL Open Font License in OFL.txt there) instead of from a render-blocking
+   Google Fonts stylesheet. Latin characters only, which covers the dashboard's text (µ and ° included). The family
+   keeps its plain name, so "Poppins" in CSS and in the charts' options finds it. */
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/poppins-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/poppins-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/poppins-700.woff2") format("woff2");
+}
+
 /* McMaster University Design System
 Based on official branding guidelines
 All colors MUST be HSL for proper shadcn/ui integration.
