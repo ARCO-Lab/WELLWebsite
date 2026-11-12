@@ -13,8 +13,8 @@ them the same way, so both layouts end up as identical rows.
 The site and parameter lists below are the only place they are defined for imports; the dashboard's own lists are in
 dashboard/frontend/src/components/config/filters.tsx and must name the same sites and parameters.
 
-Provisional, to confirm with the lab (each is marked "TO CONFIRM WITH THE LAB" where it is decided below): the site
-list, the parameter list and units, the below-detection convention, and the replicate and QC-flag rules.
+Decision points are marked "TO CONFIRM WITH THE LAB" below: the site list, the parameter list and units, the
+below-detection convention, and the replicate and QC-flag rules.
 """
 import csv
 import difflib
