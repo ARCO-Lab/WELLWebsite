@@ -11,18 +11,20 @@
 //   one request for their shared tiles instead of the first chart's going out alone;
 // - a chart's new wish replaces its old one: queued requests no chart wants any more are dropped before they are
 //   sent. A request already sent can't be taken back (the backend runs it anyway), so it finishes and is cached;
+// - coarser tiles are worked out from finer ones as they arrive (coarsen), never asked for when the finer ones are
+//   here: a chart that loads its whole range at one bucket can zoom out over it with no more requests;
 // - a failed request caches nothing, so asking again retries it;
 // - a tile that reaches into the last LIVE_WINDOW_MS (still filling in with new readings) is kept only LIVE_TTL_MS
 //   as fresh: asked for after that, it is fetched again (the old copy is drawn until the new one arrives).
 // No React or browser APIs here (fetching is passed in), so scripts/seriesLoader.test.mjs can test it with Node.
 
 import {
-  cutIntoTiles, seriesKey, tileQuery, tileRange, type ApiSeries, type TileSeries,
+  LADDER, MAX_TILES, coarsen, cutIntoTiles, seriesKey, tileQuery, tileRange, type ApiSeries, type TileSeries,
 } from "./seriesTiles.ts";
 
 export const MAX_ENTRIES = 3000;
 export const MAX_IN_FLIGHT = 2;
-export const MAX_BATCH = 8; // tiles per request: 8 x 360 = 2,880 buckets, under the API's 4,000
+export const MAX_BATCH = MAX_TILES; // tiles per request: the API takes 1 to 8 whole tiles
 export const MAX_KEYS = 40; // series per request (the API's MAX_FILTERS)
 export const BATCH_MS = 30;
 export const LIVE_WINDOW_MS = 3_600_000; // a tile ending later than this before now may still get readings
@@ -47,6 +49,7 @@ export interface LoaderStats {
   inFlight: number;
   peakInFlight: number;
   tilesLoaded: number; // series-tiles cached from responses
+  tilesDerived: number; // coarser series-tiles worked out from finer cached ones
   hits: number; // series-tiles wanted that were cached already
   deduped: number; // series-tiles wanted that were already on their way
   dropped: number; // queued requests dropped before they were sent
@@ -67,7 +70,7 @@ export class SeriesLoader {
   private listeners = new Map<string, () => void>();
   private errors = new Map<string, Error>();
   private seq = 0;
-  readonly stats: LoaderStats = { requests: 0, inFlight: 0, peakInFlight: 0, tilesLoaded: 0, hits: 0, deduped: 0, dropped: 0, failed: 0 };
+  readonly stats: LoaderStats = { requests: 0, inFlight: 0, peakInFlight: 0, tilesLoaded: 0, tilesDerived: 0, hits: 0, deduped: 0, dropped: 0, failed: 0 };
 
   private fetchTiles: FetchTiles;
   private maxEntries: number;
@@ -158,6 +161,12 @@ export class SeriesLoader {
     return this.cache.has(tileKey(key, bucketS, index));
   }
 
+  /** Cached and not due to be fetched again (see LIVE_TTL_MS). */
+  fresh(key: string, bucketS: number, index: number): boolean {
+    const tk = tileKey(key, bucketS, index);
+    return this.cache.has(tk) && !this.stale(tk);
+  }
+
   /** The tile indexes of a series cached at a bucket. */
   loadedTiles(key: string, bucketS: number): ReadonlySet<number> {
     return this.loaded.get(`${key}#${bucketS}`) ?? new Set();
@@ -235,6 +244,31 @@ export class SeriesLoader {
     }
   }
 
+  // The coarser tiles that tiles first..last of one series make up, at every bigger bucket on the ladder, wherever all
+  // the finer tiles of one are cached (the ones just stored or others): each size divides the next, so a tile of the
+  // next size is a whole number of tiles of this one
+  private deriveUp(key: string, bucketS: number, first: number, last: number): void {
+    const agg = this.meta.get(key)?.agg ?? "mean";
+    let b = bucketS, lo = first, hi = last;
+    for (let n = LADDER.indexOf(b) + 1; n > 0 && n < LADDER.length; n++) {
+      const c = LADDER[n], per = c / b;
+      const clo = Math.floor(lo / per), chi = Math.floor(hi / per);
+      for (let i = clo; i <= chi; i++) {
+        const parts: TileSeries[] = [];
+        for (let j = i * per; j < (i + 1) * per; j++) {
+          const t = this.cache.get(tileKey(key, b, j));
+          if (!t) break;
+          parts.push(t);
+        }
+        if (parts.length === per) {
+          this.put(key, c, i, coarsen(parts, c, agg));
+          this.stats.tilesDerived++;
+        }
+      }
+      b = c; lo = clo; hi = chi;
+    }
+  }
+
   private pump(): void {
     while (this.stats.inFlight < this.maxInFlight && this.queue.length) {
       this.queue.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
@@ -297,6 +331,7 @@ export class SeriesLoader {
             this.put(k, job.bucketS, i, tile);
             this.stats.tilesLoaded++;
           }
+          this.deriveUp(k, job.bucketS, first, last);
         }
       })
       .catch((err: unknown) => {

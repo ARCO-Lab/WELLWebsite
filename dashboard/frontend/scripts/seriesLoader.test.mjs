@@ -5,10 +5,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TILE_BUCKETS, bucketFor, tileAt, tileRange, tilesFor, tileQuery, toWall, fromWall, cutIntoTiles, segmentsFor,
-  composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow,
+  composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow, coarsen, baseBucket, MAX_TILES,
 } from "../src/lib/seriesTiles.ts";
 import { SeriesLoader, MAX_BATCH, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
-import { ChartController, clampWindow, overviewBucket } from "../src/lib/chartController.ts";
+import { ChartController, clampWindow, overviewBucket, fillTiles } from "../src/lib/chartController.ts";
 
 const H = 3600 * 1000;
 const D = 24 * H;
@@ -384,9 +384,11 @@ test("controller: a lingering gesture longer than the max wait fetches only the 
     await sleep(200);
   }
   const during = srv.calls.slice(n0);
-  assert.equal(during.length, 1); // one max-wait fetch, for the window's tiles only (no history, no padding)
+  assert.equal(during.length, 1); // one max-wait fetch: the window's tiles, filled up to one request (no history)
   assert.equal(during[0].bucketS, 600);
-  assert.ok(during[0].last - during[0].first <= 1);
+  assert.ok(during[0].last - during[0].first + 1 <= 8);
+  const shown = tilesFor(c.window, 600);
+  assert.ok(during[0].first <= shown[0] && during[0].last >= shown[shown.length - 1]);
   c.endGesture();
   await sleep(60);
   await srv.settle();
@@ -646,4 +648,163 @@ test("fetchFromApi: a passing server error or dropped connection is retried in t
   } finally {
     globalThis.fetch = saved;
   }
+});
+
+// ---- one request for the whole range, coarser buckets worked out from it ----
+
+// Raw readings every 10 minutes (with an outage), aggregated straight into buckets of `b` the way /api/series does
+function rawReadings(from, to, value) {
+  const out = [];
+  for (let t = from; t < to; t += 600_000) {
+    if (t >= from + 30 * H && t < from + 33 * H) continue; // three hours without readings
+    out.push([t, value(t)]);
+  }
+  return out;
+}
+const rad = (v) => (v * Math.PI) / 180;
+function aggregate(readings, b, agg) {
+  const size = b * 1000, groups = new Map();
+  for (const [t, v] of readings) {
+    const g = Math.floor(toWall(t) / size);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(v);
+  }
+  const s = { t: [], avg: [], min: [], max: [], n: [] };
+  for (const [g, vs] of [...groups].sort((x, y) => x[0] - y[0])) {
+    const total = vs.reduce((a, v) => a + v, 0);
+    const sin = vs.reduce((a, v) => a + Math.sin(rad(v)), 0), cos = vs.reduce((a, v) => a + Math.cos(rad(v)), 0);
+    s.t.push(fromWall(g * size));
+    s.avg.push(agg === "sum" ? total : agg === "vector_mean" ? ((Math.atan2(sin, cos) * 180) / Math.PI + 360) % 360 : total / vs.length);
+    s.min.push(Math.min(...vs));
+    s.max.push(Math.max(...vs));
+    s.n.push(vs.length);
+  }
+  return s;
+}
+
+test("coarsen: buckets worked out from finer tiles equal the API's own, across the fall-back day", () => {
+  // Readings over 2026-11-01 (25 hours long), varying so that the weights matter
+  const from = fromWall(Date.UTC(2026, 9, 25)), to = fromWall(Date.UTC(2026, 10, 8));
+  const value = (t) => 5 + Math.sin(t / 7e6) * 3 + ((t / 600_000) % 7);
+  for (const agg of ["mean", "sum"]) {
+    const readings = rawReadings(from, to, value);
+    for (const [fine, coarse] of [[600, 1800], [600, 10800], [1800, 3600], [3600, 86400]]) {
+      const per = coarse / fine;
+      const i = tileAt(from, coarse);
+      const fineTiles = cutIntoTiles(aggregate(readings, fine, agg), i * per, (i + 1) * per - 1, fine);
+      const parts = [...fineTiles.keys()].sort((a, b) => a - b).map((j) => fineTiles.get(j));
+      const got = coarsen(parts, coarse, agg);
+      const want = cutIntoTiles(aggregate(readings, coarse, agg), i, i, coarse).get(i);
+      assert.equal(got.t.length, want.t.length, `${agg} ${fine}->${coarse}`);
+      for (let j = 0; j < want.t.length; j++) {
+        assert.equal(got.t[j], want.t[j]);
+        for (const f of ["avg", "min", "max", "n"]) {
+          assert.ok(Math.abs(got[f][j] - want[f][j]) < 1e-9, `${agg} ${fine}->${coarse} ${f}[${j}]`);
+        }
+      }
+    }
+  }
+  // Wind direction: north stays north (350 and 10 degrees give 0, not 180), close to the mean over every reading
+  const dirs = rawReadings(from, from + 4 * D, (t) => ((t / 600_000) % 2 ? 350 : 10) + ((t / 3.6e6) % 3));
+  const i = tileAt(from, 1800);
+  const fineTiles = cutIntoTiles(aggregate(dirs, 600, "vector_mean"), i * 3, i * 3 + 2, 600);
+  const got = coarsen([...fineTiles.values()], 1800, "vector_mean");
+  const want = cutIntoTiles(aggregate(dirs, 1800, "vector_mean"), i, i, 1800).get(i);
+  assert.ok(want.t.length > 0);
+  for (let j = 0; j < want.t.length; j++) {
+    const d = Math.abs(((got.avg[j] - want.avg[j] + 540) % 360) - 180);
+    assert.ok(d < 1, `direction ${got.avg[j]} vs ${want.avg[j]}`);
+  }
+});
+
+test("baseBucket: the finest bucket whose whole tiles over the range fit in one request of 8", () => {
+  const end = Date.parse("2026-11-12T17:00:00Z");
+  const all = { start: Date.parse("2025-05-08T04:00:00Z"), end };
+  assert.equal(baseBucket(all), 21600); // all the history: 6 hours, 7 tiles
+  assert.equal(tilesFor(all, 21600).length, 7);
+  assert.equal(baseBucket({ start: end - 2 * D, end }), 600); // two days: the raw readings
+  assert.equal(baseBucket({ start: end - 14 * D, end }), 600);
+  assert.equal(baseBucket({ start: end - 90 * D, end }), 3600);
+  for (const days of [1, 7, 14, 20, 27, 90, 365, 560]) {
+    const r = { start: end - days * D, end }, b = baseBucket(r);
+    assert.ok(tilesFor(r, b).length <= MAX_TILES, `${days} d`);
+    const finer = LADDER[LADDER.indexOf(b) - 1];
+    if (finer) assert.ok(tilesFor(r, finer).length > MAX_TILES, `${days} d: ${finer} would fit`);
+  }
+});
+
+test("fillTiles: nothing when the window is cached; otherwise one run of up to 8, mostly ahead of a pan", () => {
+  const none = () => false;
+  assert.deepEqual(fillTiles([10, 11], 0, 100, () => true, 1), []);
+  assert.deepEqual(fillTiles([10, 11], 0, 100, none, 1), [8, 9, 10, 11, 12, 13, 14, 15]); // 4 ahead, 2 behind
+  assert.deepEqual(fillTiles([10, 11], 0, 100, none, -1), [6, 7, 8, 9, 10, 11, 12, 13]);
+  assert.deepEqual(fillTiles([10, 11], 0, 100, none, 0), [7, 8, 9, 10, 11, 12, 13, 14]); // after a zoom: even
+  assert.deepEqual(fillTiles([1, 2], 0, 100, none, -1), [0, 1, 2, 3, 4, 5, 6, 7]); // the extent's start: the rest after
+  assert.deepEqual(fillTiles([10, 11], 0, 100, (i) => i === 13 || i === 8, 1), [9, 10, 11, 12]); // stops at cached tiles
+  assert.deepEqual(fillTiles([10, 11, 12], 10, 12, none, 1), [10, 11, 12]); // the whole extent
+});
+
+// A session on one card of three series: each step is [what, action]; returns the requests each step made
+async function session(range, steps) {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0);
+  const c = new ChartController("card", [A, B, C], range, range, loader, syncFrame, 30);
+  c.setPlotWidth(600);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const first = srv.calls.slice();
+  const per = [];
+  for (const [what, act] of steps) {
+    const n0 = srv.calls.length;
+    act(c);
+    await sleep(60);
+    await srv.settle();
+    await sleep(20);
+    await srv.settle();
+    per.push([what, srv.calls.slice(n0)]);
+  }
+  c.dispose();
+  return { first, per, loader };
+}
+
+test("session over all the history: one first request, then at most one per interaction", async () => {
+  const range = { start: Date.parse("2025-05-08T04:00:00Z"), end: Date.parse("2026-11-12T17:00:00Z") };
+  const zoomIn = (c) => c.zoom(0.5, undefined, "button"), zoomOut = (c) => c.zoom(2, undefined, "button");
+  const steps = [
+    ...Array.from({ length: 6 }, () => ["zoom in", zoomIn]),
+    ...Array.from({ length: 6 }, () => ["pan later", (c) => c.pan(0.5, "button")]),
+    ...Array.from({ length: 6 }, () => ["pan earlier", (c) => c.pan(-0.5, "button")]),
+    ...Array.from({ length: 3 }, () => ["zoom out", zoomOut]),
+    ...Array.from({ length: 3 }, () => ["zoom in", zoomIn]),
+    ["reset", (c) => c.reset()],
+  ];
+  const { first, per, loader } = await session(range, steps);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].bucketS, 21600);
+  assert.equal(first[0].last - first[0].first + 1, 7);
+  for (const [what, calls] of per) {
+    assert.ok(calls.length <= 1, `${what}: ${calls.length} requests`);
+    for (const r of calls) assert.ok(r.last - r.first + 1 <= MAX_TILES);
+  }
+  const total = 1 + per.reduce((a, [, calls]) => a + calls.length, 0);
+  console.log(`[session] all history: ${total} requests for ${steps.length} interactions`);
+  assert.ok(total <= 12, `${total} requests for ${steps.length} interactions`);
+  assert.ok(loader.stats.peakInFlight <= 2);
+  assert.ok(loader.stats.tilesDerived > 0); // the 12-hour and daily tiles came from the 6-hour ones
+  for (const [what, calls] of per.filter(([w]) => w === "zoom out" || w === "reset")) assert.equal(calls.length, 0, what);
+});
+
+test("session over two weeks: the first request has the raw readings, and nothing is asked for again", async () => {
+  const end = Date.parse("2026-11-12T17:00:00Z");
+  const range = { start: end - 14 * D, end };
+  const steps = [
+    ...Array.from({ length: 5 }, () => ["zoom in", (c) => c.zoom(0.5, undefined, "button")]),
+    ...Array.from({ length: 4 }, () => ["pan", (c) => c.pan(-0.5, "button")]),
+    ["zoom out", (c) => c.zoom(4, undefined, "button")],
+  ];
+  const { first, per } = await session(range, steps);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].bucketS, 600);
+  for (const [what, calls] of per) assert.equal(calls.length, 0, what);
 });
