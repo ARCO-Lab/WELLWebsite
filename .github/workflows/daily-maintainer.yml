@@ -1,0 +1,106 @@
+# Daily maintainer: once a day, Claude Code (anthropics/claude-code-action) reads what went wrong in the last 24
+# hours (Sentry, failed runs on main, code-quality comments, security alerts; collected by
+# .github/scripts/maintainer_inputs.py), fixes real problems in at most MAX_PRS pull requests from maint/* branches,
+# audits each one, and labels it. It is told never to merge, and its tool rules deny it. Then
+# .github/scripts/maintainer_summary.py emails what is ready to merge and what needs a person. The steps are in
+# maintainer-run.yml; its instructions are .github/maintainer/PROMPT.md, its tool rules
+# .github/maintainer/settings.json. See .github/workflows/README.md, "Daily maintainer", for the secrets and how to
+# pause it.
+name: Daily maintainer
+
+on:
+  schedule:
+    - cron: "23 11 * * *"   # 11:23 UTC: 6:23 (EST) or 7:23 (EDT) in Toronto, after the 11:17 API canary
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Investigate and report only: no branches, commits or pull requests"
+        type: boolean
+        default: false
+      max_prs:
+        description: "Most pull requests to open or update in this run"
+        type: number
+        default: 3
+
+permissions: {}
+
+concurrency:
+  group: daily-maintainer
+  cancel-in-progress: false
+
+jobs:
+  # Fails here, before anything runs, when Claude can't authenticate, and picks the token: WELL_MAINTAINER_PAT when
+  # it is set, otherwise the workflow token. Only the job for the chosen token runs, so the workflow token gets
+  # write permissions only when it is the one that writes.
+  token:
+    if: github.repository == 'ARCO-Lab/WELLWebsite'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+    steps:
+      # A scheduled run has no inputs and uses 3. A run by hand must ask for at least one: 0 would read as unset
+      # below ("|| 3"), so it is refused here; use dry run to change nothing.
+      - name: Check the limit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          MAX_PRS: ${{ inputs.max_prs }}
+        run: |
+          if ! [[ "$MAX_PRS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::max prs must be a whole number of 1 or more (got '$MAX_PRS'); to change nothing, tick dry run"
+            exit 1
+          fi
+
+      - name: Check the secrets
+        id: mode
+        env:
+          PAT: ${{ secrets.WELL_MAINTAINER_PAT }}
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$OAUTH" ] && [ -z "$API_KEY" ]; then
+            echo "::error::Set CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token') or ANTHROPIC_API_KEY"; exit 1
+          fi
+          if [ -n "$PAT" ]; then
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::WELL_MAINTAINER_PAT is not set: pull requests are opened as github-actions[bot]"
+            echo "mode=github_token" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Every write goes through the PAT; the workflow token only reads (the inputs, checks and the summary).
+  with-pat:
+    needs: token
+    if: needs.token.outputs.mode == 'pat'
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+      checks: read
+      security-events: read   # code scanning alerts, for the inputs
+    uses: ./.github/workflows/maintainer-run.yml
+    with:
+      mode: pat
+      dry_run: ${{ inputs.dry_run || false }}
+      max_prs: ${{ inputs.max_prs || 3 }}
+    secrets: inherit
+
+  # No PAT: the workflow token pushes, opens the pull requests and labels them, and starts CI on them through
+  # workflow_dispatch (a push made with this token starts no workflow).
+  with-workflow-token:
+    needs: token
+    if: needs.token.outputs.mode == 'github_token'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+      checks: read
+      security-events: read
+    uses: ./.github/workflows/maintainer-run.yml
+    with:
+      mode: github_token
+      dry_run: ${{ inputs.dry_run || false }}
+      max_prs: ${{ inputs.max_prs || 3 }}
+    secrets: inherit

@@ -93,7 +93,7 @@ are in [docs/deploying.md](docs/deploying.md).
 | API endpoints, ingestion and scheduler jobs, exports, Borealis and SharePoint, monitoring and alerts, error reporting, backups, migrations, backend tests, the disabled AI analysis | [dashboard/backend/README.md](dashboard/backend/README.md) |
 | The dashboard: charts, map, visitor counts (GoatCounter), dashboard tests, end-to-end tests | [dashboard/frontend/README.md](dashboard/frontend/README.md) |
 | welldash², the operations dashboard | [dashboard/backend/app/ops/README.md](dashboard/backend/app/ops/README.md) |
-| CI, the API canary, Sentry errors as GitHub issues, the load test, Dependabot | [.github/workflows/README.md](.github/workflows/README.md) |
+| CI, the API canary, Sentry errors as GitHub issues, the daily maintainer, the load test, Dependabot | [.github/workflows/README.md](.github/workflows/README.md) |
 | The WordPress site | [wordpress/README.md](wordpress/README.md) |
 | Every environment variable | [docs/configuration.md](docs/configuration.md) |
 | The VM, Docker services, host firewall | [docs/hosting.md](docs/hosting.md) |
