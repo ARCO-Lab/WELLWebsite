@@ -232,7 +232,7 @@ jobs:
   static:
     name: Lint Python, shell and compose
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -249,8 +249,13 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
 
       # The runner image ships shellcheck.
-      - name: shellcheck on deploy.sh, the CI scripts and the load-test scripts
-        run: shellcheck deploy.sh .github/scripts/*.sh dashboard/loadtest/*.sh
+      - name: shellcheck on deploy.sh, the WordPress backup, the CI scripts and the load-test scripts
+        run: shellcheck deploy.sh wordpress/*.sh .github/scripts/*.sh dashboard/loadtest/*.sh
+
+      # Stub docker and curl first, then a real throwaway MySQL 5.7 with no network: a backup, its restore check, and
+      # the restore steps in wordpress/README.md.
+      - name: wordpress/backup.sh tests
+        run: bash .github/scripts/test_wordpress_backup.sh --real
 
       # The env files compose reads aren't in the repo; placeholders are enough to check the file parses.
       - name: docker compose config

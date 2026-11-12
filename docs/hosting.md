@@ -39,6 +39,8 @@ the dashboard's API routes. The data is public and read-only; nothing on the das
 - WordPress keeps its own data in MySQL 5.7 (the `db` container, `db_data` volume).
 - Nightly `pg_dump` backups of the database on the VM, 7 daily + 8 weekly kept
   ([Database backups](../dashboard/backend/README.md#database-backups)).
+- Nightly backups of the WordPress database and uploads on the VM (`wordpress/backup.sh` from cron), 7 daily + 8
+  weekly + 12 monthly kept ([Backups](../wordpress/README.md#backups)).
 
 ## Host firewall (required)
 

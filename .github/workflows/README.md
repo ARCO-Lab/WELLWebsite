@@ -14,7 +14,7 @@ Docker image the VM builds. Its jobs:
 | Dashboard build | `npx tsc --noEmit`, `npm test` (chart helpers, site time, the tile loader, the backend proxy), `npm run build` and `npm run lint`. |
 | Dashboard image | The dashboard image builds and starts and serves the dashboard. |
 | End-to-end data (vendors to browser) | Vendor fixtures through the real ingestion, PostgreSQL, the backend and the built dashboard, to what a browser shows and downloads, in three browser time zones ([dashboard/frontend/README.md](../../dashboard/frontend/README.md#end-to-end-tests)). |
-| Lint Python, shell and compose | ruff's pyflakes rules on the backend and the CI scripts, the `.github/scripts` unit tests (Sentry issues, daily maintainer), shellcheck on `deploy.sh` and the CI and load-test scripts, `docker compose config`, and the WordPress Apache/PHP config files in the image compose runs. |
+| Lint Python, shell and compose | ruff's pyflakes rules on the backend and the CI scripts, the `.github/scripts` unit tests (Sentry issues, daily maintainer), shellcheck on `deploy.sh`, `wordpress/backup.sh` and the CI and load-test scripts, the WordPress backup's tests (`test_wordpress_backup.sh`: stub `docker` and `curl`, then a throwaway MySQL 5.7), `docker compose config`, and the WordPress Apache/PHP config files in the image compose runs. |
 | Deploy script | `deploy.sh` in a sandbox (`test_deploy.sh`: a fake remote and stub `docker` and `curl`), and `canary_issue.sh` against a stub `gh`. |
 
 `deploy.sh --auto` waits for every job except the lint job before deploying a commit
