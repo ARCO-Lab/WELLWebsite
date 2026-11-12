@@ -3,6 +3,7 @@
 import React from "react";
 import { Thermometer, Droplets, Wind, CloudRain, Compass, Snowflake, Gauge, Sun, Waves, TreePine, Navigation } from "lucide-react";
 import MetricGroup, { compassPoint, type MetricRow } from "./MetricList";
+import type { Metric } from "@/hooks/useLatestMetrics";
 
 // label = the filter's name for the metric; key = measurement_type in the API
 const metricMap = [
@@ -30,7 +31,7 @@ const WeatherMetrics = ({
 }: {
   activeKeys: string[];
   activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
-  metrics?: any[];
+  metrics?: Metric[];
   loading?: boolean;
   inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }) => {

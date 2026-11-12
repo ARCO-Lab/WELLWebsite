@@ -47,7 +47,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
   // Until the first data arrives: no Highcharts placeholder title ("Chart title") or credits link.
-  const [chartOptions, setChartOptions] = useState<any>({ title: { text: undefined }, credits: { enabled: false } });
+  const [chartOptions, setChartOptions] = useState<Highcharts.Options>({ title: { text: undefined }, credits: { enabled: false } });
   const [resolvedHeight, setResolvedHeight] = useState(height);
 
   useEffect(() => {
@@ -116,8 +116,9 @@ const SampleChart: React.FC<SampleChartProps> = ({
     }));
 
     const yAxes = Array.from(unitMap.keys()).map((unit, index) => ({
+      // No axis title: Highcharts only draws one when the text is non-empty (its types don't allow null here)
       title: {
-        text: null,
+        text: '',
       },
       labels: {
         format: `{value} ${unit}`, // Append the unit to the label
@@ -128,7 +129,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
 
     setChartOptions({
       chart: {
-        zoomType: 'x',
+        zooming: { type: 'x' }, // what the deprecated zoomType: 'x' maps to
         height: resolvedHeight,
         style: { fontFamily: "Poppins, Arial, sans-serif" }, // <-- Add this
       },
@@ -175,7 +176,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
   }, [data, loading, activeGroup, subFilters, showLegend, resolvedHeight, modalOpen]);
 
   const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
-    && chartOptions.series.every((s: { data?: unknown[] }) => !s.data?.length);
+    && chartOptions.series.every((s) => !('data' in s && Array.isArray(s.data) && s.data.length));
 
   return (
     <div className="relative">

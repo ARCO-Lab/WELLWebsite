@@ -10,6 +10,17 @@ import {
 } from "@/components/animations/dialog";
 // AI ANALYSIS DISABLED: AI panel in the chart modal (uncomment here and below to restore)
 // import AIAnalysis from "./AIAnalysis"; // Make sure this path is correct
+import type { Metric } from "@/hooks/useLatestMetrics";
+import type { RecentSample } from "@/hooks/useRecentSamples";
+import type { SampledData } from "@/hooks/useSampledData";
+
+// Props the modal passes to its content (the metric and graph components accept some or all of them).
+interface ModalContentProps {
+  modalOpen?: boolean;
+  inModal?: boolean;
+  weatherTab?: "graph" | "windrose";
+  setWeatherTab?: (tab: "graph" | "windrose") => void;
+}
 
 interface ModalProps {
   isOpen: boolean;
@@ -20,7 +31,9 @@ interface ModalProps {
   type: "weather" | "logger" | "gauges" | "quality" | "sampling";
   subtypes?: string[];
   analysisType: "recent" | "alltime";
-  data: any;
+  // What the content shows: latest readings, latest samples or sampling rows (null for the sensor graphs). Not read here
+  // while the AI panel is disabled.
+  data: Metric[] | RecentSample[] | SampledData[] | null;
   weatherTab?: "graph" | "windrose";
   setWeatherTab?: (tab: "graph" | "windrose") => void;
 }
@@ -69,7 +82,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, header, type, 
               not isOpen: this copy only exists inside the dialog, so if it is still shown while the dialog fades out
               (isOpen already false) it keeps its modal layout rather than switching to the card's (hidden axes). */}
           {React.isValidElement(children)
-            ? React.cloneElement(children as React.ReactElement<any>, { modalOpen: true, inModal: true, weatherTab, setWeatherTab, })
+            ? React.cloneElement(children as React.ReactElement<ModalContentProps>, { modalOpen: true, inModal: true, weatherTab, setWeatherTab, })
             : children}
 
           {/* AI ANALYSIS DISABLED: AI panel in the chart modal. Uncomment to restore.

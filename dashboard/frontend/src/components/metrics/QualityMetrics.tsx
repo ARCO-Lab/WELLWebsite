@@ -3,6 +3,7 @@
 import React from "react";
 import { Beaker, Eye, Waves, Zap, Droplets, FlaskConical, Activity, Thermometer } from "lucide-react";
 import MetricGroup, { type MetricRow } from "./MetricList";
+import type { Metric } from "@/hooks/useLatestMetrics";
 
 // fullLabel = the filter's name for the metric; label = the shorter name shown in the panel;
 // key = measurement_type in the API
@@ -25,7 +26,7 @@ const QualityMetrics = ({
 }: {
   activeKeys: string[];
   activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
-  metrics?: any[];
+  metrics?: Metric[];
   loading?: boolean;
   inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }) => {

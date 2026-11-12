@@ -92,8 +92,8 @@ const useSampledData = (
         const json = await res.json();
         cache.current.set(key, json);
         setData(json);
-      } catch (err: any) {
-        setError(err);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
       } finally {
         setLoading(false);
         setDoneKey(key);

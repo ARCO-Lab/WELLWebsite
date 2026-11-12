@@ -21,6 +21,16 @@ type SensorGroup = keyof typeof SENSOR_FILTER_CONFIG;
 type Creek = keyof typeof SAMPLING_FILTER_CONFIG;
 type FlagSetter<K extends string> = React.Dispatch<React.SetStateAction<Record<K, boolean>>>;
 
+// One filter group as drawn: a sensor group from SENSOR_FILTER_CONFIG, or a creek from SAMPLING_FILTER_CONFIG with
+// the sampling metrics and "All Sites" added. Items are listed by name (items) or by id with a display name (sites).
+interface FilterGroupConfig {
+  label: string;
+  metrics: string[];
+  itemsLabel?: string;
+  items?: string[];
+  sites?: Record<string, string>;
+}
+
 interface FilterPanelProps {
   activeTab: "sensor" | "sampling";
   activeGroups: { [key: string]: boolean };
@@ -87,7 +97,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
     // When opening a group, select all metrics and "All Items" (if it exists)
     if (isOpening) {
       const allMetrics = config.metrics || [];
-      const itemsLabel = (config as any).itemsLabel;
+      const itemsLabel = 'itemsLabel' in config ? config.itemsLabel : undefined;
       const allFilters = itemsLabel ? [...allMetrics, itemsLabel] : allMetrics;
       
       setSubs(prev => ({
@@ -114,7 +124,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
           ...SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG], 
           metrics: SAMPLING_METRICS, 
           itemsLabel: "All Sites",
-          items: Object.keys((SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG] as any).sites || {})
+          items: Object.keys(SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG].sites || {})
         };
 
     setSubs(prev => {
@@ -177,7 +187,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
   };
 
   // Renders a filter group with metrics and item checkboxes
-  const renderFilterGroup = (groupKey: string, config: any, subs: string[]) => {
+  const renderFilterGroup = (groupKey: string, config: FilterGroupConfig, subs: string[]) => {
     // Use type-safe property access
     const items = 'items' in config && config.items 
       ? config.items 
@@ -189,7 +199,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
 
     // Create a unified list of [id, name] pairs for rendering.
     const itemsToRender = 'items' in config && config.items 
-      ? config.items.map((item: string) => [item, item]) 
+      ? config.items.map((item): [string, string] => [item, item]) 
       : 'sites' in config && config.sites
         ? Object.entries(config.sites)
         : [];
