@@ -22,7 +22,7 @@ import csv
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from utils.borealis import Dataverse, DataverseError, base_url, is_demo, upload_file
+from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
 
 load_dotenv()
 
@@ -177,7 +177,7 @@ def borealis_settings():
         print(f"ERROR: Not uploading to Borealis: {', '.join(missing)} not set (see utils/borealis.py)")
         sys.exit(1)
     try:
-        server = base_url(url)
+        server = api_base(url)   # logs, once, which server the upload goes to
     except ValueError as e:
         print(f"ERROR: Not uploading to Borealis: {e}")
         sys.exit(1)
