@@ -23,9 +23,10 @@ networks:
       config:
         - subnet: 10.20.2.0/24
 
-# Every service logs with default-logging. Memory limits (mem_limit) are several times each service's normal use
-# (50 to 250 MB each, about 1 GB together), so only a runaway process reaches them; then the kernel stops a process
-# inside that container, not PostgreSQL or another service on the VM. Health checks show in `docker compose ps`.
+# Every service logs with default-logging. Memory limits (mem_limit) leave room for each service's busiest normal
+# load (normal use is 50 to 250 MB each, about 1 GB together; the backend and WordPress get more for bursts), so only
+# a runaway process reaches them; then the kernel stops a process inside that container, not PostgreSQL or another
+# service on the VM. Health checks show in `docker compose ps`.
 services:
   # --- WordPress + MySQL as you had ---
   db:
@@ -58,7 +59,11 @@ services:
     ports:
       - "8080:80"
     restart: always
-    mem_limit: 1g
+    # Apache (prefork) runs one process per request, each with mod_php and its own PHP memory (WordPress allows up
+    # to 256 MB in the admin), so a burst of visitors adds up quickly (about 155 MB in normal use). 2 GB lets dozens
+    # of requests run at once. The trade-off: a flood beyond that gets an Apache child killed (that request fails)
+    # rather than taking memory from PostgreSQL and the rest of the VM.
+    mem_limit: 2g
     logging: *default-logging
     networks:
       - front
@@ -101,7 +106,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"   # lets container reach host/VM if needed
     restart: unless-stopped
-    mem_limit: 1g
+    # About 200 MB idle. One /api/data answer near its 300,000-row cap briefly takes about 330 MB (rows, dicts and
+    # a 52 MB JSON body), and 3 workers x 4 threads can run 12 at once. Measured peaks: 1.0 GB with 3 such requests
+    # in parallel, 1.9 GB with 6, and up to 3 GB with all 12 (all answered; memory went back to ~300 MB after).
+    mem_limit: 3g
     logging: *default-logging
     # gunicorn finishes the requests in progress within --graceful-timeout (30 s, Dockerfile) after SIGTERM
     stop_grace_period: 35s
