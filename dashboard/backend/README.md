@@ -168,8 +168,9 @@ still going:
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of
 missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their
-headers explain how). The only cron job is the optional `deploy.sh --auto` line
-([docs/deploying.md](../../docs/deploying.md)).
+headers explain how). The only cron jobs are the optional `deploy.sh --auto` line
+([docs/deploying.md](../../docs/deploying.md)) and the WordPress backup
+([wordpress/README.md](../../wordpress/README.md#backups)).
 
 ## Exports
 
@@ -210,6 +211,31 @@ Borealis also carries data the other way. Creek **sampling** results are uploade
 ([how to upload](app/scripts/README.md)), and the weekly download (`scripts/download_data.py`, Sundays 00:00 by the
 container clock, UTC) checks each new file against [the sampling CSV format](../../docs/sampling-csv-format.md) and
 imports it into the Ancaster Watershed tab.
+
+### The monthly file's format
+
+`WELLWestCampus_<Mon><YYYY>.csv` is UTF-8 CSV with one row per time a reading was taken, in time order. The
+[golden files](tests/golden/README.md) pin it byte for byte.
+
+- **Columns**, left to right: `ID` (the row number), `Timestamp (America/Toronto)`, then a Weather block (`Group`,
+  `Latitude`, `Longitude`, then one column per measurement), a blank column, a Quality block laid out the same way,
+  a blank column, and a Logger block: `Group`, then for each logger `Sensor`, `Latitude`, `Longitude` and one column
+  per measurement. A measurement's header is `<name>: <unit>`, with the unit of its last reading that month. A file
+  has only the blocks, measurements and loggers that have readings that month; measurements are sorted by name and
+  loggers by id.
+- **Times** are local wall-clock time at the site, America/Toronto (EST or EDT, whichever was in effect), written as
+  ISO 8601 without an offset, e.g. `2026-10-01T00:10:00`; the header names the zone. In the hour repeated when the
+  clocks fall back (01:00-02:00 on the first Sunday of November) one reading per time is stored, so those rows
+  can't say whether they were EDT or EST. A month is the readings from 00:00 on the 1st up to, not including,
+  00:00 on the 1st of the next month, Toronto time.
+- **Values** are numbers as stored, unrounded (`0.30000000000000004`). A missing reading is an empty field (never
+  `nan`). Text that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, a tab or a carriage
+  return) gets a leading `'`, as in the dashboard's Download Data. Numbers are never changed.
+- If two readings share a cell (the same time and measurement from two stations of one group), the cell holds the
+  first by station id, so the same month always gives the same file.
+
+The dashboard's Download Data uses a similar layout without the `Latitude`/`Longitude` columns, and names its
+time column the same way; its sampling download names it `recorded_at (America/Toronto)`.
 
 ### How the Borealis jobs behave
 

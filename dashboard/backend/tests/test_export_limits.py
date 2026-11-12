@@ -284,7 +284,7 @@ class StreamCleanupTests(AppTestCase):
             if len(calls) == 2:  # the header is call 1
                 raise OSError("disk full")
 
-        with unittest.mock.patch.object(export_service._SafeCsvWriter, "writerow",
+        with unittest.mock.patch.object(export_service.SafeCsvWriter, "writerow",
                                         side_effect=lambda row: fail_on_a_data_row(row)):
             error = None
             try:

@@ -11,7 +11,8 @@
 #
 # Settings (environment, all optional): DEPLOY_BRANCH (main), DEPLOY_REMOTE (origin), DEPLOY_LOG
 # (deploy.log next to this script), DEPLOY_HEALTHCHECK_URL (a Healthchecks.io ping URL: success pings it,
-# failure pings <url>/fail), GITHUB_REPO (ARCO-Lab/WELLWebsite). DOCKER, CURL, GITHUB_API, DEPLOY_STATE,
+# failure pings <url>/fail), GITHUB_REPO (ARCO-Lab/WELLWebsite), DEPLOY_STATE_DIR (.deploy-state next to this
+# script: the lock, the reported-problem state and the rolled-back marker). DOCKER, CURL, GITHUB_API, DEPLOY_STATE,
 # DEPLOY_HEALTH_TRIES, DEPLOY_HEALTH_WAIT and DEPLOY_WORKER_WAIT exist for tests.
 set -Eeuo pipefail
 
@@ -20,7 +21,7 @@ for arg in "$@"; do
   case "$arg" in
     --auto) AUTO=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -29,7 +30,12 @@ cd "$(dirname "$(readlink -f "$0")")"
 BRANCH=${DEPLOY_BRANCH:-main}
 REMOTE=${DEPLOY_REMOTE:-origin}
 LOG=${DEPLOY_LOG:-$PWD/deploy.log}
-STATE=${DEPLOY_STATE:-${TMPDIR:-/tmp}/well-deploy.state}
+# Not /tmp: RHEL deletes files there after 10 days, which would drop the lock file and the rolled-back marker (so cron
+# would retry a commit it had rolled back). The directory is git-ignored.
+STATE_DIR=${DEPLOY_STATE_DIR:-$PWD/.deploy-state}
+STATE=${DEPLOY_STATE:-$STATE_DIR/state}
+# Where the lock and state were kept before; the state is moved once, below
+LEGACY=${TMPDIR:-/tmp}/well-deploy
 REPO=${GITHUB_REPO:-ARCO-Lab/WELLWebsite}
 API=${GITHUB_API:-https://api.github.com}
 DOCKER=${DOCKER:-docker}
@@ -79,11 +85,23 @@ hold() {
 }
 
 # One run at a time (cron every few minutes, plus a person running it by hand)
-exec 9>"${TMPDIR:-/tmp}/well-deploy.lock"
-if ! flock -n 9; then
+busy() {
   [ "$AUTO" = 1 ] && exit 0
   echo "Another deploy is running." >&2
   exit 1
+}
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/lock"
+flock -n 9 || busy
+# A run of the previous version of this script locks the old file instead, so while that file exists, take it too.
+# Opened read-only, so a file that isn't ours (another user's, in /tmp) is skipped rather than an error.
+if [ -e "$LEGACY.lock" ] && { exec 8<"$LEGACY.lock"; } 2>/dev/null; then flock -n 8 || busy; fi
+# Move the state the previous version kept in /tmp, once, so a problem already reported isn't reported again and a
+# rolled-back commit still isn't retried. Only for the default location, and not on a dry run.
+if [ "$DRY" = 0 ] && [ -z "${DEPLOY_STATE:-}" ]; then
+  for suffix in "" .rolled-back; do
+    if [ -f "$LEGACY.state$suffix" ] && [ ! -e "$STATE$suffix" ]; then mv -f "$LEGACY.state$suffix" "$STATE$suffix" 2>/dev/null || true; fi
+  done
 fi
 
 # Keep deploy.log (which also gets cron's stderr) to about DEPLOY_LOG_MAX bytes (5 MB): move it to deploy.log.1
@@ -259,6 +277,28 @@ ops_report() {
   fi
 }
 
+# After a healthy deploy that built images, frees what old builds hold on disk: dangling images (old builds no longer
+# tagged) and the build cache beyond its 5 GB most recently used. The images the containers ran before this deploy
+# (noted in KEEP_IMAGES) are kept as rollback points. Volumes are never touched. Best effort: logs what it freed,
+# and a failure is only logged, never fails a healthy deploy. Called with ||, so the ERR trap doesn't apply.
+KEEP_IMAGES=""
+prune_old_builds() {
+  local id removed=0 kept=0 before after cache root
+  [ ${#SERVICES[@]} -gt 0 ] || return 0
+  root=$("$DOCKER" info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+  before=$(df -Pk "${root:-/}" 2>/dev/null | awk 'NR == 2 {print $4}' || true)
+  for id in $("$DOCKER" image ls -q --no-trunc -f dangling=true 2>/dev/null || true); do
+    if grep -qxF "${id#sha256:}" <<<"$KEEP_IMAGES"; then kept=$((kept + 1)); continue; fi
+    # One still used by a container (even a stopped one) is refused by docker and left in place
+    if "$DOCKER" image rm "$id" >/dev/null 2>&1; then removed=$((removed + 1)); fi
+  done
+  cache=$("$DOCKER" builder prune -f --reserved-space 5GB 2>&1 | grep -i '^total' | tr -s ' \t' ' ' || true)
+  after=$(df -Pk "${root:-/}" 2>/dev/null | awk 'NR == 2 {print $4}' || true)
+  local disk=""
+  if [ -n "$before" ] && [ -n "$after" ]; then disk="; free disk went from $((before / 1024)) MB to $((after / 1024)) MB"; fi
+  log "pruned $removed old image(s) (kept $kept as rollback points) and the build cache (${cache:-nothing freed})$disk"
+}
+
 rebuild_and_check() {  # returns 0, or sets PROBLEM and returns 1
   if ! rebuild; then PROBLEM="the rebuild failed"; return 1; fi
   REBUILT_AT=$(date +%s)
@@ -284,9 +324,12 @@ if ! err=$(git merge -q --ff-only "$NEW" 2>&1); then
   fail "couldn't fast-forward to $(git rev-parse --short "$NEW") ($summary): $(head -3 <<<"$err" | tr '\n' ' ')"
 fi
 log "deploying $summary"
+# Image ids without the sha256: prefix, one per line, as `docker image ls --no-trunc` gives them once stripped
+if [ ${#SERVICES[@]} -gt 0 ]; then KEEP_IMAGES=$("$DOCKER" compose images -q 2>/dev/null | sed 's/^sha256://' || true); fi
 if rebuild_and_check; then
   log "deployed $(git rev-parse --short HEAD); healthy"
   ops_report
+  prune_old_builds || log "pruning old images failed; the deploy is kept"
   clear_state
   rm -f "$ROLLED_BACK" 2>/dev/null || true
   ping_health ""

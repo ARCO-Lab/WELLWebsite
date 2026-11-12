@@ -7,13 +7,13 @@
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from flask import request, jsonify
 
 from db.database import db
 from db.models import SensorMeasurement
-from .series import local_naive
+from utils.timezone import site_range
 
 log = logging.getLogger(__name__)
 
@@ -56,17 +56,12 @@ def register_data_route(app):
             return jsonify({"error": "Missing required parameters"}), 400
 
         try:
-            # Convert to datetime objects
-            start_dt = datetime.fromisoformat(start)
-            end_dt = datetime.fromisoformat(end)
-        except ValueError:
+            # As naive Toronto wall time, like recorded_at: a bound with an offset (...Z) is converted, one without
+            # is taken as local time (utils/timezone.site_range), so the session's TimeZone doesn't matter.
+            start_dt, end_dt = site_range(start, end)
+        except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
-        try:
-            # Compared as local wall-clock times, so a naive bound and one with an offset can be mixed
-            span = local_naive(end_dt) - local_naive(start_dt)
-        except OverflowError:
-            return jsonify({"error": "Invalid date format"}), 400
-        if span > timedelta(days=MAX_DAYS):
+        if end_dt - start_dt > timedelta(days=MAX_DAYS):  # both naive local times now
             return jsonify({"error": f"Pick a range of at most {MAX_DAYS} days, or use Download for longer ones.",
                             "max_days": MAX_DAYS}), 400
 

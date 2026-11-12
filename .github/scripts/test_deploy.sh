@@ -38,6 +38,11 @@ case "$*" in
   "compose ps -q ops") [ -n "${OPS_RUNNING:-}" ] && echo "id-ops" ;;   # welldash²: off unless the test turns it on
   "compose ps -q "*) if [ "$4" = "${MISSING:-}" ] && bad_head; then :; else echo "id-$4"; fi ;;
   "inspect -f {{.RestartCount}} "*) echo 0 ;;
+  # Pruning: the stack's containers run image "running"; "running" and "old" are dangling (the rebuild replaced
+  # "running"). With $PRUNE_FAIL every prune command fails.
+  "compose images -q") echo running ;;
+  "image ls -q --no-trunc -f dangling=true") [ -n "${PRUNE_FAIL:-}" ] && exit 1; printf 'sha256:running\nsha256:old\n' ;;
+  "image rm "*|"builder prune"*) [ -n "${PRUNE_FAIL:-}" ] && exit 1; case "$*" in "builder prune"*) printf 'ID\nTotal:\t1.5GB\n' ;; esac ;;
   "inspect -f {{.State.Status}} {{.RestartCount}} "*)
     if [ "$4" = "id-${CRASHING:-}" ] && bad_head; then echo "running 2"; else echo "running 0"; fi ;;
 esac
@@ -270,6 +275,39 @@ HEALTH_CODE=502 deploy --auto
 check "--auto, site already unhealthy: reported only once" 'rc 0 && [ ! -s "$T/out" ]'
 HEALTH_CODE=502 deploy
 check "by hand, site already unhealthy: deploys anyway, no rollback" 'rc 1 && head_is_remote && said "deploying anyway" && said "still unhealthy"'
+
+sync_vm; change dashboard/frontend/page.tsx; deploy
+check "healthy deploy that built images: prunes dangling images except the replaced one, and the build cache, never volumes" 'rc 0 && ran "image rm sha256:old" && ! ran "image rm sha256:running" && ran "builder prune -f --reserved-space 5GB" && ! ran "volume" && said "pruned 1 old image(s) (kept 1 as rollback points)" && said "Total: 1.5GB" && grep -q "pruned 1" "$DEPLOY_LOG"'
+
+sync_vm; change README.md; deploy
+check "deploy that built nothing: prunes nothing" 'rc 0 && ! ran "prune" && ! ran "image rm"'
+
+sync_vm; change dashboard/frontend/page.tsx; PRUNE_FAIL=1 deploy
+check "pruning fails: the healthy deploy is kept, no /fail" 'rc 0 && head_is_remote && said "healthy" && said "pruned 0 old image(s)" && ! said "FAILED"'
+
+sync_vm; change dashboard/frontend/page.tsx; BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "rolled back: prunes nothing" 'rc 1 && said "rolling back" && ! ran "prune" && ! ran "image rm"'
+
+# The lock, held here on a descriptor of this shell: the deploy's own lock attempt on the same file must fail
+sync_vm; change dashboard/frontend/page.tsx; mkdir -p "$T/vm/.deploy-state"; exec 7>"$T/vm/.deploy-state/lock"; flock 7; deploy
+check "another deploy holds the lock: by hand, says so and changes nothing" 'rc 1 && said "Another deploy is running" && ! head_is_remote && [ ! -s "$STUB_LOG" ]'
+deploy --auto
+check "another deploy holds the lock: --auto exits quietly" 'rc 0 && [ ! -s "$T/out" ] && ! head_is_remote'
+exec 7>&-
+exec 7>"$T/well-deploy.lock"; flock 7; deploy
+check "a run of the previous version holds the old lock in TMPDIR: waits for it too" 'rc 1 && said "Another deploy is running" && ! head_is_remote'
+exec 7>&-
+deploy
+check "lock released: deploys" 'rc 0 && head_is_remote'
+rm -f "$T/well-deploy.lock"
+
+# Default state location (DEPLOY_STATE empty): a rolled-back marker left in TMPDIR by the previous version is moved
+sync_vm; rm -rf "$T/vm/.deploy-state"; change dashboard/frontend/page.tsx; ci success success
+git -C "$T/work" rev-parse HEAD > "$T/well-deploy.state.rolled-back"; echo "held x" > "$T/well-deploy.state"
+DEPLOY_STATE='' deploy --auto
+check "old state in TMPDIR: moved into .deploy-state once, and the rolled-back commit still isn't retried" 'rc 0 && ! head_is_remote && [ ! -s "$T/out" ] && [ ! -e "$T/well-deploy.state.rolled-back" ] && [ ! -e "$T/well-deploy.state" ] && [ "$(cat "$T/vm/.deploy-state/state.rolled-back")" = "$(git -C "$T/work" rev-parse HEAD)" ] && [ "$(cat "$T/vm/.deploy-state/state")" = "held x" ]'
+DEPLOY_STATE='' deploy
+check "default state location: a deploy by hand clears it" 'rc 0 && head_is_remote && [ ! -e "$T/vm/.deploy-state/state.rolled-back" ] && [ ! -e "$T/vm/.deploy-state/state" ]'
 
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]
