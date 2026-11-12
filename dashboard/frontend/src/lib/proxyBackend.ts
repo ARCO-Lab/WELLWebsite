@@ -8,11 +8,12 @@
 //
 // The backend is called with node:http, not fetch. The fetch built into Node 22 and 24 (undici 6 and 7) throws an
 // uncatchable AssertionError (`assert(!this.paused)`), which ends the whole server, when the backend closes the
-// connection while a slow browser has made the proxy pause reading (gunicorn closes after every response). See
-// https://github.com/nodejs/undici/issues/5360. node:http pauses and resumes the socket itself, on any Node version.
+// connection while a slow browser has made the proxy pause reading (e.g. a gunicorn worker restarting, or an idle
+// connection reaching gunicorn's keep-alive limit). See https://github.com/nodejs/undici/issues/5360. node:http
+// pauses and resumes the socket itself, on any Node version.
 
 import http from "http";
-import type { IncomingMessage } from "http";
+import type { ClientRequest, IncomingMessage } from "http";
 import { pipeline } from "stream/promises";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { clientIp, logClientIpSample } from "./clientIp.ts";
@@ -25,6 +26,15 @@ const FORWARDED_HEADERS = ["content-type", "content-disposition", "content-lengt
 // Longer than the backend's own limits (25 s per query, gunicorn's 60 s), so normally the backend answers first
 // with its own message. It only covers the wait for the first bytes: a large CSV download may stream for longer.
 const BACKEND_TIMEOUT_MS = 65_000;
+
+// Once the body has started, the transfer is dropped if no bytes arrive from the backend for this long. A browser
+// that stops reading also counts: with backpressure the proxy stops reading the backend too, so the socket is idle.
+const BODY_IDLE_TIMEOUT_MS = 300_000;
+
+// Connections to the backend are kept open and reused. An idle one is closed after 5 s, before gunicorn's
+// --keep-alive 10 (dashboard/backend/Dockerfile) would, so Node is the side that closes idle connections and a
+// request is not sent on one that gunicorn is closing at that moment (which would fail with a 502).
+const backendAgent = new http.Agent({ keepAlive: true, timeout: 5_000 });
 
 const UNREACHABLE = { error: "The data service didn't respond. Please try again." };
 const TIMED_OUT = { error: "The data service took too long to answer. Please try again." };
@@ -51,7 +61,18 @@ export async function proxyToBackend(
   if (ip) headers["X-Forwarded-For"] = ip;
   if (init.body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(init.body));
 
-  const upstream = http.request(`${process.env.FLASK_API_URL}${path}`, { method: init.method || "GET", headers });
+  let upstream: ClientRequest;
+  try {
+    upstream = http.request(`${process.env.FLASK_API_URL}${path}`, {
+      method: init.method || "GET",
+      headers,
+      agent: backendAgent,
+    });
+  } catch (error) {
+    // An invalid FLASK_API_URL throws here, before any connection is made.
+    console.error(`[ERROR] Failed to reach the Flask backend for ${label}:`, error);
+    return res.status(502).json(UNREACHABLE);
+  }
   // Errors are handled where the request and the body are awaited below; this listener only keeps a late
   // second error (after the first was handled) from being thrown as an uncaught exception.
   upstream.on("error", () => {});
@@ -107,6 +128,12 @@ export async function proxyToBackend(
     return;
   }
 
+  let idle = false;
+  upstream.setTimeout(BODY_IDLE_TIMEOUT_MS, () => {
+    idle = true;
+    upstream.destroy(new Error("backend idle"));
+  });
+
   const firstChunk = first.value;
   const rest = body;
   async function* chunks() {
@@ -124,7 +151,11 @@ export async function proxyToBackend(
     await pipeline(chunks, res);
   } catch (error) {
     // Part of the body is already out, so the response can only be cut short.
-    if (!clientLeft) console.error(`[ERROR] Backend response for ${label} broke off:`, error);
+    if (idle) {
+      console.error(`[ERROR] Backend response for ${label} broke off: no data for ${BODY_IDLE_TIMEOUT_MS / 1000} s`);
+    } else if (!clientLeft) {
+      console.error(`[ERROR] Backend response for ${label} broke off:`, error);
+    }
     upstream.destroy();
     res.destroy();
   }

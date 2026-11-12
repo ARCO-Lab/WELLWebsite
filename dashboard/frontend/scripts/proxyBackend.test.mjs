@@ -1,8 +1,8 @@
 // Tests for src/lib/proxyBackend.ts against a real local HTTP "backend" and a real proxy server, with Node's
 // built-in test runner:   npm test
-// The first test is the crash Sentry reported on /api/series: a browser reading slowly while the backend (gunicorn,
-// which closes the connection after every response) finishes. With fetch on Node 22 that killed the server with
-// an uncaught `AssertionError: assert(!this.paused)`.
+// The first test is the crash Sentry reported on /api/series: a browser reading slowly while the backend finishes
+// and closes the connection (as gunicorn does when a worker restarts or an idle connection times out). With fetch
+// on Node 22 that killed the server with an uncaught `AssertionError: assert(!this.paused)`.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -18,8 +18,8 @@ let backendUrl;
 const backendEvents = []; // what the backend saw, per request: "finished" or "closed early"
 const backendRequests = [];
 
-// Sends SIZE bytes like gunicorn: Content-Length, then the connection is closed. /break stops half way, and
-// /endless sends a chunk every few milliseconds until the connection is closed.
+// Sends SIZE bytes with Content-Length, then closes the connection (the case that crashed fetch). /break stops
+// half way, and /endless sends a chunk every few milliseconds until the connection is closed.
 function backendHandler(req, res) {
   let posted = "";
   req.on("data", (d) => (posted += d));
@@ -206,5 +206,50 @@ test("the backend's status, body and headers pass through; POST bodies and X-For
   assert.equal(sent.body, '{"start":"é"}');
   assert.equal(sent.headers["content-type"], "application/json");
   assert.equal(sent.headers["x-forwarded-for"], "127.0.0.1");
+  assert.deepEqual(errors, []);
+});
+
+test("an invalid FLASK_API_URL is a 502 with a message, and is logged", async (t) => {
+  const url = await startProxy(t, "/series");
+  process.env.FLASK_API_URL = "not a url";
+  let result;
+  const errors = await captureErrors(async () => {
+    result = await get(url);
+  });
+  process.env.FLASK_API_URL = backendUrl;
+  assert.equal(result.status, 502);
+  assert.match(result.body.toString(), /didn't respond/);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^\[ERROR\] Failed to reach the Flask backend for test/);
+});
+
+test("connections to a keep-alive backend (like gunicorn's --keep-alive) are reused", async (t) => {
+  // Answers with Content-Length and leaves the connection open, and records which socket each request came on.
+  const sockets = [];
+  const keepAlive = http.createServer((req, res) => {
+    sockets.push(req.socket);
+    res.writeHead(200, { "content-type": "application/json", "content-length": 2 });
+    res.end("{}");
+  });
+  keepAlive.listen(0);
+  await once(keepAlive, "listening");
+  t.after(() => {
+    keepAlive.closeAllConnections();
+    keepAlive.close();
+  });
+  const url = await startProxy(t, "/latest");
+  process.env.FLASK_API_URL = `http://127.0.0.1:${keepAlive.address().port}`;
+  const results = [];
+  const errors = await captureErrors(async () => {
+    results.push(await get(url));
+    results.push(await get(url));
+  });
+  process.env.FLASK_API_URL = backendUrl;
+  for (const result of results) {
+    assert.equal(result.status, 200);
+    assert.equal(result.body.toString(), "{}");
+  }
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets[0], sockets[1], "the second request must reuse the first connection");
   assert.deepEqual(errors, []);
 });
