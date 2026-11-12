@@ -143,7 +143,8 @@ class ScrubTest(unittest.TestCase):
             "peer 2001:db8::1 and fe80::1ff:fe23:4567:890a": "peer [ip] and [ip]",
             "full 2001:0db8:85a3:0000:0000:8a2e:0370:7334": "full [ip]",
             "GET /api/series?start=2026-01-01&station=x": "GET /api/series?[Filtered]",
-            "postgresql://well:pa55@db.example.org:5432/well": "postgresql://[Filtered]@N{ZERO WIDTH SPACE}db.example.org:5432/well",
+            "postgresql://well:pa55@db.example.org:5432/well":
+                "postgresql://[Filtered]@\N{ZERO WIDTH SPACE}db.example.org:5432/well",
             "api_key=abc123 password: 'x y'": "api_key=[Filtered] password: [Filtered]",
             "Authorization: Bearer abcdefghijkl": "Authorization: [Filtered] [Filtered]",
             "id 0123456789abcdef0123456789abcdef": "id [Filtered]",
