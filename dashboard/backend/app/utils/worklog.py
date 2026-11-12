@@ -38,12 +38,14 @@ class _QuietRotatingFileHandler(logging.handlers.RotatingFileHandler):
                 sys.stderr.write(f"[worklog] can't write {self.baseFilename} ({type(error).__name__}: {error}); "
                                  f"dropping its lines until it works again\n")
             except Exception:
-                pass   # stderr is unusable too: nowhere left to report it, and the job must go on
+                # stderr is unusable too: nowhere left to report it, and the job must go on
+                pass
         # Closed, so the next line opens the file again (it may work once the disk has room)
         try:
             self.close()
         except Exception:
-            pass   # a stream that fails to close is dropped all the same; the next line opens a new one
+            # a stream that fails to close is dropped all the same; the next line opens a new one
+            pass
 
     def emit(self, record):
         super().emit(record)
@@ -79,11 +81,13 @@ def file_logger(path, mirror_stdout=False, max_bytes=MAX_BYTES, backup_count=BAC
         try:
             handler.handle(logging.LogRecord(path, logging.INFO, path, 0, line, None, None))
         except Exception:
-            pass   # handle() reports through handleError; this only guards the job against anything else
+            # handle() reports through handleError; this only guards the job against anything else
+            pass
         if mirror_stdout:
             try:
                 _original_print(line, flush=True)
             except Exception:
-                pass   # the stdout copy is optional; the line is already in the file
+                # the stdout copy is optional; the line is already in the file
+                pass
 
     return log
