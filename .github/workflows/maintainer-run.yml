@@ -105,6 +105,13 @@ jobs:
       before: ${{ steps.before.outputs.sha }}
       branches: ${{ steps.bundle.outputs.branches }}
     steps:
+      # Records every outbound connection this job makes (audit mode: nothing is blocked yet). Once a few runs show
+      # what it needs, switch to egress-policy: block with the allowlist in .github/workflows/README.md, "Daily
+      # maintainer", so code Claude runs can't send anything elsewhere.
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a   # v2.22.4
+        with:
+          egress-policy: audit
+
       # Outside the checkout, so nothing Claude writes there can end up in a commit.
       - name: Set the work directory
         run: echo "WORK_DIR=$RUNNER_TEMP/maintainer" >> "$GITHUB_ENV"
@@ -183,15 +190,20 @@ jobs:
             --json-schema '${{ steps.prompt.outputs.schema }}'
             ${{ vars.MAINTAINER_MODEL && format('--model {0}', vars.MAINTAINER_MODEL) || '' }}
 
-      # Every local maint/* branch, for the publish job, which decides what of it is pushed. Hooks are off: Claude
+      # Every local maint/* branch, for the publish job, which decides what of it is pushed. Only the commits that
+      # aren't on main go in (the publish job has main's history), not the whole repository. Hooks are off: Claude
       # could have written to .git.
       - name: Bundle the maint/* branches
         id: bundle
         if: ${{ !cancelled() }}
         run: |
           n=$(git -c core.hooksPath=/dev/null for-each-ref --format='%(refname)' refs/heads/maint/ | wc -l)
-          if [ "$n" -gt 0 ]; then
-            git -c core.hooksPath=/dev/null bundle create "$RUNNER_TEMP/branches.bundle" --branches='maint/*'
+          # git refuses to write a bundle with no commits in it (every maint/* branch already on main)
+          if [ "$n" -gt 0 ] && [ "$(git rev-list --count --branches='maint/*' --not origin/main)" -gt 0 ]; then
+            git -c core.hooksPath=/dev/null bundle create "$RUNNER_TEMP/branches.bundle" --branches='maint/*' \
+              --not origin/main
+          else
+            n=0
           fi
           echo "branches=$n" >> "$GITHUB_OUTPUT"
           echo "$n maint/* branch(es) bundled"
