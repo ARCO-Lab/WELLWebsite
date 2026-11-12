@@ -14,7 +14,8 @@
 //
 // The navigator: an invisible series spans the picked range, so the navigator (and how far the chart can be moved)
 // covers that range and not just where the data is; the navigator's own line is the range's overview, at the bucket
-// the range needs. On touch screens the chart redraws when the finger lifts from the navigator, not on every move.
+// the range needs. Dragging it (or its scrollbar) is handled here, not by Highcharts, so it redraws at the same pace
+// as any other drag.
 //
 // Input (handled here, with Stock's own wheel zoom and panning off, so each gesture means one thing):
 // - mouse wheel: a plain (vertical) wheel always scrolls the page, and now and then shows a hint. Ctrl/⌘ + wheel or
@@ -198,8 +199,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       handles: { backgroundColor: '#ffffff', borderColor: '#7a003c', height: 18, width: 9 },
       xAxis: { dateTimeLabelFormats: DATE_FORMATS, labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#6b7280' } } },
     },
-    // liveRedraw (for the navigator too): on touch screens the chart redraws when the finger lifts
-    scrollbar: { enabled: true, liveRedraw: !coarse, height: coarse ? 12 : 10, barBorderRadius: 5, buttonBorderRadius: 5, trackBorderRadius: 5 },
+    scrollbar: { enabled: true, height: coarse ? 12 : 10, barBorderRadius: 5, buttonBorderRadius: 5, trackBorderRadius: 5 },
     accessibility: {
       description: `${title}. Use the buttons above the chart, or the arrow, plus and minus keys, to move and zoom.`,
       keyboardNavigation: { enabled: false }, // the chart's own keys (see above) move and zoom it
@@ -464,22 +464,17 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     // A drag in the plot. With a finger (or pen) it waits until it has moved TOUCH_SLOP_PX: sideways it pans, up or down
     // it is the browser's page scroll (which cancels it)
     let drag: { x0: number; y0: number; w0: { start: number; end: number }; mode: 'pan' | 'select'; moved: boolean; id: number; touch: boolean } | null = null;
-    // A press below the plot (the navigator, its scrollbar) starts a gesture that ends when the pointer lifts anywhere
-    let below = false;
     const belowPlot = (clientY: number) => {
       const c = chart();
       return !!c && clientY - c.container.getBoundingClientRect().top > c.plotTop + c.plotHeight + 8;
     };
-    const liftBelow = () => {
-      if (!below) return;
-      below = false;
-      controller.endGesture();
-    };
-    // A finger below the plot: Highcharts' navigator moves the window as soon as a finger lands on its track, so a page
-    // scroll starting there jumped the chart. Its touch handling is stopped (onTouchStart) and this does it instead:
-    // once the finger has moved TOUCH_SLOP_PX, sideways moves the window (or the handle it started on), up or down is
-    // the page's scroll; a tap on the track centres the window there
-    let nav: { x0: number; y0: number; w0: { start: number; end: number }; part: 'start' | 'end' | 'window' | 'track'; moved: boolean; id: number } | null = null;
+    // The navigator and its scrollbar, below the plot, are driven here rather than by Highcharts (whose mouse and touch
+    // handling there is stopped, onNavPress): Highcharts redrew the chart on every move of a navigator drag, at up to
+    // 150 ms a frame, and moved the window as soon as a finger landed on the track, so a page scroll starting there
+    // jumped the chart. Here a drag moves the window (or the handle it started on) through the controller, which paces
+    // the redraws like any other drag. A finger waits until it has moved TOUCH_SLOP_PX: sideways it drags, up or down
+    // it is the page's scroll. A click or tap on the track centres the window there; on a scrollbar arrow, steps it.
+    let nav: { x0: number; y0: number; w0: { start: number; end: number }; part: 'start' | 'end' | 'window' | 'track'; moved: boolean; id: number; mouse: boolean } | null = null;
     const navAxis = () => (chart() as (Highcharts.Chart & { navigator?: { xAxis?: Highcharts.Axis } }) | undefined)?.navigator?.xAxis;
     const navDown = (e: PointerEvent) => {
       const c = chart(), axis = navAxis();
@@ -487,19 +482,27 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const x = e.clientX - c.container.getBoundingClientRect().left;
       const w = controller.window;
       const a = axis.toPixels(w.start, false), b = axis.toPixels(w.end, false);
-      const part = Math.abs(x - a) <= NAV_HANDLE_PX ? 'start' : Math.abs(x - b) <= NAV_HANDLE_PX ? 'end' : x > a && x < b ? 'window' : 'track';
-      nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId };
+      // A window narrower than two handles is moved from inside it, and resized from just outside
+      const narrow = b - a < 2 * NAV_HANDLE_PX;
+      const part = narrow && x >= a && x <= b ? 'window'
+        : Math.abs(x - a) <= NAV_HANDLE_PX ? 'start' : Math.abs(x - b) <= NAV_HANDLE_PX ? 'end' : x > a && x < b ? 'window' : 'track';
+      nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId, mouse: e.pointerType === 'mouse' };
     };
     const navMove = (e: PointerEvent) => {
-      const axis = navAxis();
+      const axis = navAxis(), c = chart();
       if (!nav || e.pointerId !== nav.id || !axis) return;
       const dx = e.clientX - nav.x0;
       if (!nav.moved) {
         const dy = e.clientY - nav.y0;
-        if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
-        if (Math.abs(dy) >= Math.abs(dx)) { nav = null; return; } // the page's scroll
+        if (nav.mouse) {
+          if (Math.abs(dx) < 3) return;
+        } else {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
+          if (Math.abs(dy) >= Math.abs(dx)) { nav = null; return; } // the page's scroll
+        }
         nav.moved = true;
         el.setPointerCapture(e.pointerId);
+        c?.tooltip?.hide(0);
         controller.beginGesture();
       }
       const ext = controller.extent;
@@ -517,19 +520,25 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       if (done.moved) controller.endGesture();
       else if (done.part === 'track' && axis && c && e.type === 'pointerup') {
-        const at = axis.toValue(e.clientX - c.container.getBoundingClientRect().left, false);
-        const span = done.w0.end - done.w0.start;
-        controller.setWindow({ start: at - span / 2, end: at + span / 2 }, 'slider');
+        const x = e.clientX - c.container.getBoundingClientRect().left;
+        const ext = controller.extent;
+        if (x < axis.toPixels(ext.start, false)) controller.pan(-0.2, 'slider'); // the scrollbar's arrows, past the axis
+        else if (x > axis.toPixels(ext.end, false)) controller.pan(0.2, 'slider');
+        else {
+          const at = axis.toValue(x, false);
+          const span = done.w0.end - done.w0.start;
+          controller.setWindow({ start: at - span / 2, end: at + span / 2 }, 'slider');
+        }
       }
     };
+    // Presses below the plot don't reach Highcharts' navigator and scrollbar (see nav above); not cancelled, so focus
+    // and text selection behave as usual
+    const onNavPress = (e: MouseEvent) => {
+      if (belowPlot(e.clientY)) e.stopPropagation();
+    };
     const onDown = (e: PointerEvent) => {
-      if (belowPlot(e.clientY) && e.pointerType !== 'mouse') {
-        navDown(e);
-        return;
-      }
       if (belowPlot(e.clientY)) {
-        below = true;
-        controller.beginGesture();
+        if (e.button === 0) navDown(e);
         return;
       }
       if (e.button !== 0 || !inPlot(e.clientX, e.clientY)) return;
@@ -608,8 +617,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     };
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 1) {
-        // Below the plot: kept from Highcharts' navigator and scrollbar (see navDown), and not cancelled, so the page
-        // can still scroll
+        // Below the plot: kept from Highcharts' navigator and scrollbar (see nav), and not cancelled, so the page can
+        // still scroll
         if (belowPlot(e.touches[0].clientY)) e.stopPropagation();
         return;
       }
@@ -676,11 +685,9 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     el.addEventListener('touchend', onTouchEnd);
     el.addEventListener('touchcancel', onTouchEnd);
     el.addEventListener('keydown', onKey);
-    window.addEventListener('pointerup', liftBelow);
-    window.addEventListener('pointercancel', liftBelow);
+    el.addEventListener('mousedown', onNavPress, { capture: true });
     return () => {
-      window.removeEventListener('pointerup', liftBelow);
-      window.removeEventListener('pointercancel', liftBelow);
+      el.removeEventListener('mousedown', onNavPress, { capture: true });
       window.clearTimeout(hintTimer);
       window.clearTimeout(wheelEnd);
       controller.endGesture();
