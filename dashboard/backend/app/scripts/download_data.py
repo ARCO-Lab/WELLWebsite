@@ -100,7 +100,7 @@ def parse_filename_date(filename):
                 month_abbr = season_map[season]
                 return datetime.strptime(f"{month_abbr}{year}", "%b%Y")
         except ValueError:
-            pass
+            pass   # not a season name either; reported just below and the caller falls back to create_date
         print(f"DEBUG: Failed to parse date from suffix: {suffix}. Falling back to create_date.")
         return None
 

@@ -4,8 +4,7 @@ import contextlib
 import io
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import requests
 
@@ -56,7 +55,7 @@ def fetch(responses, max_pages=None):
     return points, out.getvalue(), [c.kwargs["params"]["from"] for c in get.call_args_list]
 
 
-class QualityPagingTests(unittest.TestCase):
+class QualityPagingTests(TestCase):
     def test_keeps_paging_when_more_is_false_but_count_is_below_total(self):
         """Seen on WQData: a 14-day request's 4th page said more=false with count 6,963 of total 12,591."""
         points, _, froms = fetch([
@@ -99,7 +98,7 @@ class QualityPagingTests(unittest.TestCase):
         self.assertIn("stopped after 3 pages", log)
 
 
-class QualityErrorLoggingTests(unittest.TestCase):
+class QualityErrorLoggingTests(TestCase):
     def test_the_raw_error_text_would_contain_the_key(self):
         self.assertIn(KEY, str(http_error(429)))  # why the message must not be printed as-is
 
@@ -117,4 +116,4 @@ class QualityErrorLoggingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

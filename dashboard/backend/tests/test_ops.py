@@ -8,7 +8,6 @@ import os
 import pathlib
 import sys
 import time
-import unittest
 import unittest.mock
 
 import requests

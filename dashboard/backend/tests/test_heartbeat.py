@@ -5,8 +5,7 @@ import pathlib
 import subprocess
 import sys
 import types
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import requests
 
@@ -32,7 +31,7 @@ class FakeGet:
         return types.SimpleNamespace(status_code=self.status)
 
 
-class PingHeartbeatTests(unittest.TestCase):
+class PingHeartbeatTests(TestCase):
     def test_unset_is_a_no_op(self):
         get = FakeGet()
         self.assertFalse(ping_heartbeat("ingestion", env={}, get=get))
@@ -66,7 +65,7 @@ class PingHeartbeatTests(unittest.TestCase):
         get.assert_called_once_with(URL, timeout=2)
 
 
-class SchedulerHeartbeatTests(unittest.TestCase):
+class SchedulerHeartbeatTests(TestCase):
     def setUp(self):
         self.pings = []
         for patch in (
@@ -147,4 +146,4 @@ class SchedulerHeartbeatTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

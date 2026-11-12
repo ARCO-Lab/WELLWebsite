@@ -6,8 +6,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
@@ -28,7 +27,7 @@ def frozen_clock(instant_utc):
     return mock.patch("utils.timezone.datetime", Frozen)
 
 
-class EstAfterTests(unittest.TestCase):
+class EstAfterTests(TestCase):
     def test_adds_real_time_across_the_spring_dst_jump(self):
         # 01:45 EST on 2026-03-08; clocks jump from 02:00 to 03:00, so 60 real minutes later it's 03:45
         start = dt.datetime(2026, 3, 8, 6, 45, tzinfo=dt.timezone.utc)
@@ -42,7 +41,7 @@ class EstAfterTests(unittest.TestCase):
         self.assertEqual(est_after(60, FALL_BACK_DONE), dt.datetime(2026, 11, 1, 1, 30))
 
 
-class EstPassedTests(unittest.TestCase):
+class EstPassedTests(TestCase):
     def test_a_full_window_on_the_fall_back_night(self):
         expires = est_after(60, FALL_BACK_DONE)  # 01:30, meaning 01:30 EST
         self.assertFalse(est_passed(expires, FALL_BACK_DONE + dt.timedelta(seconds=3)))  # naive 01:30:03 > 01:30
@@ -55,7 +54,7 @@ class EstPassedTests(unittest.TestCase):
         self.assertFalse(est_passed(dt.datetime(2026, 11, 10, 7, 1), now))
 
 
-class CleanupTests(unittest.TestCase):
+class CleanupTests(TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="exports-test-")
         self.exports = os.path.join(self.tmp, "exports")
@@ -215,4 +214,4 @@ class CleanupTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

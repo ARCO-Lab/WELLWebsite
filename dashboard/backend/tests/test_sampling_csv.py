@@ -8,8 +8,7 @@ import os
 import pathlib
 import sys
 import tempfile
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock, skipUnless
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -26,7 +25,7 @@ def errors(result):
     return [(e.row, e.column) for e in result.errors], " | ".join(str(e) for e in result.errors)
 
 
-class ValidFileTests(unittest.TestCase):
+class ValidFileTests(TestCase):
     def test_valid_fixture(self):
         result = validate_file(FIXTURES / "valid.csv")
         self.assertTrue(result.ok, errors(result)[1])
@@ -63,7 +62,7 @@ class ValidFileTests(unittest.TestCase):
         self.assertEqual(errors(bad)[0], [(2, "creek")])
 
 
-class InvalidFileTests(unittest.TestCase):
+class InvalidFileTests(TestCase):
     """One fixture per kind of problem. Every problem of a file is reported, and an invalid file yields no rows."""
 
     def check(self, name, expected, *phrases):
@@ -117,7 +116,7 @@ class InvalidFileTests(unittest.TestCase):
         self.assertEqual(errors(result)[0], [(2, "below_detection"), (3, "value")])
 
 
-class SiteListTests(unittest.TestCase):
+class SiteListTests(TestCase):
     def test_sites_match_the_dashboard(self):
         """The import's site list is the dashboard's (frontend config/filters.tsx): ids, names and creeks."""
         dashboard = {"2": ("Maple Lane Pk", "ancaster"), "5": ("Sherman Falls", "ancaster"),
@@ -133,7 +132,7 @@ class SiteListTests(unittest.TestCase):
         self.assertEqual(errors(result)[0], [(2, "site")])
 
 
-class WideExcelTests(unittest.TestCase):
+class WideExcelTests(TestCase):
     def test_lab_sheet_imports_through_the_same_checks(self):
         result = validate_wide_excel(LAB_SHEET)
         self.assertTrue(result.ok, errors(result)[1])
@@ -197,7 +196,7 @@ class WideExcelTests(unittest.TestCase):
         self.assertEqual(errors(validate_wide_excel(self.write_workbook({"Data": frame})))[0], [(1, "column D")])
 
 
-class EdgeCaseTests(unittest.TestCase):
+class EdgeCaseTests(TestCase):
     HEADER = b"date,site,parameter,value,unit\n"
 
     def test_no_readings_is_an_error(self):
@@ -241,7 +240,7 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertIn("beyond the header's 5 columns", text)
 
 
-class CheckScriptTests(unittest.TestCase):
+class CheckScriptTests(TestCase):
     def run_check(self, *paths):
         sys.path.insert(0, str(APP / "scripts"))
         import check_sampling_csv
@@ -273,7 +272,7 @@ class CheckScriptTests(unittest.TestCase):
         self.assertIn("can't be read as CSV", out)
 
 
-class ImportLogTests(unittest.TestCase):
+class ImportLogTests(TestCase):
     def test_only_the_first_problems_are_printed(self):
         sys.path.insert(0, str(APP / "scripts"))
         import inject_sampling
@@ -289,7 +288,7 @@ class ImportLogTests(unittest.TestCase):
         self.assertTrue(str(raised.exception).startswith("60 problems in "))   # download_data.py reads this count
 
 
-class TemplateRouteTests(unittest.TestCase):
+class TemplateRouteTests(TestCase):
     def test_template_download(self):
         from server import create_app
         response = create_app().test_client().get("/api/samples/template.csv")
@@ -300,8 +299,8 @@ class TemplateRouteTests(unittest.TestCase):
         response.close()
 
 
-@unittest.skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to a disposable PostgreSQL")
-class ImportIdempotenceTests(unittest.TestCase):
+@skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to a disposable PostgreSQL")
+class ImportIdempotenceTests(TestCase):
     """The import against PostgreSQL (ON CONFLICT is PostgreSQL's): re-importing adds nothing, a backfill adds
     exactly its missing rows, and an invalid file stores nothing."""
 
@@ -412,4 +411,4 @@ class ImportIdempotenceTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

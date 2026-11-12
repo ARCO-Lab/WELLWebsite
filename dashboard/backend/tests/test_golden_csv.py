@@ -17,7 +17,6 @@ import pathlib
 import shutil
 import sys
 import tempfile
-import unittest
 import unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"

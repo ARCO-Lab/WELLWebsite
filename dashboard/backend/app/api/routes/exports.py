@@ -78,7 +78,7 @@ def register_export_routes(app):
                     if os.path.exists(tmp_path):
                         os.remove(tmp_path)
                 except OSError:
-                    pass
+                    pass   # best effort: a temp file that can't be removed mustn't fail the download being sent
                 return response
 
             return send_file(tmp_path, as_attachment=True, download_name=filename, mimetype="text/csv")
