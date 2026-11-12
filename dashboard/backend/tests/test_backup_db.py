@@ -153,14 +153,7 @@ class RowCountTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BACKUP_MAX_SHRINK_PCT": "five"}), self.assertRaises(backup_db.BackupError):
             backup_db.shrink_setting()
 
-    def test_failing_dumps_are_those_after_the_last_good_one(self):
-        names = ["welldb-20261108-0315.dump", "welldb-20261109-0315.dump", "welldb-20261110-0315.dump",
-                 "welldb-20261111-0315.dump", "manual-before-migration.dump"]
-        self.assertEqual(backup.failing_dumps(names, "welldb-20261108-0315.dump", keep="welldb-20261111-0315.dump"),
-                         ["welldb-20261109-0315.dump", "welldb-20261110-0315.dump"])
-        self.assertEqual(backup.failing_dumps(names, None, keep="welldb-20261111-0315.dump"), [])
-
-    def nightly(self, directory, day, rows, **kwargs):
+    def nightly(self, directory, day, rows, max_shrink_pct=5, **kwargs):
         """back_up() on 2026-11-`day` at 03:15 with `rows` in the table, pg_dump and its check stood in for."""
         import backup_db
 
@@ -173,7 +166,10 @@ class RowCountTests(unittest.TestCase):
                 mock.patch.object(backup_db, "pg_tool", return_value="pg_dump"):
             return backup_db.back_up(directory, {"database": "welldb"}, [], ["t"], 0, log=lambda *a: None,
                                      warn=lambda *a: None, now=dt.datetime(2026, 11, day, 3, 15),
-                                     max_shrink_pct=5, **kwargs)
+                                     max_shrink_pct=max_shrink_pct, **kwargs)
+
+    def dumps(self, directory):
+        return sorted(name for _, name in backup.dumps_in(os.listdir(directory)))
 
     def test_while_the_check_fails_only_the_newest_failing_dump_is_kept(self):
         import backup_db
@@ -184,15 +180,40 @@ class RowCountTests(unittest.TestCase):
                 with self.assertRaises(backup_db.RowCountError) as failed:
                     self.nightly(directory, day, 0)
                 self.assertIn("t is empty (it had 100 rows at the last good backup)", str(failed.exception))
-            self.assertEqual(sorted(name for _, name in backup.dumps_in(os.listdir(directory))),
+            self.assertEqual(self.dumps(directory),
                              ["welldb-20261108-0315.dump", "welldb-20261109-0315.dump", "welldb-20261112-0315.dump"])
-            # --no-prune deletes nothing
+            self.assertEqual(backup.load_record(directory)["failing_dumps"], ["welldb-20261112-0315.dump"])
+            # --no-prune deletes nothing, and both stay marked as failing
             with self.assertRaises(backup_db.RowCountError):
                 self.nightly(directory, 13, 0, prune_failing=False)
-            self.assertEqual(len(backup.dumps_in(os.listdir(directory))), 4)
-            # Accepted: recorded as the last good backup, and the next failure keeps it
+            self.assertEqual(len(self.dumps(directory)), 4)
+            self.assertEqual(backup.load_record(directory)["failing_dumps"],
+                             ["welldb-20261112-0315.dump", "welldb-20261113-0315.dump"])
+            # Accepted: recorded as the last good backup, nothing marked as failing any more
             self.nightly(directory, 14, 0, accept_row_counts=True)
-            self.assertEqual(backup.last_good_dump(directory), "welldb-20261114-0315.dump")
+            record = backup.load_record(directory)
+            self.assertEqual((record["dump"], record["failing_dumps"]), ("welldb-20261114-0315.dump", []))
+
+    def test_dumps_made_with_the_check_off_are_never_deleted_by_it(self):
+        import backup_db
+        with tempfile.TemporaryDirectory() as directory:
+            self.nightly(directory, 8, 100)
+            for day in (9, 10, 11):   # the comparison turned off; the rows went down meanwhile
+                self.nightly(directory, day, 10, max_shrink_pct=None)
+            record = backup.load_record(directory)
+            self.assertEqual((record["dump"], record["counts"]), ("welldb-20261111-0315.dump", {"t": 100}))
+            for day in (12, 13):   # on again, and failing
+                with self.assertRaises(backup_db.RowCountError):
+                    self.nightly(directory, day, 10)
+            self.assertEqual(self.dumps(directory), [f"welldb-202611{d:02d}-0315.dump" for d in (8, 9, 10, 11, 13)])
+
+    def test_a_marked_name_that_isnt_a_dump_is_never_deleted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pathlib.Path(directory, "notes.txt").write_text("keep")
+            backup.save_record(directory, {"failing_dumps": ["notes.txt"]})
+            backup.mark_failing(directory, "welldb-20261112-0315.dump", prune=True, log=lambda *a: None)
+            self.assertTrue(pathlib.Path(directory, "notes.txt").exists())
+            self.assertEqual(backup.load_record(directory)["failing_dumps"], ["welldb-20261112-0315.dump"])
 
 
 class SchedulerTests(unittest.TestCase):
@@ -553,6 +574,18 @@ class RoundTrip(unittest.TestCase):
             # hasn't seen yet still shows (exact_limit=0 takes that path even for this small table)
             owner = backup.parse_database_url(self.owner_url)
             self.assertEqual(backup.count_rows(owner, ["shrink_check"], exact_limit=0), {"shrink_check": 48})
+            # If ANALYZE can't get its lock (here held by another session, as a long VACUUM would), the older
+            # estimate is used, with a warning, instead of failing the backup
+            blocker = self.psycopg2.connect(**backup.psycopg2_kwargs(backup.with_database(self.admin, self.SOURCE)))
+            self.addCleanup(blocker.close)
+            blocker.cursor().execute("LOCK TABLE shrink_check IN SHARE UPDATE EXCLUSIVE MODE")
+            warnings = []
+            self.assertEqual(backup.count_rows(owner, ["shrink_check"], exact_limit=0, warn=warnings.append,
+                                               analyze_lock_timeout="200ms"), {"shrink_check": 48})
+            blocker.rollback()
+            self.assertEqual(len(warnings), 1, warnings)
+            self.assertIn("ANALYZE public.shrink_check failed", warnings[0])
+            self.assertIn("lock timeout", warnings[0])
             shrunk = run()
             self.assertEqual(shrunk.returncode, 1)
             self.assertIn("shrink_check has 48 rows, 50% fewer than the 96 at the last good backup", shrunk.stderr)

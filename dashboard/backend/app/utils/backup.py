@@ -40,7 +40,8 @@ DEFAULT_EXPECT_TABLES = "sensor_measurements,sampling_measurements"
 
 # Row counts of those tables at the last good backup, compared with the counts before each new dump (a dump of an
 # emptied table still lists TABLE DATA for it, so the dump's own check can't see that rows went missing). The file
-# sits in the backup folder, next to the dumps it describes.
+# sits in the backup folder, next to the dumps it describes, and also names the last good dump and the dumps written
+# while the check was failing (the only ones the check itself ever deletes).
 ROW_COUNTS_NAME = ".row-counts.json"
 # A table with fewer rows than this many percent below its count at the last good backup fails the backup
 # (BACKUP_MAX_SHRINK_PCT). These tables only grow: readings are added, and the only routine deletions are a handful
@@ -52,6 +53,9 @@ DEFAULT_MAX_SHRINK_PCT = 5
 # analyzed first (ANALYZE reads a fixed-size sample, a few seconds at most) and their fresh estimate is used
 # (pg_class.reltuples), so the check stays cheap and still sees a recent DELETE that autovacuum hasn't caught up with.
 EXACT_COUNT_LIMIT = 1_000_000
+# How long ANALYZE may wait for its lock (e.g. behind an anti-wraparound VACUUM, which holds the same lock for a
+# long time). If it can't get it, the older estimate is used, with a warning, rather than failing the backup.
+ANALYZE_LOCK_TIMEOUT = "30s"
 
 # pg_dump and pg_restore of the server's major version (13 on the VM), installed in the image from the PostgreSQL
 # apt repository (Dockerfile). A newer pg_dump writes archives that an older pg_restore can't read, so the
@@ -328,11 +332,13 @@ WHERE c.oid = to_regclass(%s)
 """
 
 
-def count_rows(settings, tables, exact_limit=EXACT_COUNT_LIMIT):
+def count_rows(settings, tables, exact_limit=EXACT_COUNT_LIMIT, warn=None, analyze_lock_timeout=ANALYZE_LOCK_TIMEOUT):
     """{table: rows} for `tables` (names or schema.name): exact (count(*)) for tables the planner estimates under
     `exact_limit` rows, the estimate just after an ANALYZE for larger ones, and always exactly 0 for a table with no
     row at all. None for a table that doesn't exist. Changes no data (ANALYZE only refreshes planner statistics).
-    Each table is named in SQL by the schema and name PostgreSQL resolved it to, quoted as identifiers."""
+    Each table is named in SQL by the schema and name PostgreSQL resolved it to, quoted as identifiers. If ANALYZE
+    can't get its lock within `analyze_lock_timeout` (or fails otherwise), the older estimate is used and
+    `warn(message)` is called."""
     import psycopg2
     from psycopg2 import sql
     conn = psycopg2.connect(**psycopg2_kwargs(settings))
@@ -358,7 +364,16 @@ def count_rows(settings, tables, exact_limit=EXACT_COUNT_LIMIT):
                 else:
                     # reltuples is only as fresh as the last (auto)vacuum or ANALYZE; a role that doesn't own the
                     # table gets a warning from ANALYZE and the older estimate
-                    cur.execute(sql.SQL("ANALYZE {}").format(relation))
+                    try:
+                        cur.execute("BEGIN")
+                        cur.execute("SET LOCAL lock_timeout = %s", (analyze_lock_timeout,))
+                        cur.execute(sql.SQL("ANALYZE {}").format(relation))
+                        cur.execute("COMMIT")
+                    except psycopg2.Error as e:
+                        cur.execute("ROLLBACK")
+                        if warn:
+                            warn(f"ANALYZE {schema}.{name} failed ({str(e).strip()}), so its row count is the "
+                                 f"planner's older estimate ({int(estimate):,})")
                     cur.execute(_TABLE_ESTIMATE_SQL, (table,))
                     counts[table] = int(cur.fetchone()[2])
     finally:
@@ -384,50 +399,71 @@ def row_count_problems(counts, previous, max_shrink_pct):
     return problems
 
 
-def load_row_counts(directory):
-    """The counts recorded at the last good backup in `directory` ({} if none were recorded). ValueError if the
-    file can't be read as such."""
+def load_record(directory):
+    """The row counts record in `directory`: {"dump": the last good dump, "recorded_at", "counts": {table: rows},
+    "failing_dumps": [dumps written while the check failed]}, with empty values when there is no record yet.
+    ValueError if the file can't be read as such."""
     path = os.path.join(directory, ROW_COUNTS_NAME)
     try:
         with open(path, encoding="utf-8") as f:
-            counts = json.load(f).get("counts")
+            record = json.load(f)
     except FileNotFoundError:
-        return {}
-    except (OSError, ValueError, AttributeError) as e:
+        record = {}
+    except (OSError, ValueError) as e:
         raise ValueError(f"{path} can't be read ({e})") from None
-    if not isinstance(counts, dict) or not all(isinstance(v, int) for v in counts.values()):
+    if not isinstance(record, dict):
         raise ValueError(f"{path} doesn't hold row counts")
-    return counts
+    record = {"dump": None, "recorded_at": None, "counts": {}, "failing_dumps": [], **record}
+    counts, failing = record["counts"], record["failing_dumps"]
+    if not isinstance(counts, dict) or not all(isinstance(v, int) for v in counts.values()) \
+            or not isinstance(failing, list) or not all(isinstance(n, str) for n in failing):
+        raise ValueError(f"{path} doesn't hold row counts")
+    return record
 
 
-def last_good_dump(directory):
-    """The file name of the last good backup in the row counts record, or None if there is none (or no record)."""
-    try:
-        with open(os.path.join(directory, ROW_COUNTS_NAME), encoding="utf-8") as f:
-            dump = json.load(f).get("dump")
-    except (OSError, ValueError, AttributeError):
-        return None
-    return dump if isinstance(dump, str) else None
+def load_row_counts(directory):
+    """The counts recorded at the last good backup in `directory` ({} if none were recorded). ValueError if the
+    file can't be read as such."""
+    return load_record(directory)["counts"]
 
 
-def failing_dumps(names, last_good, keep):
-    """The dumps among `names` written after `last_good` (the last good backup's file name), so while the row count
-    check was failing, except `keep`. [] when `last_good` isn't known, since then no dump can be told apart."""
-    good_time = dump_time(last_good) if last_good else None
-    if good_time is None:
-        return []
-    return [name for when, name in reversed(dumps_in(names)) if when > good_time and name != keep]
-
-
-def save_row_counts(directory, counts, dump, when):
-    """Record `counts` as those of the good backup `dump` (a file name) made at `when`. Written to a temporary file
-    and renamed, so a crash leaves the previous record intact."""
+def save_record(directory, record):
+    """Write the row counts record (load_record). Written to a temporary file and renamed, so a crash leaves the
+    previous record intact."""
     path = os.path.join(directory, ROW_COUNTS_NAME)
-    record = {"dump": dump, "recorded_at": when.isoformat(timespec="seconds"),
-              "counts": {table: rows for table, rows in counts.items() if rows is not None}}
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
     os.replace(path + ".tmp", path)
+
+
+def save_row_counts(directory, counts, dump, when):
+    """Record `dump` (a file name) made at `when` as the last good backup, with its `counts` (None: the check is off,
+    so the counts recorded earlier stay). No dump is failing any more."""
+    try:
+        record = load_record(directory)
+    except ValueError:   # an unreadable record is replaced
+        record = {"counts": {}}
+    record.update(dump=dump, recorded_at=when.isoformat(timespec="seconds"), failing_dumps=[])
+    if counts is not None:
+        record["counts"] = {table: rows for table, rows in counts.items() if rows is not None}
+    save_record(directory, record)
+
+
+def mark_failing(directory, dump, prune, log=print):
+    """Add `dump` to the dumps written while the row count check fails. With `prune`, first delete the ones marked
+    earlier (only files named as this job's dumps), so the newest failing dump is kept next to the good ones and
+    failing nights don't pile up dumps; no unmarked dump is ever deleted here. The record's counts stay."""
+    record = load_record(directory)
+    keep = []
+    for name in record["failing_dumps"]:
+        path = os.path.join(directory, name)
+        if prune and name != dump and DUMP_PATTERN.match(name) and os.path.exists(path):
+            os.remove(path)
+            log(f"Deleted {name}, an earlier dump taken while the row counts were failing")
+        elif not prune and name != dump:
+            keep.append(name)
+    record["failing_dumps"] = keep + [dump]
+    save_record(directory, record)
 
 
 def run_tool(cmd, env, timeout):

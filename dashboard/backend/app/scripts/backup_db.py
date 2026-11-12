@@ -24,9 +24,10 @@
 #                           estimate when large) and compared with the counts at the last good backup, kept in
 #                           .row-counts.json in BACKUP_DIR. A table that is empty, or has more than this many percent
 #                           fewer rows (default 5, see utils/backup.py), fails the run: the dump is still written
-#                           and checked, but retention doesn't run (only the dumps of earlier failing nights are
-#                           deleted, unless --no-prune) and the counts are not recorded, so every night fails until
-#                           someone looks. If the rows were removed on purpose, run once with
+#                           and checked, but retention doesn't run (only the dumps recorded as failing on earlier
+#                           nights are deleted, unless --no-prune) and the counts are not recorded, so every night
+#                           fails until someone looks. Every other successful dump is recorded as good, also with
+#                           the comparison off. If the rows were removed on purpose, run once with
 #                           --accept-row-counts. "off" turns the comparison off.
 #   BACKUP_MIN_FREE_MB      free space to leave on the disk after a dump the size of the last one (default 2048):
 #                           the database usually shares the disk, and must never be the one to run out
@@ -57,8 +58,8 @@ import psycopg2  # noqa: E402
 
 from utils.backup import (  # noqa: E402
     AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, DEFAULT_MAX_SHRINK_PCT, count_rows, csv_setting, dump_name, dumps_in,
-    dumps_to_prune, exclusion_setting, failing_dumps, human_size, last_good_dump, libpq_env, load_row_counts,
-    missing_tables, owned_sequences,
+    dumps_to_prune, exclusion_setting, human_size, libpq_env, load_row_counts, mark_failing, missing_tables,
+    owned_sequences,
     parse_database_url, pg_tool, quoted_pattern, remove_stale_passfiles, row_count_problems, run_tool,
     save_row_counts, stale_partials, table_data_entries, unreadable_relations,
 )
@@ -108,11 +109,11 @@ def shrink_setting():
     return int_setting("BACKUP_MAX_SHRINK_PCT", DEFAULT_MAX_SHRINK_PCT)
 
 
-def check_row_counts(directory, settings, expected, max_shrink_pct, log=print):
+def check_row_counts(directory, settings, expected, max_shrink_pct, log=print, warn=None):
     """Count the `expected` tables' rows now and compare them with the last good backup's. Returns (counts,
     problems), problems being a list of messages (row_count_problems)."""
     try:
-        counts = count_rows(settings, expected)
+        counts = count_rows(settings, expected, warn=warn)
         previous = load_row_counts(directory)
     except psycopg2.Error as e:
         raise BackupError(f"could not count the rows of {', '.join(expected)}: {str(e).strip()}")
@@ -234,7 +235,7 @@ def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=p
     check_free_space(directory, previous_size, min_free_mb)
     counts, problems = None, []
     if max_shrink_pct is not None:
-        counts, problems = check_row_counts(directory, settings, expected, max_shrink_pct, log)
+        counts, problems = check_row_counts(directory, settings, expected, max_shrink_pct, log, warn)
 
     now = now or datetime.now(SITE_TZ)
     final = pathlib.Path(directory) / dump_name(now)
@@ -260,21 +261,21 @@ def back_up(directory, settings, exclude, expected, min_free_mb, now=None, log=p
         if partial.exists():
             partial.unlink()
     log(f"Backup written: {final} ({human_size(final.stat().st_size)})")
-    if counts is not None:
-        if problems and not accept_row_counts:
-            # Only the newest failing dump is kept next to the good ones, so they don't pile up night after night
-            if prune_failing:
-                for name in failing_dumps(os.listdir(directory), last_good_dump(directory), keep=final.name):
-                    os.remove(os.path.join(directory, name))
-                    log(f"Deleted {name}, an earlier dump taken while the row counts were failing")
-            # Not recording these counts keeps the comparison with the last good backup, so the next nights fail too
-            raise RowCountError(
+    if problems and not accept_row_counts:
+        # Marked as failing (and the earlier failing dumps deleted), so they don't pile up night after night. Not
+        # recording these counts keeps the comparison with the last good backup, so the next nights fail too.
+        try:
+            mark_failing(directory, final.name, prune_failing, log)
+        except (OSError, ValueError) as e:
+            warn(f"could not record {final.name} as failing the row count check: {e}")
+        raise RowCountError(
                 f"{'; '.join(problems)}. The dump {final.name} was written and checked, but retention didn't run "
                 f"and these counts were not recorded, so every backup fails until this is looked at. If the rows "
                 f"were removed on purpose, run python scripts/backup_db.py --accept-row-counts once.")
-        if problems:
-            warn(f"row counts accepted with --accept-row-counts: {'; '.join(problems)}")
-        save_row_counts(directory, counts, final.name, now)
+    if problems:
+        warn(f"row counts accepted with --accept-row-counts: {'; '.join(problems)}")
+    # Recorded as good even with the check off (counts None), so the record always names the last good dump
+    save_row_counts(directory, counts, final.name, now)
     return final
 
 
