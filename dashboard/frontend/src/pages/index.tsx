@@ -435,7 +435,6 @@ export default function Dashboard() {
                           }}
                           startDate={startDate}
                           endDate={endDate}
-                          data={[] /* unused for sensors: the backend builds exports */}
                           isSampling={false}
                         />
                       </div>
@@ -607,7 +606,6 @@ export default function Dashboard() {
                         samplingSubFilters={samplingSubFilters}  // ✅ Correct prop name
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
-                        data={samplingData}
                         isSampling={true}
                       />
                       {/* For researchers adding sampling files: the standard format, with example rows */}
