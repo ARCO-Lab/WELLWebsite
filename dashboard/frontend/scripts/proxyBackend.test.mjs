@@ -286,3 +286,27 @@ test("an address may have only so many slow requests in flight; a finished one f
     assert.equal((await get(url)).status, 200);
   });
 });
+
+test("welldash²'s check from inside the server isn't limited; the same header through the public proxy is", async (t) => {
+  setRateLimiter(new RateLimiter({ ...DEFAULT_LIMITS, burst: 1, perMinute: 1 }));
+  const saved = process.env.TRUSTED_PROXY_IPS;
+  t.after(() => {
+    setRateLimiter(null);
+    if (saved === undefined) delete process.env.TRUSTED_PROXY_IPS;
+    else process.env.TRUSTED_PROXY_IPS = saved;
+  });
+  const url = await startProxy(t, "/bad-request");
+  const probe = (u) => new Promise((resolve, reject) => {
+    http.get(u, { headers: { "X-Welldash2-Probe": "1" } }, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode));
+    }).on("error", reject);
+  });
+  const codes = [];
+  await captureErrors(async () => {
+    for (let i = 0; i < 3; i++) codes.push(await probe(url)); // from 127.0.0.1, not a trusted proxy
+    process.env.TRUSTED_PROXY_IPS = "127.0.0.1"; // now the connection is "the public site's proxy"
+    for (let i = 0; i < 2; i++) codes.push(await probe(url));
+  });
+  assert.deepEqual(codes, [400, 400, 400, 400, 429]);
+});

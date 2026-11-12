@@ -17,8 +17,8 @@ import http from "http";
 import type { ClientRequest, IncomingMessage } from "http";
 import { pipeline } from "stream/promises";
 import type { NextApiRequest, NextApiResponse } from "next";
-import { clientIp, logClientIpSample } from "./clientIp.ts";
-import { RateLimiter, isSlow } from "./rateLimit.ts";
+import { clientIp, logClientIpSample, trustedProxies } from "./clientIp.ts";
+import { ClientCounter, RateLimiter, isInternalProbe, isSlow } from "./rateLimit.ts";
 
 // Headers worth forwarding; Content-Disposition and Content-Length matter for CSV downloads, and Cache-Control
 // lets browsers reuse /api/latest and /api/series answers for as long as the backend allows. The body bytes are
@@ -44,12 +44,15 @@ const UNREACHABLE = { error: "The data service didn't respond. Please try again.
 const TIMED_OUT = { error: "The data service took too long to answer. Please try again." };
 const TOO_MANY = { error: "Too many requests from your address. Please wait a moment and try again." };
 
-// One limiter for the process, made on first use so it reads the RATE_LIMIT_* variables at run time.
-let limiter: RateLimiter | null = null;
+// One limiter and one address counter for the process, made on first use so the limiter reads the RATE_LIMIT_*
+// variables at run time. Kept on globalThis: the build may give each API route its own copy of this module, and the
+// limits must be per address across all routes.
+type Shared = { limiter: RateLimiter | null; counter: ClientCounter | null };
+const shared: Shared = ((globalThis as { __wellProxy?: Shared }).__wellProxy ??= { limiter: null, counter: null });
 
 /** Replaces the process's limiter (tests use it to start from fresh counts or other limits). */
 export function setRateLimiter(next: RateLimiter | null): void {
-  limiter = next;
+  shared.limiter = next;
 }
 
 // What the API routes send to the backend: a method, headers and an optional (JSON) string body.
@@ -69,11 +72,16 @@ export async function proxyToBackend(
   // The backend has no public port, so this header (one entry, replacing any the browser sent) is the only
   // client address it sees. See lib/clientIp.ts for which address that is.
   const headers: Record<string, string> = { ...init.headers };
-  const ip = clientIp(req);
+  const trusted = trustedProxies();
+  const ip = clientIp(req, trusted);
   logClientIpSample(req, ip);
+  shared.counter ??= new ClientCounter(Date.now());
+  const counted = shared.counter.record(ip, Date.now());
+  if (counted) console.info(counted);
 
-  limiter ??= new RateLimiter();
-  const verdict = limiter.check(ip, isSlow(path, init.method));
+  shared.limiter ??= new RateLimiter();
+  const probe = isInternalProbe(req.headers, clientIp(req, new Set()), trusted);
+  const verdict = probe ? { ok: true as const, release: () => {} } : shared.limiter.check(ip, isSlow(path, init.method));
   if (!verdict.ok) {
     res.setHeader("Retry-After", String(verdict.retryAfterS));
     return res.status(429).json(TOO_MANY);

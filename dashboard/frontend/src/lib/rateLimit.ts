@@ -8,6 +8,12 @@
 // zoomed quickly) pass while a sustained flood gets 429s. On top of that, an address may have only so many slow
 // requests in flight at once. The limits are generous for one person; addresses shared by many people (a campus NAT)
 // are why they are this high. Each can be changed with an environment variable (see limitsFromEnv); 0 turns one off.
+//
+// welldash²'s uptime checks (backend app/ops/probe.py) send the X-Welldash2-Probe header and are never limited, but
+// only when they come straight from inside the server's networks (isInternalProbe): anyone can send the header.
+//
+// ClientCounter logs, at most every 10 minutes, how many different addresses made requests: if it stays at 1 while
+// the site has visitors, every visitor is seen as the same address and shares one budget (see lib/clientIp.ts).
 
 export type Limits = {
   burst: number; // requests one address may make at once
@@ -17,7 +23,58 @@ export type Limits = {
   slowConcurrent: number; // slow requests one address may have in flight
 };
 
-export const DEFAULT_LIMITS: Limits = { burst: 600, perMinute: 600, slowBurst: 30, slowPerMinute: 30, slowConcurrent: 4 };
+export const DEFAULT_LIMITS: Limits = {
+  burst: 600, perMinute: 600, slowBurst: 120, slowPerMinute: 120, slowConcurrent: 12,
+};
+
+// The header welldash²'s uptime checks send (backend utils/traffic.py PROBE_HEADER), lower-cased as Node gives it.
+export const PROBE_HEADER = "x-welldash2-probe";
+
+// Loopback and private (RFC 1918, IPv6 unique-local) addresses: the server itself and its Docker networks.
+const INTERNAL = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^::1$/, /^f[cd][0-9a-f]{2}:/i];
+
+/** Whether a request is welldash²'s uptime check: it carries PROBE_HEADER and its connection comes from inside the
+ *  server's networks, not through a trusted reverse proxy (the public site), so the header can't be used from outside
+ *  to get around the limits. `peer` is the connection's address, normalized as clientIp does. */
+export function isInternalProbe(headers: Record<string, string | string[] | undefined>, peer: string,
+  trusted: Set<string>): boolean {
+  if (!headers[PROBE_HEADER] || !peer || trusted.has(peer)) return false;
+  // Not a Docker network's gateway (x.x.x.1): when Docker's userland proxy forwards the published port, outside
+  // connections arrive from there.
+  if (!peer.startsWith("127.") && /^\d+\.\d+\.\d+\.1$/.test(peer)) return false;
+  return INTERNAL.some((re) => re.test(peer));
+}
+
+/** Counts the different client addresses seen in each window of `windowMs`, and once a window has ended, on the next
+ *  request, gives the line to log: counts only, never an address. At most `cap` addresses are remembered per window. */
+export class ClientCounter {
+  private seen = new Set<string>();
+  private requests = 0;
+  private since: number;
+  private windowMs: number;
+  private cap: number;
+
+  constructor(now: number, windowMs = 10 * 60_000, cap = 100_000) {
+    this.since = now;
+    this.windowMs = windowMs;
+    this.cap = cap;
+  }
+
+  record(ip: string, now: number): string | null {
+    let line: string | null = null;
+    if (now - this.since >= this.windowMs) {
+      const n = this.seen.size >= this.cap ? `${this.cap}+` : String(this.seen.size);
+      const minutes = Math.round((now - this.since) / 60_000);
+      line = `[client-ip] ${n} different client addresses in ${this.requests} API requests over the last ${minutes} min`;
+      this.seen.clear();
+      this.requests = 0;
+      this.since = now;
+    }
+    this.requests++;
+    if (ip && this.seen.size < this.cap) this.seen.add(ip);
+    return line;
+  }
+}
 
 // Backend paths (without the query) whose requests count as slow, by method.
 const SLOW: Record<string, string[]> = {
