@@ -15,7 +15,14 @@ The VM runs `main`. On the VM, `./deploy.sh`:
 - checks the site: `/api/latest`, the dashboard home page (both on port 8081) and the WordPress home page (port 8080).
   If `worker` or `export_worker` was rebuilt, it also checks a minute later that the container is still running and
   hasn't restarted (compose restarts crashing workers, so "running" alone proves nothing);
-- rolls back to the previous commit if any check fails.
+- rolls back to the previous commit if any check fails;
+- after a healthy deploy that rebuilt images, frees disk: it removes dangling images (old builds no longer tagged),
+  except the ones the containers ran just before this deploy, which stay as rollback points, and trims the build
+  cache to its 5 GB most recently used (`docker builder prune --reserved-space 5GB`). Volumes are never pruned. The
+  log line "pruned ..." says how many images went and how much free disk changed; a failed prune is only logged.
+
+Its lock, the last problem it reported and the last commit it rolled back are kept in `.deploy-state/` next to the
+script (git-ignored), not in `/tmp`, which RHEL empties of files older than 10 days.
 
 If the site is already unhealthy before a deploy, `--auto` doesn't deploy (so the new commit isn't blamed and rolled
 back); `./deploy.sh` by hand deploys anyway and doesn't roll back.

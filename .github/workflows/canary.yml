@@ -24,20 +24,22 @@ jobs:
     outputs:
       report: ${{ steps.report.outputs.report }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.11"
 
-      # Only what the canary imports, plus requests' own dependencies, at the versions in requirements.txt
-      # (the full set needs PostgreSQL headers).
+      # Only what the canary imports (the full set needs PostgreSQL headers), with requirements.txt as the
+      # constraints file, so these and requests' own dependencies get exactly the versions the backend image pins
+      # and can't drift from it. pip refuses extras in a constraints file, so sentry-sdk[...] loses its brackets.
       - name: Install requests and python-dotenv
-        run: >-
-          pip install "requests==2.33.0" "urllib3==2.8.0" "certifi==2026.10.23" "idna==3.15"
-          "charset-normalizer==3.4.6" "python-dotenv==1.2.2"
+        run: |
+          sed 's/\[[^]]*\]//' dashboard/backend/requirements.txt > "$RUNNER_TEMP/constraints.txt"
+          pip install -c "$RUNNER_TEMP/constraints.txt" requests python-dotenv
+          pip check
 
       - name: Check each vendor API
         working-directory: dashboard/backend
@@ -87,7 +89,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
