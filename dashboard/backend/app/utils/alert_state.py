@@ -1,8 +1,9 @@
 """Database reads and writes of the email alerts' state (tables vendor_status and alert_incidents, db/models.py).
 
-record_vendor_result is called by the ingestion (scripts/inject_from_api.py) after each vendor call; it never raises,
-so a missing table (migration not applied yet) or a database hiccup can't break ingestion. The readers are used by
-scripts/check_alerts.py, GET /health/data and the daily digest. Call them inside a Flask app context.
+record_vendor_result is called by the ingestion (scripts/inject_from_api.py) after each vendor call, and
+record_fetched_until once that call's readings are stored; neither raises, so a missing table (migration not applied
+yet) or a database hiccup can't break ingestion. The readers are used by scripts/check_alerts.py, GET /health/data,
+the daily digest and (fetched_until) the ingestion. Call them inside a Flask app context.
 """
 from datetime import datetime, timezone
 
@@ -12,9 +13,10 @@ from utils.alerts import aware, describe_vendor_error
 from utils.timezone import EST_TZ
 
 
-def record_vendor_result(source, error=None, now=None, log=print):
+def record_vendor_result(source, error=None, now=None, log=print, skipped=None):
     """Record the outcome of one vendor call: success (error None) or the exception it failed with. Written in its
-    own transaction, so it neither commits nor rolls back the caller's session. True if it was recorded."""
+    own transaction, so it neither commits nor rolls back the caller's session. True if it was recorded.
+    `skipped` (on success) describes the records of the answer that couldn't be read, None when all were."""
     now = now or datetime.now(timezone.utc)
     table = VendorStatus.__table__
     try:
@@ -22,7 +24,7 @@ def record_vendor_result(source, error=None, now=None, log=print):
             row = conn.execute(table.select().where(table.c.source == source)).mappings().first()
             if error is None:
                 values = {"last_attempt_at": now, "last_success_at": now, "consecutive_failures": 0,
-                          "failing_since": None}
+                          "failing_since": None, "last_skipped": skipped}
             else:
                 kind, status, text = describe_vendor_error(error)
                 failures = (row["consecutive_failures"] if row else 0) + 1
@@ -36,6 +38,33 @@ def record_vendor_result(source, error=None, now=None, log=print):
         return True
     except Exception as e:   # the type only: a connection error's text can include the database URL
         log(f"[WARN] Couldn't record the {source} call outcome for the alerts: {type(e).__name__}")
+        return False
+
+
+def fetched_until(source, log=print):
+    """The end (aware UTC) of the newest `source` request whose readings were all stored, or None when none is
+    recorded or it can't be read. Read on a connection of its own, so a failure leaves the caller's session usable;
+    the ingestion then falls back to starting from the stored readings."""
+    table = VendorStatus.__table__
+    try:
+        with db.engine.connect() as conn:
+            return aware(conn.execute(table.select().with_only_columns(table.c.fetched_until)
+                                      .where(table.c.source == source)).scalar())
+    except Exception as e:   # the type only, as above
+        log(f"[WARN] Couldn't read where the last {source} fetch ended: {type(e).__name__}")
+        return None
+
+
+def record_fetched_until(source, until, log=print):
+    """Record that every reading `source` returned up to `until` is stored. Updates the row record_vendor_result
+    wrote for this call; never raises (the next run then starts from the previous mark, which is safe)."""
+    table = VendorStatus.__table__
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(table.update().where(table.c.source == source).values(fetched_until=until))
+        return True
+    except Exception as e:
+        log(f"[WARN] Couldn't record where the {source} fetch ended: {type(e).__name__}")
         return False
 
 
