@@ -122,18 +122,20 @@ def catch_up(left_out, rows):
     return (min(left_out[g] for g in back), back) if back else (None, [])
 
 
-def read_answer(source, parse, error=None):
+def read_answer(source, parse, error=None, skipped=None):
     """Parse a vendor answer with parse(skipped) -> rows, then record the call's outcome for the alerts: `error` if
     the call failed, a failure if records came back but none could be read (the vendor changed its format, say),
     else success, noting any records skipped. Recorded only once the answer is read, so an answer we can't read is
-    never reported as "vendor OK, check the sensor". Returns (rows, the error to fail the run with, or None)."""
-    skipped = SkippedRecords(source)
+    never reported as "vendor OK, check the sensor". Logs the skipped records in one line. Returns (rows, the error
+    to fail the run with, or None). `skipped` (a SkippedRecords) may be passed to keep counting into it afterwards."""
+    skipped = SkippedRecords(source) if skipped is None else skipped
     try:
         rows = parse(skipped)
     except Exception as e:
         record_vendor_result(source, error or UnreadableRecords(f"{source}'s answer couldn't be read "
                                                                 f"({type(e).__name__})"))
         raise
+    skipped.report()
     if error is None and skipped.count and not rows:
         error = UnreadableRecords(f"none of {source}'s records could be read: {skipped.summary()}")
     record_vendor_result(source, error, skipped=skipped.summary())
@@ -148,8 +150,9 @@ def inject_licor(tz, now):
     except Exception as e:
         record_vendor_result("LI-COR", e)
         raise
-    rows, error = read_answer("LI-COR", lambda skipped: licor_rows(
-        records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, skipped))
+    skipped = SkippedRecords("LI-COR")
+    rows, error = read_answer("LI-COR", lambda counter: licor_rows(
+        records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, counter), skipped=skipped)
     if error is not None:
         raise error
     gap_start, back = catch_up(left_out, rows)
@@ -160,7 +163,20 @@ def inject_licor(tz, now):
         except Exception as e:
             record_vendor_result("LI-COR", e)
             raise
-        for key, row in licor_rows(gap, {"Weather", "Logger"}, weather_service.get_logger_id(), tz).items():
+        before = skipped.count
+        gap_rows = licor_rows(gap, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, skipped)
+        if skipped.count > before:
+            skipped.report()   # the run's total, now including the gap
+            if not gap_rows:
+                # Nothing in the gap could be read: fail as read_answer does, so nothing is stored, the mark stays
+                # and the next run retries the backlog.
+                error = UnreadableRecords(f"none of LI-COR's records from {gap_start:%Y-%m-%d %H:%M} to "
+                                          f"{start:%Y-%m-%d %H:%M} UTC (a silent group's gap) could be read: "
+                                          f"{skipped.summary()}")
+                record_vendor_result("LI-COR", error)
+                raise error
+            record_vendor_result("LI-COR", skipped=skipped.summary())
+        for key, row in gap_rows.items():
             rows.setdefault(key, row)
         print(f"[INFO] LI-COR: {', '.join(back)} reporting again; also fetched "
               f"{gap_start:%Y-%m-%d %H:%M} to {start:%Y-%m-%d %H:%M} UTC: {len(gap)} records")

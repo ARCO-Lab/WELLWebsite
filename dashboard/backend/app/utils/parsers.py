@@ -257,10 +257,11 @@ def to_row(obj, tz):
 def licor_rows(records, groups, weather_station, tz, skipped=None) -> dict:
     """Rows from LI-COR records for the given groups ("Weather" and/or "Logger"), keyed by unique key.
     Prints one [ERROR] line per sensor whose records were skipped for an unexpected unit, and one [WARN] line for
-    the records that couldn't be read (counted in `skipped`, a SkippedRecords, when given)."""
+    the records that couldn't be read (a caller that passes its own counter, `skipped`, reports it instead)."""
     rows = {}
     wrong_units = {}
-    skipped = SkippedRecords("LI-COR") if skipped is None else skipped
+    own = skipped is None   # a caller that passes its own counter reports it
+    skipped = SkippedRecords("LI-COR") if own else skipped
     for entry in records:
         try:
             is_logger = str(entry.get("sensor_sn", "")).startswith(LOGGER_PREFIX)
@@ -283,15 +284,18 @@ def licor_rows(records, groups, weather_station, tz, skipped=None) -> dict:
               f"another spelling of the same unit) in utils/parsers.py "
               f"(and convert if needed), then run scripts/licor_backfill.py --days N for the skipped period: "
               f"the 10-minute ingestion won't fetch it again, since the other sensors' readings move its start.")
-    skipped.report()
+    if own:
+        skipped.report()
     return rows
 
 
 def quality_rows(entries, station_id, tz, skipped=None) -> dict:
     """Rows from WQData entries, keyed by unique key. An entry without a readable timestamp is skipped whole, a
-    malformed reading (no parameterId, say) on its own; each is counted in `skipped` and reported in one [WARN] line."""
+    malformed reading (no parameterId, say) on its own; each is counted and reported in one [WARN] line, by
+    the caller when it passes its own counter (`skipped`)."""
     rows = {}
-    skipped = SkippedRecords("WQData") if skipped is None else skipped
+    own = skipped is None
+    skipped = SkippedRecords("WQData") if own else skipped
     for entry in entries:
         try:
             objs = parse_quality_entry(entry, station_id, skipped)
@@ -301,5 +305,6 @@ def quality_rows(entries, station_id, tz, skipped=None) -> dict:
         for obj in objs:
             key, row = to_row(obj, tz)
             rows.setdefault(key, row)
-    skipped.report()
+    if own:
+        skipped.report()
     return rows

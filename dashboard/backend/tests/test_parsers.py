@@ -152,6 +152,9 @@ class BadRecords(unittest.TestCase):
         skipped = parsers.SkippedRecords(args[-1])
         with contextlib.redirect_stdout(out):
             rows = fn(*args[:-1], skipped=skipped)
+        self.assertEqual(out.getvalue(), "")   # a caller that passes its own counter reports it
+        with contextlib.redirect_stdout(out):
+            skipped.report()
         return rows, skipped, out.getvalue()
 
     def test_licor_time_needs_an_offset(self):
