@@ -32,7 +32,7 @@ flowchart LR
   backend --> nxt["dashboard<br/>Next.js"]
   nxt --> browser["Browser"]
   wp["WordPress<br/>MySQL"] -->|iframe| browser
-  ops["welldash²<br/>ops"] --> pg
+  pg --> ops["welldash²<br/>ops"]
   subgraph mon["Monitoring"]
     sentry["Sentry"]
     hc["Healthchecks"]
@@ -49,7 +49,7 @@ How data flows:
 5. **Downloads.** A CSV export of up to `EXPORT_SYNC_ROW_THRESHOLD` readings is built while the visitor waits. A larger one is queued in Redis and built by the `export_worker` container (Celery), whose built-in beat scheduler deletes expired files every hour.
 6. **Monitoring.** Errors go to Sentry and job heartbeats to Healthchecks.io, two outside services drawn to the side since the worker, the backend, the export worker and the dashboard all report to them; also, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
 7. **WordPress.** The `wordpress` container (its data in MySQL, the `db` container) serves the home page at `well.mcmaster.ca`, which shows the dashboard in an iframe; the browser loads that iframe from `welldash.mcmaster.ca` like any other visit.
-8. **welldash².** The `ops` container is a private operations dashboard, reachable only on McMaster's network. It reads PostgreSQL and checks the dashboard, the data API and WordPress once a minute; see [welldash²](#welldash²-operations-dashboard).
+8. **welldash².** The `ops` container is a private operations dashboard, reachable only on McMaster's network. It reads PostgreSQL and checks the dashboard, the data API and WordPress once a minute. When their read-only keys are set, it also reads unresolved errors from the Sentry API and the job heartbeats' states from the Healthchecks.io API, for its Overview page; see [welldash²](#welldash²-operations-dashboard).
 
 Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
