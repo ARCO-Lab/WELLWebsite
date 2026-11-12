@@ -1,10 +1,12 @@
 # This file defines the /api/recent route: the latest creek sampling results, for the dashboard's sampling cards.
 # For each measurement type it returns every row taken at that type's latest recorded_at (usually one sampling day,
-# so one row per site). recorded_at is naive America/Toronto wall time.
+# so one row per site), ordered by time, then site, then parameter (db/ordering.py). recorded_at is naive
+# America/Toronto wall time.
 
 from flask import jsonify
 from db.database import db
 from db.models import SamplingMeasurement
+from db.ordering import sampling_order
 
 def register_recent_route(app):
     @app.route("/api/recent", methods=["GET"])
@@ -34,7 +36,7 @@ def register_recent_route(app):
                 "unit": r.unit,
                 "recorded_at": r.recorded_at.isoformat()
             }
-            for r in query.all()
+            for r in query.order_by(*sampling_order(db.engine.dialect.name)).all()
         ]
 
         return jsonify(results)
