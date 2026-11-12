@@ -30,8 +30,7 @@
       "Bash(mkdir *)", "Bash(jq *)", "Bash(sleep *)", "Bash(timeout *)"
     ],
     "deny": [
-      "Bash(git push * main)", "Bash(git push * main:*)", "Bash(git push *:main*)", "Bash(git push * HEAD:main*)",
-      "Bash(git push * refs/heads/main*)", "Bash(git push *:refs/heads/main*)", "Bash(git push * :*)",
+      "Bash(git push * main)", "Bash(git push * refs/heads/main*)", "Bash(git push *:*)",
       "Bash(git push --force*)", "Bash(git push -f*)",
       "Bash(git push * --force*)", "Bash(git push * -f*)", "Bash(git push * +*)", "Bash(git push * --delete*)",
       "Bash(git push * --mirror*)", "Bash(git rebase *)", "Bash(git commit --amend*)", "Bash(git commit * --amend*)",

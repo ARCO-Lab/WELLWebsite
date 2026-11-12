@@ -38,6 +38,18 @@ jobs:
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
     steps:
+      # A scheduled run has no inputs and uses 3. A run by hand must ask for at least one: 0 would read as unset
+      # below ("|| 3"), so it is refused here; use dry run to change nothing.
+      - name: Check the limit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          MAX_PRS: ${{ inputs.max_prs }}
+        run: |
+          if ! [[ "$MAX_PRS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::max prs must be a whole number of 1 or more (got '$MAX_PRS'); to change nothing, tick dry run"
+            exit 1
+          fi
+
       - name: Check the secrets
         id: mode
         env:
