@@ -50,6 +50,7 @@ def run_in_background(job, log=print, name=None):
         return thread
 
     start.__name__ = f"run_{label}"
+    start.is_running = lock.locked   # read by the scheduler's shutdown, to wait for the job to finish
     return start
 
 
@@ -67,8 +68,20 @@ def run_bounded(cmd, timeout, grace=10):
     as its own traceback and as the scheduler's CalledProcessError.
     """
     env = {**os.environ, "SENTRY_DSN": ""}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-                            env=env)
+    with _groups_lock:
+        if _stopping.is_set():   # the worker is shutting down (stop_subprocesses): start nothing new
+            raise RuntimeError(f"not running {' '.join(map(str, cmd))}: the worker is shutting down")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True, env=env)
+        _groups.add(proc.pid)
+    try:
+        return _wait_bounded(proc, cmd, timeout, grace)
+    finally:
+        with _groups_lock:
+            _groups.discard(proc.pid)
+
+
+def _wait_bounded(proc, cmd, timeout, grace):
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -83,6 +96,34 @@ def run_bounded(cmd, timeout, grace=10):
     if proc.returncode:
         raise subprocess.CalledProcessError(proc.returncode, cmd, output=out, stderr=err)
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+# Process groups of the commands run_bounded is running now, so a worker that is stopping can end them
+_groups = set()
+_groups_lock = threading.Lock()
+_stopping = threading.Event()
+
+
+def stop_subprocesses(grace=10):
+    """For a worker that is shutting down: refuse new run_bounded commands, send SIGTERM to the process group of
+    each one running now, and SIGKILL any group still there after `grace` seconds. The jobs that ran them see
+    them fail (CalledProcessError with exit code -15) and log it. Returns how many groups were signalled."""
+    with _groups_lock:
+        _stopping.set()
+        groups = list(_groups)
+    for pgid in groups:
+        _signal_group(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        with _groups_lock:
+            if not _groups:
+                break
+        time.sleep(0.2)
+    with _groups_lock:
+        left = list(_groups)
+    for pgid in left:
+        _signal_group(pgid, signal.SIGKILL)
+    return len(groups)
 
 
 def _signal_group(pgid, sig):

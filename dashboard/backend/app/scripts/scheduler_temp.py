@@ -11,14 +11,18 @@
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
 # started again, so every job runs once per slot. It logs to files under logs/.
 # When SENTRY_DSN is set, every failure it logs is also reported to Sentry, tagged with the job (utils/sentry.py).
+# On SIGTERM (docker compose stop, or a deploy recreating the worker) it starts nothing new, gives running jobs
+# STOP_WAIT_S to finish, then stops their subprocesses and exits (shut_down).
 
 import schedule
 import time
 import sys
 import builtins
+import signal
 import subprocess
 import os
 import pathlib
+import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -32,10 +36,11 @@ if __name__ == "__main__":
 
 from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
-    run_in_background, run_bounded, download_status,
+    run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
 )
 from utils.heartbeat import ping_heartbeat  # noqa: E402
+from utils.worklog import file_logger  # noqa: E402
 from utils import sharepoint  # noqa: E402
 import check_alerts  # noqa: E402
 
@@ -80,61 +85,70 @@ DIGEST_HOUR = os.getenv("DIGEST_HOUR", "7").strip()
 # Set WORKER_LOG_TO_STDOUT=1|true to enable
 LOG_TO_STDOUT = os.getenv("WORKER_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on")
 
-# Override print to add timestamps for API scheduler (file; optional stdout)
-def timestamped_print(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    # Always write to file
-    with open(log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    # Optionally mirror to stdout for debugging/visibility
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+# One print-like function per log file: a timestamp on each line, rotation by size (5 MB, 3 older copies kept), and
+# a line that can't be written is dropped rather than stopping the job (utils/worklog.py).
+timestamped_print = file_logger(log_file_path, LOG_TO_STDOUT)                    # API ingestion (and plain print)
+timestamped_print_download = file_logger(download_log_file_path, LOG_TO_STDOUT)  # weekly Borealis download
+timestamped_print_upload = file_logger(upload_log_file_path, LOG_TO_STDOUT)      # monthly Borealis/SharePoint upload
+timestamped_print_digest = file_logger(digest_log_file_path, LOG_TO_STDOUT)      # daily digest
+timestamped_print_alerts = file_logger(alerts_log_file_path, LOG_TO_STDOUT)      # alert check
+timestamped_print_backup = file_logger(backup_log_file_path, LOG_TO_STDOUT)      # nightly backup
 
-# Override print for download scheduler
-def timestamped_print_download(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(download_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+# Touched by the scheduler loop every ALIVE_EVERY_S; docker-compose.yml's healthcheck reports the worker unhealthy
+# when it is older than a few minutes (the loop has stopped or hangs). Outside logs/, so nothing on the host sees it.
+ALIVE_PATH = os.getenv("WORKER_ALIVE_PATH", "/tmp/well-scheduler.alive")
+ALIVE_EVERY_S = 30
 
-# Override print for upload scheduler
-def timestamped_print_upload(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(upload_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+# On SIGTERM, how long running jobs get to finish before their subprocesses are stopped, and how long those get to
+# exit after SIGTERM. Together with a few seconds for the jobs to log it, under docker-compose.yml's
+# stop_grace_period for the worker (60 s), after which Docker kills everything.
+STOP_WAIT_S = 40
+STOP_SUBPROCESS_GRACE_S = 10
+STOP_FINAL_WAIT_S = 5
 
-# Override print for the daily digest
-def timestamped_print_digest(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(digest_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+stopping = threading.Event()   # set by the SIGTERM handler; the loop then starts nothing new
 
-# Override print for the alert check
-def timestamped_print_alerts(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(alerts_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
 
-# Override print for the nightly backup
-def timestamped_print_backup(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(backup_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+def request_stop(signum, frame):
+    """SIGTERM/SIGINT handler: only sets `stopping`, so the loop ends after its current one-second sleep."""
+    stopping.set()
+
+
+def touch_alive(path=None):
+    """Update the alive file's time (creating it if needed). Never raises: the healthcheck reports a failure."""
+    try:
+        with open(path or ALIVE_PATH, "a"):
+            pass
+        os.utime(path or ALIVE_PATH)
+    except OSError:
+        # the file then goes stale and the healthcheck reports the worker unhealthy, as it should
+        pass
+
+
+def shut_down(jobs, log, wait_s=STOP_WAIT_S, grace_s=STOP_SUBPROCESS_GRACE_S, final_wait_s=STOP_FINAL_WAIT_S):
+    """Let the running jobs in `jobs` (run_in_background wrappers) finish within `wait_s` seconds. Any still going
+    are abandoned: their subprocesses (backup, upload, download, digest) get SIGTERM, then SIGKILL after `grace_s`,
+    and the jobs get `final_wait_s` more to log the result and ping their heartbeat. Ingestion runs in this process,
+    so an unfinished run simply ends with it; its next run starts from the newest stored reading. Returns the labels
+    of the jobs that were still running at the end."""
+    def running():
+        return [job.__name__.removeprefix("run_") for job in jobs if job.is_running()]
+
+    deadline = time.monotonic() + wait_s
+    if running():
+        log(f"[shutdown] Waiting up to {wait_s} s for: {', '.join(running())}")
+    while running() and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if running():
+        log(f"[shutdown] Still running after {wait_s} s, stopping: {', '.join(running())}")
+        stopped = stop_subprocesses(grace_s)
+        log(f"[shutdown] Sent SIGTERM to {stopped} subprocess group(s)")
+        deadline = time.monotonic() + final_wait_s
+        while running() and time.monotonic() < deadline:
+            time.sleep(0.5)
+    left = running()
+    log(f"[shutdown] Exiting{'; abandoned: ' + ', '.join(left) if left else ''}")
+    return left
 
 def run_download_data():
     """Run download_data.py. It downloads every new Borealis file and imports each one itself
@@ -414,10 +428,16 @@ def alert_check_job():
 
 if __name__ == "__main__":
     # Main entry point: one scheduler loop for all jobs
-    # Ensure log directories exist
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-    os.makedirs(os.path.dirname(download_log_file_path), exist_ok=True)
-    os.makedirs(os.path.dirname(upload_log_file_path), exist_ok=True)
+    # Ensure the log folder exists; if it can't be made, the jobs still run and their lines are dropped
+    try:
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+    except OSError as e:
+        sys.stderr.write(f"[scheduler] can't create {os.path.dirname(log_file_path)}: {e}\n")
+
+    # docker compose stop (and every deploy that recreates the worker) sends SIGTERM; Ctrl-C sends SIGINT
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    touch_alive()
 
     # Save original print and override for API scheduler
     builtins._original_print = builtins.print
@@ -466,9 +486,13 @@ if __name__ == "__main__":
     # Catch up on vendor data right away after a restart; the Borealis jobs wait for their slots.
     api_run()
 
-    try:
-        while True:
-            scheduler.run_pending()
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Shutting down the scheduler...")
+    last_alive = time.monotonic()
+    while not stopping.is_set():
+        scheduler.run_pending()
+        if time.monotonic() - last_alive >= ALIVE_EVERY_S:
+            touch_alive()
+            last_alive = time.monotonic()
+        time.sleep(1)
+
+    print("Shutting down the scheduler (stop requested); starting no new jobs")
+    shut_down([api_run, download_run, upload_run, digest_run, backup_run], print)
