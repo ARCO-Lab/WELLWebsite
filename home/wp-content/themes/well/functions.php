@@ -274,6 +274,48 @@ function well_media_img($name, $widths, $size, $attrs = array()) {
 }
 
 /**
+ * The query behind every list of news on the site: the home page's "Latest News" carousel,
+ * the News page and the "Related News" list under a post. A news item is any published post,
+ * newest first, whatever its category, so a post shows up in all three places as soon as it
+ * is published (scheduled posts appear on their date, drafts never do).
+ *
+ * $count:   how many posts to show.
+ * $exclude: post IDs to leave out, e.g. the post being read.
+ */
+function well_news_query($count, $exclude = array()) {
+    return new WP_Query(array(
+        'post_type'           => 'post',
+        'post_status'         => 'publish',
+        'posts_per_page'      => (int) $count,
+        'post__not_in'        => array_map('intval', (array) $exclude),
+        'ignore_sticky_posts' => true,
+        'no_found_rows'       => true, // no pagination, so skip counting every post
+    ));
+}
+
+/**
+ * Print the current post's featured image at the top of a news card, cropped to 16:9 by the
+ * card-img-mask classes. Prints nothing when the post has no featured image, so the card
+ * keeps its text-only layout. The image is decorative: the card's title link right below it
+ * names the post, so it gets an empty alt and screen readers skip it.
+ *
+ * Uses the media library's copies (srcset and sizes), so a phone downloads a small one.
+ */
+function well_news_card_image() {
+    if (!has_post_thumbnail()) {
+        return;
+    }
+    echo '<div class="card-img-mask card-img-mask-top">';
+    the_post_thumbnail('medium_large', array(
+        'alt'     => '',
+        'class'   => 'card-img-top',
+        'sizes'   => '(min-width: 992px) 350px, (min-width: 768px) 50vw, 100vw',
+        'loading' => 'lazy',
+    ));
+    echo '</div>';
+}
+
+/**
  * Add McMaster navigation menu items (as used in the original site)
  */
 function well_get_mcmaster_nav_menu() {

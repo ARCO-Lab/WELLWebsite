@@ -66,20 +66,10 @@ if ( have_posts() ) :
                     </section>
 
                     <?php
-                    // Related Posts Query
-                    $related_args = array(
-                        'post_type' => 'post',
-                        'posts_per_page' => 3,
-                        'post__not_in' => array( get_the_ID() ),
-                        'tax_query' => array(
-                            array(
-                                'taxonomy' => 'category',
-                                'field' => 'slug',
-                                'terms' => 'news',
-                            ),
-                        ),
-                    );
-                    $related_query = new WP_Query( $related_args );
+                    // Related News: the 3 newest other published posts. This used to ask for the
+                    // category "news", which the site doesn't use (posts are filed under any
+                    // category), so the list never appeared. well_news_query() is in functions.php.
+                    $related_query = well_news_query( 3, array( get_the_ID() ) );
                     if ( $related_query->have_posts() ) :
                     ?>
                     <section class="section-padding">
@@ -93,6 +83,7 @@ if ( have_posts() ) :
                                         <div class="card card-shadow border-top-0">
                                             <div class="card-main border-top h-100">
                                                 <div class="card border-0 no-shadow card-hover">
+                                                    <?php well_news_card_image(); ?>
                                                     <div class="card-body pb-0">
                                                         <h3 class="card-title">
                                                             <a href="<?php the_permalink(); ?>" target="_self">

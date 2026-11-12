@@ -30,16 +30,15 @@ get_header();
       <h2 class="sr-only">News Listing</h2>
       <div class="row row-eq-height">
         <?php
-        $news_query = new WP_Query([
-          'post_type' => 'post',
-          'posts_per_page' => 9, // Change as needed
-        ]);
+        // The latest 9 published posts (well_news_query() in functions.php explains what counts as news)
+        $news_query = well_news_query(9);
         if ($news_query->have_posts()) :
           while ($news_query->have_posts()) : $news_query->the_post(); ?>
             <div class="col-lg-4 col-md-6">
               <div class="card card-shadow border-top-0">
                 <div class="card-main border-top h-100">
                   <div class="card border-0 no-shadow card-hover">
+                    <?php well_news_card_image(); ?>
                     <div class="card-body pb-0">
                       <h3 class="card-title">
                         <a href="<?php the_permalink(); ?>">
