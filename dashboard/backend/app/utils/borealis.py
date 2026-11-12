@@ -9,7 +9,9 @@ Settings (dashboard/backend/app/.env on the VM; config.py reads them):
   BOREALIS_API_TOKEN               the API token of the account that uploads and publishes
   BOREALIS_UPLOAD_PERSISTENT_ID    the sensor dataset the monthly upload adds files to, e.g. doi:10.5683/SP3/ABCDEF
   BOREALIS_SAMPLING_PERSISTENT_ID  the sampling dataset the weekly download imports from
-  BOREALIS_UPLOAD_DATAVERSE, BOREALIS_SAMPLING_DATAVERSE   the aliases of the collections holding them (preflight only)
+  BOREALIS_UPLOAD_DATAVERSE, BOREALIS_SAMPLING_DATAVERSE   the aliases of the collections holding them (preflight only).
+                                   They don't default to BOREALIS_URL's alias: the datasets sit in sub-collections of
+                                   it, and the preflight already checks that alias as the parent collection.
 The older DEMO_BOREALIS_URL, DEMO_BOREALIS_WC_PERSISTENT_ID and DEMO_BOREALIS_AW_PERSISTENT_ID are still read when
 the new names are unset.
 
@@ -81,6 +83,21 @@ def base_url(url):
     if not parts.scheme or not parts.netloc:
         raise ValueError(f"BOREALIS_URL must be a URL such as https://borealisdata.ca, got {url!r}")
     return f"{parts.scheme}://{parts.netloc}"
+
+
+_logged_servers = set()
+
+
+def api_base(url, log=print):
+    """base_url(url), and the first time each server is used in this process, a log line naming it (and saying when
+    a collection page's path was dropped), so a job's log shows which Borealis host its calls go to."""
+    server = base_url(url)
+    if server not in _logged_servers:
+        _logged_servers.add(server)
+        alias = collection_alias(url)
+        note = f" (BOREALIS_URL is the page of collection {alias}; the API is at the server root)" if alias else ""
+        log(f"Borealis: using the API at {server}{note}")
+    return server
 
 
 def collection_alias(url):

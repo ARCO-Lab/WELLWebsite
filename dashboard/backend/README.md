@@ -220,11 +220,11 @@ imports it into the Ancaster Watershed tab.
 
 | Variable | What |
 |---|---|
-| `BOREALIS_URL` | `https://borealisdata.ca`. A collection page such as `https://borealisdata.ca/dataverse/WELL` also works: the jobs use only its server part, and the preflight checks the collection `WELL`. |
-| `BOREALIS_API_TOKEN` | The API token of the account that uploads and publishes (it needs the Curator role on the upload dataset or its collection). |
+| `BOREALIS_URL` | `https://borealisdata.ca`. A collection page such as `https://borealisdata.ca/dataverse/WELL` also works: the jobs and the canary use only its server part (the upload and download log the server they use), and the preflight checks the collection `WELL`. |
+| `BOREALIS_API_TOKEN` | The API token of the account that uploads and publishes (it needs the Curator role on the upload dataset or its collection). It must be made on the same server as `BOREALIS_URL`: demo and production tokens are separate. |
 | `BOREALIS_UPLOAD_PERSISTENT_ID` | The sensor dataset, e.g. `doi:10.5683/SP3/ABCDEF` (dataset page > Metadata > Persistent Identifier). |
 | `BOREALIS_SAMPLING_PERSISTENT_ID` | The sampling dataset. |
-| `BOREALIS_UPLOAD_DATAVERSE`, `BOREALIS_SAMPLING_DATAVERSE` | The aliases of the two collections. Only the preflight uses them. |
+| `BOREALIS_UPLOAD_DATAVERSE`, `BOREALIS_SAMPLING_DATAVERSE` | The aliases of the two collections. Only the preflight uses them. They don't default to the alias in `BOREALIS_URL`: the datasets sit in sub-collections of it, and the preflight already checks that one as the parent. |
 | `BOREALIS_PUBLISH` | `1` (default) publishes each month; `0` leaves a draft. |
 | `BOREALIS_UPLOAD_FIRST_MONTH` | The first month uploaded (default `2026-10`). |
 | `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET` | The Entra ID app registration (see below). |

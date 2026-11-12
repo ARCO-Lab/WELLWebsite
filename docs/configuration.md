@@ -67,8 +67,11 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 
 **Borealis and SharePoint** (details in [the backend README](../dashboard/backend/README.md#off-vm-copies-borealis-and-sharepoint))
 
-`BOREALIS_URL`, `BOREALIS_API_TOKEN`, `BOREALIS_UPLOAD_PERSISTENT_ID`, `BOREALIS_SAMPLING_PERSISTENT_ID`,
-`BOREALIS_UPLOAD_DATAVERSE`, `BOREALIS_SAMPLING_DATAVERSE`, `BOREALIS_PUBLISH` (default `1`),
+`BOREALIS_URL` (the server, e.g. `https://borealisdata.ca`; a collection page such as
+`https://borealisdata.ca/dataverse/WELL` also works, and only its scheme and host are used for API calls),
+`BOREALIS_API_TOKEN` (made on the same server as `BOREALIS_URL`: demo and production tokens are separate),
+`BOREALIS_UPLOAD_PERSISTENT_ID`, `BOREALIS_SAMPLING_PERSISTENT_ID`,
+`BOREALIS_UPLOAD_DATAVERSE`, `BOREALIS_SAMPLING_DATAVERSE` (preflight only; no default), `BOREALIS_PUBLISH` (default `1`),
 `BOREALIS_UPLOAD_FIRST_MONTH` (default `2026-10`); the older `DEMO_BOREALIS_URL`, `DEMO_BOREALIS_WC_PERSISTENT_ID` and
 `DEMO_BOREALIS_AW_PERSISTENT_ID` are read when the new names are unset. `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`,
 `SHAREPOINT_CLIENT_SECRET`, `SHAREPOINT_SITE` (the SharePoint copy is off while none of these four is set),
