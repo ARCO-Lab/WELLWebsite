@@ -39,6 +39,7 @@ class RecentRouteTests(unittest.TestCase):
             # The latest visit: the sites were sampled one after another, so each has its own time
             sample("1", "E. coli", 10.0, at(visit, 9, 40)),
             sample("2", "E. coli", 20.0, at(visit, 10, 15)),
+            sample("10", "E. coli", 100.0, at(visit, 10, 15)),   # same time as site 2: listed after it
             sample("9", "E. coli", 90.0, at(visit, 12, 5)),
             # A site sampled twice that day: the later sample is its latest
             sample("3", "E. coli", 30.0, at(visit, 9, 0)),
@@ -64,15 +65,17 @@ class RecentRouteTests(unittest.TestCase):
         response = self.client.get("/api/recent")
         self.assertEqual(response.status_code, 200)
         got = [(r["measurement_type"], r["site_id"], r["value"], r["recorded_at"]) for r in response.get_json()]
+        # In the order sampling rows are listed elsewhere: time, site number ("2" before "10"), parameter
         self.assertEqual(got, [
             ("Conductivity", "1", 833.0, "2026-09-15T00:00:00"),
             ("Conductivity", "2", 790.0, "2026-09-15T00:00:00"),
-            ("E. coli", "1", 10.0, "2026-10-06T09:40:00"),
-            ("E. coli", "2", 20.0, "2026-10-06T10:15:00"),
-            ("E. coli", "3", 33.0, "2026-10-06T15:30:00"),
-            ("E. coli", "9", 90.0, "2026-10-06T12:05:00"),
             ("pH", "1", 7.9, "2026-09-15T09:40:00"),
             ("pH", "2", 8.1, "2026-09-15T10:15:00"),
+            ("E. coli", "1", 10.0, "2026-10-06T09:40:00"),
+            ("E. coli", "2", 20.0, "2026-10-06T10:15:00"),
+            ("E. coli", "10", 100.0, "2026-10-06T10:15:00"),
+            ("E. coli", "9", 90.0, "2026-10-06T12:05:00"),
+            ("E. coli", "3", 33.0, "2026-10-06T15:30:00"),
         ])
 
     def test_the_response_keeps_its_fields(self):

@@ -10,13 +10,15 @@ from db.models import SamplingMeasurement
 
 
 def latest_per_site(rows):
-    """The newest row per (measurement type, site) among `rows`, ordered by measurement type, then site."""
+    """The newest row per (measurement type, site) among `rows`, in the order sampling rows are listed elsewhere:
+    time, then site number (shorter ids first, so "2" before "10"), then parameter, text compared byte for byte."""
     newest = {}
     for r in rows:
         key = (r.measurement_type, r.site_id)
         if key not in newest or r.recorded_at > newest[key].recorded_at:
             newest[key] = r
-    return [newest[key] for key in sorted(newest)]
+    return sorted(newest.values(), key=lambda r: (r.recorded_at, len(r.site_id), r.site_id.encode(),
+                                                  r.measurement_type.encode()))
 
 
 def register_recent_route(app):
