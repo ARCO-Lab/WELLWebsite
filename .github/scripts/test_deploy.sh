@@ -327,5 +327,10 @@ check "old state in TMPDIR: moved into .deploy-state once, and the rolled-back c
 DEPLOY_STATE='' deploy
 check "default state location: a deploy by hand clears it" 'rc 0 && head_is_remote && [ ! -e "$T/vm/.deploy-state/state.rolled-back" ] && [ ! -e "$T/vm/.deploy-state/state" ]'
 
+# --help prints the comment block at the top (line 2 up to the first line that isn't a comment), all of it and no more
+bash "$ROOT/deploy.sh" --help > "$T/out" 2>&1; echo $? > "$T/rc"
+awk 'NR > 1 && !/^#/ { exit } NR > 1' "$ROOT/deploy.sh" > "$T/header"
+check "--help: exactly the header comment" 'rc 0 && cmp -s "$T/out" "$T/header"'
+
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]

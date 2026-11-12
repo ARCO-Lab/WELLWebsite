@@ -22,7 +22,7 @@ for arg in "$@"; do
   case "$arg" in
     --auto) AUTO=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done

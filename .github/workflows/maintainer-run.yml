@@ -80,7 +80,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/maintainer"
           python3 .github/scripts/maintainer_inputs.py "$RUNNER_TEMP/maintainer/inputs.json"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: maintainer-inputs
           path: ${{ runner.temp }}/maintainer/inputs.json
@@ -108,7 +108,7 @@ jobs:
       # Records every outbound connection this job makes (audit mode: nothing is blocked yet). Once a few runs show
       # what it needs, switch to egress-policy: block with the allowlist in .github/workflows/README.md, "Daily
       # maintainer", so code Claude runs can't send anything elsewhere.
-      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a   # v2.22.4
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
           egress-policy: audit
 
@@ -116,7 +116,7 @@ jobs:
       - name: Set the work directory
         run: echo "WORK_DIR=$RUNNER_TEMP/maintainer" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
 
@@ -124,7 +124,7 @@ jobs:
         id: before
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: maintainer-inputs
           path: ${{ runner.temp }}/maintainer
@@ -208,7 +208,7 @@ jobs:
           echo "branches=$n" >> "$GITHUB_OUTPUT"
           echo "$n maint/* branch(es) bundled"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: ${{ !cancelled() && steps.bundle.outputs.branches != '' && steps.bundle.outputs.branches != '0' }}
         with:
           name: maintainer-branches
@@ -224,18 +224,18 @@ jobs:
     env:
       ASSIGNEE: lukhsaankumar
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ inputs.mode == 'pat' && secrets.WELL_MAINTAINER_PAT || github.token }}
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         if: ${{ needs.maintain.outputs.branches != '' && needs.maintain.outputs.branches != '0' }}
         with:
           name: maintainer-branches
           path: ${{ runner.temp }}/branches
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: maintainer-inputs
           path: ${{ runner.temp }}/maintainer
