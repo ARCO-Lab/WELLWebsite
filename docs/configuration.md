@@ -32,7 +32,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `DASHBOARD_PORT` | none (use `8081`) | Host port of the dashboard. `deploy.sh`'s health checks assume 8081. |
 | `TRUSTED_PROXY_IPS` | `130.113.68.30` | Reverse proxies whose `X-Forwarded-For` the dashboard believes, comma-separated. The default is McMaster's `haproxy.cas.mcmaster.ca`. Set but empty trusts none. See `dashboard/frontend/src/lib/clientIp.ts`. |
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | API queries running longer are cancelled (the API answers 504). Backend container only; `0` turns it off. Don't put it in `app/.env`: there it would also limit ingestion and exports. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Redis database for the short `/api/series` response cache. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Redis database for the short `/api/series` and `/api/windrose` response cache. Empty turns the cache off. |
 | `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | `redis://redis:6379/0`, `redis://redis:6379/1` | The export queue (Celery on Redis). |
 | `EXPORTS_DIR` | `/app/app/exports` | Where export CSVs are written, inside the shared `exports_data` volume. |
 | `WORKER_LOG_TO_STDOUT` | off | `1` also prints the worker's logs to `docker compose logs worker`; they always go to `dashboard/backend/app/logs/`. |
@@ -55,11 +55,13 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATA_MAX_ROWS` | `300000` | Most readings one `/api/data` request may return; more gets a 413 (see [the backend README](../dashboard/backend/README.md#api)). |
+| `DATA_MAX_ROWS` | `100000` | Most readings one `/api/data` request may return; more gets a 413 (see [the backend README](../dashboard/backend/README.md#api)). |
 | `EXPORT_SYNC_ROW_THRESHOLD` | `100000` | Downloads up to this many readings are built while the visitor waits; larger ones are queued for `export_worker`. |
 | `EXPORT_MAX_ROWS` | `5000000` | Largest queued export, in readings. |
 | `EXPORT_MAX_ACTIVE_JOBS` | `6` | Queued or running exports at once, in total. |
 | `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` | `2` | The same, per visitor (by IP address). |
+| `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` | `6` | Jobs one visitor may start in an hour, finished ones included. |
+| `EXPORT_MIN_FREE_MB` | `2048` | Free space to keep on the exports disk after an export's estimated size; exports that would go below it get a 507. |
 | `EXPORT_SOFT_TIME_LIMIT_SECONDS`, `EXPORT_HARD_TIME_LIMIT_SECONDS` | `900`, `1200` | An export past the soft limit is stopped and marked failed; past the hard limit its process is killed. |
 | `EXPORT_WORKER_MAX_MEMORY_KB` | `512000` | An export worker process is replaced once a task leaves it using more memory than this. |
 | `EXPORT_FILE_TTL_MINUTES` | `60` | How long a finished export can be downloaded before the hourly cleanup deletes it. |

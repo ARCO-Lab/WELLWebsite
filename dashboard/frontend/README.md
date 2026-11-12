@@ -15,6 +15,29 @@ page. Its data comes from the [backend](../backend/README.md); its settings are 
   browser never talks to Flask directly. The routes and what the backend answers are listed in
   [the backend README](../backend/README.md#api).
 
+## Rate limits and security headers
+
+Every API route that calls the backend goes through `src/lib/proxyBackend.ts`, which limits each visitor's address
+(`src/lib/clientIp.ts` decides which address that is) with in-memory token buckets (`src/lib/rateLimit.ts`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | `600`, `600` | Requests one address may make at once, and per minute after that. |
+| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | `30`, `30` | The same for slow requests: the wind rose, `/api/data`, export estimates, direct exports and new export jobs. |
+| `RATE_LIMIT_SLOW_CONCURRENT` | `4` | Slow requests one address may have in flight at once. |
+
+Beyond a limit the answer is a 429 with `Retry-After`, and the backend isn't called. `0` turns a limit off. They are
+read when the server starts; to change one, add it to the `dashboard` service's `environment:` in
+`docker-compose.yml`. The limits are generous for one person because many visitors can share one address (a campus
+network). If every visitor shows up as one address (see the note at the top of `src/lib/clientIp.ts`), they would
+share one budget too, so check the `[client-ip]` log lines before lowering them.
+
+`next.config.ts` adds `Content-Security-Policy`, `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: strict-origin-when-cross-origin` to every page and API route, and drops `X-Powered-By`. The policy
+allows scripts from this site and GoatCounter only, the map's tile hosts, Google Fonts, and the Sentry host of the
+build's DSN; `frame-ancestors` lets only this site and `well.mcmaster.ca` (whose dashboard page embeds it) frame the
+dashboard. A new third-party host (a map style, a font) must be added there, or the browser will refuse it.
+
 ## Charts
 
 Each chart zooms and pans on its own (`src/hooks/useChartWindow.ts`, `src/lib/chartController.ts`, with a slider and
