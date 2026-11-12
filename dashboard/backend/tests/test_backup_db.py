@@ -153,6 +153,47 @@ class RowCountTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BACKUP_MAX_SHRINK_PCT": "five"}), self.assertRaises(backup_db.BackupError):
             backup_db.shrink_setting()
 
+    def test_failing_dumps_are_those_after_the_last_good_one(self):
+        names = ["welldb-20261108-0315.dump", "welldb-20261109-0315.dump", "welldb-20261110-0315.dump",
+                 "welldb-20261111-0315.dump", "manual-before-migration.dump"]
+        self.assertEqual(backup.failing_dumps(names, "welldb-20261108-0315.dump", keep="welldb-20261111-0315.dump"),
+                         ["welldb-20261109-0315.dump", "welldb-20261110-0315.dump"])
+        self.assertEqual(backup.failing_dumps(names, None, keep="welldb-20261111-0315.dump"), [])
+
+    def nightly(self, directory, day, rows, **kwargs):
+        """back_up() on 2026-11-`day` at 03:15 with `rows` in the table, pg_dump and its check stood in for."""
+        import backup_db
+
+        def fake_dump(cmd, env, timeout):
+            pathlib.Path(next(c for c in cmd if c.startswith("--file=")).split("=", 1)[1]).write_text("dump")
+
+        with mock.patch.object(backup_db, "count_rows", return_value={"t": rows}), \
+                mock.patch.object(backup_db, "run_tool", side_effect=fake_dump), \
+                mock.patch.object(backup_db, "verify_dump"), \
+                mock.patch.object(backup_db, "pg_tool", return_value="pg_dump"):
+            return backup_db.back_up(directory, {"database": "welldb"}, [], ["t"], 0, log=lambda *a: None,
+                                     warn=lambda *a: None, now=dt.datetime(2026, 11, day, 3, 15),
+                                     max_shrink_pct=5, **kwargs)
+
+    def test_while_the_check_fails_only_the_newest_failing_dump_is_kept(self):
+        import backup_db
+        with tempfile.TemporaryDirectory() as directory:
+            self.nightly(directory, 8, 100)
+            self.nightly(directory, 9, 100)
+            for day in (10, 11, 12):
+                with self.assertRaises(backup_db.RowCountError) as failed:
+                    self.nightly(directory, day, 0)
+                self.assertIn("t is empty (it had 100 rows at the last good backup)", str(failed.exception))
+            self.assertEqual(sorted(name for _, name in backup.dumps_in(os.listdir(directory))),
+                             ["welldb-20261108-0315.dump", "welldb-20261109-0315.dump", "welldb-20261112-0315.dump"])
+            # --no-prune deletes nothing
+            with self.assertRaises(backup_db.RowCountError):
+                self.nightly(directory, 13, 0, prune_failing=False)
+            self.assertEqual(len(backup.dumps_in(os.listdir(directory))), 4)
+            # Accepted: recorded as the last good backup, and the next failure keeps it
+            self.nightly(directory, 14, 0, accept_row_counts=True)
+            self.assertEqual(backup.last_good_dump(directory), "welldb-20261114-0315.dump")
+
 
 class SchedulerTests(unittest.TestCase):
     def setUp(self):
@@ -508,6 +549,10 @@ class RoundTrip(unittest.TestCase):
 
             # 50% fewer: the dump is written and checked, but the run fails and the counts aren't recorded
             self.source_sql("DELETE FROM shrink_check WHERE id <= 52")
+            # A large table is counted by its estimate, refreshed by an ANALYZE first, so a DELETE that autovacuum
+            # hasn't seen yet still shows (exact_limit=0 takes that path even for this small table)
+            owner = backup.parse_database_url(self.owner_url)
+            self.assertEqual(backup.count_rows(owner, ["shrink_check"], exact_limit=0), {"shrink_check": 48})
             shrunk = run()
             self.assertEqual(shrunk.returncode, 1)
             self.assertIn("shrink_check has 48 rows, 50% fewer than the 96 at the last good backup", shrunk.stderr)

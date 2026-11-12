@@ -45,11 +45,12 @@ ROW_COUNTS_NAME = ".row-counts.json"
 # A table with fewer rows than this many percent below its count at the last good backup fails the backup
 # (BACKUP_MAX_SHRINK_PCT). These tables only grow: readings are added, and the only routine deletions are a handful
 # of sentinel rows (scripts/clean_sentinels.py) or a sampling reload with about as many rows. Large tables are
-# counted with the planner's estimate, which drifts by a percent or so between ANALYZE runs, so 5% stays clear of
-# that noise and still catches the loss of a few weeks of data or more.
+# counted with the planner's estimate, taken from a sample and so off by a percent or so, so 5% stays clear of that
+# noise and still catches the loss of a few weeks of data or more.
 DEFAULT_MAX_SHRINK_PCT = 5
-# Tables estimated below this many rows are counted exactly with count(*) (well under a second); larger ones use
-# the estimate (pg_class.reltuples, which autovacuum and ANALYZE keep current), so the check stays cheap.
+# Tables estimated below this many rows are counted exactly with count(*) (well under a second); larger ones are
+# analyzed first (ANALYZE reads a fixed-size sample, a few seconds at most) and their fresh estimate is used
+# (pg_class.reltuples), so the check stays cheap and still sees a recent DELETE that autovacuum hasn't caught up with.
 EXACT_COUNT_LIMIT = 1_000_000
 
 # pg_dump and pg_restore of the server's major version (13 on the VM), installed in the image from the PostgreSQL
@@ -329,14 +330,15 @@ WHERE c.oid = to_regclass(%s)
 
 def count_rows(settings, tables, exact_limit=EXACT_COUNT_LIMIT):
     """{table: rows} for `tables` (names or schema.name): exact (count(*)) for tables the planner estimates under
-    `exact_limit` rows, the estimate for larger ones, and always exactly 0 for a table with no row at all (an
-    emptied table's estimate can lag until autovacuum runs). None for a table that doesn't exist. Read-only."""
+    `exact_limit` rows, the estimate just after an ANALYZE for larger ones, and always exactly 0 for a table with no
+    row at all. None for a table that doesn't exist. Changes no data (ANALYZE only refreshes planner statistics).
+    Each table is named in SQL by the schema and name PostgreSQL resolved it to, quoted as identifiers."""
     import psycopg2
     from psycopg2 import sql
     conn = psycopg2.connect(**psycopg2_kwargs(settings))
     counts = {}
     try:
-        conn.set_session(readonly=True, autocommit=True)
+        conn.set_session(autocommit=True)
         with conn.cursor() as cur:
             cur.execute("SET statement_timeout = '5min'")
             for table in tables:
@@ -354,7 +356,11 @@ def count_rows(settings, tables, exact_limit=EXACT_COUNT_LIMIT):
                     cur.execute(sql.SQL("SELECT count(*) FROM {}").format(relation))
                     counts[table] = cur.fetchone()[0]
                 else:
-                    counts[table] = int(estimate)
+                    # reltuples is only as fresh as the last (auto)vacuum or ANALYZE; a role that doesn't own the
+                    # table gets a warning from ANALYZE and the older estimate
+                    cur.execute(sql.SQL("ANALYZE {}").format(relation))
+                    cur.execute(_TABLE_ESTIMATE_SQL, (table,))
+                    counts[table] = int(cur.fetchone()[2])
     finally:
         conn.close()
     return counts
@@ -392,6 +398,25 @@ def load_row_counts(directory):
     if not isinstance(counts, dict) or not all(isinstance(v, int) for v in counts.values()):
         raise ValueError(f"{path} doesn't hold row counts")
     return counts
+
+
+def last_good_dump(directory):
+    """The file name of the last good backup in the row counts record, or None if there is none (or no record)."""
+    try:
+        with open(os.path.join(directory, ROW_COUNTS_NAME), encoding="utf-8") as f:
+            dump = json.load(f).get("dump")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return dump if isinstance(dump, str) else None
+
+
+def failing_dumps(names, last_good, keep):
+    """The dumps among `names` written after `last_good` (the last good backup's file name), so while the row count
+    check was failing, except `keep`. [] when `last_good` isn't known, since then no dump can be told apart."""
+    good_time = dump_time(last_good) if last_good else None
+    if good_time is None:
+        return []
+    return [name for when, name in reversed(dumps_in(names)) if when > good_time and name != keep]
 
 
 def save_row_counts(directory, counts, dump, when):
