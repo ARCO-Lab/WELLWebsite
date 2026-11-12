@@ -2,7 +2,7 @@
 # ingestion reads (dashboard/backend/app/scripts/api_canary.py; one small request per source). A failed run
 # opens (or comments on) an "API canary failing" issue, and the next passing run closes it, so a rejected or
 # expired key is noticed the day it happens even when nobody gets GitHub's "workflow run failed" email.
-# See the README's "API canary" section.
+# See .github/workflows/README.md, "API canary".
 name: API canary
 
 on:

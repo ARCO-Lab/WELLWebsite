@@ -174,7 +174,7 @@ services:
     networks:
       - internal_api
 
-  # --- welldash², the operations dashboard (dashboard/backend/app/ops/; README "welldash² (operations dashboard)") ---
+  # --- welldash², the operations dashboard (dashboard/backend/app/ops/; its README) ---
   # Read-only pages of uptime, traffic, alerts and CI, behind one password. Only for McMaster's network/VPN: the
   # front proxy (haproxy.cas.mcmaster.ca) must never route to this port. It starts only when the "ops" profile is on
   # (COMPOSE_PROFILES=ops in .env), and refuses to start without OPS_PASSWORD_HASH and OPS_SECRET_KEY (also in .env).
@@ -186,7 +186,7 @@ services:
     command: ["gunicorn", "-k", "gthread", "-w", "1", "--threads", "4", "--timeout", "60", "-b", "0.0.0.0:8090",
               "ops.app:create_app()"]
     environment:
-      # A read-only role is better (README); unset, it reads with the backend's role.
+      # A read-only role is better (dashboard/backend/app/ops/README.md); unset, it reads with the backend's role.
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-${BACKEND_DATABASE_URL}}
       OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:-}
       OPS_SECRET_KEY: ${OPS_SECRET_KEY:-}
@@ -200,7 +200,7 @@ services:
       OPS_GOATCOUNTER_CODE: ${OPS_GOATCOUNTER_CODE:-}
       OPS_GOATCOUNTER_TOKEN: ${OPS_GOATCOUNTER_TOKEN:-}
     ports:
-      # Set OPS_BIND to the VM's campus address (README): Docker's published ports bypass the host firewall, and
+      # Set OPS_BIND to the VM's campus address (ops README): Docker's published ports bypass the host firewall, and
       # 0.0.0.0 publishes it on every address the VM has.
       - "${OPS_BIND:-0.0.0.0}:${OPS_PORT:-8090}:8090"
     extra_hosts:
@@ -215,7 +215,7 @@ services:
         gw_priority: 1
       wp_probe: {}     # to check WordPress (not front, which WordPress shares with MySQL)
     volumes:
-      # Log sizes on the System page, and deploy.log if deploy.sh writes it here (README). Read-only.
+      # Log sizes on the System page, and deploy.log if deploy.sh writes it here (ops README). Read-only.
       - ./dashboard/backend/app/logs:/ops/logs:ro
 
   # Optional internal reverse proxy. If the McMaster VM already has an external

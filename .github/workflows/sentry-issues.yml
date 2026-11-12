@@ -2,7 +2,7 @@
 # comments when an open one's event count jumps, and adds a "Seen again" comment (without reopening) to a closed one
 # that Sentry still receives (.github/scripts/sentry_issues.py). Test events ("Sentry test") are skipped.
 # It needs the repository secret SENTRY_API_TOKEN, a read-only Sentry token (org:read, project:read, event:read);
-# without it, the run passes with a warning. See the README's "Monitoring" section.
+# without it, the run passes with a warning. See .github/workflows/README.md, "Sentry errors as GitHub issues".
 name: Sentry issues
 
 on:

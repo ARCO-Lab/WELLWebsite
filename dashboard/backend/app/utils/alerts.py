@@ -538,5 +538,5 @@ def build_email(new, reminders, recovered, open_count, now, settings, back_again
               f"before it is reported recovered.",
               f"Dashboard: {base}/",
               f"Data freshness and open alerts (JSON): {base}/api/health/data",
-              "What each alert means and how to tune it: the README's Monitoring section."]
+              "What each alert means and how to tune it: dashboard/backend/README.md (Email alerts)."]
     return "[WELL] " + subject, "\n".join(lines) + "\n"

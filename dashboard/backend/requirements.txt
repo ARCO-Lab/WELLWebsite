@@ -11,7 +11,8 @@
 # above), and python-dateutil on 2.9.0.post0 because celery 5.7.0 requires exactly that version.
 #
 # Not installed while the AI analysis is disabled: openai (pinned at openai==2.30.0 before it was taken out). Add it
-# back, with the dependencies pip pulls in for it, when re-enabling that feature (see the README's "AI Analysis").
+# back, with the dependencies pip pulls in for it, when re-enabling that feature (see dashboard/backend/README.md,
+# "AI analysis (disabled)").
 amqp==5.4.2
 billiard==4.3.2
 blinker==1.9.0
