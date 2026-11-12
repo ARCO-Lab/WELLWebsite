@@ -40,6 +40,7 @@ import { SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
 import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
+import { useEmbedFrame } from "@/lib/embed";
 
 type ActiveFilters = { [key: string]: string[] };
 type SensorGroup = "weather" | "quality" | "gauges";
@@ -79,9 +80,12 @@ const GRAPH_GRID: Record<number, string> = {
 };
 const getGraphGridClass = (count: number) => GRAPH_GRID[count] ?? "grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))]";
 
-export default function Dashboard() {
+// embedded: the page inside the WordPress site's iframe (pages/embed.tsx, served at /?embed=1; see lib/embed.ts).
+// It has no header or footer, in the server HTML too, and tells the WordPress page its height.
+export default function Dashboard({ embedded = false }: { embedded?: boolean }) {
 
-  const [inIframe, setInIframe] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
+  useEmbedFrame(mainRef, embedded);
 
   const [activeTab, setActiveTab] = useState<"sensor" | "sampling">("sensor");
   
@@ -283,13 +287,6 @@ export default function Dashboard() {
     setPreviousActiveCreekCount(activeCreekCount);
   }, [activeCreekCount]);
 
-  useEffect(() => {
-    try {
-      setInIframe(window.self !== window.top);
-    } catch {
-      setInIframe(true);
-    }
-  }, []);
 
 
 
@@ -369,10 +366,11 @@ export default function Dashboard() {
         <title>Dashboard | Watershed and Ecosystems Living Lab</title>
       </Head>
 
-      {/* Header is hidden in iframe mode */}
-      {!inIframe && <Header />}
+      {/* No header or footer when embedded. In any other frame, CSS hides them (data-site-chrome, globals.css). */}
+      {!embedded && <div data-site-chrome><Header /></div>}
       <ChartPageContext.Provider value={chartPage}>
-      <main className="min-h-screen bg-background text-foreground">
+      {/* Embedded, the page is as tall as its content (the iframe is sized to it), never the iframe's height */}
+      <main ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground`}>
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
           
           {/* Title and tab triggers */}
@@ -796,7 +794,7 @@ export default function Dashboard() {
         </Modal>
       </main>
       </ChartPageContext.Provider>
-      {!inIframe && <Footer />}
+      {!embedded && <div data-site-chrome><Footer /></div>}
     </>
   );
 }

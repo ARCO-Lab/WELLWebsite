@@ -119,6 +119,17 @@ one, edit that default, build by hand with `docker build --build-arg NAME=value 
 the dashboard's `build: args:` in `docker-compose.yml`. Env files are kept out of the image build (`.dockerignore`),
 so `.env.local` can't set any of them.
 
+## WordPress backup (`wordpress/backup.sh`, set in the crontab line)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HEALTHCHECK_URL_WP_BACKUP` | none | Healthchecks.io ping URL: `<url>/start` when a backup begins, `<url>` on success, `<url>/fail` on a failure. |
+| `WP_BACKUP_DIR` | `wp-backups/` in the repository root | Where backups go. |
+| `WP_BACKUP_KEEP_DAILY`, `WP_BACKUP_KEEP_WEEKLY`, `WP_BACKUP_KEEP_MONTHLY` | `7`, `8`, `12` | Retention: the newest backup of each of that many days, ISO weeks and months is kept. |
+| `WP_BACKUP_MIN_FREE_MB` | `2048` | Free space to leave after a backup the size of the last one; the run refuses to start otherwise. |
+
+Details in [wordpress/README.md](../wordpress/README.md#backups).
+
 ## Deploy script (`deploy.sh`, set in the crontab line)
 
 | Variable | Default | Meaning |
@@ -126,6 +137,7 @@ so `.env.local` can't set any of them.
 | `DEPLOY_HEALTHCHECK_URL` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure or a held commit. |
 | `DEPLOY_BRANCH`, `DEPLOY_REMOTE` | `main`, `origin` | What is deployed. |
 | `DEPLOY_LOG` | `deploy.log` next to the script | Log file. |
+| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported and the last commit rolled back. Earlier versions kept these in `/tmp`; the first run moves them here. |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
 ## Tests

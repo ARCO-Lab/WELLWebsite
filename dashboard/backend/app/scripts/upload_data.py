@@ -18,9 +18,9 @@ import argparse
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 import pandas as pd
-import csv
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from api.services.exports import TIMESTAMP_HEADER, SafeCsvWriter
 from dotenv import load_dotenv
 from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
 
@@ -131,7 +131,7 @@ def build_csv_frontend_style(data_list, file_obj):
     sections = [(label, keys) for label, keys in
                 (("Weather", weather_keys), ("Quality", quality_keys), ("Logger", logger_keys)) if keys]
 
-    headers = ["ID", "Timestamp"]
+    headers = ["ID", TIMESTAMP_HEADER]
     for section_idx, (label, keys) in enumerate(sections):
         if section_idx != 0:
             headers.append("")  # blank separator between sections
@@ -162,7 +162,9 @@ def build_csv_frontend_style(data_list, file_obj):
                     csv_row += [first_value.get((timestamp, label, site_id, m), "") for m in keys]
         rows.append(csv_row)
 
-    writer = csv.writer(file_obj)
+    # The dashboard download's cell rules: a missing value is an empty field (pandas holds it as NaN, which
+    # csv.writer would write as "nan"), and text that a spreadsheet would run as a formula gets a leading '
+    writer = SafeCsvWriter(file_obj)
     writer.writerow(headers)
     writer.writerows(rows)
     print(f"Built the CSV: {len(rows)} rows, {len(headers)} columns")
@@ -213,13 +215,18 @@ def export_month_csv(start, end):
     Needs the app context (the database)."""
     from db.database import db
     from db.models import SensorMeasurement
+    from db.ordering import bytewise
 
+    # A cell holds the first reading of its time and metric, so readings of one time come in a fixed order
+    # (station, then metric), and the same month always gives the same file.
+    dialect = db.engine.dialect.name
     query = db.session.query(SensorMeasurement).filter(
         SensorMeasurement.group_type.in_(["Weather", "Quality", "Logger"]),
         # Half-open, so the reading at midnight on the 1st goes in the new month's file only
         SensorMeasurement.recorded_at >= start,
         SensorMeasurement.recorded_at < end,
-    ).order_by(SensorMeasurement.recorded_at)
+    ).order_by(SensorMeasurement.recorded_at, bytewise(SensorMeasurement.station_id, dialect),
+               bytewise(SensorMeasurement.measurement_type, dialect))
     data = [
         {
             "station_id": r.station_id,

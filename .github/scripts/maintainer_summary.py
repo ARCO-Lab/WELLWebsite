@@ -20,7 +20,8 @@ settings and TLS rules as the backend's daily digest (dashboard/backend/app/scri
 SMTP_HOST/SMTP_PORT the email is only printed. The text also goes to the job summary.
 
 Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (read-only), MAINTAINER_LOGIN, RUN_URL, CLAUDE_OUTCOME (the Claude
-step's outcome), CLAUDE_RESULT (its structured output, JSON), INPUTS_FILE, MAIN_BEFORE and MAIN_AFTER (main's
+step's outcome), CLAUDE_RESULT (its structured output, JSON), INPUTS_FILE, PUBLISH_FILE (what maintainer_publish.py
+pushed, opened and refused), MAIN_BEFORE and MAIN_AFTER (main's
 commit before and after the run), TOKEN_MODE ("pat" or "github_token"), DRY_RUN, and the SMTP settings above."""
 import json
 import os
@@ -288,6 +289,19 @@ def gather(env, transport=urllib_transport):
             notes += inputs.get("notes") or []
         except (OSError, ValueError) as error:
             errors.append(f"the inputs file couldn't be read: {error}")
+    # What maintainer_publish.py did: a branch it refused to push needs a look as much as an error does.
+    publish_file = env.get("PUBLISH_FILE")
+    if publish_file and os.path.exists(publish_file):
+        try:
+            with open(publish_file, encoding="utf-8") as f:
+                published = json.load(f)
+            errors += [f"publishing: {e}" for e in published.get("errors") or []]
+            errors += [f"not published: {r.get('branch')}: {r.get('reason')}" for r in published.get("refused") or []]
+            notes += [f"{p.get('branch')}: {p.get('action')}" for p in published.get("published") or []]
+        except (OSError, ValueError, AttributeError) as error:
+            errors.append(f"the publish result couldn't be read: {error}")
+    elif publish_file:
+        errors.append("the publish step left no result (did it run?)")
     gh = github_client(env["GITHUB_TOKEN"], transport)
     reviewed = []
     try:

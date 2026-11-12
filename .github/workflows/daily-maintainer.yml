@@ -1,8 +1,9 @@
 # Daily maintainer: once a day, Claude Code (anthropics/claude-code-action) reads what went wrong in the last 24
 # hours (Sentry, failed runs on main, code-quality comments, security alerts; collected by
-# .github/scripts/maintainer_inputs.py), fixes real problems in at most MAX_PRS pull requests from maint/* branches,
-# audits each one, and labels it. It is told never to merge, and its tool rules deny it. Then
-# .github/scripts/maintainer_summary.py emails what is ready to merge and what needs a person. The steps are in
+# .github/scripts/maintainer_inputs.py), fixes real problems on at most MAX_PRS local maint/* branches and audits
+# each one, with a read-only token. A later job with no model (.github/scripts/maintainer_publish.py) checks those
+# branches, pushes them and opens and labels their pull requests. Then .github/scripts/maintainer_summary.py emails
+# what is ready to merge and what needs a person. Nothing in it merges. The steps are in
 # maintainer-run.yml; its instructions are .github/maintainer/PROMPT.md, its tool rules
 # .github/maintainer/settings.json. See .github/workflows/README.md, "Daily maintainer", for the secrets and how to
 # pause it.

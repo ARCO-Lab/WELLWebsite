@@ -77,7 +77,10 @@ def user_facing_error(exc: Exception) -> str:
     return EXPORT_FAILED_MESSAGE
 
 
-@celery_app.task(bind=True, name="exports.generate_export_job")
+# ignore_result: the job's state is in export_jobs, and nothing reads Celery's copy. It also keeps the API's
+# delay() from subscribing to the result in Redis: with Redis down that retried for over two minutes before failing,
+# while the publish alone fails within seconds, so the API can mark the job failed and answer 503 at once.
+@celery_app.task(bind=True, name="exports.generate_export_job", ignore_result=True)
 def generate_export_job(self, job_id: str):
     """Writes a queued job's CSV to EXPORTS_DIR/<job id>/, updating its progress as it goes, and marks it ready
     (downloadable for EXPORT_FILE_TTL_MINUTES) or failed. Errors are re-raised so Celery and Sentry see them."""
