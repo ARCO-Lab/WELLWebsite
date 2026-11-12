@@ -1,5 +1,7 @@
 // This file defines the Download component for exporting filtered sensor or sampling data as a CSV file.
-// It builds the CSV structure based on active filters, groups, and selected metrics/sites.
+// It turns the active filters, groups, selected metrics/sites and dates into an export request; the backend builds
+// the CSV. A small export downloads directly (/api/exports/sync); a large one is queued as a job that this
+// component polls until its file is ready (/api/exports/jobs).
 
 import React, { useEffect, useRef, useState } from "react";
 import { Download as DownloadIcon, X } from "lucide-react";

@@ -8,8 +8,7 @@ import pathlib
 import subprocess
 import sys
 import types
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -32,7 +31,7 @@ def empty_state():
     return {"processed_files": [], "refused_files": []}
 
 
-class BookkeepingTests(unittest.TestCase):
+class BookkeepingTests(TestCase):
     def test_import_outcome(self):
         self.assertEqual(download_data.import_outcome(0, "[INFO] Inserted 12 new sampling records.\n"), ("processed", 12))
         self.assertEqual(download_data.import_outcome(0, "[INFO] Inserted 0 new sampling records.\n"), ("processed", 0))
@@ -65,7 +64,7 @@ class BookkeepingTests(unittest.TestCase):
         self.assertEqual(choose([NEW, BAD, OLD], state, ["2"]), [NEW])        # naming needs --force
 
 
-class MainTests(unittest.TestCase):
+class MainTests(TestCase):
     def run_main(self, state, outcomes, *argv, files=(OLD, BAD, NEW)):
         """main() over OLD, BAD and NEW with the given state; outcomes maps file id -> (returncode, stdout)."""
         saved = []
@@ -151,7 +150,7 @@ class MainTests(unittest.TestCase):
         self.assertNotIn("OUTPUT:", out)
 
 
-class SchedulerTests(unittest.TestCase):
+class SchedulerTests(TestCase):
     def run_job(self, stdout, code):
         logs, pings = [], []
 
@@ -179,4 +178,4 @@ class SchedulerTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

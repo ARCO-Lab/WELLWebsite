@@ -1,3 +1,6 @@
+# This file defines the /api/exports routes behind the dashboard's Download panel: a row estimate, a direct CSV
+# download for small exports, and background jobs (run by the Celery worker, tasks/exports.py) for large ones.
+# Job timestamps (created_at, expires_at) are naive America/Toronto wall time, like the sensor readings.
 import hashlib
 import os
 import tempfile
@@ -23,6 +26,8 @@ from utils.timezone import est_now, est_passed
 def register_export_routes(app):
     @app.route("/api/exports/estimate", methods=["POST"])
     def estimate_export_rows():
+        """Counts the readings an export would contain and says whether to download it directly ("sync") or as a
+        background job ("async"), so the page can choose before asking for the file."""
         payload = request.get_json(silent=True) or {}
         print(f"[EXPORT API] /api/exports/estimate received payload keys: {payload.keys()}")
         print(f"[EXPORT API] /api/exports/estimate group_types: {payload.get('group_types', 'MISSING')}")
@@ -44,6 +49,8 @@ def register_export_routes(app):
 
     @app.route("/api/exports/sync", methods=["POST"])
     def export_sync():
+        """Builds the CSV in this request and sends it as a download. Refuses (413) above
+        EXPORT_SYNC_ROW_THRESHOLD readings, which must use a background job instead."""
         payload = request.get_json(silent=True) or {}
         print(f"[EXPORT API] /api/exports/sync received payload keys: {payload.keys()}")
         print(f"[EXPORT API] /api/exports/sync group_types: {payload.get('group_types', 'MISSING')}")
@@ -78,7 +85,7 @@ def register_export_routes(app):
                     if os.path.exists(tmp_path):
                         os.remove(tmp_path)
                 except OSError:
-                    pass
+                    pass   # best effort: a temp file that can't be removed mustn't fail the download being sent
                 return response
 
             return send_file(tmp_path, as_attachment=True, download_name=filename, mimetype="text/csv")
@@ -87,6 +94,8 @@ def register_export_routes(app):
 
     @app.route("/api/exports/jobs", methods=["POST"])
     def create_export_job():
+        """Queues a background export (202 with the job id). Refuses exports above EXPORT_MAX_ROWS (413), and
+        new jobs when this visitor or the whole server already has too many running (429)."""
         payload = request.get_json(silent=True) or {}
 
         try:
@@ -171,6 +180,7 @@ def register_export_routes(app):
 
     @app.route("/api/exports/jobs/<job_id>", methods=["GET"])
     def get_export_job(job_id: str):
+        """A job's status and progress, polled by the page until it is ready, failed or expired."""
         job = db.session.get(ExportJob, job_id)
         if not job:
             return jsonify({"error": "Export job not found"}), 404
@@ -186,6 +196,7 @@ def register_export_routes(app):
 
     @app.route("/api/exports/jobs/<job_id>/download", methods=["GET"])
     def download_export_artifact(job_id: str):
+        """Sends a finished job's CSV: 409 while it isn't ready, 410 once it has expired or the file is gone."""
         job = db.session.get(ExportJob, job_id)
         if not job:
             return jsonify({"error": "Export job not found"}), 404

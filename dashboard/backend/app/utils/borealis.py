@@ -204,6 +204,7 @@ class Dataverse:
     # ---- changing
 
     def add_file(self, persistent_id, name, content, description, directory=None):
+        """Add a CSV file to the dataset's draft (made if there is none). Returns Dataverse's dataFile record."""
         meta = file_metadata(description, directory)
         body = self.pid_call("POST", "/add", persistent_id, f"Adding {name} to {persistent_id}",
                              files={"file": (name, content, "text/csv")}, data={"jsonData": json.dumps(meta)},
@@ -236,6 +237,7 @@ class Dataverse:
 
 
 def file_metadata(description, directory):
+    # tabIngest "false": keep the CSV as uploaded, instead of Dataverse converting it to its own tabular format.
     meta = {"description": description, "categories": ["Data"], "tabIngest": "false"}
     if directory:
         meta["directoryLabel"] = directory

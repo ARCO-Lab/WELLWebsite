@@ -4,7 +4,8 @@
 // link or input) do their own job and don't open the modal, and neither does a drag (e.g. drag-to-zoom on a chart).
 // The button sits in a row of its own above the content ("band", the default), so it never covers a chart, its
 // legend or Highcharts' own buttons; "corner" floats it in the top-right corner, for cards that keep that corner
-// free themselves (the Latest Data groups keep it clear with a float on their title line).
+// free themselves (the Latest Data groups keep it clear with a float on their title line). With openOnClick={false}
+// (the chart cards, where a click or tap belongs to the charts: tooltips, focus, dragging), only the button opens it.
 
 import React, { useRef } from "react";
 import { Maximize2 } from "lucide-react";
@@ -15,6 +16,7 @@ interface ExpandableCardProps {
   className?: string;
   style?: React.CSSProperties;
   placement?: "band" | "corner";
+  openOnClick?: boolean; // false: only the button opens the larger view
   children: React.ReactNode;
 }
 
@@ -43,7 +45,7 @@ const ExpandButton = React.forwardRef<HTMLButtonElement, { label: string; onOpen
 );
 ExpandButton.displayName = "ExpandButton";
 
-const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, className = "", style, placement = "band", children }) => {
+const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, className = "", style, placement = "band", openOnClick = true, children }) => {
   const pressedAt = useRef<{ x: number; y: number } | null>(null);
   const button = useRef<HTMLButtonElement>(null);
   const expandButton = <ExpandButton ref={button} label={label} onOpen={onOpen} corner={placement === "corner"} />;
@@ -51,6 +53,7 @@ const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, classNam
     <div
       onPointerDown={(e) => { pressedAt.current = { x: e.clientX, y: e.clientY }; }}
       onClick={(e) => {
+        if (!openOnClick) return;
         const start = pressedAt.current;
         pressedAt.current = null;
         if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > DRAG_PX) return;
@@ -60,7 +63,7 @@ const ExpandableCard: React.FC<ExpandableCardProps> = ({ label, onOpen, classNam
         button.current?.focus({ preventScroll: true });
         onOpen();
       }}
-      className={`mcmaster-card mcmaster-card-interactive group relative cursor-pointer ${className}`} style={style}>
+      className={`mcmaster-card group relative ${openOnClick ? "mcmaster-card-interactive cursor-pointer" : ""} ${className}`} style={style}>
       {placement === "band" ? (
         // In the card's top padding plus a short row: the content starts 20 px lower than it would without it
         <div className="-mr-2.5 -mt-3 mb-1 flex justify-end">{expandButton}</div>

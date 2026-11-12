@@ -21,25 +21,35 @@ Both run in Docker on one Linux VM (`docker-compose.yml`): WordPress on port 808
 
 ```mermaid
 flowchart LR
-  vendors["LI-COR (HOBOlink) and WQData APIs"] -->|every 10 min| worker
-  borealis[("Borealis")] <-->|monthly sensor CSV up, sampling CSVs down weekly| worker
-  worker["worker (scheduler)"] --> pg[("PostgreSQL 13 on the VM host")]
-  pg --> backend["backend (Flask on gunicorn)"]
+  licor["LI-COR<br/>HOBOlink"] -->|every 10 min| worker
+  wqdata["WQData"] -->|every 10 min| worker
+  borealis[("Borealis")] <-->|CSV files| worker
+  worker["worker<br/>scheduler"] --> pg[("PostgreSQL<br/>13 on host")]
+  pg --> backend["backend<br/>Flask API"]
   backend <--> redis[("redis")]
-  redis <--> exp["export_worker (Celery)"]
+  redis <--> exp["export<br/>worker<br/>Celery"]
   exp --> pg
-  backend --> nxt["dashboard (Next.js API routes)"]
+  backend --> nxt["dashboard<br/>Next.js"]
   nxt --> browser["Browser"]
-  wp["wordpress + MySQL"] -->|page with the dashboard in an iframe| browser
+  wp["WordPress<br/>MySQL"] -->|iframe| browser
+  pg --> ops["welldash²<br/>ops"]
+  subgraph mon["Monitoring"]
+    sentry["Sentry"]
+    hc["Healthchecks"]
+  end
 ```
 
+<!-- GitHub draws every node 120 px wide and may cut off a line wider than that, so keep each line of a label to about 10 characters, break lines with <br/>, keep edge labels to a few words, and put the details in the list below. -->
+
 How data flows:
-1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the weekly Borealis sampling download, the monthly Borealis upload (followed by the SharePoint copy, once that is configured) and the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
+1. **Ingestion.** The `worker` container runs `scripts/scheduler_temp.py`: one Python `schedule` loop that starts each job in its own thread, and never starts a job again while its last run is still going. Every 10 minutes it fetches new readings from LI-COR (the weather station and the water-level loggers) and WQData (the water quality sonde), writes them to PostgreSQL, then runs the alert check. It also runs the Borealis jobs, which move CSV files both ways (the two-way arrow): on the 1st of each month it uploads the month that just ended as a CSV (followed by the SharePoint copy, once that is configured), and every week it downloads new creek sampling CSVs and imports them. It also sends the daily digest; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint) and [Monitoring](#monitoring).
 2. **Storage.** PostgreSQL 13 runs on the VM itself, not in Docker; the containers reach it on the host's IP (see the firewall note below). Readings are in `sensor_measurements`, one row per reading with a unique index on (station, measurement, time); creek sampling results are in `sampling_measurements`.
 3. **API.** The `backend` container is a Flask app on gunicorn with no public port. Chart data is aggregated in SQL for each request; nothing is precomputed.
 4. **Dashboard.** The `dashboard` container is Next.js. The browser loads the page, then fetches all data from the dashboard's own API routes (`dashboard/frontend/src/pages/api/`), which pass each request on to Flask (`src/lib/proxyBackend.ts`). The browser never talks to Flask directly.
 5. **Downloads.** A CSV export of up to `EXPORT_SYNC_ROW_THRESHOLD` readings is built while the visitor waits. A larger one is queued in Redis and built by the `export_worker` container (Celery), whose built-in beat scheduler deletes expired files every hour.
-6. **Monitoring.** Errors go to Sentry, job heartbeats to Healthchecks.io, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+6. **Monitoring.** Errors go to Sentry and job heartbeats to Healthchecks.io, two outside services drawn to the side since the worker, the backend, the export worker and the dashboard all report to them; also, the worker emails a daily digest and alerts, and `/health/data` reports how fresh the data is. See [Error reporting](#error-reporting-sentry) and [Monitoring](#monitoring).
+7. **WordPress.** The `wordpress` container (its data in MySQL, the `db` container) serves the home page at `well.mcmaster.ca`, which shows the dashboard in an iframe; the browser loads that iframe from `welldash.mcmaster.ca` like any other visit.
+8. **welldash².** The `ops` container is a private operations dashboard, reachable only on McMaster's network. It reads PostgreSQL and checks the dashboard, the data API and WordPress once a minute. When their read-only keys are set, it also reads unresolved errors from the Sentry API and the job heartbeats' states from the Healthchecks.io API, for its Overview page; see [welldash²](#welldash²-operations-dashboard).
 
 Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
@@ -57,6 +67,7 @@ Every setting is listed in [docs/configuration.md](docs/configuration.md).
   - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement; `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
   - `/api/exports/estimate`, `/api/exports/sync`, `/api/exports/jobs`, `/api/exports/jobs/<id>` and `/api/exports/jobs/<id>/download`: CSV downloads
   - `/health` (the process is up; not passed through) and `/health/data` (data freshness, see Monitoring; the dashboard's `/api/health/data`)
+  - The AI analysis routes (`/api/analysis/*`) are switched off; see [AI Analysis](#ai-analysis)
 - `/api/series?start=&end=&group_type=...` serves chart data aggregated in PostgreSQL: about 2,000 points per series
   (raw 10-minute readings up to ~2 weeks, coarser buckets beyond; ranges longer than ~5.5 years are capped at daily
   buckets, so they get more). Times with an offset (`...Z`) are real instants, times without one are Toronto local
@@ -107,6 +118,7 @@ Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used onl
 |---|---|
 | HoboLink (Licor Cloud API) | Automated ingestion & scheduled updates |
 | WQData Live API | Automated ingestion & scheduled updates |
+| OpenAI API | AI analysis, currently disabled (see [AI Analysis](#ai-analysis)) |
 | Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 | SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
@@ -397,11 +409,85 @@ recreate the three backend containers, or build the dashboard with `--build-arg 
 the key in Sentry also stops everything at once. In the Sentry project settings, keep *Prevent storing of IP
 addresses* on as a second guard.
 
+### Daily maintainer
+
+`.github/workflows/daily-maintainer.yml` (with its steps in `maintainer-run.yml`) runs Claude Code ([anthropics/claude-code-action](https://github.com/anthropics/claude-code-action)) every day at 11:23 UTC (6:23 or 7:23 in Toronto) to find and fix problems, and emails a summary. Every change arrives as a pull request for you to read and merge; the maintainer is told never to merge, and its tool rules deny it (see [what stops it](#what-stops-it-from-doing-harm) for what that does and doesn't guarantee).
+
+What a run does:
+
+1. **Collects the inputs** (`.github/scripts/maintainer_inputs.py`, into one JSON file): open issues labelled `sentry`; unresolved Sentry issues seen in the last 24 hours with their latest exception (organization `well-cs`, when `SENTRY_API_TOKEN` is set); failed workflow runs on `main` in the last 24 hours (the API canary, the load test and the maintainer itself are left out); unresolved github-code-quality[bot] comments on open pull requests; open code scanning and Dependabot alerts, when the token can read them; and the maintainer's own open pull requests and `maint/*` branches, so nothing is fixed twice. The Sentry token is used in this step only and is never in Claude's environment.
+2. **Claude works through them** following `.github/maintainer/PROMPT.md`: it skips what isn't a code problem (vendor outages, expired keys, bots probing URLs) or is already handled, and fixes the rest, most important first, at most 3 pull requests a run. Each fix gets its own `maint/<topic>` branch from `main`, new commits only, a test where the code is testable, the CI checks run before pushing, a pull request assigned to `lukhsaankumar` with the sections Summary, What changes, Testing, Deploy and Risk, and the github-code-quality comments addressed. A separate subagent then audits the pull request, and Claude fixes its findings until the audit says "Approval recommended".
+3. **Labels** each pull request: `maintainer`; `risk:high` if it touches the database schema or migrations, `docker-compose.yml`, Dockerfiles, `deploy.sh`, `nginx.conf`, dependency manifests, ingestion, backfills, uploads, the scheduler, Sentry or other security code, the Flask app (`server.py`), the ops dashboard (`app/ops/`), the dashboard's API routes or `next.config.*`, `.gitignore`/`.gitattributes`, `.github/`, `.claude/`, `home/` or `wordpress/`, otherwise `risk:low`; and `audit:approved` once the audit recommends approval and CI passed (`audit:findings` while it doesn't).
+4. **Emails the summary** (`.github/scripts/maintainer_summary.py`) to `ALERT_EMAILS`, every run, also when there is nothing to report ("all clear"), so a day without an email means the job didn't run. It lists the maintainer's open pull requests (from `maint/*` branches, or labelled `maintainer`) in two groups, with links: **Ready to merge** (the maintainer's own: from a `maint/*` branch of this repository and opened by the maintainer's account; with the PAT that account is your own, which opens your other pull requests too, so the `maint/*` branch is what tells them apart, and your other pull requests are never listed as ready; CI passed with all five checks `main` requires among the results, `audit:approved`, `risk:low`, no risky files, not a draft) and **Needs your review** (anything else, with the reasons: not opened by the maintainer (a `maintainer` label alone doesn't count), `risk:high`, a risky file, which the script checks itself whatever the label says, failed, unfinished or missing required checks, an audit with findings). Then what the run did and skipped, and any errors, including a commit that reached `main` from the maintainer's account other than through a merged pull request. The same text is in the run's job summary.
+
+**Who the pull requests come from.** With `WELL_MAINTAINER_PAT` set, the checkout, every push and every pull request use that token, so commits and pull requests appear as its owner (`lukhsaankumar`), with the owner's GitHub noreply address (`<id>+<login>@users.noreply.github.com`, read from the API at run time) as the commit email, and CI starts on them as on any pull request. Without it, the workflow falls back to its own `GITHUB_TOKEN`: commits and pull requests appear as `github-actions[bot]`, and the email says so. GitHub doesn't start workflows for pushes or pull requests made with that token, so in this mode the maintainer starts CI itself on its branch (`gh workflow run ci.yml --ref maint/<topic>`; `ci.yml` accepts `workflow_dispatch` for this). Those runs have the same job names on the same commit, so they count for `main`'s required checks. The fallback needs two settings: the workflow's `permissions` grant `contents`, `pull-requests`, `issues` and `actions: write` (only in the `with-workflow-token` job, which runs only without the PAT), and *Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests* must be on (the organization may have to allow it first), or `gh pr create` fails. Nothing in the workflow approves a pull request.
+
+Secrets (Settings → Secrets and variables → Actions → New repository secret):
+
+| Secret | Needed | What |
+| --- | --- | --- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | this or the next | Run `claude setup-token` locally (Claude Pro or Max subscription) and paste the token. Uses the subscription's limits. |
+| `ANTHROPIC_API_KEY` | this or the previous | An API key from the Claude Console, billed per use. Set only one of the two. |
+| `WELL_MAINTAINER_PAT` | optional (recommended) | A fine-grained personal access token created by `lukhsaankumar`: *Settings → Developer settings → Fine-grained tokens → Generate new token*, resource owner `ARCO-Lab`, *Only select repositories* → `ARCO-Lab/WELLWebsite`, repository permissions **Contents: Read and write**, **Pull requests: Read and write**, **Issues: Read and write**, **Actions: Read**, **Metadata: Read** (added automatically), and optionally **Dependabot alerts: Read** and **Code scanning alerts: Read** so the inputs include those alerts. Expiry: the longest the organization allows (90 days is a sensible default); put a reminder in the calendar, since an expired token fails the run with "WELL_MAINTAINER_PAT was rejected". The organization must allow fine-grained tokens, and may have to approve this one (*ARCO-Lab → Settings → Personal access tokens*). It has no Workflows permission, on purpose, so it can't change workflow files. |
+| `SENTRY_API_TOKEN` | optional | A read-only Sentry auth token for `well-cs` (a personal token with `event:read`, `project:read` and `org:read`). Without it Sentry isn't queried; the `sentry` GitHub issues still are. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAILS` | optional | The same values as the backend's daily digest in `dashboard/backend/app/.env` (see [Monitoring](#monitoring)): port 465 uses SSL, other ports STARTTLS, and the password is never sent unencrypted. Without `SMTP_HOST`/`SMTP_PORT` the summary is only in the job summary. |
+
+A missing Claude credential fails the run at its first step, and a rejected (expired or revoked) PAT right after; a missing optional secret only adds a warning. Those two failures stop the run before the summary email, so the only signal is GitHub's "workflow run failed" email (sent, for a scheduled run, to whoever last changed the workflow's `cron` line, if their notification settings include Actions) and the red run on the Actions tab: a morning without the maintainer's email means look there. The repository variable `MAINTAINER_MODEL` (Settings → Secrets and variables → Actions → Variables), if set, picks the model (e.g. `opus`); otherwise Claude Code's default is used.
+
+Using it:
+
+- **Run it by hand**: Actions → Daily maintainer → Run workflow. *dry run* investigates and reports without creating branches or pull requests (an instruction to Claude, not enforced by the token); *max prs* changes the limit for that run (1 or more; 0 is refused with a message, use *dry run* to change nothing).
+- **Pause it**: Actions → Daily maintainer → ⋯ → Disable workflow (Enable workflow resumes it). GitHub also disables scheduled workflows after 60 days without repository activity.
+- **Change what it does**: edit `.github/maintainer/PROMPT.md` (instructions), `.github/maintainer/settings.json` (allowed and denied tools) or `RISKY_PATHS` in `.github/scripts/maintainer_summary.py` (what always needs your review) in a normal pull request. The maintainer is told not to edit these, and its tool rules deny it.
+- **Tests**: `python3 -m unittest discover -s .github/scripts -p 'test_maintainer*.py'` (standard library only; the GitHub and Sentry APIs and SMTP are faked). CI runs them in the "Lint Python, shell and compose" job.
+
+#### What stops it from doing harm
+
+- **`main` can't be pushed to**: branch protection requires a pull request and the five CI checks, with no bypass, for administrators too. A commit can only reach `main` through a merged pull request.
+- **Merging is not blocked by GitHub.** `main` requires no approving review, and both tokens can merge a pull request whose checks passed through the API (the PAT has Contents and Pull requests write; so does the workflow token in the fallback). That the maintainer never merges rests on its instructions and its tool rules below. Requiring one approving review on `main` would make GitHub enforce it (the PAT's owner can't approve their own pull request), at the cost of every pull request, yours included, needing a second person's approval.
+- **Tool rules** (`.github/maintainer/settings.json`): git, `gh` for pull requests, issues, runs and labels, npm, Python, ruff, shellcheck and Docker for the tests are allowed; merging, closing or reviewing pull requests, pushes to `main` or anything but `maint/*` (any push with a refspec such as `a:b`, more than one branch, `HEAD` or `--all` is denied, so `git push origin maint/x:main` or `git push origin maint/x other` can't slip through the allow rule), force-pushes, branch deletion, amends and rebases, `gh secret`/`gh repo`/`gh auth`, writes through `gh api` (`-X`, `--method`, `-f`, `-F`, GraphQL), `curl`, `wget`, `nc`, Python one-liners that open network connections or read the environment, printing the environment, `git remote`/`git config` (the action keeps the token in the remote URL), reading `.git/config` or `.env` files, and editing `.github/workflows/` or the maintainer itself are denied. `gh pr edit` and labelling are allowed on any pull request (only changing a pull request's base branch is denied): that the maintainer edits and labels only its own `maint/*` pull requests rests on the prompt alone. The rules match commands as written, and Claude can still write and run a Python file, so they stop mistakes, not a determined attacker. The same file turns off Claude Code's commit and pull request attribution (`"attribution": {"commit": "", "pr": "", "sessionUrl": false}`), so no `Co-Authored-By` or "Generated with" line is added.
+- **Untrusted input**: Sentry events, issue bodies, review comments and logs are text from outside (anyone can make the site raise an error with a message they chose), so they can try to give Claude instructions (prompt injection). The prompt tells Claude to treat them as data, never follow instructions in them, and report any that try; the Sentry token is never in Claude's environment, and the tool rules above limit what a fooled Claude could run. This is a reduced risk, not a removed one, which is why everything still goes through your review.
+- **Network**: not restricted beyond the tool rules. An egress allowlist (for example `step-security/harden-runner` in block mode) would also need Docker Hub, npm, PyPI, the Playwright downloads, Anthropic, GitHub, Sentry and the SMTP host, and any miss would fail runs; it isn't used for now.
+- **Permissions**: the workflow token only reads when the PAT is set (the `with-pat` job); it gets write permissions only in the `with-workflow-token` job, which runs only when the PAT isn't set.
+
+### Visitor counts (GoatCounter)
+
+Page views on both sites are counted with [GoatCounter](https://www.goatcounter.com), in one GoatCounter site,
+`well` (statistics at https://well.goatcounter.com; welldash²'s Visitors page shows them once
+`OPS_GOATCOUNTER_TOKEN` is set). GoatCounter sets no cookies and stores nothing in the browser; it keeps aggregated
+counts of pages, referrers, browsers, screen sizes and countries, and no IP addresses or other personal data.
+
+- **Paths start with the host**, since both sites have a `/`: `welldash.mcmaster.ca/` is the dashboard,
+  `well.mcmaster.ca/news/` a WordPress page. Query strings are left out of the path. (GoatCounter's script still
+  sends the query string separately; GoatCounter reads only campaign parameters such as `utm_source` from it.)
+- **Dashboard:** `dashboard/frontend/src/components/VisitorCount.tsx` loads GoatCounter's script and counts the first
+  page load and each move to another page; a change of query alone (`?from=&to=`) or a chart zoom isn't a page
+  view. It counts only in a production build with `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` set (the Dockerfile's default)
+  and only when the page is served from welldash.mcmaster.ca, so local, preview, CI and e2e runs send nothing. The
+  dashboard shown inside WordPress's Dashboard page isn't counted a second time: GoatCounter's script skips pages
+  shown in a frame, and the WordPress page around it is counted.
+- **WordPress:** `well_goatcounter_script()` in the theme's `functions.php` adds the script to every public page,
+  except for logged-in users and previews, and counts only on well.mcmaster.ca. Theme files are mounted into the
+  container, so a change is live once it is pulled, with no restart.
+- **Turning it off:** build the dashboard with `--build-arg NEXT_PUBLIC_GOATCOUNTER_ENDPOINT=`, and remove the
+  `add_action('wp_footer', 'well_goatcounter_script')` line from the theme. One browser can opt out of a site by
+  opening its address with `#toggle-goatcounter` at the end (GoatCounter's switch, kept in that browser).
+
 ---
 
 ## AI Analysis
 
-Removed. The dashboard once had OpenAI-written summaries of the charts; it was switched off in PR #3 and its backend routes, Next.js proxies and the `openai` dependency were deleted later. The old code is in the git history (`git log --diff-filter=D -- dashboard/backend/app/api/routes/analysis`). A few commented-out UI blocks marked `AI ANALYSIS DISABLED` remain in the dashboard frontend until its next clean-up; uncommenting them has nothing left to call.
+> **Currently disabled; the code is kept.** Nothing calls OpenAI and the `openai` package is not installed. The UI entry points (`dashboard/frontend/src/pages/index.tsx`, `components/Modal.tsx`, `components/Information.tsx`) and the route registration in `dashboard/backend/app/api/routes/__init__.py` are commented out, each marked `AI ANALYSIS DISABLED`; the backend routes in `dashboard/backend/app/api/routes/analysis/` are not imported, and the four Next.js proxies in `dashboard/frontend/src/pages/api/analysis/` answer 404.
+
+To turn it back on:
+
+1. Search the code for `AI ANALYSIS DISABLED` and uncomment those blocks.
+2. Delete the 404 stubs at the top of `dashboard/frontend/src/pages/api/analysis/*.ts` (their original handlers are commented out below them).
+3. Add `openai` back to `dashboard/backend/requirements.txt` (it was pinned at `openai==2.30.0`, with its dependencies; see the note in that file) and set `OPENAI_API_KEY`.
+4. Rebuild the summaries the analysis routes read. `latest_summaries` (filled after each `/api/data` request) and `latest_sampling_summaries` (after each `/api/samples` request) were deleted in commit `5b501eb`, not commented out, so uncommenting alone gives the routes nothing to summarise. The old code is in the commit before it: `git show 5b501eb^:dashboard/backend/app/api/routes/data.py` (and `samples.py`).
+5. Rebuild the backend and dashboard images, and restore the OpenAI mentions in the privacy/disclaimer text.
+
+When it was on, an API endpoint aggregated and downsampled a series (`scripts/downsample.py` was written for it and is kept with it) and sent a bounded prompt to the OpenAI API to generate human-readable summaries of trends, anomalies, and ranges. The frontend rendered the output inside an analysis modal and allowed exporting the narrative.
 
 ---
 
@@ -422,6 +508,8 @@ source venv/bin/activate
 
 pip install -r requirements.txt
 ```
+
+CI's "Lint Python, shell and compose" job runs ruff's pyflakes rules on the backend (`ruff check --select F dashboard/backend`), and GitHub's code-quality bot comments on pull requests. To keep both quiet: import a module one way per file (`import unittest.mock`, or `from unittest import TestCase, mock`, not both), leave no unused imports or variables, give an `except` that only passes a comment saying why, and put commas between strings in a list unless they're meant to join.
 
 ---
 
@@ -451,15 +539,15 @@ WQ_DEVICE_ID=your-device-id-here
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers for a short time (1 minute for a range that ends within the last hour, 5 minutes otherwise), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
-`/api/latest` and `/api/series` also tell browsers how long they may reuse an answer (`Cache-Control: public, max-age=60`, or 300 for `/api/series` ranges that ended over an hour ago; an answer from the Redis cache gets only the time it has left there, so a browser never holds an answer longer than the server would); the Next.js proxy passes that header through. Nothing on the server caches `/api/latest`, so the Latest Data panel is never more than a minute behind the database. If the backend hasn't started answering after 65 s, the proxy answers 504.
+`/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public, max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that ended over a day ago may be reused for 3 hours (readings that old rarely change, so a chart panning back over them asks again only now and then; not longer, since a backfill or cleanup can still change them); the Next.js proxy passes that header through. Nothing on the server caches `/api/latest`, so the Latest Data panel is never more than a minute behind the database. If the backend hasn't started answering after 65 s, the proxy answers 504.
 
 ---
 
 ## Monitoring
 
-Four simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
+A few simple pieces, all optional and all off until configured. On the VM their settings go in `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it (`docker compose up -d --no-deps backend worker`).
 
 **Data freshness check.** `GET /health/data` on the backend, passed through by the dashboard at `https://welldash.mcmaster.ca/api/health/data`, lists for each group (Weather, Logger, Quality) and each series (station and measurement) the newest `recorded_at` and its age in minutes. It answers **200** when every live series is within its limit and **503** with a `stale` list otherwise (also 503 if the database can't be read or a setting below is invalid). It walks the same index as `/api/latest`, so polling it every few minutes costs nothing noticeable.
 
@@ -492,6 +580,16 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 - **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
+
+**Sentry errors as GitHub issues.** Every day at 13:17 UTC, the `Sentry issues` workflow (`.github/workflows/sentry-issues.yml`, script `.github/scripts/sentry_issues.py`) lists the unresolved issues in the `well-cs` Sentry organization that had events in the last 14 days. It does this without Sentry's GitHub app, which needs an organization owner to install:
+- An issue with no GitHub issue yet gets one, labelled `sentry` and titled `[Sentry] <short id>: <exception type>` (or `unresolved error` when the type is missing or doesn't look like an exception class, such as `TypeError` or `psycopg2.errors.UndefinedTable`). The issue shows the Sentry title, the project, event and user counts, first and last seen, the culprit, the top 8 frames of the latest event's stack trace and a link to Sentry.
+- An open GitHub issue gets a comment when the event count jumps: at least twice the count last reported there and 20 more events (`SENTRY_JUMP_FACTOR`, `SENTRY_JUMP_MIN`).
+- A closed GitHub issue gets one "Seen again" comment per new sighting after it was closed. It is never reopened automatically: reopen it if the fix didn't hold, or resolve the issue in Sentry.
+- Test events (titles containing "Sentry test") are skipped.
+
+GitHub issues are matched to Sentry issues by a hidden `<!-- sentry:<short id> -->` line in the issue body, among open and closed issues labelled `sentry`, so don't remove that line. The repository is public, so the issue text never includes request data, cookies, headers, local variables, breadcrumbs or user details. E-mail and IP addresses, query strings, invisible Unicode characters and anything that looks like a key are also removed from the title, the culprit and the stack frames. That text can come from site visitors, so it stays in code spans or a code block, under a line saying to treat it as data, not instructions; the issue title holds only the short id and the exception type.
+
+To set it up, create a Sentry auth token with only `org:read`, `project:read` and `event:read` (*User settings > Personal Tokens*, or an internal integration's token) and save it as the repository secret `SENTRY_API_TOKEN` (*Settings > Secrets and variables > Actions*). Without the secret, the run passes with a warning. The workflow writes issues with the built-in `GITHUB_TOKEN` and does nothing on forks. To run it by hand, open *Actions > Sentry issues > Run workflow*. You can choose another period there (e.g. `24h`) or tick *dry run*, which only prints what it would do.
 
 **Daily digest.** `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with ingestion); every series' newest reading; and yesterday's API traffic (requests, errors, p95 response time, data sent, CSV downloads, busiest minute; see [welldash²](#welldash²-operations-dashboard)). It emails the digest when SMTP is configured and prints it otherwise (the worker logs it to `logs/daily_digest.log`). Run it by hand with `python scripts/daily_digest.py --dry-run` (print only) or `--no-wqdata` (no WQData request).
 
@@ -626,7 +724,7 @@ Then set `OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal
 | `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
 | `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |
 | `OPS_HEALTHCHECKS_API_KEY` | none | The Healthchecks.io project's **read-only** API key (Project Settings, API Access). |
-| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Counting visits needs GoatCounter's script on the dashboard, which isn't added yet. |
+| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Both sites count into the site `well` (see [Visitor counts](#visitor-counts-goatcounter)). |
 | `REQUEST_METRICS` | on | In `dashboard/backend/app/.env`: `0` stops the backend counting requests (recreate `backend`). |
 
 **Request to McMaster IT** (copy, fill in, send):
@@ -696,7 +794,7 @@ docker compose exec backend python scripts/migrate.py            # apply
 | Database | PostgreSQL 13 (VM host); MySQL 5.7 for WordPress |
 | Infrastructure | Docker Compose on a Linux VM, behind McMaster's reverse proxy |
 | CMS | WordPress (PHP, Bootstrap, Flickity) |
-| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured) |
+| External services | LI-COR (HOBOlink), WQData Live, Borealis; SharePoint (off until configured); OpenAI (AI analysis, disabled) |
 | Monitoring | Sentry, Healthchecks.io, email digest and alerts, daily API canary (GitHub Actions) |
 | Deploy and CI | `deploy.sh` (by hand or from cron), GitHub Actions |
 
@@ -726,7 +824,8 @@ The platform should publish a simple privacy notice covering both the dashboard 
 - **Analytics and observability:** Monitoring tools, logs, metrics, and alerts may be used to understand uptime, failures, and performance across Nginx, Flask, Next.js, WordPress, and PostgreSQL.
 - **User-submitted or uploaded files:** Research uploads such as CSV or Excel sampling files may contain user-supplied content and should be handled as institutional research data, with access limited to authorized project administrators.
 - **Third-party processing:** Data sent to third-party services, such as the external APIs used for ingestion and export workflows, is subject to those providers' terms and privacy practices.
-- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content. If analytics or non-essential cookies are added later, a cookie notice/consent flow should be considered.
+- **Visitor counts:** Both sites count page views with GoatCounter, which sets no cookies, stores nothing in the browser and keeps only aggregated counts (pages, referrers, browsers, screen sizes, countries), not personal data or IP addresses. Query strings are left out of the counted page.
+- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content; the visitor counts add none. If non-essential cookies are added later, a cookie notice/consent flow should be considered.
 - **Data retention:** Application logs, backups, exports, and uploaded files should follow a defined retention and deletion policy appropriate for operational, institutional, and research needs.
 - **Access and protection:** Secrets should be stored securely, admin access should be restricted, backups should be protected, and production systems should use TLS and least-privilege access controls.
 - **Contact and governance:** The public site should identify the responsible WELL/McMaster contact or team for privacy questions, correction requests, and operational issues.
@@ -741,6 +840,9 @@ The platform should publish a simple privacy notice covering both the dashboard 
 
 **How are backups automated?**
 Every night at 03:15 Toronto time the worker dumps the database with `pg_dump` (every table its role can read, which on the VM is all of them; any left out are named in a warning), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
+
+**How did the AI analysis feature work?**
+It is switched off; see [AI Analysis](#ai-analysis). When it was on, the API aggregated and downsampled the series first, then sent a bounded prompt with metadata to OpenAI.
 
 **What keeps the dashboard responsive with large datasets?**
 `/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.

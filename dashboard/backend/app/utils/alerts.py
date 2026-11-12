@@ -64,6 +64,7 @@ RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed fo
 
 @dataclass
 class Settings:
+    """The alert settings (see the list at the top of this file); settings_from_env() reads them."""
     vendor_failures: int = DEFAULT_VENDOR_FAILURES
     reminder: timedelta = timedelta(hours=DEFAULT_REMINDER_HOURS)
     suspect_window: timedelta = timedelta(hours=DEFAULT_SUSPECT_HOURS)
@@ -77,6 +78,8 @@ class Settings:
 
 @dataclass
 class Condition:
+    """One problem found by this check. `key` identifies it across runs (e.g. "vendor:LI-COR",
+    "stale:LI-COR:2577531"), so an open incident is matched to the same condition next time."""
     key: str
     kind: str
     title: str          # the email subject, without "[WELL] "
@@ -112,6 +115,8 @@ def parse_positive(text, name, unit):
 
 
 def settings_from_env(env=None):
+    """Settings from the ALERT_* environment variables; unset ones take the defaults. A bad value raises
+    ValueError naming the variable."""
     env = os.environ if env is None else env
     failures = (env.get("ALERT_VENDOR_FAILURES") or "").strip()
     if failures and (not failures.isdigit() or int(failures) < 1):
@@ -207,6 +212,7 @@ def aware(ts):
 
 
 def site_time(ts):
+    # A database time as "YYYY-MM-DD HH:MM" site (America/Toronto) time, for the email text.
     return aware(ts).astimezone(EST_TZ).strftime("%Y-%m-%d %H:%M")
 
 

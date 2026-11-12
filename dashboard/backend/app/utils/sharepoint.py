@@ -233,6 +233,8 @@ class SharePoint:
 
 
 def retry_wait(response, attempt):
+    # Seconds to wait before retrying a throttled (429) or unavailable (503/504) call: Graph's Retry-After if given,
+    # else an exponential backoff; at least 1 s and at most MAX_RETRY_WAIT_S (60 s).
     try:
         wait = float(response.headers.get("Retry-After", ""))
     except (TypeError, ValueError):

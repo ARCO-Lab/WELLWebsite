@@ -97,7 +97,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 |---|---|
 | `ALLOW_WIPE` | `1` lets a script that deletes every row of a table run (`clear_sampling_db.py`, `inject_sampling.py --full-reload`), e.g. `docker compose exec -e ALLOW_WIPE=1 worker python scripts/...`. Take a `pg_dump` first. |
 
-`OPENAI_API_KEY` is no longer read by anything (the AI analysis was removed; see the README's "AI Analysis"). Delete it from `.env` if it is still there.
+`OPENAI_API_KEY` is unused while the AI analysis is disabled; it is only needed if that feature is turned back on (see the README's "AI Analysis").
 
 ## Dashboard (Next.js)
 
@@ -108,9 +108,10 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |
+| `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` | build arg | `https://well.goatcounter.com/count` | Where page views are counted (README, "Visitor counts"). Counts are sent only from welldash.mcmaster.ca, whatever the value; empty leaves counting out of the build. |
 
 `docker-compose.yml` passes only two build args, `FLASK_API_URL` (from `BACKEND_INTERNAL_URL`) and
-`NEXT_PUBLIC_FLASK_API_URL`. The other three come from the `ARG` defaults in `dashboard/frontend/Dockerfile`. To change
+`NEXT_PUBLIC_FLASK_API_URL`. The other four come from the `ARG` defaults in `dashboard/frontend/Dockerfile`. To change
 one, edit that default, build by hand with `docker build --build-arg NAME=value dashboard/frontend`, or add it under
 the dashboard's `build: args:` in `docker-compose.yml`. Env files are kept out of the image build (`.dockerignore`),
 so `.env.local` can't set any of them.
@@ -131,4 +132,6 @@ so `.env.local` can't set any of them.
 | `TEST_POSTGRES_URL`, `MIGRATE_TEST_DATABASE_URL` | Throwaway PostgreSQL databases for the backend tests that need one; without them those tests are skipped locally (CI fails if they are skipped). |
 | `E2E_DATABASE_URL`, `E2E_BASE_URL` | Database and dashboard address for the end-to-end tests in `dashboard/e2e/`. |
 
-The API canary's GitHub repository secrets are listed in the README's "API canary" section.
+The API canary's GitHub repository secrets are listed in the README's "API canary" section, and the daily maintainer's
+(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `WELL_MAINTAINER_PAT`, `SENTRY_API_TOKEN`, the SMTP settings and
+`ALERT_EMAILS`, and the `MAINTAINER_MODEL` variable) in its "Daily maintainer" section.

@@ -6,8 +6,7 @@ import io
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 from urllib.parse import unquote, urlsplit
 
 os.environ["DATABASE_URL"] = "sqlite://"
@@ -109,7 +108,7 @@ NAME = "WELLWestCampus_Oct2026.csv"
 PATH = f"WELL sensor data/2026/{NAME}"
 
 
-class SettingsTests(unittest.TestCase):
+class SettingsTests(TestCase):
     def test_status(self):
         self.assertEqual(sharepoint.status({}), ("off", []))
         self.assertEqual(sharepoint.status(ENV), ("on", []))
@@ -132,7 +131,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((digest[19] >> 2, digest[0] & 0b11), (0b111111, 0b11))
 
 
-class UploadTests(unittest.TestCase):
+class UploadTests(TestCase):
     def setUp(self):
         patch = mock.patch.object(sharepoint, "CHUNK", 320 * 1024)
         patch.start()
@@ -211,7 +210,7 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(client.drive(), "drive-1")
 
 
-class ScriptTests(unittest.TestCase):
+class ScriptTests(TestCase):
     def test_check_is_read_only(self):
         graph = FakeGraph()
         with mock.patch.dict(os.environ, ENV), contextlib.redirect_stdout(io.StringIO()) as out:
@@ -229,4 +228,4 @@ class ScriptTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

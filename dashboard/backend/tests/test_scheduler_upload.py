@@ -6,8 +6,7 @@ import subprocess
 import sys
 import tempfile
 import types
-import unittest
-from unittest import mock
+from unittest import SkipTest, TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -20,7 +19,7 @@ try:
     from zoneinfo import ZoneInfo
     ZoneInfo("America/Toronto")
 except Exception:  # pragma: no cover
-    raise unittest.SkipTest("no time zone database on this machine")
+    raise SkipTest("no time zone database on this machine")
 
 
 def finished(stdout, code=0):
@@ -31,7 +30,7 @@ def finished(stdout, code=0):
     return run
 
 
-class MonthlyUploadCheckTests(unittest.TestCase):
+class MonthlyUploadCheckTests(TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
@@ -137,4 +136,4 @@ class MonthlyUploadCheckTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

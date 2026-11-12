@@ -6,6 +6,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Started by hand or by the daily maintainer: a push made with the workflow token starts no workflow, so without
+  # a personal token the maintainer runs CI on its maint/* branch this way. The jobs keep their names, so their
+  # checks on the branch's commit count for main's required checks as a pull_request run's would.
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -102,7 +106,7 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Unit tests (chart zoom helpers)
+      - name: Unit tests (chart helpers, site time, the backend proxy)
         run: npm test
 
       - run: npm run build
@@ -233,8 +237,16 @@ jobs:
       - uses: actions/checkout@v7
 
       # Pyflakes rules only (F): undefined names, unused imports and variables, and the like. No style rules.
-      - name: ruff (pyflakes rules) on the backend
-        run: pipx run ruff==0.14.0 check --select F --target-version py311 --output-format github dashboard/backend
+      - name: ruff (pyflakes rules) on the backend and the CI scripts
+        run: pipx run ruff==0.14.0 check --select F --target-version py311 --output-format github dashboard/backend .github/scripts
+
+      # Standard library only, with the GitHub and Sentry APIs and SMTP faked: nothing to install, no network.
+      - name: Unit tests of the daily maintainer's scripts
+        run: python3 -m unittest discover -s .github/scripts -p 'test_maintainer*.py' -v
+
+      # The daily Sentry check (.github/workflows/sentry-issues.yml), against an in-memory Sentry and GitHub.
+      - name: sentry_issues.py unit tests
+        run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
 
       # The runner image ships shellcheck.
       - name: shellcheck on deploy.sh, the CI scripts and the load-test scripts

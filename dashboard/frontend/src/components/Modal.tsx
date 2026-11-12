@@ -13,7 +13,6 @@ import {
 import type { Metric } from "@/hooks/useLatestMetrics";
 import type { RecentSample } from "@/hooks/useRecentSamples";
 import type { SampledData } from "@/hooks/useSampledData";
-import type { LoadedSeries } from "@/hooks/useChartSeries";
 
 // Props the modal passes to its content (the metric and graph components accept some or all of them).
 interface ModalContentProps {
@@ -32,9 +31,9 @@ interface ModalProps {
   type: "weather" | "logger" | "gauges" | "quality" | "sampling";
   subtypes?: string[];
   analysisType: "recent" | "alltime";
-  // What the content shows: latest readings or samples, sampling rows, or the charts' series. Not read here
+  // What the content shows: latest readings, latest samples or sampling rows (null for the sensor graphs). Not read here
   // while the AI panel is disabled.
-  data: Metric[] | RecentSample[] | SampledData[] | LoadedSeries | null;
+  data: Metric[] | RecentSample[] | SampledData[] | null;
   weatherTab?: "graph" | "windrose";
   setWeatherTab?: (tab: "graph" | "windrose") => void;
 }
