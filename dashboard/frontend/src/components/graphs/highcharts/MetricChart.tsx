@@ -55,6 +55,7 @@ const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
 const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
 const HINT_EVERY_MS = 30_000;
+const NAV_HANDLE_PX = 14; // how near a navigator handle a finger must land to take it
 const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
 const EXTENT_ID = 'picked-range'; // the invisible series that spans the picked range
 
@@ -468,7 +469,58 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       below = false;
       controller.endGesture();
     };
+    // A finger below the plot: Highcharts' navigator moves the window as soon as a finger lands on its track, so a page
+    // scroll starting there jumped the chart. Its touch handling is stopped (onTouchStart) and this does it instead:
+    // once the finger has moved TOUCH_SLOP_PX, sideways moves the window (or the handle it started on), up or down is
+    // the page's scroll; a tap on the track centres the window there
+    let nav: { x0: number; y0: number; w0: { start: number; end: number }; part: 'start' | 'end' | 'window' | 'track'; moved: boolean; id: number } | null = null;
+    const navAxis = () => (chart() as (Highcharts.Chart & { navigator?: { xAxis?: Highcharts.Axis } }) | undefined)?.navigator?.xAxis;
+    const navDown = (e: PointerEvent) => {
+      const c = chart(), axis = navAxis();
+      if (!c || !axis) return;
+      const x = e.clientX - c.container.getBoundingClientRect().left;
+      const w = controller.window;
+      const a = axis.toPixels(w.start, false), b = axis.toPixels(w.end, false);
+      const part = Math.abs(x - a) <= NAV_HANDLE_PX ? 'start' : Math.abs(x - b) <= NAV_HANDLE_PX ? 'end' : x > a && x < b ? 'window' : 'track';
+      nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId };
+    };
+    const navMove = (e: PointerEvent) => {
+      const axis = navAxis();
+      if (!nav || e.pointerId !== nav.id || !axis) return;
+      const dx = e.clientX - nav.x0;
+      if (!nav.moved) {
+        const dy = e.clientY - nav.y0;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
+        if (Math.abs(dy) >= Math.abs(dx)) { nav = null; return; } // the page's scroll
+        nav.moved = true;
+        el.setPointerCapture(e.pointerId);
+        controller.beginGesture();
+      }
+      const ext = controller.extent;
+      const dt = (dx / Math.max(axis.len, 1)) * (ext.end - ext.start);
+      const { start, end } = nav.w0;
+      if (nav.part === 'start') controller.setWindow({ start: Math.min(start + dt, end), end }, 'slider', 'end');
+      else if (nav.part === 'end') controller.setWindow({ start, end: Math.max(end + dt, start) }, 'slider', 'start');
+      else controller.setWindow({ start: start + dt, end: end + dt }, 'slider');
+    };
+    const navUp = (e: PointerEvent) => {
+      const axis = navAxis(), c = chart();
+      if (!nav || e.pointerId !== nav.id) return;
+      const done = nav;
+      nav = null;
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      if (done.moved) controller.endGesture();
+      else if (done.part === 'track' && axis && c && e.type === 'pointerup') {
+        const at = axis.toValue(e.clientX - c.container.getBoundingClientRect().left, false);
+        const span = done.w0.end - done.w0.start;
+        controller.setWindow({ start: at - span / 2, end: at + span / 2 }, 'slider');
+      }
+    };
     const onDown = (e: PointerEvent) => {
+      if (belowPlot(e.clientY) && e.pointerType !== 'mouse') {
+        navDown(e);
+        return;
+      }
       if (belowPlot(e.clientY)) {
         below = true;
         controller.beginGesture();
@@ -482,6 +534,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       };
     };
     const onMove = (e: PointerEvent) => {
+      if (nav) navMove(e);
       if (!drag || e.pointerId !== drag.id) return;
       if (e.buttons === 0) { // the button was released where we didn't hear it (outside the window, say)
         onUp(e);
@@ -514,6 +567,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       }
     };
     const onUp = (e: PointerEvent) => {
+      if (nav) navUp(e);
       if (!drag || e.pointerId !== drag.id) return;
       if (drag.mode === 'select' && drag.moved) {
         const a = timeAt(drag.x0), b = timeAt(e.clientX);
@@ -526,6 +580,12 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     };
     // Capture lost (e.g. the window lost focus mid-drag): end the drag where it is; a selection is dropped
     const onLost = (e: PointerEvent) => {
+      // A finger's implicit capture by the element it landed on ends when the drag takes the capture: not this chart's
+      if (e.target !== el) return;
+      if (nav?.id === e.pointerId) {
+        if (nav.moved) controller.endGesture();
+        nav = null;
+      }
       if (!drag || e.pointerId !== drag.id) return;
       if (selectRef.current) selectRef.current.style.display = 'none';
       drag = null;
@@ -541,6 +601,12 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       return { d: Math.max(20, Math.abs(a.clientX - b.clientX)), cx: (a.clientX + b.clientX) / 2 };
     };
     const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        // Below the plot: kept from Highcharts' navigator and scrollbar (see navDown), and not cancelled, so the page
+        // can still scroll
+        if (belowPlot(e.touches[0].clientY)) e.stopPropagation();
+        return;
+      }
       if (e.touches.length !== 2) return;
       e.preventDefault();
       e.stopPropagation();

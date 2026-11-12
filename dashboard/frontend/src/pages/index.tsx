@@ -178,26 +178,25 @@ export default function Dashboard() {
   // data's extent ends at the next whole hour, and so do today's picked days (clampToNow), so a page left open moves
   // on with the hours.
   const [clock, setClock] = useState(() => hourStart(Date.now()));
+  // The user picked dates (or opened a link): they no longer roll over at midnight
+  const [datesChosenState, setDatesChosen] = useState(false);
   useEffect(() => {
     const id = window.setInterval(() => {
       setClock(hourStart(Date.now()));
       // Dates the user hasn't chosen follow the calendar: yesterday and today roll over at Toronto midnight
-      if (!datesChosen.current) {
+      if (!datesChosenState) {
         const today = siteDay();
         setEndDate((d) => (d && d.toDateString() === today.toDateString() ? d : today));
         setStartDate((d) => (d && d.toDateString() === siteDay(-1).toDateString() ? d : siteDay(-1)));
       }
     }, 60_000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [datesChosenState]);
 
   // A shared link's window (?from=&to=, read once on load): it is where every chart starts and goes back to on
   // Reset, and the date pickers show the days it covers. Picking other days drops it.
   const [linkWindow, setLinkWindow] = useState<Range | null>(null);
-  // The user picked dates (or opened a link): they no longer roll over. State for rendering, a ref for the clock tick.
-  const [datesChosenState, setDatesChosen] = useState(false);
-  const datesChosen = useRef(false);
-  const chooseDates = useCallback(() => { datesChosen.current = true; setDatesChosen(true); }, []);
+  const chooseDates = useCallback(() => setDatesChosen(true), []);
   const changeStartDate = useCallback((d: Date | null) => { chooseDates(); setStartDate(d); setLinkWindow(null); }, [chooseDates]);
   const changeEndDate = useCallback((d: Date | null) => { chooseDates(); setEndDate(d); setLinkWindow(null); }, [chooseDates]);
   const [urlRead, setUrlRead] = useState(false);
