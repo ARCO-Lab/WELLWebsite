@@ -10,8 +10,7 @@ import json
 import math
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import SkipTest, TestCase, main, mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.services import quality, weather  # noqa: E402
@@ -34,7 +33,7 @@ def toronto():
         from zoneinfo import ZoneInfo
         return ZoneInfo("America/Toronto")
     except Exception:
-        raise unittest.SkipTest("no time zone database on this machine")
+        raise SkipTest("no time zone database on this machine")
 
 
 def reply(body):
@@ -45,7 +44,7 @@ def reply(body):
     return resp
 
 
-class FixturesAreSanitized(unittest.TestCase):
+class FixturesAreSanitized(TestCase):
     def test_no_credentials(self):
         for path in FIXTURES.glob("*.json"):
             text = path.read_text(encoding="utf-8").lower()
@@ -53,7 +52,7 @@ class FixturesAreSanitized(unittest.TestCase):
                 self.assertNotIn(word, text, f"{path.name} mentions {word}")
 
 
-class Licor(unittest.TestCase):
+class Licor(TestCase):
     body = load("licor_fall_back_2026-11-01.json")
 
     def test_get_page_returns_every_record_and_the_cap_flag(self):
@@ -112,7 +111,7 @@ class Licor(unittest.TestCase):
         self.assertNotIn(3.8, [r["value"] for r in rows.values()])
 
 
-class WQData(unittest.TestCase):
+class WQData(TestCase):
     pages = load("wqdata_pages_fall_back_2026-11-01.json")
     START, TO = "2026-11-01 04:00:00", "2026-11-02 04:59:59"   # local midnight to midnight: 25 hours of UTC
     FROMS = [START, "2026-11-01 06:30:00", "2026-11-01 12:00:00"]
@@ -165,4 +164,4 @@ class WQData(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

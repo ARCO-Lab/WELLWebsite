@@ -6,8 +6,7 @@ import datetime as dt
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import SkipTest, TestCase, main, mock
 
 import requests
 
@@ -40,7 +39,7 @@ def parsers():
     except ModuleNotFoundError as e:
         if (e.name or "").split(".")[0] in {"utils", "db", "config", "scripts", "api"}:
             raise
-        raise unittest.SkipTest(f"backend package not installed: {e.name}")
+        raise SkipTest(f"backend package not installed: {e.name}")
     return p
 WQDATA = {"info": {"count": 2, "total": 2, "more": False, "lastDataPointTimestamp": "2026-11-10 10:00:00"},
           "data": [{"timestamp": "2026-11-10 10:00:00",
@@ -54,7 +53,7 @@ def without(d, key):
     return {k: v for k, v in d.items() if k != key}
 
 
-class LicorShape(unittest.TestCase):
+class LicorShape(TestCase):
     def test_ok(self):
         self.assertEqual(canary.check_licor(LICOR),
                          "5 records (1 weather, 1 water-level logger read by ingestion)")
@@ -130,7 +129,7 @@ class LicorShape(unittest.TestCase):
                 self.assertEqual(canary.licor_record_used(r["sensor_sn"]), bool(rows))
 
 
-class WqdataShape(unittest.TestCase):
+class WqdataShape(TestCase):
     def test_ok(self):
         self.assertEqual(canary.check_wqdata(WQDATA), "1 points, 1 values ingestion stores")
 
@@ -154,7 +153,7 @@ class WqdataShape(unittest.TestCase):
         self.assertEqual(canary.WQ_PARAMETER_IDS, set(parsers().QUALITY_PARAM_ID_MAP))
 
 
-class BorealisShape(unittest.TestCase):
+class BorealisShape(TestCase):
     def test_ok(self):
         self.assertEqual(canary.check_borealis(BOREALIS), "RELEASED, 1 files")
 
@@ -195,7 +194,7 @@ ENV = {"HOBO_API_URL": "https://licor.invalid/v1/data", "HOBO_API_TOKEN": SECRET
        "BOREALIS_SAMPLING_PERSISTENT_ID": "doi:aw", "BOREALIS_UPLOAD_PERSISTENT_ID": "doi:wc"}
 
 
-class Run(unittest.TestCase):
+class Run(TestCase):
     def run_with(self, responses, **env):
         """Run every probe against canned responses (one list per probe, in order); returns (failed, lines, calls)."""
         queue = list(responses)
@@ -254,4 +253,4 @@ class Run(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

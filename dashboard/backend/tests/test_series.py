@@ -7,7 +7,7 @@ import datetime as dt
 import os
 import pathlib
 import sys
-import unittest
+from unittest import TestCase, main, mock, skipUnless
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.routes.series import LADDER, MAX_POINTS, columnar, pick_bucket, to_local_naive  # noqa: E402
@@ -15,7 +15,7 @@ from api.routes.series import LADDER, MAX_POINTS, columnar, pick_bucket, to_loca
 DAY = 86400
 
 
-class PickBucketTests(unittest.TestCase):
+class PickBucketTests(TestCase):
     def test_raw_resolution_up_to_about_two_weeks(self):
         self.assertEqual(pick_bucket(7 * DAY), 600)
         self.assertEqual(pick_bucket(13 * DAY), 600)
@@ -35,7 +35,7 @@ class PickBucketTests(unittest.TestCase):
         self.assertGreater(3000 * DAY / pick_bucket(3000 * DAY), MAX_POINTS)
 
 
-class ToLocalNaiveTests(unittest.TestCase):
+class ToLocalNaiveTests(TestCase):
     def test_aware_times_become_toronto_wall_clock(self):
         self.assertEqual(to_local_naive("2026-11-01T04:20:00Z"), dt.datetime(2026, 11, 1, 0, 20))  # EDT
         self.assertEqual(to_local_naive("2026-11-02T05:00:00+00:00"), dt.datetime(2026, 11, 2, 0, 0))  # EST
@@ -51,7 +51,7 @@ class ToLocalNaiveTests(unittest.TestCase):
         self.assertLess(start, end)  # comparing a naive with an aware time was a TypeError, and a 500
 
 
-class ColumnarTests(unittest.TestCase):
+class ColumnarTests(TestCase):
     def test_groups_rows_into_series_in_order(self):
         rows = [("Weather", "s", "Rain", "mm", 1000, 0.2, 0.0, 0.2, 3),
                 ("Weather", "s", "Rain", "mm", 2000, 0.0, 0.0, 0.0, 6),
@@ -74,8 +74,8 @@ class ColumnarTests(unittest.TestCase):
         self.assertEqual((by["Wind Direction"]["min"], by["Wind Direction"]["max"]), ([None], [None]))
 
 
-@unittest.skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the SQL against PostgreSQL")
-class SeriesSqlTests(unittest.TestCase):
+@skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the SQL against PostgreSQL")
+class SeriesSqlTests(TestCase):
     # The session TimeZone every new database connection gets. The route must give the same answers whatever it
     # is, since nothing in the app sets it; UTC is what a fresh PostgreSQL (and the postgres image) defaults to.
     zone = "UTC"
@@ -257,7 +257,6 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertEqual(by["Water Temperature"]["agg"], "mean")
 
     def test_answers_are_cached_by_rounded_range_and_marked_cacheable(self):
-        from unittest import mock
         from utils import response_cache
         bodies, ttls = {}, {}
 
@@ -308,4 +307,4 @@ class SeriesSqlTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

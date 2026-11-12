@@ -5,8 +5,7 @@ import importlib
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real database
@@ -24,7 +23,7 @@ Config.SQLALCHEMY_DATABASE_URI = "sqlite://"
 T0 = dt.datetime(2026, 11, 1, 0, 0)
 
 
-class DataRouteTests(unittest.TestCase):
+class DataRouteTests(TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = create_app()
@@ -79,7 +78,7 @@ class DataRouteTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/data?start=x&end=y&group_type=Weather").status_code, 400)
 
 
-class MaxRowsSettingTests(unittest.TestCase):
+class MaxRowsSettingTests(TestCase):
     """DATA_MAX_ROWS is parsed once at import; a bad value falls back to the default instead of failing requests."""
 
     def test_unset_or_empty_uses_the_default_quietly(self):
@@ -108,4 +107,4 @@ class MaxRowsSettingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

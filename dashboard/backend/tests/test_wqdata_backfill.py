@@ -4,7 +4,7 @@ import datetime as dt
 import pathlib
 import sys
 import traceback
-import unittest
+from unittest import SkipTest, TestCase, main, mock
 
 import requests
 
@@ -21,7 +21,7 @@ def toronto():
         from zoneinfo import ZoneInfo
         return ZoneInfo("America/Toronto")
     except Exception:
-        raise unittest.SkipTest("no time zone database on this machine")
+        raise SkipTest("no time zone database on this machine")
 
 
 def point(ts, *params):
@@ -57,7 +57,7 @@ def client(*outcomes):
     return bf.WQData("https://wqdata.example/api", KEY, "4501", get=get, sleep=sleeps.append), calls, sleeps
 
 
-class Requests(unittest.TestCase):
+class Requests(TestCase):
     def assert_no_key(self, err):
         text = str(err) + "".join(traceback.format_exception(type(err), err, err.__traceback__))
         self.assertNotIn(KEY, text)
@@ -139,7 +139,7 @@ class Requests(unittest.TestCase):
         self.assert_no_key(cm.exception)
 
 
-class Paging(unittest.TestCase):
+class Paging(TestCase):
     start, end = dt.datetime(2026, 11, 9, 5, tzinfo=UTC), dt.datetime(2026, 11, 10, 5, tzinfo=UTC)
 
     def test_one_page(self):
@@ -189,7 +189,7 @@ class Paging(unittest.TestCase):
             bf.fetch_points(get_page, self.start, self.end)
 
 
-class Days(unittest.TestCase):
+class Days(TestCase):
     def test_local_days_ending_at_end(self):
         tz = toronto()
         end = dt.datetime(2026, 11, 10, 18, 5, tzinfo=UTC)   # 13:05 EST
@@ -211,7 +211,7 @@ class Days(unittest.TestCase):
                          (dt.datetime(2026, 11, 1, 4, tzinfo=UTC), dt.datetime(2026, 11, 2, 5, tzinfo=UTC)))
 
 
-class Compare(unittest.TestCase):
+class Compare(TestCase):
     def test_missing_extra_and_changed_values(self):
         tz = toronto()
         points = [point("2026-11-09 05:00:00", 125001, 125002),
@@ -233,7 +233,7 @@ class Compare(unittest.TestCase):
         self.assertFalse(bf.same_value(1.0, 1.001))
 
 
-class FallBackHour(unittest.TestCase):
+class FallBackHour(TestCase):
     def test_repeated_hour_shares_keys_with_the_first(self):
         # 2026-11-01 05:00-06:00Z is 01:00-02:00 EDT and 06:00-07:00Z is 01:00-02:00 EST again: the naive
         # stored times repeat, so the second hour merges into the first (its reading kept), as in the table.
@@ -248,7 +248,7 @@ class FallBackHour(unittest.TestCase):
         self.assertEqual((missing, extra, differ), ([], 0, 0))   # the repeat isn't reported missing
 
 
-class Backfill(unittest.TestCase):
+class Backfill(TestCase):
     """backfill() with stand-ins for WQData and the database."""
 
     def setUp(self):
@@ -327,16 +327,15 @@ class Backfill(unittest.TestCase):
         self.assertIn("4 missing on 2026-11-09 (2), 2026-11-10 (2)", self.log[-1])
 
 
-class Settings(unittest.TestCase):
+class Settings(TestCase):
     def test_unset_wqdata_settings_stop_with_a_clear_error(self):
-        from unittest import mock
         from config import Config
         with mock.patch.object(Config, "WQ_API_KEY", None), mock.patch("builtins.print") as out:
             self.assertEqual(bf.main(["--check"]), 2)
         self.assertIn("WQ_API_KEY", out.call_args[0][0])
 
 
-class Args(unittest.TestCase):
+class Args(TestCase):
     def test_defaults(self):
         a = bf.parse_args([])
         self.assertEqual((a.check, a.days), (False, 14))
@@ -351,4 +350,4 @@ class Args(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
