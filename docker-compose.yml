@@ -118,6 +118,8 @@ services:
     volumes:
       # Persist worker logs on host for easy access
       - ./dashboard/backend/app/logs:/app/app/logs
+      # Nightly database dumps (scripts/backup_db.py), on the host in ./backups (gitignored, readable by root only)
+      - ./backups:/app/backups
 
   export_worker:
     build:

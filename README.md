@@ -73,6 +73,7 @@ Every setting is listed in [docs/configuration.md](docs/configuration.md).
 - Worker logs and the records of uploaded months are files in `dashboard/backend/app/logs/`, mounted from the host
 - Export CSVs stay in the `exports_data` Docker volume for `EXPORT_FILE_TTL_MINUTES`
 - WordPress keeps its own data in MySQL 5.7 (the `db` container, `db_data` volume)
+- Nightly `pg_dump` backups of the database on the VM, 7 daily + 8 weekly kept ([Database backups](#database-backups))
 
 ### WordPress Home Page
 - Custom PHP template under `wp-content/themes/well`
@@ -130,6 +131,54 @@ Using it:
 - **Run it by hand**: Actions → API canary → Run workflow. On the VM, once the image includes the script: `docker compose exec worker python scripts/api_canary.py`.
 - **When a key is rotated**, update the matching repository secret (Settings → Secrets and variables → Actions) as well as `dashboard/backend/app/.env` on the VM, then run the canary by hand. The secrets are `HOBOLINK_API_URL`, `HOBOLINK_API_TOKEN`, `HOBOLINK_LOGGERS`, `WQ_API_URL`, `WQ_API_KEY`, `WQ_DEVICE_ID`, `BOREALIS_URL`, `BOREALIS_API_TOKEN`, `BOREALIS_SAMPLING_PERSISTENT_ID` and `BOREALIS_UPLOAD_PERSISTENT_ID` (or the older `DEMO_BOREALIS_URL`, `DEMO_BOREALIS_AW_PERSISTENT_ID` and `DEMO_BOREALIS_WC_PERSISTENT_ID`). The Borealis token and the WQData key are both due for rotation.
 - **Tests**: `dashboard/backend/tests/test_api_canary.py` (no network). The canary keeps copies of a few constants from `utils/parsers.py` so the workflow needs only `requests`; CI runs the tests that check those copies still match on every pull request, with the rest of the backend tests (by hand, from `dashboard/backend`: `python -m unittest discover -s tests -t .`). The issue logic is tested by `.github/scripts/test_canary_issue.sh` against a stub `gh` (`bash .github/scripts/test_canary_issue.sh`; CI runs it with the deploy script test).
+
+## Database backups
+
+The PostgreSQL database (on the VM host, outside Docker) is the only complete copy of the data, and some of it can't be fetched again: LI-COR serves at most one year of history. So the worker backs it up every night.
+
+- **When**: 03:15 Toronto time, every night (`scripts/backup_db.py`, run by the scheduler; its output goes to `logs/backup.log`). It pings `HEALTHCHECK_URL_BACKUP` when it starts and again when it ends (`/fail` if it failed), and a failure is reported to Sentry.
+- **What**: `pg_dump -Fc` (PostgreSQL's compressed custom format) of every table the role in `DATABASE_URL` can read (on the VM that is `postgres`, so the whole database), made with `pg_dump` 13, the server's version (the backend image installs `postgresql-client-13` from the PostgreSQL apt repository). The password reaches `pg_dump` through a temporary 0600 password file, never its command line.
+- **Where**: `~/WELLWebsite/backups/welldb-YYYYmmdd-HHMM.dump` on the VM (`/app/backups` in the worker; the folder is gitignored). The files are readable by root only (the container runs as root, and the job sets `umask 077`), so use `sudo` on the host.
+- **Checked**: each dump is written as a hidden `.partial` file, then read back with `pg_restore --list` (it must list data for `sensor_measurements` and `sampling_measurements`, `BACKUP_EXPECT_TABLES`) and in full, and only then renamed. A failed run leaves no file that looks like a backup, and the next run deletes an unfinished one left by a run that was killed. Each step has its own time limit (dump 80 min, checks 10 and 15 min), within the scheduler's 2 h for the whole run. Only one backup runs at a time (a lock file, `.backup.lock`). If deleting old dumps fails after a good backup, the run still counts as a success and logs a `WARNING:` line, which also goes to Sentry as a warning.
+- **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`) stays. The job refuses to start if a dump the size of the last one would leave less than `BACKUP_MIN_FREE_MB` (default 2048) free, since the database shares the disk.
+
+**Tables the role can't read are left out, and named.** `pg_dump` locks and reads every table it dumps, so by default (`BACKUP_EXCLUDE_TABLES` unset or `auto`) the job leaves out any table or sequence the connecting role can't read, and prints a `WARNING:` line naming them (in `logs/backup.log`, and sent to Sentry as a warning); the backup still counts as a success. On the VM the app connects as `postgres`, which reads everything, so nothing is left out. With a more limited role, tables created by migrations or by hand as `postgres` (`schema_migrations`, `vendor_status`, `alert_incidents`, `export_jobs`, `data_fixes`, `request_metrics`, `uptime_probes`) would be named. Grant that role `SELECT` on them (and on any sequence they own), or dump them now and then as `postgres` on the host, e.g. `sudo -u postgres pg_dump -Fc -t export_jobs -t data_fixes -f /tmp/well-postgres-tables.dump <database>`. Setting `BACKUP_EXCLUDE_TABLES` to a comma-separated list leaves out exactly those, with no warning; an empty value leaves out nothing, and the dump then fails if anything is unreadable.
+
+**Run a backup by hand** (e.g. before a migration): `docker compose exec worker python scripts/backup_db.py --no-prune`. `--prune-only` applies retention without dumping.
+
+**Restore drill** (optional; once a month is plenty): `docker compose exec worker python scripts/restore_check.py` restores the newest dump (or `--file /app/backups/<name>`) into a throwaway database, `welldb_restore_check` (another name given with `--database` must start with that, since the drill drops it first), compares each table's row count with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing from the restore or restored empty fails the drill, unless it was left out on purpose (`BACKUP_EXCLUDE_TABLES`) or because the role can't read it. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role on the VM) has; for another role, grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set `RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
+
+**Restoring for real.** Restore into a new, empty database, put back anything the dump left out, then point the app at it. `<app role>` is the role in `BACKEND_DATABASE_URL` (`postgres` on the VM).
+
+```bash
+cd ~/WELLWebsite
+docker compose stop worker export_worker      # nothing writes while you switch over
+sudo -u postgres createdb -O <app role> welldb_restored
+sudo cat backups/welldb-YYYYmmdd-HHMM.dump | sudo -u postgres pg_restore --no-owner --role=<app role> --exit-on-error -d welldb_restored
+```
+
+The next steps matter only if that night's `logs/backup.log` has a `WARNING:` line saying tables were left out. On the VM the app connects as `postgres`, so normally nothing was. If `data_fixes` was left out and you kept a dump of it made as `postgres` (see above), restore that: `sudo cat /path/to/well-postgres-tables.dump | sudo -u postgres pg_restore --exit-on-error -d welldb_restored`. If not, recreate it with a row for each dated fix that had run, so none can run a second time; without its row, running `2026-11-10_swap_air_soil_temperature.sql` again would swap air and soil temperature back. Each fix's name is in the `INSERT INTO data_fixes` line of its file in `dashboard/backend/app/db/migrations/`; so far that is only the 2026-11-10 one. These statements are safe to run even if the table came back with the dump:
+
+```bash
+sudo -u postgres psql -d welldb_restored -v ON_ERROR_STOP=1 \
+  -c "CREATE TABLE IF NOT EXISTS data_fixes (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" \
+  -c "INSERT INTO data_fixes (name) VALUES ('2026-11-10 swap air and soil temperature') ON CONFLICT (name) DO NOTHING"
+```
+
+Then switch over:
+
+```bash
+# In ~/WELLWebsite/.env, change the database name in BACKEND_DATABASE_URL to welldb_restored. Then create any of the
+# app's tables still missing (e.g. export_jobs, if it was left out): db/init_db.py runs create_all(), which creates
+# missing tables only and never changes existing ones, so it is harmless when nothing is missing.
+docker compose run --rm --no-deps backend python db/init_db.py
+# Recreate the containers so they read the new URL. Until then the backend keeps serving the old database.
+docker compose up -d backend worker export_worker
+```
+
+The next ingestion runs continue from the newest reading in the restored database, within their look-back limit; fill a longer gap with `scripts/licor_backfill.py` and `scripts/wqdata_backfill.py` (LI-COR only as far back as its one-year limit).
+
+**Off-VM copies.** These dumps sit on the VM's own disk, so they protect against mistakes (a bad migration or fix, deleted rows), not against losing the VM. The monthly CSVs on Borealis and SharePoint ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) hold the sensor readings off the VM. Borealis is public, so dumps never go there; once SharePoint access exists, copying a weekly dump to that private library is the next step. Until then, copy one off by hand now and then, e.g. `ssh well 'sudo cat ~/WELLWebsite/backups/<name>.dump' > <name>.dump`, and keep it somewhere private.
 
 ## Off-VM copies: Borealis and SharePoint
 
@@ -241,6 +290,7 @@ The scheduled jobs run inside the containers, not from cron. The `worker` contai
 - **Sampling download** every Sunday at 00:00 by the container's clock (UTC unless `TZ` is set): new sampling CSVs from Borealis (see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint)).
 - **Monthly upload** at 02:00 Toronto time: each month that has ended and isn't uploaded yet goes to Borealis (so last month goes up on the 1st, and a failed month is retried the next day), then the same file to SharePoint, which stays off until its settings are filled in.
 - **Daily digest** at `DIGEST_HOUR` (default 07:00 Toronto time).
+- **Database backup** at 03:15 Toronto time: a checked `pg_dump` of the database, 7 daily and 8 weekly dumps kept (see [Database backups](#database-backups)).
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their headers explain how). The only cron job is the optional `deploy.sh --auto` line below.
 
@@ -347,6 +397,29 @@ recreate the three backend containers, or build the dashboard with `--build-arg 
 the key in Sentry also stops everything at once. In the Sentry project settings, keep *Prevent storing of IP
 addresses* on as a second guard.
 
+### Visitor counts (GoatCounter)
+
+Page views on both sites are counted with [GoatCounter](https://www.goatcounter.com), in one GoatCounter site,
+`well` (statistics at https://well.goatcounter.com; welldash²'s Visitors page shows them once
+`OPS_GOATCOUNTER_TOKEN` is set). GoatCounter sets no cookies and stores nothing in the browser; it keeps aggregated
+counts of pages, referrers, browsers, screen sizes and countries, and no IP addresses or other personal data.
+
+- **Paths start with the host**, since both sites have a `/`: `welldash.mcmaster.ca/` is the dashboard,
+  `well.mcmaster.ca/news/` a WordPress page. Query strings are left out of the path. (GoatCounter's script still
+  sends the query string separately; GoatCounter reads only campaign parameters such as `utm_source` from it.)
+- **Dashboard:** `dashboard/frontend/src/components/VisitorCount.tsx` loads GoatCounter's script and counts the first
+  page load and each move to another page; a change of query alone (`?from=&to=`) or a chart zoom isn't a page
+  view. It counts only in a production build with `NEXT_PUBLIC_GOATCOUNTER_ENDPOINT` set (the Dockerfile's default)
+  and only when the page is served from welldash.mcmaster.ca, so local, preview, CI and e2e runs send nothing. The
+  dashboard shown inside WordPress's Dashboard page isn't counted a second time: GoatCounter's script skips pages
+  shown in a frame, and the WordPress page around it is counted.
+- **WordPress:** `well_goatcounter_script()` in the theme's `functions.php` adds the script to every public page,
+  except for logged-in users and previews, and counts only on well.mcmaster.ca. Theme files are mounted into the
+  container, so a change is live once it is pulled, with no restart.
+- **Turning it off:** build the dashboard with `--build-arg NEXT_PUBLIC_GOATCOUNTER_ENDPOINT=`, and remove the
+  `add_action('wp_footer', 'well_goatcounter_script')` line from the theme. One browser can opt out of a site by
+  opening its address with `#toggle-goatcounter` at the end (GoatCounter's switch, kept in that browser).
+
 ---
 
 ## AI Analysis
@@ -431,7 +504,7 @@ Four simple pieces, all optional and all off until configured. On the VM their s
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
-| `HEALTHCHECK_URL_BACKUP` | Reserved for the database backup job on the host, which is outside the containers: end it with `curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL_BACKUP"`. |
+| `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check ([Database backups](#database-backups)). |
 
 To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough), create one check per job, and copy each check's ping URL into the matching variable:
 - **WELL ingestion**: Simple schedule, period 10 minutes, grace 30 minutes.
@@ -439,7 +512,7 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 - **WELL SharePoint copy**, once SharePoint is set up: the same schedule and grace.
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
 - **WELL alerts**: Simple schedule, period 10 minutes, grace 30 minutes.
-- **WELL backup**, if the backup job pings it: its own schedule, grace about an hour.
+- **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan, 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It goes red both when the site is down and when data stops arriving.
 
@@ -576,7 +649,7 @@ Then set `OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal
 | `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
 | `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |
 | `OPS_HEALTHCHECKS_API_KEY` | none | The Healthchecks.io project's **read-only** API key (Project Settings, API Access). |
-| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Counting visits needs GoatCounter's script on the dashboard, which isn't added yet. |
+| `OPS_GOATCOUNTER_CODE`, `OPS_GOATCOUNTER_TOKEN` | none | A GoatCounter site's code (the `<code>` of `<code>.goatcounter.com`) and an API token allowed to read statistics. With the code only, the page links to GoatCounter. Both sites count into the site `well` (see [Visitor counts](#visitor-counts-goatcounter)). |
 | `REQUEST_METRICS` | on | In `dashboard/backend/app/.env`: `0` stops the backend counting requests (recreate `backend`). |
 
 **Request to McMaster IT** (copy, fill in, send):
@@ -619,7 +692,7 @@ New tables are created by `db.create_all()` (`dashboard/backend/app/db/init_db.p
 ```bash
 cd ~/WELLWebsite
 ./deploy.sh                                                       # pull main, rebuild backend (the migration files are baked into the image)
-pg_dump "<database url>" -Fc -f ~/welldb-$(date +%F).dump        # a backup first, kept outside the repo
+docker compose exec worker python scripts/backup_db.py --no-prune   # a backup first (see Database backups)
 docker compose exec backend python scripts/migrate.py --status   # what has run and what is pending
 docker compose exec backend python scripts/migrate.py --dry-run  # the SQL that would run
 docker compose exec backend python scripts/migrate.py            # apply
@@ -676,7 +749,8 @@ The platform should publish a simple privacy notice covering both the dashboard 
 - **Analytics and observability:** Monitoring tools, logs, metrics, and alerts may be used to understand uptime, failures, and performance across Nginx, Flask, Next.js, WordPress, and PostgreSQL.
 - **User-submitted or uploaded files:** Research uploads such as CSV or Excel sampling files may contain user-supplied content and should be handled as institutional research data, with access limited to authorized project administrators.
 - **Third-party processing:** Data sent to third-party services, such as the external APIs used for ingestion and export workflows, is subject to those providers' terms and privacy practices.
-- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content. If analytics or non-essential cookies are added later, a cookie notice/consent flow should be considered.
+- **Visitor counts:** Both sites count page views with GoatCounter, which sets no cookies, stores nothing in the browser and keeps only aggregated counts (pages, referrers, browsers, screen sizes, countries), not personal data or IP addresses. Query strings are left out of the counted page.
+- **Cookies and WordPress behavior:** The WordPress site may set essential cookies related to login state, session handling, security, or embedded content; the visitor counts add none. If non-essential cookies are added later, a cookie notice/consent flow should be considered.
 - **Data retention:** Application logs, backups, exports, and uploaded files should follow a defined retention and deletion policy appropriate for operational, institutional, and research needs.
 - **Access and protection:** Secrets should be stored securely, admin access should be restricted, backups should be protected, and production systems should use TLS and least-privilege access controls.
 - **Contact and governance:** The public site should identify the responsible WELL/McMaster contact or team for privacy questions, correction requests, and operational issues.
@@ -690,7 +764,7 @@ The platform should publish a simple privacy notice covering both the dashboard 
 `welldash.mcmaster.ca` and `well.mcmaster.ca` both point at McMaster's reverse proxy, which terminates TLS and forwards to the VM: the dashboard container on port 8081, WordPress on port 8080. The browser calls the dashboard's own API routes (`/api/...`), which pass the request to the Flask backend on the internal Docker network. The API routes are listed under [Backend](#backend); none are versioned.
 
 **How are backups automated?**
-Each month the worker exports the month's sensor data as CSV and uploads it to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint).
+Every night at 03:15 Toronto time the worker dumps the database with `pg_dump` (every table its role can read, which on the VM is all of them; any left out are named in a warning), checks the dump, and keeps 7 daily and 8 weekly dumps on the VM; see [Database backups](#database-backups). Those dumps are on the VM's own disk. Off the VM, each month's sensor data goes up as a CSV to Borealis (published, citable) and, when configured, to SharePoint; see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint). There are no nightly CSV exports.
 
 **What keeps the dashboard responsive with large datasets?**
 `/api/series` aggregates each chart range in PostgreSQL to about 2,000 points per series, using an index on (sensor group, time); its answers are cached in Redis for a few minutes, every API query has a statement timeout, and raw `/api/data` requests are capped at `DATA_MAX_ROWS`. Large CSV downloads are built by a separate worker instead of in the request.
