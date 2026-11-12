@@ -29,9 +29,8 @@ Every API route that calls the backend goes through `src/lib/proxyBackend.ts`, w
 Beyond a limit the answer is a 429 with `Retry-After`, and the backend isn't called. `0` turns a limit off. They are
 read when the server starts; to change one, add it to the `dashboard` service's `environment:` in
 `docker-compose.yml`. The limits are generous for one person because many visitors can share one address (a campus
-network). welldash²'s uptime checks (header `X-Welldash2-Probe`) are never limited when they connect from inside the
-server's own networks (a private address that isn't a Docker gateway or a trusted proxy); the same header arriving
-through the public site counts like any request.
+network). welldash²'s uptime checks call the dashboard page and the backend directly on the Docker network, not these
+API routes, so they never use a budget.
 
 **Are visitors told apart?** If every visitor shows up as one address, they all share one budget. At most every 10
 minutes the dashboard logs how many different addresses made API requests, as a count only:

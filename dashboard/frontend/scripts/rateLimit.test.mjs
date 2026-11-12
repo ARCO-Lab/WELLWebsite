@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ClientCounter, DEFAULT_LIMITS, InFlight, PROBE_HEADER, RateLimiter, TokenBuckets, isInternalProbe, isSlow, limitsFromEnv,
+  ClientCounter, DEFAULT_LIMITS, InFlight, RateLimiter, TokenBuckets, isSlow, limitsFromEnv,
 } from "../src/lib/rateLimit.ts";
 
 function clock(start = 1_000_000) {
@@ -88,19 +88,6 @@ test("limits can be set from the environment; bad values keep the default", () =
   assert.equal(limits.burst, 50);
   assert.equal(limits.slowConcurrent, 0);
   assert.equal(limits.perMinute, DEFAULT_LIMITS.perMinute);
-});
-
-test("only welldash²'s checks from inside the server's networks skip the limits", () => {
-  const probe = { [PROBE_HEADER]: "1" };
-  const none = new Set();
-  assert.ok(isInternalProbe(probe, "172.18.0.5", none), "a container on a Docker network");
-  assert.ok(isInternalProbe(probe, "127.0.0.1", none), "the server itself");
-  assert.ok(isInternalProbe(probe, "10.20.2.7", none));
-  assert.ok(!isInternalProbe({}, "172.18.0.5", none), "no header");
-  assert.ok(!isInternalProbe(probe, "198.51.100.7", none), "a public address can't claim to be the probe");
-  assert.ok(!isInternalProbe(probe, "172.18.0.1", none), "a Docker gateway: outside connections can arrive from there");
-  assert.ok(!isInternalProbe(probe, "130.113.68.30", new Set(["130.113.68.30"])), "through the public site");
-  assert.ok(!isInternalProbe(probe, "10.0.0.9", new Set(["10.0.0.9"])), "a trusted proxy is never the probe");
 });
 
 test("the address counter logs counts, never addresses, at most once per window", () => {

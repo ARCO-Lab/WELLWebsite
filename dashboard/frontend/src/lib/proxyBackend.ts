@@ -17,8 +17,8 @@ import http from "http";
 import type { ClientRequest, IncomingMessage } from "http";
 import { pipeline } from "stream/promises";
 import type { NextApiRequest, NextApiResponse } from "next";
-import { clientIp, logClientIpSample, trustedProxies } from "./clientIp.ts";
-import { ClientCounter, RateLimiter, isInternalProbe, isSlow } from "./rateLimit.ts";
+import { clientIp, logClientIpSample } from "./clientIp.ts";
+import { ClientCounter, RateLimiter, isSlow } from "./rateLimit.ts";
 
 // Headers worth forwarding; Content-Disposition and Content-Length matter for CSV downloads, and Cache-Control
 // lets browsers reuse /api/latest and /api/series answers for as long as the backend allows. The body bytes are
@@ -72,16 +72,14 @@ export async function proxyToBackend(
   // The backend has no public port, so this header (one entry, replacing any the browser sent) is the only
   // client address it sees. See lib/clientIp.ts for which address that is.
   const headers: Record<string, string> = { ...init.headers };
-  const trusted = trustedProxies();
-  const ip = clientIp(req, trusted);
+  const ip = clientIp(req);
   logClientIpSample(req, ip);
   shared.counter ??= new ClientCounter(Date.now());
   const counted = shared.counter.record(ip, Date.now());
   if (counted) console.info(counted);
 
   shared.limiter ??= new RateLimiter();
-  const probe = isInternalProbe(req.headers, clientIp(req, new Set()), trusted);
-  const verdict = probe ? { ok: true as const, release: () => {} } : shared.limiter.check(ip, isSlow(path, init.method));
+  const verdict = shared.limiter.check(ip, isSlow(path, init.method));
   if (!verdict.ok) {
     res.setHeader("Retry-After", String(verdict.retryAfterS));
     return res.status(429).json(TOO_MANY);

@@ -9,9 +9,6 @@
 // requests in flight at once. The limits are generous for one person; addresses shared by many people (a campus NAT)
 // are why they are this high. Each can be changed with an environment variable (see limitsFromEnv); 0 turns one off.
 //
-// welldash²'s uptime checks (backend app/ops/probe.py) send the X-Welldash2-Probe header and are never limited, but
-// only when they come straight from inside the server's networks (isInternalProbe): anyone can send the header.
-//
 // ClientCounter logs, at most every 10 minutes, how many different addresses made requests: if it stays at 1 while
 // the site has visitors, every visitor is seen as the same address and shares one budget (see lib/clientIp.ts).
 
@@ -26,24 +23,6 @@ export type Limits = {
 export const DEFAULT_LIMITS: Limits = {
   burst: 600, perMinute: 600, slowBurst: 120, slowPerMinute: 120, slowConcurrent: 12,
 };
-
-// The header welldash²'s uptime checks send (backend utils/traffic.py PROBE_HEADER), lower-cased as Node gives it.
-export const PROBE_HEADER = "x-welldash2-probe";
-
-// Loopback and private (RFC 1918, IPv6 unique-local) addresses: the server itself and its Docker networks.
-const INTERNAL = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^::1$/, /^f[cd][0-9a-f]{2}:/i];
-
-/** Whether a request is welldash²'s uptime check: it carries PROBE_HEADER and its connection comes from inside the
- *  server's networks, not through a trusted reverse proxy (the public site), so the header can't be used from outside
- *  to get around the limits. `peer` is the connection's address, normalized as clientIp does. */
-export function isInternalProbe(headers: Record<string, string | string[] | undefined>, peer: string,
-  trusted: Set<string>): boolean {
-  if (!headers[PROBE_HEADER] || !peer || trusted.has(peer)) return false;
-  // Not a Docker network's gateway (x.x.x.1): when Docker's userland proxy forwards the published port, outside
-  // connections arrive from there.
-  if (!peer.startsWith("127.") && /^\d+\.\d+\.\d+\.1$/.test(peer)) return false;
-  return INTERNAL.some((re) => re.test(peer));
-}
 
 /** Counts the different client addresses seen in each window of `windowMs`, and once a window has ended, on the next
  *  request, gives the line to log: counts only, never an address. At most `cap` addresses are remembered per window. */
