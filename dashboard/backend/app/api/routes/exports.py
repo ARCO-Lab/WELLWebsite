@@ -17,6 +17,7 @@ from flask import after_this_request, jsonify, request, send_file
 from sqlalchemy import text
 
 from api.services.exports import (
+    EXPORT_QUEUE_DOWN_MESSAGE,
     default_export_filename,
     disk_space_error,
     estimate_rows,
@@ -30,6 +31,7 @@ from api.services.exports import (
 from config import Config
 from db.database import db
 from db.models import ExportJob
+from utils.sentry import capture_job_error
 from utils.timezone import est_now, est_passed
 
 log = logging.getLogger(__name__)
@@ -208,7 +210,19 @@ def register_export_routes(app):
         db.session.commit()
 
         from tasks.exports import generate_export_job
-        generate_export_job.delay(job_id)
+        try:
+            generate_export_job.delay(job_id)
+        except Exception as exc:
+            # The queue (Redis) is unreachable. Left "queued", the job would count against the visitor's and the
+            # global limits for an hour (QUEUED_STALE_AFTER); failed now, it frees its place at once. It isn't run
+            # here instead: a large export can take minutes and hundreds of MB, too much for a web request.
+            app.logger.error("export job %s not queued: %s", job_id, type(exc).__name__)
+            capture_job_error(exc, source="api")
+            job.status = "failed"
+            job.error_message = EXPORT_QUEUE_DOWN_MESSAGE
+            job.completed_at = est_now()
+            db.session.commit()
+            return jsonify({"error": EXPORT_QUEUE_DOWN_MESSAGE, "job_id": job_id}), 503
 
         return (
             jsonify(

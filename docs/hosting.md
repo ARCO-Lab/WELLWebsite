@@ -13,6 +13,10 @@ commented-out `proxy` service in `docker-compose.yml` are for local development 
 - Seven Docker Compose services: `db` (MySQL), `wordpress` (the stock image with `home/` mounted), `backend`, `redis`,
   `worker`, `export_worker` and `dashboard` (`backend`, `worker` and `export_worker` are built from one image). An
   eighth, `ops` ([welldash²](../dashboard/backend/app/ops/README.md)), starts only with the `ops` compose profile.
+- Each service has a memory limit (`mem_limit`, several times its normal use) and a size cap on Docker's own log
+  (10 MB x 5 files). `backend`, `dashboard`, `worker`, `redis` and `ops` have health checks, shown by
+  `docker compose ps`. Redis is capped at 256 MB and keeps nothing on disk; when full it evicts cache entries only,
+  never the export queue.
 - TLS and the public hostnames are handled by McMaster's reverse proxy, outside this repository.
 - Secrets are injected through env files that aren't committed (see [configuration.md](configuration.md)).
 - The VM runs `main`, deployed by `deploy.sh` (see [deploying.md](deploying.md)).
@@ -35,6 +39,8 @@ the dashboard's API routes. The data is public and read-only; nothing on the das
 - Schema changes are numbered SQL migrations, applied by hand (see
   [Database migrations](../dashboard/backend/README.md#database-migrations)).
 - Worker logs and the records of uploaded months are files in `dashboard/backend/app/logs/`, mounted from the host.
+  Each `*.log` the worker writes is rotated at 5 MB (`name.log.1` to `.3` are the older copies; the oldest is deleted),
+  and a log it can't write never stops a job (`utils/worklog.py`).
 - Export CSVs stay in the `exports_data` Docker volume for `EXPORT_FILE_TTL_MINUTES`.
 - WordPress keeps its own data in MySQL 5.7 (the `db` container, `db_data` volume).
 - Nightly `pg_dump` backups of the database on the VM, 7 daily + 8 weekly kept

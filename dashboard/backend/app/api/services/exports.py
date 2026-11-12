@@ -120,9 +120,17 @@ def jobs_started_since(fingerprint: str, since_utc: datetime) -> int:
     are kept for weeks (tasks/exports.py JOB_ROW_RETENTION), and created_at is naive wall time, so rows from a little
     before are fetched and their real ages checked here (wall times are an hour off across a DST change)."""
     wall_cutoff = since_utc.astimezone(EST_TZ).replace(tzinfo=None) - timedelta(hours=1)
-    rows = (db.session.query(ExportJob.created_at)
+    rows = (db.session.query(ExportJob.created_at, ExportJob.error_message)
             .filter(ExportJob.requester_fingerprint == fingerprint, ExportJob.created_at >= wall_cutoff).all())
-    return sum(1 for (created_at,) in rows if _wall_to_utc(created_at) >= since_utc)
+    # A job that couldn't be queued (Redis down) never ran, so it doesn't use up the quota
+    return sum(1 for created_at, error in rows
+               if _wall_to_utc(created_at) >= since_utc and error != EXPORT_QUEUE_DOWN_MESSAGE)
+
+
+# Shown on the Download panel when a background export can't be queued (the job is marked failed with it too, by
+# api/routes/exports.py). Such a job never ran, so it doesn't count against the visitor's hourly quota.
+EXPORT_QUEUE_DOWN_MESSAGE = ("Large exports are unavailable right now. Please try again in a few minutes, "
+                             "or pick a shorter range to download directly.")
 
 
 # A ready job is handed to another request for the same export only if its file has at least this long left, so
