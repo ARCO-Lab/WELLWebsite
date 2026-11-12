@@ -5,7 +5,8 @@
 #  - WQData (Quality) continues from its newest stored reading minus an hour, so readings that arrive late
 #    are still picked up and a short outage catches up by itself. LI-COR continues from a few hours before
 #    the end of its last fully stored fetch, or from a group's newest reading after a short gap or when the
-#    whole station has been silent (see licor_start), so a group silent for days doesn't widen every request.
+#    whole station has been silent (see licor_start), so a group silent for days doesn't widen every request;
+#    once it reports again, its gap is fetched in the same run (catch_up).
 #    A run never looks back more than 14 days; older gaps are filled by scripts/licor_backfill.py (LI-COR)
 #    and scripts/wqdata_backfill.py (WQData).
 #  - LI-COR (the weather station and the water-level loggers) is read once for both groups, in windows
@@ -61,7 +62,8 @@ KEY_COLUMNS = ["station_id", "measurement_type", "recorded_at"]   # the table's 
 LICOR_LATE = timedelta(hours=3)
 # A LI-COR group whose newest reading is this much older than the last fetch counts as silent (the loggers pulled for
 # winter, say) and no longer moves the start back. Until then its newest reading still does, so readings a logger
-# resends after losing contact for a few hours are picked up; after it, scripts/licor_backfill.py fills them.
+# resends after losing contact for a few hours are picked up; after it, its gap is fetched once it reports again
+# (catch_up), up to 14 days back.
 LICOR_SILENT = timedelta(days=1)
 
 
@@ -86,20 +88,38 @@ def run_start(group, tz, now):
 
 
 def licor_start(tz, now):
-    """Where a LI-COR run starts: LICOR_LATE before the end of the last fetch whose readings were all stored, or
-    earlier where a group's newest reading is older than that (a short gap, caught up as before), except a group
-    silent for more than LICOR_SILENT. Without that exception a silent group dragged every run back to the 14-day
-    limit: two 7-day requests every 10 minutes, burning millions of row ids a day on rows already stored. When every
-    group is silent (the whole station offline), the fresher group's newest reading sets the start, so what the
-    station uploads once it is back is caught up. With no fetch recorded yet, the older group's start, as before."""
-    starts = [run_start("Weather", tz, now), run_start("Logger", tz, now)]
+    """(start, {group: its own start}) for a LI-COR run. The start is LICOR_LATE before the end of the last fetch
+    whose readings were all stored, or earlier where a group's newest reading is older than that (a short gap,
+    caught up as before), except a group silent for more than LICOR_SILENT. Without that exception a silent group
+    dragged every run back to the 14-day limit: two 7-day requests every 10 minutes, burning millions of row ids a
+    day on rows already stored. When every group is silent (the whole station offline), the fresher group's newest
+    reading sets the start. Either way a run never starts more than LICOR_LATE + LICOR_SILENT ago, so the window stops
+    growing while the station is offline, every record is unreadable, or ingestion was down. The groups left out
+    (their own start is earlier) are returned, and once one of them reports again inject_licor fetches its gap
+    (catch_up). With no fetch recorded yet, the older group's start, as before."""
+    starts = {group: run_start(group, tz, now) for group in ("Weather", "Logger")}
     until = fetched_until("LI-COR")
     if until is None:
-        start = min(starts)
+        start = min(starts.values())
     else:
-        reporting = [s for s in starts if s >= until - LICOR_SILENT]
-        start = min([until - LICOR_LATE] + reporting) if reporting else max(starts)
-    return max(start, now - RUN_LOOKBACK)
+        reporting = [s for s in starts.values() if s >= until - LICOR_SILENT]
+        start = min([until - LICOR_LATE] + reporting) if reporting else max(starts.values())
+        start = max(start, now - LICOR_LATE - LICOR_SILENT)
+    start = max(start, now - RUN_LOOKBACK)
+    return start, {group: s for group, s in starts.items() if s < start}
+
+
+def catch_up(left_out, rows):
+    """(where to fetch from again, the groups back), or (None, []): the earliest start among the left-out groups
+    that this answer has readings from that are newer than their newest stored one. A logger out of contact for longer
+    than LICOR_SILENT resends what it missed when it reconnects; without this, all but the last few hours of that
+    would never be fetched."""
+    back = []
+    for group in sorted(left_out):
+        newest = newest_stored(group)
+        if any(r["group_type"] == group and (newest is None or r["recorded_at"] > newest) for r in rows.values()):
+            back.append(group)
+    return (min(left_out[g] for g in back), back) if back else (None, [])
 
 
 def read_answer(source, parse, error=None):
@@ -122,7 +142,7 @@ def read_answer(source, parse, error=None):
 
 def inject_licor(tz, now):
     # One read of LI-COR covers both the weather station and the water-level loggers.
-    start = licor_start(tz, now)
+    start, left_out = licor_start(tz, now)
     try:
         records = fetch_range(weather_service.get_page, start, now)
     except Exception as e:
@@ -132,6 +152,20 @@ def inject_licor(tz, now):
         records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, skipped))
     if error is not None:
         raise error
+    gap_start, back = catch_up(left_out, rows)
+    if gap_start is not None:
+        # A silent group is back: fetch its gap too, before anything is stored or the mark moves.
+        try:
+            gap = fetch_range(weather_service.get_page, gap_start, start)
+        except Exception as e:
+            record_vendor_result("LI-COR", e)
+            raise
+        for key, row in licor_rows(gap, {"Weather", "Logger"}, weather_service.get_logger_id(), tz).items():
+            rows.setdefault(key, row)
+        print(f"[INFO] LI-COR: {', '.join(back)} reporting again; also fetched "
+              f"{gap_start:%Y-%m-%d %H:%M} to {start:%Y-%m-%d %H:%M} UTC: {len(gap)} records")
+        records = records + gap
+        start = gap_start
     new = store(list(rows.values()))
     record_fetched_until("LI-COR", now)
     print(f"[INFO] LI-COR: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(records)} records, "

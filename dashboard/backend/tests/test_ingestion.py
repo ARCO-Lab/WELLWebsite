@@ -75,12 +75,16 @@ class IngestionTestCase(unittest.TestCase):
 
 class LicorStartTests(IngestionTestCase):
     def start(self):
-        return self.ingest.licor_start(EST_TZ, NOW)
+        return self.ingest.licor_start(EST_TZ, NOW)[0]
+
+    def left_out(self):
+        return self.ingest.licor_start(EST_TZ, NOW)[1]
 
     def test_without_a_mark_the_older_group_sets_the_start_as_before(self):
         self.add("Weather", NOW - 10 * dt.timedelta(minutes=1))
         self.add("Logger", NOW - 3 * D)
         self.assertEqual(self.start(), NOW - 3 * D - H)
+        self.assertEqual(self.left_out(), {})
 
     def test_a_silent_group_no_longer_widens_every_run(self):
         # The loggers stopped three days ago; the weather station reports. Before, every run fetched 3 days, then
@@ -90,11 +94,13 @@ class LicorStartTests(IngestionTestCase):
         self.mark(NOW - 10 * dt.timedelta(minutes=1))
         self.assertEqual(self.start(), NOW - 10 * dt.timedelta(minutes=1) - self.ingest.LICOR_LATE)
         self.assertEqual(self.ingest.LICOR_LATE, 3 * H)
+        self.assertEqual(self.left_out(), {"Logger": NOW - 3 * D - H})   # its gap is fetched once it reports again
 
     def test_a_group_that_has_never_reported_doesnt_count(self):
         self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
         self.mark(NOW - 10 * dt.timedelta(minutes=1))
         self.assertEqual(self.start(), NOW - 10 * dt.timedelta(minutes=1) - 3 * H)
+        self.assertEqual(self.left_out(), {"Logger": NOW - 14 * D})
 
     def test_a_short_gap_is_still_caught_up(self):
         # A logger out of contact for 6 hours resends what it missed: its newest reading still sets the start.
@@ -102,26 +108,41 @@ class LicorStartTests(IngestionTestCase):
         self.add("Logger", NOW - 6 * H)
         self.mark(NOW - 10 * dt.timedelta(minutes=1))
         self.assertEqual(self.start(), NOW - 7 * H)
+        self.assertEqual(self.left_out(), {})
 
-    def test_a_whole_station_outage_is_caught_up_from_the_fresher_group(self):
-        # Nothing from the station for 3 days (the loggers report through it): what it uploads once it is back must
-        # still be fetched, so the fresher group's newest reading sets the start, not the mark.
+    def test_a_whole_station_outage_doesnt_grow_the_window(self):
+        # Nothing from the station for 3 days (the loggers report through it). Each run reads at most the last
+        # LICOR_LATE + LICOR_SILENT; both groups are left out, so what the station uploads once it is back is fetched
+        # from their newest readings then (see LicorRunTests).
         self.add("Weather", NOW - 3 * D)
         self.add("Logger", NOW - 4 * D)
         self.mark(NOW - 10 * dt.timedelta(minutes=1))
-        self.assertEqual(self.start(), NOW - 3 * D - H)
+        self.assertEqual(self.start(), NOW - 27 * H)
+        self.assertEqual(self.left_out(), {"Weather": NOW - 3 * D - H, "Logger": NOW - 4 * D - H})
 
-    def test_ingestion_down_for_days_starts_from_the_mark(self):
+    def test_unreadable_records_dont_grow_the_window(self):
+        # Every answer unreadable for 3 days: nothing is stored and the mark doesn't move, but the window stays at
+        # LICOR_LATE + LICOR_SILENT instead of growing to 14 days.
+        self.add("Weather", NOW - 3 * D)
+        self.add("Logger", NOW - 3 * D)
+        self.mark(NOW - 3 * D)
+        self.assertEqual(self.start(), NOW - 27 * H)
+        self.assertEqual(set(self.left_out()), {"Weather", "Logger"})
+
+    def test_ingestion_down_for_days_starts_a_day_back_and_catches_up_the_rest(self):
         self.add("Weather", NOW - 2 * D)
         self.add("Logger", NOW - 2 * D)
         self.mark(NOW - 2 * D)
-        self.assertEqual(self.start(), NOW - 2 * D - 3 * H)
+        self.assertEqual(self.start(), NOW - 27 * H)
+        self.assertEqual(self.left_out(), {"Weather": NOW - 2 * D - H, "Logger": NOW - 2 * D - H})
 
     def test_never_more_than_14_days_back(self):
         self.add("Weather", NOW - 30 * D)
         self.add("Logger", NOW - 30 * D)
+        self.assertEqual(self.start(), NOW - 14 * D)   # no mark yet: as before, capped
         self.mark(NOW - 30 * D)
-        self.assertEqual(self.start(), NOW - 14 * D)
+        self.assertEqual(self.left_out(), {"Weather": NOW - 14 * D, "Logger": NOW - 14 * D})
+
 
     def test_an_unreadable_mark_falls_back_to_the_stored_readings(self):
         self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
@@ -139,14 +160,15 @@ class LicorStartTests(IngestionTestCase):
 class LicorRunTests(IngestionTestCase):
     """inject_licor with the fetch and the insert replaced."""
 
-    def run_with(self, records, store=None):
+    def run_with(self, records, store=None, fetch=None):
         out = io.StringIO()
         stored = []
 
         def fake_store(rows):
             stored.extend(rows)
             return len(rows)
-        with mock.patch.object(self.ingest, "fetch_range", return_value=records), \
+        self.fetch = mock.Mock(side_effect=fetch, return_value=records)
+        with mock.patch.object(self.ingest, "fetch_range", self.fetch), \
                 mock.patch.object(self.ingest, "store", side_effect=store or fake_store), \
                 mock.patch.object(self.ingest.weather_service, "get_logger_id", return_value=WEATHER), \
                 contextlib.redirect_stdout(out):
@@ -171,6 +193,50 @@ class LicorRunTests(IngestionTestCase):
         self.assertEqual((row["consecutive_failures"], row["last_skipped"]),
                          (0, "3 unreadable record(s), e.g. unreadable timestamp None from sensor '22154270-1'"))
         self.assertEqual(fetched_until("LI-COR"), NOW)
+
+    def test_a_logger_back_after_two_days_has_its_gap_fetched(self):
+        # The loggers were out of contact for 2 days (so the runs left them out), then resend what they missed. The
+        # run that first sees them again also fetches their gap, before storing anything or moving the mark.
+        from utils.alert_state import fetched_until
+        self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
+        self.add("Logger", NOW - 2 * D)
+        self.mark(NOW - 10 * dt.timedelta(minutes=1))
+        start = NOW - 10 * dt.timedelta(minutes=1) - 3 * H
+        logger = "22168654-3"   # logger 2's water temperature
+
+        def fetch(get_page, lo, hi):
+            if hi == NOW:   # this run's window: the weather station and the loggers' newest readings
+                return [licor("21948438-1", 5.0, "2026-11-11 18:40:00Z"), licor(logger, 4.4, "2026-11-11 18:40:00Z")]
+            return [licor(logger, 4.1, "2026-11-10 06:00:00Z"), licor(logger, 4.0, "2026-11-09 20:00:00Z")]
+        stored = self.run_with(None, fetch=fetch)
+        self.assertEqual([c.args[1:] for c in self.fetch.call_args_list],
+                         [(start, NOW), (NOW - 2 * D - H, start)])
+        self.assertEqual(sorted(r["value"] for r in stored if r["group_type"] == "Logger"), [4.0, 4.1, 4.4])
+        self.assertIn("[INFO] LI-COR: Logger reporting again; also fetched 2026-11-09 18:00 to 2026-11-11 15:50 UTC: "
+                      "2 records", self.output)
+        self.assertEqual(fetched_until("LI-COR"), NOW)
+
+    def test_a_silent_group_still_silent_costs_no_second_fetch(self):
+        self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
+        self.add("Logger", NOW - 2 * D)
+        self.mark(NOW - 10 * dt.timedelta(minutes=1))
+        self.run_with([licor("21948438-1", 5.0, "2026-11-11 18:40:00Z")])
+        self.assertEqual(self.fetch.call_count, 1)
+
+    def test_a_failed_gap_fetch_is_recorded_and_keeps_the_mark(self):
+        from utils.alert_state import fetched_until
+        self.add("Weather", NOW - 20 * dt.timedelta(minutes=1))
+        self.add("Logger", NOW - 2 * D)
+        self.mark(NOW - 10 * dt.timedelta(minutes=1))
+
+        def fetch(get_page, lo, hi):
+            if hi == NOW:
+                return [licor("22168654-3", 4.4, "2026-11-11 18:40:00Z")]
+            raise BadVendorResponse("LI-COR reply has no 'data' list (got ['message'])")
+        with self.assertRaises(BadVendorResponse):
+            self.run_with(None, fetch=fetch)
+        self.assertEqual(self.status("LI-COR")["last_error_kind"], "bad_response")
+        self.assertEqual(fetched_until("LI-COR"), NOW - 10 * dt.timedelta(minutes=1))
 
     def test_a_clean_answer_clears_the_note(self):
         self.run_with([licor("21948438-1", 5.0, None), licor("21948438-1", 5.0, "2026-11-11 18:40:00Z")])
