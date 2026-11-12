@@ -27,6 +27,14 @@ no Content-Security-Policy, `frame-ancestors` or `X-Frame-Options` header, so an
 Flask API accepts requests from any origin (`CORS(app)` in `server.py`), but it has no public port: browsers only reach
 the dashboard's API routes. The data is public and read-only; nothing on the dashboard needs a login.
 
+**The embedded page.** The WordPress Dashboard page (`page-dashboard.php`) frames `/?embed=1`, which the dashboard
+serves from a static page without its header and footer, so they never flash in the frame. The two pages exchange
+`postMessage` messages, each checking the other's origin: the dashboard sends its height and the theme's
+`js/dashboard-embed.js` sizes the iframe to it, so there is no scrollbar inside the frame. The dashboard only sends to
+the origin of `NEXT_PUBLIC_WP_HOME` (a build argument, `https://well.mcmaster.ca` by default), and the theme only
+listens to the origin of `DASHBOARD_URL`. Any other framing (an old link without `?embed=1`) still hides the header
+and footer, from a check that runs before the first paint. Details are in `dashboard/frontend/src/lib/embed.ts`.
+
 ## Storage
 
 - **PostgreSQL** 13 on the VM host: sensor readings, sampling results, export jobs, alert state, and the record of
