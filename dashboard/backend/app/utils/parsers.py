@@ -155,8 +155,9 @@ class SkippedRecords:
     every run until it falls out of the look-back. Keeps a count and one example (the problem and the sensor or
     time, never the whole record) for a single log line, and for vendor_status.last_skipped. Records in an
     unexpected unit (add_wrong_unit) are counted too, and named apart, so the alerts can say the vendor sends wrong
-    units. `earliest` is the earliest time of a skipped record whose time could be read: LI-COR's fetch mark stops
-    there, so the next runs read that record again (once utils/parsers.py is fixed, it is stored)."""
+    units. `earliest` is the earliest time of an unreadable record whose time could be read (not one in a wrong unit,
+    which a sensor may keep sending for weeks, pinning the mark): LI-COR's fetch mark stops there, so the next runs
+    read that record again (once utils/parsers.py is fixed, it is stored)."""
 
     def __init__(self, vendor):
         self.vendor, self.count, self.sample = vendor, 0, None
@@ -312,7 +313,6 @@ def licor_rows(records, groups, weather_station, tz, skipped=None, now=None) -> 
             mismatch = unit_mismatch(entry)
             if mismatch:
                 wrong_units[mismatch] = wrong_units.get(mismatch, 0) + 1
-                skipped.note_time(record_time(entry, now))
                 continue
             obj = parse_logger_entry(entry, now) if is_logger else parse_weather_entry(entry, weather_station, now)
         except RECORD_ERRORS as e:
@@ -327,7 +327,7 @@ def licor_rows(records, groups, weather_station, tz, skipped=None, now=None) -> 
               f"record(s). Check the sensor, then update WEATHER_UNITS/LOGGER_UNITS (or UNIT_ALIASES, for "
               f"another spelling of the same unit) in utils/parsers.py "
               f"(and convert if needed), then run scripts/licor_backfill.py --days N for the skipped period: "
-              f"the 10-minute ingestion reads only about the last day of it again.")
+              f"the 10-minute ingestion doesn't read it again.")
     if own:
         skipped.report()
     return rows

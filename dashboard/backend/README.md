@@ -168,8 +168,10 @@ still going:
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of
 missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their
-headers explain how). The 10-minute ingestion fetches a LI-COR group's gap once, in the run that first sees it
-again after more than a day of silence; older readings it resends in later uploads are left to `licor_backfill.py`.
+headers explain how). The 10-minute ingestion fetches a LI-COR station's gap (the weather station or one logger) once, in the run that
+first sees it again after a silence longer than that run's window; older readings it resends in later uploads are left
+to `licor_backfill.py`. It rereads LI-COR records it couldn't read for about a day; records skipped for an unexpected
+unit aren't reread, so once the unit is set in `utils/parsers.py`, refill their period with `licor_backfill.py`.
 The only cron jobs are the optional `deploy.sh --auto` line
 ([docs/deploying.md](../../docs/deploying.md)) and the WordPress backup
 ([wordpress/README.md](../../wordpress/README.md#backups)).

@@ -314,9 +314,10 @@ class LicorRunTests(IngestionTestCase):
                          "1 unreadable record(s), e.g. timestamp '2027-01-01 00:00:00Z' is in the future from "
                          "sensor '21948438-1'")
 
-    def test_wrong_units_are_noted_and_hold_the_mark(self):
-        # A sensor swapped to one reporting °F: its records are skipped, counted apart from unreadable ones, sent to
-        # Sentry, and the mark stops at the first of them, so the next runs read them again.
+    def test_wrong_units_are_noted_but_dont_hold_the_mark(self):
+        # A sensor swapped to one reporting °F: its records are skipped, counted apart from unreadable ones and sent
+        # to Sentry. The mark still moves to now: the sensor may send them for weeks, and holding it would make every
+        # run reread about a day (licor_backfill.py refills the period once the unit is set).
         from utils.alert_state import fetched_until
         self.add("Weather", NOW - 20 * M, WEATHER, "Air Temperature")
         self.mark(NOW - H)
@@ -330,8 +331,20 @@ class LicorRunTests(IngestionTestCase):
                    "unexpected unit, e.g. sensor '21948438-1' reports '°F', not '°C'")
         self.assertEqual(self.status("LI-COR")["last_skipped"], skipped)
         warn.assert_called_once_with("LI-COR: skipped " + skipped)
-        self.assertEqual(fetched_until("LI-COR"), dt.datetime(2026, 11, 11, 17, 0, tzinfo=UTC))
+        self.assertEqual(fetched_until("LI-COR"), NOW)
         self.assertIn("[ERROR] LI-COR sensor 21948438-1 reports '°F', not '°C': skipped its 2 record(s)", self.output)
+
+    def test_an_unreadable_record_with_a_known_time_holds_the_mark(self):
+        # A record whose time can be read but which is otherwise malformed (a numeric sensor serial): the next runs
+        # read it again from there, so it is stored once utils/parsers.py is fixed.
+        from utils.alert_state import fetched_until
+        self.add("Weather", NOW - 20 * M, WEATHER, "Air Temperature")
+        self.mark(NOW - H)
+        stored = self.run_with([licor(21948438, 5.0, "2026-11-11 17:30:00Z"),
+                                licor("21948438-1", 41.0, "2026-11-11 17:00:00Z", unit="°F"),   # doesn't hold it
+                                licor("21948438-1", 5.0, "2026-11-11 18:40:00Z")])
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(fetched_until("LI-COR"), dt.datetime(2026, 11, 11, 17, 30, tzinfo=UTC))
 
     def test_only_wrong_units_is_a_failed_call_that_says_so(self):
         with self.assertRaises(UnreadableRecords) as caught:

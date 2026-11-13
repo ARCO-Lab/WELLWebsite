@@ -23,7 +23,8 @@
 #    can't be read (no or a garbled timestamp, or one without a UTC offset) are skipped, counted in one log line
 #    and noted for the alerts, and an answer none of whose records can be read counts as a failed call. So are
 #    records dated more than an hour in the future and LI-COR records in an unexpected unit. LI-COR's fetch mark
-#    doesn't move past the earliest skipped record whose time is known, so it is read again by the next runs. A
+#    doesn't move past the earliest unreadable record whose time is known, so it is read again by the next runs
+#    (not past one in a wrong unit: a swapped sensor would pin it; licor_backfill.py refills those). A
 #    WQData request that fails, or whose paging stalls, fails the run, like LI-COR's.
 
 import sys
@@ -224,8 +225,10 @@ def inject_licor(tz, now):
         records = records + gap
         start = gap_start
     new = store(list(rows.values()))
-    # Not past a skipped record whose time is known (a wrong unit, say): the next runs read it again, so it is
-    # stored once utils/parsers.py is fixed, as long as that is within about a day (LICOR_LATE + LICOR_SILENT).
+    # Not past an unreadable record whose time is known: the next runs read it again, so it is stored once
+    # utils/parsers.py is fixed, as long as that is within about a day (LICOR_LATE + LICOR_SILENT). Records in a wrong
+    # unit don't hold it: a swapped sensor keeps sending them, and every run would reread about a day (9 times the
+    # records, burning row ids). scripts/licor_backfill.py refills them once the unit is set.
     record_fetched_until("LI-COR", now if skipped.earliest is None else min(now, skipped.earliest))
     print(f"[INFO] LI-COR: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(records)} records, "
           f"{len(rows)} readings, {new} new")
