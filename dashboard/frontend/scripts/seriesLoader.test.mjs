@@ -950,3 +950,37 @@ test("a long zoom gesture asks for nothing until it ends, then once", async () =
   await srv.settle();
   c.dispose();
 });
+
+test("sweep: a narrow range, then the last 90 days, draws no gap where there is data", async () => {
+  const failures = [];
+  for (const today of [Date.parse("2026-11-10T17:00:00Z"), Date.parse("2026-11-11T17:00:00Z")]) {
+    for (const days of [1, 2, 3, 5, 7, 10]) {
+      for (const back of [0, 5, 13, 21, 40]) {
+        let clock = today;
+        const end = today - back * D;
+        const narrow = { start: end - days * D, end };
+        const wide = { start: today - 90 * D, end: today };
+        const srv = fakeServer();
+        const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+        const c = new ChartController("card", [A], narrow, narrow, loader, syncFrame, 30);
+        c.setPlotWidth(600);
+        c.activate();
+        await sleep(40);
+        await srv.settle();
+        clock += 5 * 60_000; // five minutes between the two picks
+        c.setExtent(wide);
+        c.setDefault(wide);
+        await sleep(40);
+        await srv.settle();
+        await sleep(20);
+        await srv.settle();
+        // The fake server has a reading in every bucket: the drawn series must have no break inside the range
+        const pts = (c.lastData.series.get(A) ?? []).filter((p) => p.x > wide.start + D && p.x < wide.end - D);
+        const gap = pts.find((p) => p.y === null);
+        if (!pts.length || gap) failures.push(`${new Date(today).toISOString().slice(0, 10)} ${days} d, ${back} d back: ${gap ? `gap at ${new Date(gap.x).toISOString()}` : "nothing drawn"}`);
+        c.dispose();
+      }
+    }
+  }
+  assert.deepEqual(failures, []);
+});
