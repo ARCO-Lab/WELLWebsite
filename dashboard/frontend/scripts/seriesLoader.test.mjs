@@ -278,6 +278,15 @@ test("loader: least recently used tiles go first when the cache is full", async 
 
 // ---- the chart controller ----
 
+// One series at the controller's overview bucket over its extent, as drawn from the loader's tiles: what fitting and
+// the first view rely on (the chart's own points are lastData)
+function overviewOf(c, loader, key) {
+  const ovB = c.ovB();
+  const tiles = [...loader.loadedTiles(key, ovB)];
+  const pts = composeSeries(segmentsFor([{ bucketS: ovB, tiles }]), (b, i) => loader.tile(key, b, i), () => () => null);
+  return pts.filter((p) => p.x >= c.extent.start && p.x <= c.extent.end);
+}
+
 const now = Date.parse("2026-11-11T17:00:00Z");
 const extent = { start: Date.parse("2025-05-08T04:00:00Z"), end: now };
 const twoDays = { start: now - 2 * D, end: now };
@@ -558,7 +567,7 @@ test("controller: opens on where the data is, keeps the navigator's extent, and 
   assert.equal(c.window.end, to);
   assert.deepEqual(c.extent, range); // the navigator still covers both days
   assert.equal(c.ovB(), 600); // two days at 10-minute readings from the start
-  assert.equal(c.overview(A).filter((p) => p.y !== null).length, (to - from) / 600e3);
+  assert.equal(overviewOf(c, loader, A).filter((p) => p.y !== null).length, (to - from) / 600e3);
   // Reset returns to the fitted window; after the user moves, new data doesn't move it
   c.pan(-0.5, "key");
   await sleep(40);
@@ -835,7 +844,7 @@ test("a narrow chart over two days draws at once: coarser tiles reaching past th
   assert.equal(srv.calls.length, 1);
   assert.equal(c.ovB(), 1800);
   assert.notEqual(c.snapshot().shownBucket, null);
-  assert.ok(c.overview(A).some((p) => p.y !== null));
+  assert.ok(overviewOf(c, loader, A).some((p) => p.y !== null));
   assert.ok([...c.lastData.series.get(A)].some((p) => p.y !== null && p.x >= range.start && p.x <= range.end));
   c.dispose();
 });
@@ -857,9 +866,9 @@ test("widening the range replaces coarser tiles worked out from part of their fi
   await srv.settle();
   await sleep(20);
   await srv.settle();
-  // Every bucket of the navigator's line over the wide range has a value (the fake server has data everywhere)
+  // Every bucket of the overview over the wide range has a value (the fake server has data everywhere)
   const b = c.ovB();
-  const pts = c.overview(A).filter((p) => p.y !== null);
+  const pts = overviewOf(c, loader, A).filter((p) => p.y !== null);
   const from = wide.start + b * 1000, to = narrow.start + 3 * D;
   const missing = [];
   for (let t = from; t < to; t += b * 1000) if (!pts.some((p) => Math.abs(p.x - (t + b * 500)) < b * 1000)) missing.push(new Date(t).toISOString());

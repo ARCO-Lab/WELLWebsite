@@ -33,8 +33,8 @@ export const MAX_WAIT_MS = 1500; // a gesture this long fetches the tiles of the
 export const GESTURE_IDLE_MS = 3000; // a gesture with no movement for this long is taken as ended (a lost pointerup)
 export const PACE = 1.5; // the next chart redraw starts this many times the last one's cost after it ended
 export const AHEAD_SHARE = 2 / 3; // of the tiles a request has room for besides the window's, those ahead of a pan
-// The overview (the navigator's line, and what shows before finer tiles arrive) covers the chart's extent, the picked
-// range, at the bucket that range needs at the chart's width: a two-day range is at 10-minute readings from the start.
+// The overview (what shows before finer tiles arrive, and where fitting looks for readings) covers the chart's extent,
+// the picked range, at the bucket that range needs at the chart's width: a two-day range is at 10-minute readings.
 // It is never finer than the chart's base bucket (baseBucket), the one its whole range is loaded at first.
 export const overviewBucket = (extent: Range, plotWidthPx: number, pointsPerPx: number): number =>
   Math.max(bucketFor(extent.end - extent.start, plotWidthPx, pointsPerPx), baseBucket(extent));
@@ -301,7 +301,6 @@ export class ChartController {
     this.setWindow({ start: at - (at - this.win.start) * f, end: at + (this.win.end - at) * f }, reason);
   }
 
-  /** Move by a share of the window's width (negative: earlier). */
   /** The window before (-1) or after (1) this one, of the same length: it ends where this one starts, or starts where
    *  it ends. At the edge of the picked range it stops there, still as long. */
   page(dir: -1 | 1, reason: WindowReason = "button"): void {
@@ -310,6 +309,7 @@ export class ChartController {
     else this.setWindow({ start: end, end: end + span }, reason, "start");
   }
 
+  /** Move by a share of the window's width (negative: earlier). */
   pan(share: number, reason: WindowReason = "button"): void {
     const d = (this.win.end - this.win.start) * share;
     this.setWindow({ start: this.win.start + d, end: this.win.end + d }, reason);
@@ -442,14 +442,6 @@ export class ChartController {
     if (!this.disposed) return;
     this.disposed = false;
     this.request();
-  }
-
-  /** One series at the overview bucket only, within the extent, for the navigator's line. */
-  overview(key: string): ComposedPoint[] {
-    const ovB = this.ovB();
-    const tiles = [...this.loader.loadedTiles(key, ovB)];
-    const pts = composeSeries(segmentsFor([{ bucketS: ovB, tiles }]), (b, i) => this.loader.tile(key, b, i), () => () => null);
-    return pts.filter((p) => p.x >= this.ext.start && p.x <= this.ext.end);
   }
 
   /** The overview's bucket (see overviewBucket). */

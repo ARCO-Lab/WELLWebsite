@@ -258,7 +258,9 @@ test.describe("charts under stress", () => {
       return { a, b };
     };
     const bar = weather.getByTestId("chart-range-bar");
-    await expect(bar).toHaveAttribute("aria-label", /Time window within the picked days/);
+    await expect(bar).toHaveAttribute("role", "slider");
+    await expect(bar).toHaveAttribute("aria-label", /time window within the picked days/);
+    await expect(bar).toHaveAttribute("aria-valuetext", (await label(weather))!); // announces the window itself
     await bar.focus();
     const w0 = await read();
     await page.keyboard.press("ArrowLeft"); // moves it
