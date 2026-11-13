@@ -29,6 +29,8 @@ _QUERY = re.compile(r"((?:https?://|/)[^\s?#'\"<>]*)\?[^\s#'\"<>]*")
 REPEAT_AFTER_S = 60 * 60
 _last_sent = {}
 _last_sent_lock = threading.Lock()
+# Past this many remembered failures, the ones not seen within REPEAT_AFTER_S are forgotten (bounds the memory).
+MAX_REMEMBERED = 1000
 
 # How much of a failed subprocess's stderr (often a traceback) and of its stdout ERROR: lines goes with the event.
 STDERR_TAIL_CHARS = 2000
@@ -189,8 +191,34 @@ def scrub_urls(value):
     return value
 
 
+def _first_in_a_while(key):
+    """Whether `key` wasn't seen in the last REPEAT_AFTER_S (and remember it now)."""
+    now = time.monotonic()
+    with _last_sent_lock:
+        if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
+            return False
+        if len(_last_sent) >= MAX_REMEMBERED:
+            for old in [k for k, at in _last_sent.items() if now - at >= REPEAT_AFTER_S]:
+                del _last_sent[old]
+        _last_sent[key] = now
+    return True
+
+
+def _unhandled_request_error(event):
+    """Whether the event is an error a request raised and nothing caught (reported by Sentry's Flask integration)."""
+    values = (event.get("exception") or {}).get("values") or []
+    return any((value.get("mechanism") or {}).get("type") == "flask" for value in values)
+
+
 def before_send(event, hint=None):
-    """Strip what could identify a visitor or leak a credential before an event leaves the process."""
+    """Strip what could identify a visitor or leak a credential before an event leaves the process, and drop an
+    unhandled request error already sent in the last REPEAT_AFTER_S for the same path, type and message: a client
+    repeating a request that fails would otherwise send an event per request and use up the monthly quota."""
+    exc = ((hint or {}).get("exc_info") or (None, None))[1]
+    if exc is not None and _unhandled_request_error(event):
+        path = str((event.get("request") or {}).get("url", "")).split("?")[0]
+        if not _first_in_a_while(("request", path, type(exc).__name__, failure_signature(exc))):
+            return None
     request = event.get("request")
     if request:
         # Keep only the method and the path, which say which endpoint failed.

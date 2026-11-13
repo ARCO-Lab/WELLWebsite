@@ -403,14 +403,18 @@ class SeriesSqlTests(unittest.TestCase):
                 self.assertEqual(self.get(f"{q}&group_type=Weather").status_code, 200, q)
             self.assertEqual(len(bodies), 5)
 
-            # A range without a bucket is answered but never stored: it can be any range, shifted a few minutes
-            # each time, so storing those would let anyone fill the cache.
+            # A range without a bucket is widened to whole buckets (10 minutes for a span this short), so ranges
+            # shifted a few minutes inside the same buckets share one stored answer instead of each storing its own.
             bodies.clear()
             r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
             self.assertEqual(r.status_code, 200)
-            self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])
+            self.assertEqual(r.get_json()["series"][0]["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")
-            self.assertEqual(bodies, {})
+            (key,) = bodies
+            self.assertEqual(key, cache_key(600, dt.datetime(2026, 11, 1, 0, 0), dt.datetime(2026, 11, 1, 0, 50),
+                                            ["Weather"], {"st": None, "m": None, "k": None}))
+            r = self.client.get("/api/series?start=2026-11-01T00:01:00&end=2026-11-01T00:59:00&group_type=Weather")
+            self.assertEqual((r.get_data(), len(bodies)), (bodies[key], 1))
 
         # A range that runs to now: a minute only.
         now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

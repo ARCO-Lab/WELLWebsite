@@ -28,16 +28,21 @@
 # of their length counted on Toronto's wall clock from 1970-01-01T00:00. start must be a tile's start and end a later
 # tile's start or one second before it (what the dashboard sends), as times without an offset; at most MAX_TILES
 # tiles. Anything else gets a 400 (check_tiles). Without a bucket, the bucket is picked from the span (pick_bucket)
-# and any range is accepted; either way a request for more than MAX_BUCKETS buckets per series is refused with a 400.
+# and the range is widened to whole buckets (whole_buckets); either way a request for more than MAX_BUCKETS buckets
+# per series is refused with a 400. start and end must fall in the years utils/timezone.FIRST_YEAR to LAST_YEAR.
 # series, station_id, measurement_type: only these series, so one chart fetches only what it draws. `series` names
 # whole series ("Logger|2577531|Water Temperature") and stands in for group_type; station_id and measurement_type
 # narrow the groups asked for. Each can be repeated, up to MAX_FILTERS values; a value may not contain "," or "|"
-# (no station or measurement name does, and a key is split on "|").
+# (no station or measurement name does, and a key is split on "|"), nor a control character (api/validation.py).
+# Values that name no existing series (api/services/catalog.py) are dropped before anything else, so they cost no
+# query and no cache entry; a filter left with no values matches nothing, and the answer is an empty list of series.
 #
 # Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
-# same readings as the request (no bucket is added at either edge). Only tile requests are kept in Redis
-# (utils/response_cache.py): there are only so many tiles, so the cache can't be filled by asking for ranges shifted
-# a few minutes at a time, which any range without a bucket could do. The answer is kept for an hour for a range that
+# same readings as the request (no bucket is added at either edge). Answers are kept in Redis
+# (utils/response_cache.py) under keys that shifting a range by a few minutes can't multiply: a tile request starts
+# and ends on tile edges, and a range without a bucket is widened to whole buckets first. The dashboard asks for
+# tiles only; the bucket-less form is for scripts such as the load test, and the dashboard's proxy counts it as a slow
+# request (lib/rateLimit.ts). The answer is kept for an hour for a range that
 # ended over a day ago, 5 minutes for one that ended over an hour ago, 1 minute otherwise, under a key that is a hash
 # of all its parameters.
 # Browsers may keep an answer for a range that ended over a day ago for BROWSER_SETTLED_AGE, and any other for a
@@ -50,10 +55,12 @@ from datetime import datetime, timedelta
 from flask import current_app, jsonify, request
 from sqlalchemy import text
 
+from api.services.catalog import known_series
+from api.validation import bad_text
 from db.database import db
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ
+from utils.timezone import EST_TZ, check_site_years
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
 LADDER = (600, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600)
@@ -138,6 +145,16 @@ def tile_start(t, bucket):
     return t - (t - WALL_EPOCH) % tile
 
 
+def whole_buckets(start, end, bucket):
+    """A bucket-less request's range (naive wall-clock times) widened to whole buckets: start back to its bucket's
+    start, end on to one second before the next bucket's. The buckets at the edges then hold all their readings
+    rather than the part inside the range, and every range within the same buckets shares one cache key."""
+    size = timedelta(seconds=bucket)
+    first = start - (start - WALL_EPOCH) % size
+    last = end - (end - WALL_EPOCH) % size + size - ONE_SECOND
+    return first, last
+
+
 def check_tiles(start, end, bucket):
     """A tile request's range (naive wall-clock times) -> (start, end), with an end on a tile's start moved to one
     second before it, so both ways of asking for the same tiles share a cache key. ValueError, with the message for
@@ -191,6 +208,8 @@ def parse_filters(args):
         values = [v for v in args.getlist(param) if v]
         if len(values) > MAX_FILTERS:
             raise ValueError(f"At most {MAX_FILTERS} values for {param}")
+        if any(bad_text(v) for v in values):
+            raise ValueError(f"{param} values may not contain control characters")
         if name != "k" and any("," in v or "|" in v for v in values):
             raise ValueError(f"{param} values may not contain ',' or '|'")
         filters[name] = values or None
@@ -206,11 +225,22 @@ def parse_filters(args):
     return filters, sorted({k[0] for k in keys})
 
 
+def known_filters(filters):
+    """`filters` (from parse_filters) without the values that name no existing series (api/services/catalog.py),
+    and whether a filter that had values is left with none (so the request matches nothing)."""
+    if not any(filters.values()):
+        return filters, False
+    series = known_series()
+    known = {"st": {s for _, s, _ in series}, "m": {m for _, _, m in series}, "k": {"|".join(s) for s in series}}
+    kept = {name: [v for v in values if v in known[name]] if values else values for name, values in filters.items()}
+    return kept, any(filters[name] and not kept[name] for name in filters)
+
+
 def parse_bucket(value):
     """The bucket a request asks for (seconds), or None; ValueError unless it is one of LADDER."""
     if value is None or value == "":
         return None
-    bucket = int(value) if value.isdigit() else None
+    bucket = int(value) if value.isascii() and value.isdigit() else None  # isdigit alone also takes "²"
     if bucket not in LADDER:
         raise ValueError(f"bucket must be one of {', '.join(str(b) for b in LADDER)} (seconds)")
     return bucket
@@ -270,6 +300,10 @@ def register_series_route(app):
             start_dt, end_dt = local_naive(start_in), local_naive(end_in)
         except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no local time
             return jsonify({"error": "Invalid date format"}), 400
+        try:
+            check_site_years(start_dt, end_dt)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
         if start_in.tzinfo and end_in.tzinfo:
             # Two real instants: compare those. Their wall-clock times can run backwards inside the hour repeated
             # when clocks fall back (05:30Z -> 01:30 EDT, 06:10Z -> 01:10 EST), so the naive bounds are put in
@@ -288,16 +322,25 @@ def register_series_route(app):
                 start_dt, end_dt = check_tiles(start_dt, end_dt, asked_bucket)
             except ValueError as error:
                 return jsonify({"error": str(error)}), 400
+            except OverflowError:  # a tile past datetime's last year; check_site_years keeps requests well short
+                return jsonify({"error": "Invalid date range"}), 400
         bucket = asked_bucket or pick_bucket(span)
         if span / bucket > MAX_BUCKETS:
             return jsonify({"error": f"That is more than {MAX_BUCKETS} points per series: pick a shorter range or a "
                                      "larger bucket."}), 400
+        if not asked_bucket:
+            start_dt, end_dt = whole_buckets(start_dt, end_dt, bucket)
         now = datetime.now(EST_TZ).replace(tzinfo=None)
+        filters, matches_nothing = known_filters(filters)
+        if matches_nothing:
+            # Nothing to look up, and nothing worth keeping in the cache
+            response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": []})
+            response.headers["Cache-Control"] = browser_cache_control(end_dt, now, BROWSER_MAX_AGE)
+            return response
         age = max_age(end_dt, now)
         start_dt, end_dt = snap_range(start_dt, end_dt)
-        # Only tile requests use the shared cache (see "Caching" at the top)
-        key = cache_key(bucket, start_dt, end_dt, groups, filters) if asked_bucket else None
-        hit = response_cache.get(key) if key else None
+        key = cache_key(bucket, start_dt, end_dt, groups, filters)
+        hit = response_cache.get(key)
         seconds_left = None
         if hit is not None:
             body, seconds_left = hit
@@ -306,7 +349,6 @@ def register_series_route(app):
             db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
             rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups, **filters}).fetchall()
             response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": columnar(rows)})
-            if key:
-                response_cache.put(key, response.get_data(), age)
+            response_cache.put(key, response.get_data(), age)
         response.headers["Cache-Control"] = browser_cache_control(end_dt, now, seconds_left)
         return response

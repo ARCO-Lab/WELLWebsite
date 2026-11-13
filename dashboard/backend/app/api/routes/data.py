@@ -4,6 +4,8 @@
 # A request can't notice that the browser left: once it passes the count, its gunicorn thread stays busy until
 # the query and jsonify finish, even if nobody is waiting for the answer. The row cap bounds that time, along
 # with DB_STATEMENT_TIMEOUT_MS (config.py), which cancels any one query that runs too long.
+# Values are sent as stored, except that a "no reading" sentinel (utils/parsers.SENTINEL_MAX) or a value that isn't
+# finite (rows stored before ingestion skipped them) is null: a bare NaN would make the whole answer invalid JSON.
 
 import logging
 import os
@@ -11,8 +13,10 @@ from datetime import timedelta
 
 from flask import request, jsonify
 
+from api.validation import bad_text
 from db.database import db
 from db.models import SensorMeasurement
+from utils.parsers import reading_value
 from utils.timezone import site_range
 
 log = logging.getLogger(__name__)
@@ -54,6 +58,8 @@ def register_data_route(app):
 
         if not start or not end or not group_types:
             return jsonify({"error": "Missing required parameters"}), 400
+        if any(bad_text(g) for g in group_types):
+            return jsonify({"error": "group_type values may not contain control characters"}), 400
 
         try:
             # As naive Toronto wall time, like recorded_at: a bound with an offset (...Z) is converted, one without
@@ -101,7 +107,7 @@ def register_data_route(app):
                 "station_id": r.station_id,
                 "group_type": r.group_type,
                 "measurement_type": r.measurement_type,
-                "value": r.value,
+                "value": reading_value(r.value),
                 "unit": r.unit,
                 "recorded_at": r.recorded_at.isoformat(),
             }
