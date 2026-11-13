@@ -133,6 +133,7 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
     g.strokeStyle = g.fillStyle = String(s.color);
     // Only the points over the painted span, and one each side so lines run to the edges
     const pts = ps.points;
+    if (!pts.length) return;
     let lo = 0, hi = pts.length;
     while (lo < hi) { const m = (lo + hi) >> 1; if (pts[m].x < a) lo = m + 1; else hi = m; }
     const from = Math.max(0, lo - 1);

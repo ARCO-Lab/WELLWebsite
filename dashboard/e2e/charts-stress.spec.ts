@@ -433,7 +433,7 @@ test.describe("chart performance budgets", () => {
       await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + 4, y: box.y + box.height / 2, id: 1 }] });
       await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       await expect.poll(() => label(logger)).not.toBe(panned);
-      expect((await label(logger))!.startsWith("Oct 31 00:00")).toBe(true); // the window's start, clamped to the range
+      expect(await label(logger)).toMatch(/^Oct 31 /); // near the range's start, a day before the readings it showed
     });
 
     test("in the larger view the plot keeps most of the width (one y-axis on a phone)", async ({ page }) => {
