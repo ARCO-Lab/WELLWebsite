@@ -446,7 +446,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                     </h2>
                     <div className="space-y-4">
                       <FilterPanel
-                        activeTab={activeTab}
+                        activeTab="sensor" // this panel's own tab: the other stays mounted when hidden
                         activeGroups={activeGroups}
                         setActiveGroups={setActiveGroups}
                         subFilters={{
@@ -623,7 +623,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                     </h2>
                     <div className="space-y-4">
                       <FilterPanel
-                        activeTab={activeTab}
+                        activeTab="sampling"
                         activeGroups={{}}  // Empty object for sampling mode
                         setActiveGroups={() => {}}  // Empty function for sampling mode
                         subFilters={{}}  // Empty object for sampling mode
