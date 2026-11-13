@@ -166,8 +166,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     const type = seriesType(s.agg);
     series.push({
       id: s.key, type, name: s.name, custom: info, yAxis: s.axis, color: s.color, data: [], zIndex: 1, visible: !s.hidden,
-      showInNavigator: s === first,
-      ...(s === first ? { navigatorOptions: { type: 'line', color: s.color, lineWidth: 1, data: [], dataGrouping: { enabled: false } } } : {}),
+      showInNavigator: false, // the navigator's base is the extent series (below)
       ...(s.dash ? { dashStyle: s.dash } : {}),
       ...(type === 'line' ? { lineWidth: 1.5 } : {}),
       ...(type === 'area' ? { step: 'center', threshold: 0, lineWidth: 1, fillOpacity: 0.35 } : {}),
@@ -188,10 +187,13 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
   const ext = controller.extent, w = controller.window;
   series.push({
     id: EXTENT_ID, type: 'line', data: extentData(ext), yAxis: 0, enableMouseTracking: false, showInLegend: false,
-    showInNavigator: false, includeInDataExport: false, accessibility: { enabled: false }, lineWidth: 0,
+    includeInDataExport: false, accessibility: { enabled: false }, lineWidth: 0,
+    // Exactly one series carries the navigator (Stock otherwise adds a navigator series per series it is given): this
+    // one, which the legend can't hide (Stock hides the navigator's line with its base series). The line itself is the
+    // first shown series' overview over the range, set by navigator() in the chart's effect.
+    showInNavigator: true,
+    navigatorOptions: { type: 'line', color: first?.color ?? '#7a003c', lineWidth: 1, data: [], dataGrouping: { enabled: false } },
   } as Highcharts.SeriesLineOptions);
-  // Exactly one series carries the navigator (Stock otherwise adds a navigator series per series it is given); its
-  // navigator line is the range's overview, set by setNavigator below, not the series' own (detailed) data
   return {
     time: { timezone: TIME_ZONE },
     chart: {
@@ -369,13 +371,6 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const nav = (chart as Highcharts.Chart & { navigator?: { series?: Highcharts.Series[] } }).navigator?.series?.[0];
       const key = keys.find((k) => (chart.get(k) as Highcharts.Series | undefined)?.visible) ?? keys[0];
       if (!nav || !key) return;
-      // Stock hides the navigator's line with its base series (hidden in the legend): the line stays, showing the first
-      // series still shown
-      if (!nav.visible) {
-        nav.setVisible(true, false);
-        navShown = '';
-        dirty = true;
-      }
       const pts = controller.overview(key);
       const e = controller.extent;
       const sig = `${key}|${pts.length}|${e.start}|${e.end}|${pts.at(-1)?.y ?? ''}`;
