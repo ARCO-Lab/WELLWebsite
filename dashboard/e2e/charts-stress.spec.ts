@@ -149,7 +149,8 @@ test.describe("charts under stress", () => {
     const before = await label(weather);
     const item = weather.locator(".highcharts-legend-item", { hasText: "Dew Point" });
     await item.scrollIntoViewIfNeeded();
-    await item.click();
+    // force: Highcharts lays its accessible legend button over the item, which takes the click (the same toggle)
+    await item.click({ force: true });
     await page.waitForTimeout(600);
     await expect(item).toHaveClass(/highcharts-legend-item-hidden/);
     expect(await label(weather)).toBe(before);
@@ -169,7 +170,7 @@ test.describe("charts under stress", () => {
     const logger = chart(page, "logger");
     const first = logger.locator(".highcharts-legend-item").first();
     await first.scrollIntoViewIfNeeded();
-    await first.click();
+    await first.click({ force: true }); // as above: the accessible legend button over the item takes the click
     await expect(first).toHaveClass(/highcharts-legend-item-hidden/);
     await expect.poll(lines).toEqual(expect.arrayContaining([[true, expect.any(Number)]]));
     for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); }
