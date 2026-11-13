@@ -64,18 +64,20 @@ add_filter('the_author', function ($name) {
 
 /* ---- Failed logins ------------------------------------------------------------------------------------------- */
 
-// The campus proxy restricts /wp-admin/ but not /wp-login.php, so nothing else limits password guessing. After
-// WELL_LOGIN_MAX_FAILURES failed logins from one client address, with less than WELL_LOGIN_WINDOW_S between each and
-// the next, that address can't log in until WELL_LOGIN_WINDOW_S has passed since its last failure; its password
-// isn't even checked. Kept in transients (the options table), one per address that has failed recently.
+// The campus proxy restricts /wp-admin/ but not /wp-login.php, so nothing else limits password guessing. Each login
+// attempt from a client address is counted before its password is checked; after WELL_LOGIN_MAX_FAILURES with less
+// than WELL_LOGIN_WINDOW_S between each and the next, that address is refused, without any password check, until
+// WELL_LOGIN_WINDOW_S has passed since its last counted attempt. A successful login clears the count. Refused
+// attempts aren't counted, so they don't extend the lock. IPv6 clients are counted per /64, the block one home or
+// device usually gets, so cycling through its addresses doesn't help.
 const WELL_LOGIN_MAX_FAILURES = 5;
 const WELL_LOGIN_WINDOW_S = 15 * 60;
 
-// The client's address. Apache sees the campus proxy's address for every visitor, so the proxy's X-Forwarded-For is
-// used, but only when the connection comes from a proxy listed in WELL_TRUSTED_PROXY_IPS (comma-separated; unset
-// means 130.113.68.30, haproxy.cas.mcmaster.ca; set but empty trusts none). Anyone else could write any address in
-// that header. The proxy appends the address it saw, so the last entry is the one to believe. (The image's
-// mod_remoteip believes X-Forwarded-For only from private addresses, so it leaves haproxy's public one alone.)
+// The client's address. Apache sees the campus proxy's address for every visitor (wordpress/remoteip.conf turns off
+// the image's own X-Forwarded-For handling), so the proxy's X-Forwarded-For is used, but only when the connection
+// comes from a proxy listed in WELL_TRUSTED_PROXY_IPS (comma-separated; unset means 130.113.68.30,
+// haproxy.cas.mcmaster.ca; set but empty trusts none). Anyone else could write any address in that header. The proxy
+// appends the address it saw, so the last entry is the one to believe.
 function well_client_ip() {
     $peer = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
     $setting = getenv('WELL_TRUSTED_PROXY_IPS');
@@ -90,40 +92,96 @@ function well_client_ip() {
     return $peer;
 }
 
+// The options row that counts this client's attempts: an IPv4 address as it is (also when written IPv4-mapped,
+// ::ffff:a.b.c.d), an IPv6 address by its first 64 bits.
 function well_login_key() {
-    return 'well_login_fail_' . md5(well_client_ip());
+    $ip = well_client_ip();
+    $packed = @inet_pton($ip);
+    if ($packed !== false && strlen($packed) === 16) {
+        $ip = substr($packed, 0, 12) === str_repeat("\0", 10) . "\xff\xff"
+            ? inet_ntop(substr($packed, 12))
+            : bin2hex(substr($packed, 0, 8)) . '::/64';
+    }
+    return 'well_login_fail_' . md5($ip);
 }
 
-function well_login_locked() {
-    return (int) get_transient(well_login_key()) >= WELL_LOGIN_MAX_FAILURES;
+// Attempts counted in the window, from the row's "count:unix time of the last one". Read straight from the database,
+// as the count is written there directly.
+function well_login_count($key) {
+    global $wpdb;
+    $value = (string) $wpdb->get_var(
+        $wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $key)
+    );
+    $parts = explode(':', $value);
+    return count($parts) === 2 && time() - (int) $parts[1] < WELL_LOGIN_WINDOW_S ? (int) $parts[0] : 0;
 }
 
-// Before any password check (priority 1): a locked-out address gets an error, and the password checks that would
-// run next are taken off for this request, so guessing costs no hashing either.
-add_filter('authenticate', function ($user) {
-    if (!well_login_locked()) {
+// Counts one attempt and returns this attempt's number in the window, in one statement, so parallel requests each
+// get a different number: the row is created, or its count goes up by one (back to 1 if the last attempt is older
+// than the window), and LAST_INSERT_ID(n) hands this connection its own n.
+function well_login_add_attempt($key) {
+    global $wpdb;
+    $now = time();
+    $wpdb->query($wpdb->prepare(
+        "INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'off')
+         ON DUPLICATE KEY UPDATE option_value = CONCAT(LAST_INSERT_ID(
+             IF(CAST(SUBSTRING_INDEX(option_value, ':', -1) AS UNSIGNED) + %d <= %d, 1,
+                CAST(SUBSTRING_INDEX(option_value, ':', 1) AS UNSIGNED) + 1)), ':', %d)",
+        $key, "1:$now", WELL_LOGIN_WINDOW_S, $now, $now
+    ));
+    // 1 row affected: inserted, the first attempt. 2: updated, and LAST_INSERT_ID() is the new count.
+    $count = (int) $wpdb->rows_affected === 1 ? 1 : (int) $wpdb->get_var('SELECT LAST_INSERT_ID()');
+    // Now and then, forget addresses whose last attempt is older than the window.
+    if (mt_rand(1, 50) === 1) {
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s
+             AND CAST(SUBSTRING_INDEX(option_value, ':', -1) AS UNSIGNED) < %d",
+            $wpdb->esc_like('well_login_fail_') . '%', $now - WELL_LOGIN_WINDOW_S
+        ));
+    }
+    return $count;
+}
+
+// Whether this request's login was refused by the limit (set at the start of the authenticate chain).
+function well_login_refused($set = null) {
+    static $refused = false;
+    if ($set !== null) {
+        $refused = $set;
+    }
+    return $refused;
+}
+
+// First in the authenticate chain, before any password is hashed. Opening the login page (no user name and no
+// password) and cookie logins aren't attempts. An address already at the limit is refused without counting;
+// otherwise this attempt is counted first, and refused if it is over the limit (requests that arrived together).
+// When refused, the password checks that would run next are taken off for this request.
+add_filter('authenticate', function ($user, $username, $password) {
+    well_login_refused(false);
+    if ($user instanceof WP_User || ((string) $username === '' && (string) $password === '')) {
         return $user;
     }
+    $key = well_login_key();
+    if (well_login_count($key) < WELL_LOGIN_MAX_FAILURES && well_login_add_attempt($key) <= WELL_LOGIN_MAX_FAILURES) {
+        return $user;
+    }
+    well_login_refused(true);
     remove_filter('authenticate', 'wp_authenticate_username_password', 20);
     remove_filter('authenticate', 'wp_authenticate_email_password', 20);
     remove_filter('authenticate', 'wp_authenticate_application_password', 20);
     return new WP_Error('well_login_locked', 'Too many failed login attempts. Try again in 15 minutes.');
-}, 1);
+}, 1, 3);
 
-// And last: if anything let a locked-out address through, refuse it anyway.
+// And last: if anything let a refused login through, refuse it anyway.
 add_filter('authenticate', function ($user) {
-    return ($user instanceof WP_User && well_login_locked())
+    return ($user instanceof WP_User && well_login_refused())
         ? new WP_Error('well_login_locked', 'Too many failed login attempts. Try again in 15 minutes.')
         : $user;
 }, PHP_INT_MAX);
 
-add_action('wp_login_failed', function () {
-    $key = well_login_key();
-    set_transient($key, (int) get_transient($key) + 1, WELL_LOGIN_WINDOW_S);
-});
-
+// A successful login clears its address's count (including the attempt that succeeded).
 add_action('wp_login', function () {
-    delete_transient(well_login_key());
+    global $wpdb;
+    $wpdb->delete($wpdb->options, ['option_name' => well_login_key()]);
 });
 
 /* ---- Comments, pingbacks, XML-RPC ---------------------------------------------------------------------------- */
