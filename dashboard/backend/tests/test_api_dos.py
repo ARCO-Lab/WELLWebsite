@@ -325,6 +325,16 @@ class SentryThrottleTests(unittest.TestCase):
         self.assertIsNotNone(self.sentry.before_send(self.event(mechanism="generic"), hint),
                              "captured on purpose (capture_job_error throttles those itself)")
 
+    def test_the_throttles_memory_is_bounded_even_within_the_hour(self):
+        sentry = self.sentry
+        with unittest.mock.patch.object(sentry, "MAX_REMEMBERED", 5):
+            for i in range(20):  # 20 different failures within the hour: none can be pruned by age
+                self.assertTrue(sentry._first_in_a_while(("key", i)))
+            self.assertLessEqual(len(sentry._last_sent), 5)
+            self.assertEqual(list(sentry._last_sent), [("key", i) for i in range(15, 20)], "the newest are kept")
+            self.assertFalse(sentry._first_in_a_while(("key", 19)), "a kept key is still throttled")
+            self.assertTrue(sentry._first_in_a_while(("key", 0)), "a forgotten one may be sent again")
+
 
 @unittest.skipUnless(os.getenv("TEST_POSTGRES_URL"),
                      "set TEST_POSTGRES_URL to run the API abuse tests against PostgreSQL")
