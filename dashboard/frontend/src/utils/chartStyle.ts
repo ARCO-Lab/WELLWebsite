@@ -16,6 +16,19 @@ const MEASUREMENT_COLORS: Record<string, string> = {
 };
 const FALLBACK_COLORS = ["#0866AB", "#50B748", "#F79425", "#E90D8B", "#7F488D", "#CB2027", "#17BECF", "#8C564B"];
 
+// The water loggers' colours: one hue per logger, its Water Surface Elevation in the dark shade and its Water Temperature
+// in the light shade of the same hue (dashed as well), so a logger's two lines read as one instrument. Five hues that
+// stay apart for most colour vision (checked with Machado 2009 protanopia and deuteranopia simulations: the closest
+// pair of dark shades is 8 CIELAB units apart, of light shades 12, each dark/light pair 18), with every shade at least
+// 3:1 against white (the darks 5:1 to 10:1).
+export const LOGGER_PALETTE: { dark: string; light: string }[] = [
+  { dark: "#003F8C", light: "#3D8BDA" }, // blue
+  { dark: "#A3270A", light: "#EE6C40" }, // vermilion
+  { dark: "#006B4F", light: "#1F9E78" }, // bluish green
+  { dark: "#8B2C7A", light: "#C966B5" }, // reddish purple
+  { dark: "#8A6A00", light: "#B88E00" }, // amber
+];
+
 export function measurementColor(name: string): string {
   if (MEASUREMENT_COLORS[name]) return MEASUREMENT_COLORS[name];
   let h = 0;

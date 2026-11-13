@@ -170,7 +170,8 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
       expect(url.searchParams.getAll("series").length).toBeGreaterThan(0);
       expect(body.bucket_seconds).toBe(Number(url.searchParams.get("bucket")));
     }
-    // The 10-minute tiles hold every reading of the picked days, once each (tiles don't overlap)
+    // The 10-minute tiles hold every charted reading of the picked days, once each (tiles don't overlap). Wind
+    // direction isn't charted (the wind rose shows it, from its own route), so the charts don't ask for it.
     const points = new Map<string, number>();
     for (const { body } of all.filter((a) => a.body.bucket_seconds === 600)) {
       for (const s of body.series) {
@@ -182,7 +183,8 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
         });
       }
     }
-    expectSameValues(points, expectedValues(), 1e-4); // the API rounds to 4 decimals
+    const charted = new Map([...expectedValues()].filter(([k]) => !k.includes(" | Wind Direction | ")));
+    expectSameValues(points, charted, 1e-4); // the API rounds to 4 decimals
   });
 
   await test.step("the air temperature tooltip shows Toronto time", async () => {
