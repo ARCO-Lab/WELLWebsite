@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
 import { SENSOR_STATIONS } from '@/components/config/filters';
 import { cardSeries } from '@/utils/cardSeries';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 
@@ -38,7 +39,16 @@ const QualityGraph = ({ subFilters, modalOpen }: Props) => {
   );
   return (
     <div className="rounded bg-white p-4 shadow max-sm:p-0 max-sm:shadow-none">
-      <MetricChart id="quality" title="Water Quality" series={series} axes={axes} modalOpen={modalOpen} />
+      {series.length === 0 ? (
+        <>
+          <h3 className="mb-2 text-lg font-bold">Water Quality</h3>
+          <p className="text-sm text-muted">Tick a measurement under Water Quality in Filters to see its readings.</p>
+        </>
+      ) : (
+        <ChartErrorBoundary title="Water Quality">
+          <MetricChart id="quality" title="Water Quality" series={series} axes={axes} modalOpen={modalOpen} />
+        </ChartErrorBoundary>
+      )}
     </div>
   );
 };

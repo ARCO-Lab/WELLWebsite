@@ -149,7 +149,8 @@ test.describe("charts under stress", () => {
     const before = await label(weather);
     const item = weather.locator(".highcharts-legend-item", { hasText: "Dew Point" });
     await item.scrollIntoViewIfNeeded();
-    await item.click();
+    // force: Highcharts lays its accessible legend button over the item, which takes the click (the same toggle)
+    await item.click({ force: true });
     await page.waitForTimeout(600);
     await expect(item).toHaveClass(/highcharts-legend-item-hidden/);
     expect(await label(weather)).toBe(before);
@@ -169,7 +170,7 @@ test.describe("charts under stress", () => {
     const logger = chart(page, "logger");
     const first = logger.locator(".highcharts-legend-item").first();
     await first.scrollIntoViewIfNeeded();
-    await first.click();
+    await first.click({ force: true }); // as above: the accessible legend button over the item takes the click
     await expect(first).toHaveClass(/highcharts-legend-item-hidden/);
     await expect.poll(lines).toEqual(expect.arrayContaining([[true, expect.any(Number)]]));
     for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); }
@@ -201,6 +202,25 @@ test.describe("charts under stress", () => {
     await settled(page, net);
     console.log(`[perf] 80 Ctrl+wheel at 4x: ${net.requests.length - n0} requests`);
     expect(net.requests.length - n0).toBeLessThanOrEqual(1);
+  });
+
+  test("unticking every measurement of a card leaves a message there and the page whole", async ({ page }) => {
+    const { errors } = await open(page);
+    for (const group of ["weather", "quality", "gauges"]) {
+      const ticked = page.locator(`[role=checkbox][id^="${group}-"][aria-checked=true]`);
+      for (let n = await ticked.count(); n > 0; n = await ticked.count()) {
+        await ticked.first().click();
+        await page.waitForTimeout(100);
+      }
+    }
+    await expect(page.getByText("Tick a measurement under Weather Station in Filters to see its readings.")).toBeVisible();
+    await expect(page.getByText("Tick a measurement under Water Quality in Filters to see its readings.")).toBeVisible();
+    await expect(page.getByText(/Tick Water Surface Elevation or Water Temperature under Filters/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Filters" })).toBeVisible(); // the page is still there
+    expect(errors).toEqual([]);
+    // And ticking one again draws its chart
+    await page.locator('[role=checkbox][id="weather-Air Temperature"]').click();
+    await expect(chart(page, "weather").getByTestId("chart-resolution")).toBeVisible();
   });
 
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
