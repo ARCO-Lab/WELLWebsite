@@ -158,8 +158,11 @@ fails=$((fails + $(grep -c '^FAIL' <<<"$inside")))
 check "the PHP checks ran" has "$inside" "^ok DISALLOW_FILE_EDIT"
 
 echo "== Failed-login limit"
-login() {   # login <password> [curl arguments]: the HTTP status, and "in" if the login cookie was set
-    wpcurl -o /dev/null -D - -b 'wordpress_test_cookie=WP%20Cookie%20check' -X POST "${@:2}" http://localhost/wp-login.php \
+# login <password> [curl arguments]: the HTTP status, and "in" if the login cookie was set. Posts to $LOGIN_HOST,
+# localhost by default (so the peer is 127.0.0.1).
+login() {
+    wpcurl -o /dev/null -D - -b 'wordpress_test_cookie=WP%20Cookie%20check' -X POST "${@:2}" \
+        "http://${LOGIN_HOST:-localhost}/wp-login.php" \
         --data-urlencode log=ciadmin --data-urlencode "pwd=$1" --data-urlencode testcookie=1 \
         | awk 'NR == 1 {s = $2} /^[Ss]et-[Cc]ookie: wordpress_logged_in_/ {c = " in"} END {print s c}'
 }
@@ -170,11 +173,12 @@ check "and the page says why" has "$(wpcurl -b 'wordpress_test_cookie=WP%20Cooki
     http://localhost/wp-login.php -H 'X-Forwarded-For: 203.0.113.7' --data-urlencode log=ciadmin \
     --data-urlencode "pwd=$PW" --data-urlencode testcookie=1)" 'Too many failed login attempts'
 check "another client still logs in" is "$(login "$PW" -H 'X-Forwarded-For: 203.0.113.8')" "302 in"
-# From the container's own network address the peer isn't a trusted proxy, so X-Forwarded-For is ignored: five
-# failures under five made-up addresses still lock out the one real peer.
-for i in 1 2 3 4 5; do login wrong --resolve "localhost:80:$WP_IP" -H "X-Forwarded-For: 198.51.100.$i" >/dev/null; done
+# Posted to the container's network address, the peer is that address, not a trusted proxy, so X-Forwarded-For is
+# ignored: five failures under five made-up addresses still lock out the one real peer. (curl always sends localhost
+# to loopback, whatever --resolve says, hence the address in the URL.)
+for i in 1 2 3 4 5; do LOGIN_HOST=$WP_IP login wrong -H "X-Forwarded-For: 198.51.100.$i" >/dev/null; done
 check "an untrusted peer can't dodge the limit with X-Forwarded-For" \
-    is "$(login "$PW" --resolve "localhost:80:$WP_IP" -H 'X-Forwarded-For: 198.51.100.99')" 200
+    is "$(LOGIN_HOST=$WP_IP login "$PW" -H 'X-Forwarded-For: 198.51.100.99')" 200
 
 echo
 if [ "$fails" -eq 0 ]; then echo "All WordPress hardening checks passed"; else echo "$fails check(s) failed"; exit 1; fi
