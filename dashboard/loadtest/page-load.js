@@ -6,11 +6,13 @@
 // Each iteration is one page view by a new visitor (no browser cache, its own IP address):
 //   1. the page, then /api/latest and /api/recent at once, as the page does on load;
 //   2. a few seconds later, the chart overview for the groups and days picked: half the time a range ending today
-//      (1 day, 1 week, 1 month or 1 year: views many visitors share; these requests have no bucket=, so the backend
-//      computes them every time, as only tile requests are cached),
-//      otherwise the same lengths ending on a random day of the history (almost always computed afresh);
-//   3. 3-5 zooms, each a detail request for the window plus half its width either side, as useChartSeries makes
-//      (only when the window needs finer buckets than the overview, as in the browser);
+//      (1 day, 1 week, 1 month or 1 year), otherwise the same lengths ending on a random day of the history;
+//   3. 3-5 zooms, each a detail request for the window plus half its width either side
+//      (only when the window needs finer buckets than the overview).
+//   Steps 2 and 3 ask /api/series for a range without bucket=, which the dashboard itself no longer sends (it loads
+//   fixed tiles, src/lib/seriesLoader.ts). The backend never caches such a request, so every one is a query over
+//   the whole range, and the dashboard's proxy counts it as a slow request (src/lib/rateLimit.ts): this measures the
+//   database's worst case for chart data, not the cached tiles real visitors mostly get;
 //   4. sometimes (15%) the wind rose's raw readings (/api/data, weather only, for ranges up to a month);
 //   5. sometimes (10%) a small CSV export through the export queue: estimate, job, status polls, download.
 //      The page uses the direct (sync) export for anything this small; the queue is used here on purpose, to
@@ -56,9 +58,9 @@ const ENDPOINTS = [
   ["page", "GET / (HTML)"],
   ["latest", "/api/latest"],
   ["recent", "/api/recent"],
-  ["series_shared", "/api/series overview, range ending today (shared, mostly cached)"],
-  ["series_unique", "/api/series overview, range ending on a random day (cold)"],
-  ["series_zoom", "/api/series zoom detail (cold)"],
+  ["series_shared", "/api/series overview, range ending today (no bucket=: never cached)"],
+  ["series_unique", "/api/series overview, range ending on a random day (no bucket=: never cached)"],
+  ["series_zoom", "/api/series zoom detail (no bucket=: never cached)"],
   ["data_windrose", "/api/data wind rose"],
   ["export_estimate", "POST /api/exports/estimate"],
   ["export_create", "POST /api/exports/jobs (202 or 429)"],
@@ -326,8 +328,9 @@ export function handleSummary(data) {
   }
 
   lines.push("### Warnings", "");
-  lines.push(`Targets at ${CLASS_VUS} visitors (class30): p95 /api/latest < 300 ms, /api/series < 2 s for shared ` +
-    `(cached) ranges and < 5 s for cold ones, error answers < 1%. They don't fail the run.`, "");
+  lines.push(`Targets at ${CLASS_VUS} visitors (class30): p95 /api/latest < 300 ms, /api/series < 2 s for ranges ` +
+    `ending today and < 5 s for other ranges and zooms (none of these is cached), error answers < 1%. They don't ` +
+    `fail the run.`, "");
   if (warnings.length) for (const w of warnings) lines.push(`- :warning: ${w}`);
   else lines.push("- None: every target was met.");
   lines.push("");
