@@ -559,7 +559,8 @@ export class ChartController {
     const error = owners.map((o) => this.loader.error(o)).find(Boolean) ?? null;
     let hasData: boolean | null = null;
     if (this.lastData.series.size) {
-      const any = [...this.lastData.series.values()].some((pts) => pts.some((p) => p.y !== null));
+      // Readings inside the picked range only: tiles reach past it, and readings there are not the range's
+      const any = [...this.lastData.series.values()].some((pts) => pts.some((p) => p.y !== null && p.x >= this.ext.start && p.x <= this.ext.end));
       hasData = any ? true : this.loadedForAll(this.ovB()).length >= tilesFor(this.ext, this.ovB()).length ? false : null;
     }
     return {

@@ -215,6 +215,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     rangeSelector: { enabled: false },
     navigator: {
       enabled: true,
+      accessibility: { enabled: false }, // its handles were tab stops named "Start, percent"; the keys and buttons do this
       height: coarse ? 30 : 36,
       margin: 6,
       adaptToUpdatedData: false, // its extent is the picked range, not wherever data happens to be
@@ -226,7 +227,14 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     scrollbar: { enabled: true, height: coarse ? 12 : 10, barBorderRadius: 5, buttonBorderRadius: 5, trackBorderRadius: 5 },
     accessibility: {
       description: `${title}. Use the buttons above the chart, or the arrow, plus and minus keys, to move and zoom.`,
-      keyboardNavigation: { enabled: false }, // the chart's own keys (see above) move and zoom it
+      // The summary read before the chart names its series, not Highcharts' count (which includes the helper series
+      // for markers, bands and the navigator: "33 series" for 11)
+      screenReaderSection: {
+        beforeChartFormat: `<div>${title}: a time chart of ${specs.length} series: ${specs.map((sp) => sp.name).join(', ')}.</div><div>{chartLongdesc}</div>`,
+      },
+      // Keyboard: Tab reaches the legend (arrow keys move along it, Enter shows or hides a series); moving and zooming
+      // are the chart's own keys on the plot (see above)
+      keyboardNavigation: { enabled: true, order: ['legend'] },
       // No hidden description per point: the chart is described as a whole, and the toolbar announces its window.
       // 0, not 1 or false: below the threshold the module adds invisible markers, and as an empty series fills it
       // updates every series' markers with a redraw each, so a chart was drawn as many times as it has series.
@@ -291,7 +299,8 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
         },
       },
     } as Highcharts.XAxisOptions,
-    yAxis,
+    // At least one axis, hidden when the card has none: the extent series (on axis 0) would otherwise throw error #18
+    yAxis: yAxis.length ? yAxis : [{ visible: false }],
     series,
   };
 }
@@ -590,10 +599,17 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const part = narrow && x >= a && x <= b ? 'window'
         : Math.abs(x - a) <= NAV_HANDLE_PX ? 'start' : Math.abs(x - b) <= NAV_HANDLE_PX ? 'end' : x > a && x < b ? 'window' : 'track';
       nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId, mouse: e.pointerType === 'mouse' };
+      // A mouse press is captured at once, so its release is heard wherever it happens (a finger's waits for its
+      // direction: up or down is the page's scroll)
+      if (nav.mouse) el.setPointerCapture(e.pointerId);
     };
     const navMove = (e: PointerEvent) => {
       const axis = navAxis(), c = chart();
       if (!nav || e.pointerId !== nav.id || !axis) return;
+      if (nav.mouse && e.buttons === 0) { // the button was released where we didn't hear it
+        navUp(e);
+        return;
+      }
       const dx = e.clientX - nav.x0;
       if (!nav.moved) {
         const dy = e.clientY - nav.y0;
@@ -729,6 +745,10 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         return;
       }
       if (e.touches.length !== 2) return;
+      // Fingers more above each other than side by side: not a time zoom (the chart's pinch measures the sideways
+      // spread, which barely changes); left to the browser, which zooms the page
+      const [ta, tb] = [e.touches[0], e.touches[1]];
+      if (Math.abs(ta.clientY - tb.clientY) > Math.abs(ta.clientX - tb.clientX)) return;
       e.preventDefault();
       e.stopPropagation();
       const c = chart();
@@ -763,6 +783,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target !== el) return; // keys on the legend (inside the chart) are the legend's
       const acts: Record<string, () => void> = {
         ArrowLeft: () => controller.pan(-0.1, 'key'),
         ArrowRight: () => controller.pan(0.1, 'key'),
