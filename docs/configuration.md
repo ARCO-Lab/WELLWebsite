@@ -87,7 +87,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
   `HEALTH_EXCLUDED_SERIES` (default `2577535:*`). `<GROUP>` is `WEATHER`, `LOGGER` or `QUALITY`.
 - Heartbeats (Healthchecks.io ping URLs): `HEALTHCHECK_URL_INGESTION`, `_UPLOAD`, `_SHAREPOINT`, `_DOWNLOAD`,
   `_DIGEST`, `_ALERTS`. `HEALTHCHECK_URL_BACKUP` is for the nightly database backup and `HEALTHCHECK_URL_RESTORE`
-  for the monthly restore drill (`RESTORE_CHECK_DAY`, default `2`; `RESTORE_CHECK_TOLERANCE_PCT`, default `2`)
+  for the monthly restore drill (`RESTORE_CHECK_DAY`, default `2`; `RESTORE_CHECK_TOLERANCE_PCT`, default `2`; `RESTORE_CHECK_DATABASE_URL`, the role that creates and drops the throwaway database, e.g. a `well_restore` role where there is one)
   ([Database backups](../dashboard/backend/README.md#database-backups)). The worker logs a warning at start-up, and
   the daily digest lists, every one of these that isn't set.
 - Email (digest and alerts): `ALERT_EMAILS`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`,

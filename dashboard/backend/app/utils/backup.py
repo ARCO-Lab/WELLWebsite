@@ -561,3 +561,97 @@ def human_size(size):
         if size < 1024:
             return f"{size:.1f} {unit}"
     return f"{size / 1024:.1f} GB"
+
+
+# The restore drill's throwaway databases (scripts/restore_check.py): the only databases anything here ever drops.
+# Each is a full copy of the live database, so one left behind (the drill killed, or the worker out of memory) is
+# dropped at worker start-up, after a failed drill and before each nightly backup, and listed in the daily digest.
+RESTORE_DATABASE_PREFIX = "welldb_restore_check"
+RESTORE_DATABASE_PATTERN = re.compile(r"^welldb_restore_check[a-z0-9_]*$")
+# Held by a running drill, so its database isn't taken for a leftover. In the temporary folder: the scheduled drill,
+# one run by hand with docker compose exec, and the backup all run in the worker container.
+RESTORE_LOCK_NAME = "welldb-restore-check.lock"
+
+
+def restore_lock_path():
+    return os.path.join(tempfile.gettempdir(), RESTORE_LOCK_NAME)
+
+
+@contextlib.contextmanager
+def restore_lock():
+    """Hold the restore drill's lock for the block: yields True if it was taken, False if a drill holds it."""
+    import fcntl
+    fd = os.open(restore_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)   # closing the file releases the lock
+
+
+def restore_settings(env=None):
+    """(admin, live): the settings the drill creates and drops its database with (RESTORE_CHECK_DATABASE_URL, else
+    DATABASE_URL), and the live database's (DATABASE_URL). ValueError if a URL is unusable."""
+    env = os.environ if env is None else env
+    live = parse_database_url((env.get("DATABASE_URL") or "").strip())
+    admin = parse_database_url((env.get("RESTORE_CHECK_DATABASE_URL") or "").strip()
+                               or (env.get("DATABASE_URL") or "").strip())
+    return admin, live
+
+
+def leftover_restore_databases(names, protected):
+    """The names among `names` that are restore drill databases (RESTORE_DATABASE_PATTERN), leaving out those in
+    `protected` (the live and admin databases, which a drill may never use)."""
+    return sorted(name for name in names if RESTORE_DATABASE_PATTERN.match(name) and name not in set(protected))
+
+
+def list_databases(settings):
+    """Every database name on the server `settings` points at."""
+    import psycopg2
+    conn = psycopg2.connect(**psycopg2_kwargs(settings))
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '1min'")
+            cur.execute("SELECT datname FROM pg_database")
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def drop_restore_database(settings, name, protected=()):
+    """DROP DATABASE IF EXISTS `name` WITH (FORCE) on the server `settings` points at (PostgreSQL 13+): FORCE ends the
+    sessions still connected to it, such as the backend of a pg_restore that was stopped. Refuses any name that isn't
+    a restore drill database, or is in `protected`."""
+    import psycopg2
+    from psycopg2 import sql
+    if not RESTORE_DATABASE_PATTERN.match(name) or name in set(protected):
+        raise ValueError(f"refusing to drop {name}: only a restore drill database ({RESTORE_DATABASE_PREFIX}...) "
+                         f"that no live setting names is ever dropped")
+    conn = psycopg2.connect(**psycopg2_kwargs(settings))
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+    finally:
+        conn.close()
+
+
+def drop_leftover_restore_databases(log=print, env=None):
+    """Drop every restore drill database left on the server, unless a drill is running now (it holds restore_lock).
+    Returns the names dropped. psycopg2.Error or ValueError if listing or dropping fails."""
+    with restore_lock() as free:
+        if not free:
+            log("A restore drill is running; its database isn't a leftover, so nothing was dropped.")
+            return []
+        admin, live = restore_settings(env)
+        protected = {admin["database"], live["database"]}
+        dropped = []
+        for name in leftover_restore_databases(list_databases(admin), protected):
+            drop_restore_database(admin, name, protected)
+            log(f"Dropped {name}, a restore drill database left behind by a drill that didn't finish")
+            dropped.append(name)
+        return dropped

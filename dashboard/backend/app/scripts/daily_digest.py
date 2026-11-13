@@ -80,6 +80,23 @@ def read_traffic(db, now):
         return {"error": type(e).__name__}
 
 
+def read_restore_leftovers(db):
+    """The restore drill databases on the server (utils/backup.py), or [] while a drill is running (its database
+    isn't left behind) or if they can't be listed."""
+    from utils.backup import leftover_restore_databases, restore_lock
+    try:
+        with restore_lock() as free:
+            if not free:
+                return []
+            names = db.session.execute(db.text("SELECT datname FROM pg_database")).scalars().all()
+            current = db.session.execute(db.text("SELECT current_database()")).scalar()
+        return leftover_restore_databases(names, {current})
+    except Exception as e:   # the digest still goes out
+        db.session.rollback()
+        print(f"[WARN] could not list the restore drill databases: {type(e).__name__}: {e}")
+        return []
+
+
 def read_wqdata(config, now):
     """Primary power min/max and the newest data point of the last 24 h, from one WQData request."""
     if not (config.WQ_API_URL and config.WQ_API_KEY and config.WQ_DEVICE_ID):
@@ -163,6 +180,7 @@ def main(argv=None):
             db.session.rollback()
             incidents = recoveries = {"error": type(e).__name__}
         traffic = read_traffic(db, now)
+        leftovers = read_restore_leftovers(db)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     from utils.alerts import Settings, settings_from_env
     try:
@@ -175,7 +193,7 @@ def main(argv=None):
     unset = unset_heartbeats(sharepoint_on=sharepoint.status()[0] != "off")
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
                                  incidents, traffic, recoveries, alert_settings.dashboard_url,
-                                 alert_settings.quiet_kinds, unset)
+                                 alert_settings.quiet_kinds, unset, leftovers)
     return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject))
 
 

@@ -546,6 +546,7 @@ class RoundTrip(unittest.TestCase):
     PASSWORD = "p:w\\d@x"   # a colon and a backslash, which the password file must escape
     SOURCE = "backup_test_source"
     RESTORED = "welldb_restore_check_test"
+    LEFTOVER = "welldb_restore_check_left"
 
     @classmethod
     def setUpClass(cls):
@@ -591,8 +592,8 @@ class RoundTrip(unittest.TestCase):
 
     @classmethod
     def cleanup(cls):
-        for db in (cls.RESTORED, cls.SOURCE):
-            cls.admin_sql(f"DROP DATABASE IF EXISTS {db}")
+        for db in (cls.RESTORED, cls.LEFTOVER, cls.SOURCE):
+            cls.admin_sql(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
         cls.admin_sql(f"DROP ROLE IF EXISTS {cls.ROLE}")
 
     def rows(self, database, table):
@@ -774,6 +775,39 @@ class RoundTrip(unittest.TestCase):
             self.assertEqual(run("--no-prune").returncode, 0)
             self.assertTrue(dumps())
 
+    def database_exists(self, name):
+        conn = self.psycopg2.connect(**backup.psycopg2_kwargs(self.admin))
+        with conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+            found = cur.fetchone() is not None
+        conn.close()
+        return found
+
+    def test_a_leftover_drill_database_is_dropped_even_with_a_session_still_in_it(self):
+        superuser = {"RESTORE_CHECK_DATABASE_URL": os.environ["TEST_POSTGRES_URL"]}
+        self.admin_sql(f"CREATE DATABASE {self.LEFTOVER}")
+        # A session left in it, as by a pg_restore stopped part-way: a plain DROP DATABASE would fail
+        session = self.psycopg2.connect(**backup.psycopg2_kwargs(backup.with_database(self.admin, self.LEFTOVER)))
+        self.addCleanup(session.close)
+        # While a drill holds the lock, its database is left alone
+        with backup.restore_lock():
+            held = self.run_script("restore_check.py", "--drop-leftovers", **superuser)
+        self.assertEqual(held.returncode, 0, held.stderr)
+        self.assertIn("A restore drill is running", held.stdout)
+        self.assertTrue(self.database_exists(self.LEFTOVER))
+        done = self.run_script("restore_check.py", "--drop-leftovers", **superuser)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn(f"Dropped {self.LEFTOVER}", done.stdout)
+        self.assertFalse(self.database_exists(self.LEFTOVER))
+        self.assertTrue(self.database_exists(self.SOURCE))   # the live database is never touched
+        # The nightly backup drops one too, before it dumps
+        self.admin_sql(f"CREATE DATABASE {self.LEFTOVER}")
+        with tempfile.TemporaryDirectory() as directory:
+            backed_up = self.run_script("backup_db.py", "--dir", directory, "--no-prune", **superuser)
+        self.assertEqual(backed_up.returncode, 0, backed_up.stderr)
+        self.assertIn(f"Dropped {self.LEFTOVER}", backed_up.stdout)
+        self.assertFalse(self.database_exists(self.LEFTOVER))
+
     def test_a_check_that_cant_be_made_still_takes_the_dump(self):
         with tempfile.TemporaryDirectory() as directory:
             first = self.run_script("backup_db.py", "--dir", directory)
@@ -858,6 +892,56 @@ class RestoreShortfallTests(unittest.TestCase):
                                     "(the dump has no record of its own counts to compare with)"])
 
 
+class RestoreLeftoverTests(unittest.TestCase):
+    """Only restore drill databases are ever dropped, never a live one, and the counts can't hang."""
+
+    def test_only_drill_databases_that_no_live_setting_names_are_leftovers(self):
+        names = ["welldb", "postgres", "template1", "welldb_restore_check", "welldb_restore_check_2",
+                 "Welldb_restore_check", "welldb_restore_check; DROP", "welldb_restore_checklive"]
+        self.assertEqual(backup.leftover_restore_databases(names, {"welldb", "welldb_restore_checklive"}),
+                         ["welldb_restore_check", "welldb_restore_check_2"])
+
+    def test_dropping_refuses_other_names_before_connecting(self):
+        with mock.patch("psycopg2.connect") as connect:
+            for name, protected in (("welldb", ()), ("postgres", ()), ("welldb_restore_check", ["welldb_restore_check"]),
+                                    ("welldb_restore_check; DROP", ())):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    backup.drop_restore_database({"database": "postgres"}, name, protected)
+        connect.assert_not_called()
+
+    def test_drop_uses_force(self):
+        with mock.patch("psycopg2.connect") as connect:
+            backup.drop_restore_database({"database": "postgres"}, "welldb_restore_check")
+        statement = connect.return_value.cursor.return_value.__enter__.return_value.execute.call_args[0][0]
+        self.assertIn("WITH (FORCE)", repr(statement))
+
+    def test_counts_have_a_statement_timeout(self):
+        import restore_check
+        with mock.patch.object(restore_check.psycopg2, "connect") as connect:
+            cur = connect.return_value.cursor.return_value.__enter__.return_value
+            cur.fetchall.return_value = []
+            restore_check.row_counts({"database": "x"}, read_only=True)
+        first = cur.execute.call_args_list[0][0]
+        self.assertEqual(first, ("SET statement_timeout = %s", (restore_check.COUNT_STATEMENT_TIMEOUT,)))
+
+    def test_a_running_drill_keeps_its_database(self):
+        with backup.restore_lock() as taken:
+            self.assertTrue(taken)
+            logs = []
+            with mock.patch.object(backup, "list_databases") as listing:
+                self.assertEqual(backup.drop_leftover_restore_databases(logs.append, env={}), [])
+            listing.assert_not_called()
+            self.assertIn("A restore drill is running", logs[0])
+
+    def test_the_backup_drops_leftovers_and_a_failure_is_only_a_warning(self):
+        import backup_db
+        warnings = []
+        with mock.patch.object(backup_db, "drop_leftover_restore_databases",
+                               side_effect=ValueError("DATABASE_URL is not set")):
+            backup_db.drop_restore_leftovers(log=lambda *a: None, warn=warnings.append)
+        self.assertEqual(warnings, ["could not drop the leftover restore drill databases: DATABASE_URL is not set"])
+
+
 class RestoreSchedulerTests(unittest.TestCase):
     """The monthly restore drill's slot in the scheduler, with its own heartbeat."""
 
@@ -891,14 +975,19 @@ class RestoreSchedulerTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, "Restore check passed", "")
 
         def short(cmd, timeout):
+            self.cmds.append((cmd, timeout))
+            if "--drop-leftovers" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "Leftover restore drill databases dropped: none.", "")
             raise subprocess.CalledProcessError(1, cmd, output="", stderr="ERROR: restore check failed: too few rows")
 
         self.assertTrue(self.run_at(2, 5, ok)[0])
-        self.assertEqual(self.cmds[0][0][1:], ["scripts/restore_check.py"])
-        self.assertEqual(self.cmds[0][1], self.scheduler.RESTORE_TIMEOUT_S)
+        self.assertEqual(self.cmds, [([sys.executable, "scripts/restore_check.py"], self.scheduler.RESTORE_TIMEOUT_S)])
         ran, capture = self.run_at(2, 5, short)
         self.assertFalse(ran)
         capture.assert_called_once()
+        # A failed (perhaps killed) drill is followed by dropping what it may have left
+        self.assertEqual(self.cmds[-1], ([sys.executable, "scripts/restore_check.py", "--drop-leftovers"],
+                                         self.scheduler.LEFTOVERS_TIMEOUT_S))
         self.assertEqual(self.pings, [("restore", "start"), ("restore", "success"), ("restore", "start"),
                                       ("restore", "fail")])
 
@@ -907,6 +996,34 @@ class RestoreSchedulerTests(unittest.TestCase):
         self.assertIsNone(self.run_at(2, 4, never, setting="31")[0])
         self.assertIsNone(self.run_at(2, 5, never, setting="31")[0])
         self.assertEqual(self.pings, [("restore", "fail")])
+
+    def test_a_failure_to_drop_leftovers_is_reported_and_never_raises(self):
+        def broken(cmd, timeout):
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="ERROR: permission denied")
+        with mock.patch.object(self.scheduler, "capture_job_error") as capture:
+            self.assertFalse(self.scheduler.drop_restore_leftovers(self.logs.append, broken))
+            self.assertFalse(self.scheduler.drop_restore_leftovers(
+                self.logs.append, lambda cmd, timeout: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 1))))
+        self.assertEqual(capture.call_count, 2)
+        self.assertIn("permission denied", self.logs[0])
+        self.assertEqual(self.pings, [])
+
+    def test_a_slow_run_within_its_limit_is_never_called_stuck(self):
+        hour = 60 * 60
+        skips = self.scheduler.skips_before_fail
+        self.assertEqual(skips(self.scheduler.RESTORE_TIMEOUT_S, hour), 5)   # a 4 h drill is skipped at most 4 times
+        self.assertEqual(skips(self.scheduler.BACKUP_TIMEOUT_S, hour), 3)
+        self.assertEqual(skips(2 * self.scheduler.UPLOAD_TIMEOUT_S, hour), 5)
+        self.assertEqual(skips(self.scheduler.DIGEST_TIMEOUT_S, hour), 2)
+        self.assertEqual(skips(self.scheduler.DOWNLOAD_TIMEOUT_S, 7 * 24 * hour), 2)
+        # The restore drill's reporter: 4 skips (a drill near its 4 h limit) only log; the 5th fails
+        statuses = []
+        with mock.patch.object(self.scheduler, "ping_heartbeat",
+                               lambda name, status, message=None: statuses.append(status)),                 mock.patch.object(self.scheduler, "capture_job_warning"):
+            on_skip = self.scheduler.skip_reporter("restore", skips(self.scheduler.RESTORE_TIMEOUT_S, hour))
+            for n in range(1, 6):
+                on_skip(n, "monthly_restore_check is still running")
+        self.assertEqual(statuses, ["log"] * 4 + ["fail"])
 
     def test_it_runs_after_the_backup_can_have_finished(self):
         start = self.scheduler.BACKUP_HOUR * 60 + 15

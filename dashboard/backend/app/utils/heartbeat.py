@@ -18,8 +18,9 @@ SUFFIXES = {"success": "", "fail": "/fail", "start": "/start", "log": "/log"}
 # Healthchecks.io keeps the first 100 kB of a ping's body; a message here is far shorter, this only bounds it.
 MESSAGE_LIMIT = 10_000
 
-# The checks the worker pings (scripts/scheduler_temp.py). "sharepoint" only counts while the SharePoint copy is
-# configured: with it off there is nothing to watch.
+# The checks the worker pings (scripts/scheduler_temp.py). "restore" only counts while the restore drill is on
+# (RESTORE_CHECK_DAY isn't "off"), and "sharepoint" while the SharePoint copy is configured: with them off there is
+# nothing to watch.
 WORKER_HEARTBEATS = ("ingestion", "alerts", "download", "upload", "digest", "backup", "restore")
 
 
@@ -36,8 +37,12 @@ def heartbeat_url(name, env=None):
 
 def unset_heartbeats(env=None, sharepoint_on=False):
     """The HEALTHCHECK_URL_* settings of the worker's jobs that aren't set, in WORKER_HEARTBEATS order (then
-    HEALTHCHECK_URL_SHAREPOINT when `sharepoint_on`). [] when every job is watched."""
-    names = list(WORKER_HEARTBEATS) + (["sharepoint"] if sharepoint_on else [])
+    HEALTHCHECK_URL_SHAREPOINT when `sharepoint_on`), leaving out the restore drill's while RESTORE_CHECK_DAY is
+    "off". [] when every job is watched."""
+    env = os.environ if env is None else env
+    restore_on = (env.get("RESTORE_CHECK_DAY") or "").strip().lower() != "off"
+    names = [name for name in WORKER_HEARTBEATS if restore_on or name != "restore"]
+    names += ["sharepoint"] if sharepoint_on else []
     return [heartbeat_setting(name) for name in names if not heartbeat_url(name, env)]
 
 

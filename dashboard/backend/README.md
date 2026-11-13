@@ -397,11 +397,13 @@ otherwise (also 503 if the database can't be read or a setting below is invalid)
 The worker pings a [Healthchecks.io](https://healthchecks.io) check after each job, and Healthchecks emails the account
 owner when a check reports a failure or stops being pinged, so no SMTP is needed for these. A ping times out after 5 s
 and never stops the job. Unset variables mean no ping, so a job, or the whole worker, could stop with nobody told:
-the worker names every unset one in a `[WARN]` line when it starts (in `logs/db_injections.log` and in `docker
+the worker names every unset one (`HEALTHCHECK_URL_RESTORE` only while the drill is on) in a `[WARN]` line when it starts (in `logs/db_injections.log` and in `docker
 compose logs worker`) and as a Sentry warning, and the daily digest lists them first. A run skipped because the
 previous one is still going is recorded in the job's check with Healthchecks' `/log` (shown in its event log, no
-change of state); 3 skipped in a row (`SKIPS_BEFORE_FAIL`) ping `/fail` and send a Sentry warning, since the job is
-then stuck rather than slow.
+change of state); enough skipped in a row ping `/fail` and send a Sentry warning, since the job is then stuck rather than
+slow. For ingestion that is 3 skips (`SKIPS_BEFORE_FAIL`, half an hour); a job run under a time limit gets one more
+skip than a run can last (the backup 3, the restore drill 5, the upload 5, the digest 2, the weekly download 2), so a
+slow run within its limit is never reported as stuck.
 
 | Variable | Pinged |
 |---|---|
@@ -680,6 +682,20 @@ on the VM) has; for another role, grant it once (as `postgres`: `ALTER ROLE <app
 throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as
 the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus
 `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
+
+If the database has a dedicated restore role (`well_restore`, with `CREATEDB` and no rights on the live data), set
+`RESTORE_CHECK_DATABASE_URL` in `dashboard/backend/app/.env` to a URL for it, e.g.
+`postgresql://well_restore:<password>@host.docker.internal:5432/postgres`, and recreate the worker; the drill then
+creates and drops its database as that role, and reads the live counts with `DATABASE_URL` as before.
+
+**The throwaway database never stays.** It is a full copy of the live database, so it is dropped with `DROP DATABASE
+... WITH (FORCE)`, which also ends a session still connected to it (a `pg_restore` stopped part-way), and each
+`count(*)` is stopped after 20 minutes. A drill killed outright (out of memory, `SIGKILL`) can't drop it, so the
+worker drops every `welldb_restore_check*` database left behind when it starts, after a failed drill, and before each
+nightly backup (before its free-space check); the daily digest lists any that are still there. A drill that is
+running holds a lock, so its database is never taken for a leftover. `--keep` leaves the database for you to look
+at, until the next of those. To drop leftovers by hand: `docker compose exec worker python scripts/restore_check.py
+--drop-leftovers`.
 
 **Restoring for real.** Restore into a new, empty database, put back anything the dump left out, then point the app at
 it. `<app role>` is the role in `BACKEND_DATABASE_URL` (`postgres` on the VM).

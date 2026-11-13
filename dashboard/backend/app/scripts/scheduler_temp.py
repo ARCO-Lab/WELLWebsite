@@ -23,6 +23,7 @@ import sys
 import builtins
 import signal
 import subprocess
+import math
 import os
 import pathlib
 import threading
@@ -75,6 +76,7 @@ LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
 BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds its own steps to 80 + 10 + 15 min (DUMP_TIMEOUT_S etc.)
 RESTORE_TIMEOUT_S = 4 * 60 * 60  # restore_check.py stops pg_restore after 3 h; counting both databases is the rest
+LEFTOVERS_TIMEOUT_S = 5 * 60     # restore_check.py --drop-leftovers: a few DROP DATABASE statements
 
 # The nightly backup runs at BACKUP_HOUR:15 Toronto time: after the 02:00 uploads, before the working day, and an
 # hour that happens exactly once on DST change days (02:00 is skipped or repeated, 03:00 never is).
@@ -88,7 +90,16 @@ RESTORE_CHECK_DAY = os.getenv("RESTORE_CHECK_DAY", "2").strip()
 
 # A job whose runs are skipped this many times in a row (the previous run is still going) pings its heartbeat with
 # /fail and is reported to Sentry: it is stuck, not just slow (skip_reporter). Fewer skips are only logged there.
+# For ingestion (every 10 minutes, its requests bounded on their own) 3 skips is half an hour, its check's grace. The
+# jobs run under a time limit get one more skip than a run can last (skips_before_fail), so a slow run that is still
+# within its limit is never reported as stuck.
 SKIPS_BEFORE_FAIL = 3
+
+
+def skips_before_fail(timeout_s, interval_s):
+    """How many skipped runs in a row mean a job is stuck: one more than a run within `timeout_s` can cover when the
+    job is started every `interval_s`."""
+    return math.ceil(timeout_s / interval_s) + 1
 
 # The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
 # logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
@@ -475,9 +486,30 @@ def monthly_restore_check(log=None, run=None):
         log(f"[ERROR] Unexpected error running restore_check.py: {e}")
         capture_job_error(e)
         ok = False
+    if not ok:   # a drill that was killed can't drop its own database, and it is a full copy of the live one
+        drop_restore_leftovers(log, run)
     ping_heartbeat("restore", "success" if ok else "fail")
     log(f"========== RESTORE DRILL {'PASSED' if ok else 'FAILED'} ==========")
     return ok
+
+
+def drop_restore_leftovers(log=None, run=None):
+    """Drop the restore drill databases left by drills that didn't finish (scripts/restore_check.py
+    --drop-leftovers; never one a running drill holds). At start-up and after a failed drill; the nightly backup
+    does it too. A failure is logged and reported, and changes no heartbeat. True if it worked."""
+    log = log or timestamped_print_backup
+    run = run or run_bounded
+    try:
+        result = run([sys.executable, "scripts/restore_check.py", "--drop-leftovers"], LEFTOVERS_TIMEOUT_S)
+        log(f"restore_check.py --drop-leftovers: {result.stdout.strip()}")
+        return True
+    except subprocess.CalledProcessError as e:
+        log(f"[ERROR] Dropping leftover restore drill databases failed: {(e.stderr or '').strip()}")
+        capture_job_error(e)
+    except Exception as e:   # TimeoutExpired and anything unexpected
+        log(f"[ERROR] Dropping leftover restore drill databases failed: {type(e).__name__}: {e}")
+        capture_job_error(e)
+    return False
 
 
 def skip_reporter(heartbeat, fail_after=SKIPS_BEFORE_FAIL):
@@ -500,7 +532,7 @@ def report_unset_heartbeats(log, sentry_warning=None, env=None):
     WORKER_LOG_TO_STDOUT, in docker logs) and as one Sentry warning. Without them, a worker that stops, or a job
     that stops running, reports nothing anywhere. Returns the names."""
     state, _ = sharepoint.status(env)
-    missing = unset_heartbeats(env, sharepoint_on=state != "off")
+    missing = unset_heartbeats(env, sharepoint_on=state != "off")   # leaves out the drill's while it is off
     if missing:
         message = (f"Heartbeats not set: {', '.join(missing)}. Those jobs report nothing if they stop or keep "
                    f"failing (README, Monitoring).")
@@ -577,13 +609,22 @@ if __name__ == "__main__":
 
     # Each job starts in its own thread and is skipped while its previous run is still going; a skip is logged in
     # the job's heartbeat check, and several in a row fail it (skip_reporter).
+    hour, week = 60 * 60, 7 * 24 * 60 * 60
     api_run = run_in_background(api_injection_job, log=print, on_skip=skip_reporter("ingestion"))
-    download_run = run_in_background(download_job, log=timestamped_print_download, on_skip=skip_reporter("download"))
-    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload, on_skip=skip_reporter("upload"))
-    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest, on_skip=skip_reporter("digest"))
-    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup, on_skip=skip_reporter("backup"))
+    download_run = run_in_background(download_job, log=timestamped_print_download,
+                                     on_skip=skip_reporter("download", skips_before_fail(DOWNLOAD_TIMEOUT_S, week)))
+    # An upload run sends a month to Borealis, then to SharePoint, each under UPLOAD_TIMEOUT_S
+    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload,
+                                   on_skip=skip_reporter("upload", skips_before_fail(2 * UPLOAD_TIMEOUT_S, hour)))
+    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest,
+                                   on_skip=skip_reporter("digest", skips_before_fail(DIGEST_TIMEOUT_S, hour)))
+    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup,
+                                   on_skip=skip_reporter("backup", skips_before_fail(BACKUP_TIMEOUT_S, hour)))
     restore_run = run_in_background(monthly_restore_check, log=timestamped_print_backup,
-                                    on_skip=skip_reporter("restore"))
+                                    on_skip=skip_reporter("restore", skips_before_fail(RESTORE_TIMEOUT_S, hour)))
+    # A drill killed with the last worker (or out of memory) left its database behind: drop it now, in the
+    # background so ingestion catches up at once
+    run_in_background(drop_restore_leftovers, log=timestamped_print_backup)()
 
     scheduler = schedule.Scheduler()
     scheduler.every(10).minutes.do(api_run)

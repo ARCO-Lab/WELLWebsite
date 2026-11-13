@@ -6,11 +6,20 @@
 #
 #   docker compose exec worker python scripts/restore_check.py
 #   docker compose exec worker python scripts/restore_check.py --file /app/backups/welldb-20261111-0315.dump
+#   docker compose exec worker python scripts/restore_check.py --drop-leftovers   only drop databases left behind
 #
 # Creating a database needs the CREATEDB privilege. On the VM the app connects as postgres, which has it. A role
 # without it can be granted it once (as postgres: ALTER ROLE <role> CREATEDB;), or RESTORE_CHECK_DATABASE_URL can
-# point at a role that has it; that role creates, restores into and drops the throwaway database, and the live
-# counts are still read with DATABASE_URL, in a read-only session.
+# point at a role that has it, such as a dedicated well_restore role with CREATEDB where the database has one; that
+# role creates, restores into and drops the throwaway database, and the live counts are still read with
+# DATABASE_URL, in a read-only session.
+#
+# The throwaway database is a full copy of the live one, so it must not outlive the drill. It is dropped with
+# DROP DATABASE ... WITH (FORCE), which also ends a session still connected to it (a pg_restore stopped by SIGTERM),
+# and every count(*) is stopped after 20 minutes. A drill killed outright (SIGKILL, out of memory) can't drop it: the
+# worker drops any welldb_restore_check* database left behind at start-up, after a failed drill and before each
+# nightly backup, and the daily digest lists any still there. A running drill holds a lock (in the temporary folder)
+# so its own database is never taken for a leftover, and only one drill runs at a time.
 #
 # The live database keeps changing (new readings every 10 minutes), so counts that grew since the dump are
 # expected and reported, not failures. It fails (exit 1) if the restore fails, a table the live database has is
@@ -32,7 +41,6 @@
 import argparse
 import os
 import pathlib
-import re
 import shutil
 import signal
 import subprocess
@@ -44,8 +52,9 @@ import psycopg2  # noqa: E402
 from psycopg2 import sql  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, csv_setting, dumps_in, exclusion_setting, human_size, libpq_env,
-    load_dump_counts, parse_database_url, pg_tool, psycopg2_kwargs, run_tool, with_database,
+    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, RESTORE_DATABASE_PATTERN, csv_setting, drop_leftover_restore_databases,
+    drop_restore_database, dumps_in, exclusion_setting, human_size, libpq_env, load_dump_counts, pg_tool,
+    psycopg2_kwargs, restore_lock, restore_settings, run_tool, with_database,
 )
 
 # How far below its recorded count an estimated count (a large table's, from the planner) may restore: the estimate
@@ -55,10 +64,13 @@ DEFAULT_TOLERANCE_PCT = 2
 # newest dump is at most a day old, and these tables only grow by well under a percent a day)
 LIVE_SHORTFALL_PCT = 5
 
+# The only names the drill restores into (and so drops first) match RESTORE_DATABASE_PATTERN (utils/backup.py):
+# welldb_restore_check, optionally with a suffix
 DEFAULT_RESTORE_DATABASE = "welldb_restore_check"
-# The only names the drill restores into (and so drops first): welldb_restore_check, optionally with a suffix
-RESTORE_DATABASE_PATTERN = re.compile(r"^welldb_restore_check[a-z0-9_]*$")
 RESTORE_TIMEOUT_S = 3 * 60 * 60
+# Each count(*) is stopped after this long, so a count that hangs (a lock, a slow disk) ends the drill, and with it
+# the throwaway database, instead of holding it until the scheduler kills the drill
+COUNT_STATEMENT_TIMEOUT = "20min"
 
 # Every table outside the system schemas, and whether this role may read it (run without parameters, so % is literal)
 TABLES_SQL = """
@@ -90,6 +102,7 @@ def row_counts(settings, read_only=False):
         if read_only:
             conn.set_session(readonly=True)
         with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = %s", (COUNT_STATEMENT_TIMEOUT,))
             cur.execute(TABLES_SQL)
             tables = cur.fetchall()
             counts = {}
@@ -206,8 +219,28 @@ def main(argv=None):
                         help="name of the throwaway database (must start with welldb_restore_check)")
     parser.add_argument("--no-space-check", action="store_true",
                         help="don't check free disk space first (the database is on another disk)")
-    parser.add_argument("--keep", action="store_true", help="leave the throwaway database in place afterwards")
+    parser.add_argument("--keep", action="store_true", help="leave the throwaway database in place afterwards (the "
+                        "next worker start or nightly backup drops it)")
+    parser.add_argument("--drop-leftovers", action="store_true",
+                        help="only drop restore drill databases left by drills that didn't finish, then exit")
     args = parser.parse_args(argv)
+    if args.drop_leftovers:
+        try:
+            dropped = drop_leftover_restore_databases()
+        except (ValueError, psycopg2.Error) as e:
+            print(f"ERROR: could not drop the leftover restore drill databases: {str(e).strip()}", file=sys.stderr)
+            return 1
+        print(f"Leftover restore drill databases dropped: {', '.join(dropped) or 'none'}.")
+        return 0
+    with restore_lock() as free:
+        if not free:
+            print("ERROR: restore check failed: another restore drill is running", file=sys.stderr)
+            return 1
+        return drill(args)
+
+
+def drill(args):
+    """The drill itself, run while holding restore_lock (see main)."""
     # The scheduler stops a drill that runs too long with SIGTERM: ending through SystemExit still runs the finally
     # below, which drops the throwaway database.
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
@@ -215,9 +248,7 @@ def main(argv=None):
     created = False
     admin = None
     try:
-        live = parse_database_url(os.getenv("DATABASE_URL", "").strip())
-        admin = parse_database_url((os.getenv("RESTORE_CHECK_DATABASE_URL") or "").strip()
-                                   or os.getenv("DATABASE_URL", "").strip())
+        admin, live = restore_settings()
         if not RESTORE_DATABASE_PATTERN.match(args.database):
             raise RestoreCheckError(f"refusing to restore into {args.database}: the throwaway database's name must "
                                     f"start with welldb_restore_check (lowercase letters, digits and _ after it)")
@@ -246,9 +277,9 @@ def main(argv=None):
         print(f"Restoring {dump} into a new database {args.database}")
 
         # Only a database of this exact name, left over from an earlier drill that was interrupted, is dropped.
-        name = sql.Identifier(args.database)
-        admin_execute(admin, sql.SQL("DROP DATABASE IF EXISTS {}").format(name))
-        admin_execute(admin, sql.SQL("CREATE DATABASE {}").format(name))
+        protected = (live["database"], admin["database"])
+        drop_restore_database(admin, args.database, protected)
+        admin_execute(admin, sql.SQL("CREATE DATABASE {}").format(sql.Identifier(args.database)))
         created = True
         target = with_database(admin, args.database)
         with libpq_env(target) as env:
@@ -278,9 +309,10 @@ def main(argv=None):
     finally:
         if created and not args.keep:
             try:
-                admin_execute(admin, sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(args.database)))
+                # FORCE: a pg_restore stopped by SIGTERM may still have its session open
+                drop_restore_database(admin, args.database, (live["database"], admin["database"]))
                 print(f"Dropped the throwaway database {args.database}.")
-            except psycopg2.Error as e:
+            except (psycopg2.Error, ValueError) as e:
                 print(f"ERROR: could not drop {args.database}; drop it by hand: {str(e).strip()}", file=sys.stderr)
 
 

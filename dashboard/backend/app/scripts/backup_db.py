@@ -39,6 +39,8 @@
 #   BACKUP_MIN_FREE_MB      free space to leave on the disk after a dump the size of the last one (default 2048):
 #                           the database usually shares the disk, and must never be the one to run out. If there
 #                           isn't enough, retention runs first (unless --no-prune) and the space is checked again.
+#                           Before that, any restore drill database a drill left behind (welldb_restore_check*, a full
+#                           copy of the database) is dropped; a failure to do so is a WARNING: line.
 #   PG_BIN_DIR              where pg_dump and pg_restore are (default /usr/lib/postgresql/13/bin, else PATH)
 #
 # Dumps are named welldb-YYYYmmdd-HHMM.dump (Toronto time). Only files with that name are ever deleted. A dump is
@@ -66,11 +68,11 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 import psycopg2  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, DEFAULT_MAX_SHRINK_PCT, count_rows, csv_setting, dump_name, dumps_in,
-    dumps_to_prune, exclusion_setting, human_size, libpq_env, load_record, load_row_counts, mark_failing,
-    missing_tables, orphan_counts_files, owned_sequences, parse_database_url, pg_tool, quoted_pattern,
-    remove_stale_passfiles, row_count_problems, run_tool, save_dump_counts, save_row_counts, stale_partials,
-    table_data_entries, unreadable_relations,
+    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, DEFAULT_MAX_SHRINK_PCT, count_rows, csv_setting,
+    drop_leftover_restore_databases, dump_name, dumps_in, dumps_to_prune, exclusion_setting, human_size, libpq_env,
+    load_record, load_row_counts, mark_failing, missing_tables, orphan_counts_files, owned_sequences,
+    parse_database_url, pg_tool, quoted_pattern, remove_stale_passfiles, row_count_problems, run_tool,
+    save_dump_counts, save_row_counts, stale_partials, table_data_entries, unreadable_relations,
 )
 
 SITE_TZ = ZoneInfo("America/Toronto")
@@ -369,6 +371,15 @@ def main(argv=None):
         return run(args, keep_daily, keep_weekly)
 
 
+def drop_restore_leftovers(log=print, warn=warn_stderr):
+    """Drop the restore drill databases a drill left behind (utils/backup.drop_leftover_restore_databases). A failure
+    is a warning: the backup doesn't depend on it."""
+    try:
+        drop_leftover_restore_databases(log)
+    except (ValueError, psycopg2.Error) as e:
+        warn(f"could not drop the leftover restore drill databases: {str(e).strip()}")
+
+
 def run(args, keep_daily, keep_weekly):
     """The backup (unless --prune-only), then retention (unless --no-prune). The exit code."""
     try:
@@ -377,6 +388,7 @@ def run(args, keep_daily, keep_weekly):
             exclude = exclusion_setting()
             expected = csv_setting(os.getenv("BACKUP_EXPECT_TABLES", DEFAULT_EXPECT_TABLES))
             make_room = None if args.no_prune else lambda: prune(args.dir, keep_daily, keep_weekly)
+            drop_restore_leftovers()   # a leftover drill database is a copy of the live one: free its space first
             back_up(args.dir, settings, exclude, expected, int_setting("BACKUP_MIN_FREE_MB", 2048),
                     max_shrink_pct=shrink_setting(), accept_row_counts=args.accept_row_counts,
                     prune_failing=not args.no_prune, make_room=make_room)

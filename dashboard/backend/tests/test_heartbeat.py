@@ -87,6 +87,9 @@ class PingHeartbeatTests(TestCase):
         partial = {**everything, "HEALTHCHECK_URL_RESTORE": " ", "HEALTHCHECK_URL_INGESTION": ""}
         self.assertEqual(unset_heartbeats(partial), ["HEALTHCHECK_URL_INGESTION", "HEALTHCHECK_URL_RESTORE"])
         self.assertEqual(len(unset_heartbeats({})), len(WORKER_HEARTBEATS))
+        # With the restore drill off, its heartbeat isn't asked for
+        self.assertNotIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": " OFF "}))
+        self.assertIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": "2"}))
 
 
 class WorkerHeartbeatReportTests(TestCase):
