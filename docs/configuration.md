@@ -25,7 +25,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `DEPLOYMENT` | `DEV` | `PROD` makes the WordPress theme force HTTPS URLs (`home/wp-content/themes/well/functions.php`). |
 | `WP_HOME`, `WP_SITEURL` | none | Passed into the `wordpress` container. The stock image doesn't apply them by itself; they only take effect if `home/wp-config.php` (not in the repository) reads them. |
 | `DASHBOARD_URL` | `https://welldash.mcmaster.ca` | The dashboard address the WordPress theme links to and embeds. |
-| `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see [Host firewall](hosting.md#host-firewall-required)). |
+| `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see [Host firewall](hosting.md#host-firewall-required)). Use the `well_app` role, not `postgres` ([Database roles](../dashboard/backend/README.md#database-roles)). |
 | `BACKEND_PORT` | must be `5000` | Only feeds the backend's `expose:` line. Gunicorn always listens on 5000 (`dashboard/backend/Dockerfile`), so any other value breaks the stack. |
 | `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`, which is fixed when the image is built, so a change needs a dashboard rebuild. |
 | `NEXT_PUBLIC_FLASK_API_URL` | none | Passed to the dashboard build and container, but no code reads it. |
