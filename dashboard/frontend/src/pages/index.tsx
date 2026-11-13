@@ -3,7 +3,7 @@
 // Each West Campus chart has its own zoom window and loads its own data (hooks/useChartWindow); the page gives them,
 // through ChartPageContext, the window they start at (the picked days, or a shared link's window) and the data's extent.
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import type MapComponent from "@/components/map/Map";
@@ -31,7 +31,7 @@ import { GraphFrame, LoadingOverlay } from "@/components/LoadingOverlay";
 // import AIAnalysis from "@/components/AIAnalysis";
 import { ChartPageContext, type ChartPage } from "@/hooks/useChartWindow";
 import {
-  clampToNow, dataStart, daysCovering, hourStart, pickedDaysRange, searchWithWindow, windowFromSearch, type Range,
+  clampToNow, daysCovering, hourStart, pickedDaysRange, searchWithWindow, windowFromSearch, type Range,
 } from "@/utils/chartWindow";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
@@ -89,6 +89,25 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
   useEmbedFrame(mainRef, embedded);
 
   const [activeTab, setActiveTab] = useState<"sensor" | "sampling">("sensor");
+  // A tab once opened stays mounted while another is shown: switching back is then instant, with its map, charts and
+  // data as they were, instead of rebuilding them all (seconds on a phone). The hidden one keeps its width, out of the
+  // flow and unrendered (content-visibility), so showing it again needs no reflow either.
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(["sensor"]));
+  // The tab bar and the shown panel switch at once (shownTab); the page's own state follows in a
+  // transition, so the click isn't held up by re-rendering the whole dashboard
+  const [shownTab, setShownTab] = useState<"sensor" | "sampling">("sensor");
+  const showTab = useCallback((value: string) => {
+    setShownTab(value as "sensor" | "sampling");
+    startTransition(() => {
+      setActiveTab(value as "sensor" | "sampling");
+      setVisited((v) => (v.has(value) ? v : new Set([...v, value])));
+    });
+  }, []);
+  // A shared link's ?tab= opens that tab like a click would
+  const openTab = useCallback((v: React.SetStateAction<"sensor" | "sampling">) => {
+    if (typeof v === "function") setActiveTab(v);
+    else showTab(v);
+  }, [showTab]);
   
   const [activeGroups, setActiveGroups] = useState({
     gauges: false,
@@ -156,7 +175,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
 
   // A shared link's ?tab=, ?groups= and ?creeks= tick what its sender had ticked, and the link follows the ticks
   useSelectionLink({
-    activeTab, setActiveTab, activeGroups, setActiveGroups, setSubFilters, activeCreeks, setActiveCreeks,
+    activeTab, setActiveTab: openTab, activeGroups, setActiveGroups, setSubFilters, activeCreeks, setActiveCreeks,
     setSamplingSubFilters, setOpen, setChevronState,
   });
 
@@ -177,36 +196,56 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
   // data's extent ends at the next whole hour, and so do today's picked days (clampToNow), so a page left open moves
   // on with the hours.
   const [clock, setClock] = useState(() => hourStart(Date.now()));
+  // The user picked dates (or opened a link): they no longer roll over at midnight
+  const [datesChosenState, setDatesChosen] = useState(false);
   useEffect(() => {
-    const id = window.setInterval(() => setClock(hourStart(Date.now())), 60_000);
+    const id = window.setInterval(() => {
+      setClock(hourStart(Date.now()));
+      // Dates the user hasn't chosen follow the calendar: yesterday and today roll over at Toronto midnight
+      if (!datesChosenState) {
+        const today = siteDay();
+        setEndDate((d) => (d && d.toDateString() === today.toDateString() ? d : today));
+        setStartDate((d) => (d && d.toDateString() === siteDay(-1).toDateString() ? d : siteDay(-1)));
+      }
+    }, 60_000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [datesChosenState]);
 
   // A shared link's window (?from=&to=, read once on load): it is where every chart starts and goes back to on
   // Reset, and the date pickers show the days it covers. Picking other days drops it.
   const [linkWindow, setLinkWindow] = useState<Range | null>(null);
-  const changeStartDate = useCallback((d: Date | null) => { setStartDate(d); setLinkWindow(null); }, []);
-  const changeEndDate = useCallback((d: Date | null) => { setEndDate(d); setLinkWindow(null); }, []);
+  const chooseDates = useCallback(() => setDatesChosen(true), []);
+  const changeStartDate = useCallback((d: Date | null) => { chooseDates(); setStartDate(d); setLinkWindow(null); }, [chooseDates]);
+  const changeEndDate = useCallback((d: Date | null) => { chooseDates(); setEndDate(d); setLinkWindow(null); }, [chooseDates]);
   const [urlRead, setUrlRead] = useState(false);
   useEffect(() => {
     const w = windowFromSearch(window.location.search, Date.now());
     if (w) {
       const { startDay, endDay } = daysCovering(w);
+      chooseDates();
       setStartDate(startDay);
       setEndDate(endDay);
       setLinkWindow(w);
     }
     setUrlRead(true);
-  }, []);
+  }, [chooseDates]);
 
-  const extentEnd = clock + 3_600_000;
+  // The charts' extent is the picked days, up to the next whole hour (so a page left open moves on with the hours);
+  // a shared link's window is shown as it is, otherwise each chart fits to where its data is within the days
+  const nowEnd = clock + 3_600_000;
   const picked = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), clock + 1) : null;
-  const defaultStart = linkWindow?.start ?? picked?.start ?? extentEnd - 2 * 86_400_000;
-  const defaultEnd = linkWindow?.end ?? picked?.end ?? extentEnd;
+  const extentStart = Math.min(picked?.start ?? nowEnd - 2 * 86_400_000, linkWindow?.start ?? Infinity);
+  const extentEnd = Math.max(picked?.end ?? nowEnd, linkWindow?.end ?? -Infinity);
+  const defaultStart = linkWindow?.start ?? extentStart;
+  const defaultEnd = linkWindow?.end ?? extentEnd;
   const chartPage = useMemo<ChartPage>(() => ({
     defaultWindow: { start: defaultStart, end: Math.max(defaultEnd, defaultStart + 3_600_000) },
-    extent: { start: dataStart(), end: extentEnd },
-  }), [defaultStart, defaultEnd, extentEnd]);
+    extent: { start: extentStart, end: Math.max(extentEnd, extentStart + 3_600_000) },
+    fit: !linkWindow,
+    // The user's choice; default days rolling over at midnight aren't one (a window the user moved stays put)
+    selection: linkWindow ? `link:${linkWindow.start}-${linkWindow.end}`
+      : datesChosenState ? `days:${startDate?.toDateString()}-${endDate?.toDateString()}` : "default",
+  }), [defaultStart, defaultEnd, extentStart, extentEnd, linkWindow, datesChosenState, startDate, endDate]);
 
   // The link keeps the charts' starting window: the picked days (when they aren't the default ones) or the link's
   // window. replaceState, so it adds no history entries.
@@ -378,7 +417,8 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
       <ChartPageContext.Provider value={chartPage}>
       {/* Embedded, the page is as tall as its content (the iframe is sized to it), never the iframe's height */}
       <main id="main-content" tabIndex={-1} ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground focus:outline-none`}>
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
+        {/* relative: a visited tab that isn't shown is kept, out of the flow, at the page's width (see TabsContent below) */}
+        <Tabs value={shownTab} onValueChange={showTab} className="relative p-6">
           
           {/* Title and tab triggers */}
           <div className="col-span-full mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -392,7 +432,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
           </div>
 
           {/* Sensor Tab Content (Your existing dashboard) */}
-          <TabsContent value="sensor" className="mt-0" tabIndex={-1}>
+          <TabsContent value="sensor" className="mt-0 data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sensor") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
               <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
@@ -406,7 +446,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                     </h2>
                     <div className="space-y-4">
                       <FilterPanel
-                        activeTab={activeTab}
+                        activeTab="sensor" // this panel's own tab: the other stays mounted when hidden
                         activeGroups={activeGroups}
                         setActiveGroups={setActiveGroups}
                         subFilters={{
@@ -431,7 +471,8 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         onEndChange={changeEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                        <Download
+                        {/* Only on the shown tab: leaving the tab unmounts it, which stops an export's status checks */}
+                        {shownTab === "sensor" && <Download
                           activeGroups={activeGroups}
                           subFilters={{
                             weather: subFilters.weather || [],
@@ -441,7 +482,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                           startDate={startDate}
                           endDate={endDate}
                           isSampling={false}
-                        />
+                        />}
                       </div>
                     </div>
                   </StickyPanel>
@@ -569,7 +610,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
           {/* Sampling Tab Content (New) */}
 
 
-          <TabsContent value="sampling" tabIndex={-1}>
+          <TabsContent value="sampling" className="data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sampling") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
               <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
@@ -583,7 +624,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                     </h2>
                     <div className="space-y-4">
                       <FilterPanel
-                        activeTab={activeTab}
+                        activeTab="sampling"
                         activeGroups={{}}  // Empty object for sampling mode
                         setActiveGroups={() => {}}  // Empty function for sampling mode
                         subFilters={{}}  // Empty object for sampling mode
@@ -604,7 +645,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         onEndChange={setSamplingEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                      <Download
+                      {shownTab === "sampling" && <Download
                         activeGroups={{ gauges: false, weather: false, quality: false }}  // All false for sampling mode
                         subFilters={{ weather: [], quality: [], gauges: [] }}  // Empty for sampling mode
                         activeCreeks={activeCreeks}  // ✅ Correct prop name
@@ -612,7 +653,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
                         isSampling={true}
-                      />
+                      />}
                       {/* For researchers adding sampling files: the standard format, with example rows */}
                       <p className="pt-1 text-center text-sm text-muted">
                         Adding sampling data?{" "}

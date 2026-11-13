@@ -42,9 +42,10 @@ export const UNITS: Record<string, string> = {
 export const aggOf = (measurement: string): Agg =>
   measurement === "Rain" ? "sum" : measurement === "Wind Direction" ? "vector_mean" : "mean";
 
-/** Rain totals as bars; wind direction (an angle: a line from 350° to 10° would cross the whole chart) as points. */
-export function seriesType(agg: Agg): "line" | "column" | "scatter" {
-  return agg === "sum" ? "column" : agg === "vector_mean" ? "scatter" : "line";
+/** Rain totals as a stepped area (each bucket's total flat across its span; one shape, where bars would be hundreds of
+ *  rectangles to redraw); wind direction (an angle: a line from 350° to 10° would cross the whole chart) as points. */
+export function seriesType(agg: Agg): "line" | "area" | "scatter" {
+  return agg === "sum" ? "area" : agg === "vector_mean" ? "scatter" : "line";
 }
 
 /** "225° (SW)": a direction with its 16-point compass name. */
@@ -65,8 +66,8 @@ export const seriesNote = (group: string, measurement: string) => SERIES_NOTES[`
 
 export interface ChartPanel { id: string; title: string; measurements: string[] }
 
-// The weather station's charts, one per kind of reading, in this order. `id` is stable (tests find a chart by
-// data-testid="chart-weather-<id>"); titles may change.
+// The weather station's kinds of reading, in this order: how its series are ordered in the card's one chart and its
+// legend (cardSeries), so related ones sit together.
 export const WEATHER_PANELS: ChartPanel[] = [
   { id: "temperature", title: "Temperature", measurements: ["Air Temperature", "Dew Point", "Soil Temperature"] },
   { id: "humidity", title: "Relative humidity", measurements: ["Relative Humidity"] },
@@ -78,7 +79,7 @@ export const WEATHER_PANELS: ChartPanel[] = [
   { id: "soil-water", title: "Soil water content", measurements: ["Water Content"] },
 ];
 
-// The water quality probe's charts: one per unit.
+// The water quality probe's readings grouped by unit, in the order the card's chart lists them.
 export const QUALITY_PANELS: ChartPanel[] = [
   { id: "conductivity", title: "Conductivity", measurements: ["Conductivity"] },
   { id: "temperature", title: "Water temperature", measurements: ["Water Temperature"] },

@@ -134,13 +134,32 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
   const answers = await openDashboard(page);
 
   await test.step("every chart starts at Toronto's picked days and gets every reading", async () => {
-    // Each chart says what it shows: the picked days from Toronto midnight to the next whole hour after now (now is
-    // 03:00 EST), whatever the browser's zone
-    for (const id of ["logger-2577531", "weather-temperature", "weather-wind-direction", "quality-conductivity"]) {
+    // One chart per card. The picked days run from Toronto midnight on Oct 31 to the next whole hour after now (now
+    // is 03:00 EST on Nov 1), whatever the browser's zone, and each chart opens on where its group has readings within
+    // them: from its first reading's bucket to the end of its last (the fixtures' first and last readings per group).
+    // The loggers only have readings on Nov 1 from 01:00: their chart must not open on the empty day before.
+    const fitted: Record<string, string> = {
+      logger: "Nov 1 01:00 – Nov 1 02:50",
+      weather: "Oct 31 01:00 – Nov 1 02:50",
+      quality: "Oct 31 12:00 – Nov 1 03:00",
+    };
+    for (const [id, label] of Object.entries(fitted)) {
       const chart = chartById(page, id);
-      await expect(chart.getByTestId("chart-window-label")).toHaveText("Oct 31 00:00 – Nov 1 04:00");
+      await expect(chart.getByTestId("chart-window-label")).toHaveText(label);
       await expect(chart.getByTestId("chart-resolution")).toHaveText("10-min readings");
     }
+    // The fitted window holds data: the loggers' chart draws points inside its x-axis range
+    const inView = await page.evaluate(() => {
+      type HChart = { container: HTMLElement; xAxis: { min: number; max: number }[];
+        series: { name: string; points: { x: number; y: number | null }[] }[] };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      const chart = H?.charts.find((c) => c?.container.closest('[data-testid="chart-logger"]'));
+      if (!chart) return -1;
+      const { min, max } = chart.xAxis[0];
+      return chart.series.filter((s) => s.name.startsWith("Logger 1 ·"))
+        .flatMap((s) => s.points).filter((p) => p.y !== null && p.x >= min && p.x <= max).length;
+    });
+    expect(inView).toBeGreaterThan(0);
     await expect(page.getByText("Loading data…")).toHaveCount(0);
     const all = await Promise.all(answers);
     // Tiles: whole Toronto days or half days, a bucket size from the ladder, the page's own series only

@@ -1,9 +1,9 @@
-// useChartWindow: one chart's own time window and data (lib/chartController.ts), for a React component. Every
-// chart has its own, so each one zooms and pans by itself; they share only the page's loader and its cache.
+// useChartWindow: one chart's own time window and data (lib/chartController.ts), for a React component. Each card's
+// chart has its own window; the charts share only the page's loader and its cache.
 //
-// The page provides, through ChartPageContext, the window charts start at and go back to on Reset (the picked days,
-// or a shared link's window) and the extent of the data (the first day with data to the current hour). A card can
-// link its charts (ChartLinkContext): while linked, moving one moves the others in that card.
+// The page provides, through ChartPageContext, the extent (the range picked under Filters: how far a chart can be
+// moved, and what its navigator covers), the window charts start at, and whether they fit that window to where their
+// series have readings (yes for picked days; no for a shared link's window, which is shown as it is).
 
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChartController, type ChartSnapshot } from "@/lib/chartController";
@@ -11,72 +11,35 @@ import { seriesLoader } from "@/lib/seriesLoader";
 import type { Range } from "@/utils/chartWindow";
 
 export interface ChartPage {
-  defaultWindow: Range; // where every chart starts, and goes back to on Reset
-  extent: Range; // the data there can be: from the first day with data to the current hour
+  defaultWindow: Range; // where every chart starts (before fitting), and goes back to on Reset
+  extent: Range; // the picked range, up to the current hour
+  fit: boolean; // open on where the data is within the extent (see ChartController.setAutoFit)
+  selection: string; // what the user chose (the picked days, or a link): when it changes, charts go to the new default
 }
+
+// How often a chart fetches its latest hour again while the page is open (as often as Latest Data refreshes)
+export const LIVE_REFRESH_MS = 10 * 60_000;
 
 export const ChartPageContext = createContext<ChartPage | null>(null);
 
 // The charts on the page now, by id, so a chart opened in the larger view starts where its card's chart is.
 const live = new Map<string, ChartController>();
 
-/** Charts in one card that may follow each other's window. */
-export class ChartLinkGroup {
-  linked = false;
-  private members = new Set<ChartController>();
-  private moving = false;
-  private forwarding = false;
-
-  add(c: ChartController): () => void {
-    this.members.add(c);
-    const off = c.onWindow((w, reason) => {
-      if (!this.linked || this.moving || reason === "link" || reason === "default") return;
-      this.moving = true;
-      try {
-        for (const other of this.members) if (other !== c) other.setWindow(w, "link");
-      } finally {
-        this.moving = false;
-      }
-    });
-    // A gesture on one chart is a gesture on the ones following it too: they hold their requests and drop their
-    // bands and accessibility layer while it lasts, as the leader does
-    const offGesture = c.onGesture((active) => {
-      if (!this.linked || this.forwarding) return;
-      this.forwarding = true;
-      try {
-        for (const other of this.members) if (other !== c) (active ? other.beginGesture() : other.endGesture());
-      } finally {
-        this.forwarding = false;
-      }
-    });
-    return () => {
-      off();
-      offGesture();
-      this.members.delete(c);
-    };
-  }
-
-  /** Link (and line every chart up with `leader`, or the first chart) or unlink. */
-  setLinked(linked: boolean, leader?: ChartController): void {
-    this.linked = linked;
-    const first = leader ?? this.members.values().next().value;
-    if (linked && first) for (const other of this.members) if (other !== first) other.setWindow(first.window, "link");
-  }
+/** Ask again for every chart on the page that failed to load: one Retry for all of them. */
+export function retryAllCharts(): void {
+  for (const c of live.values()) if (c.snapshot().error) c.retry();
 }
 
-export const ChartLinkContext = createContext<ChartLinkGroup | null>(null);
-
-/** One chart's controller. `id` is stable for the chart (e.g. "logger-2577531"; the larger view adds ":modal"),
+/** One chart's controller. `id` is stable for the chart (e.g. "weather"; the larger view adds ":modal"),
  *  `seriesKeys` are "<group>|<station>|<measurement>". */
 export function useChartWindow(id: string, seriesKeys: string[]): ChartController {
   const page = useContext(ChartPageContext);
   if (!page) throw new Error("useChartWindow needs a ChartPageContext provider");
-  const links = useContext(ChartLinkContext);
   const [controller] = useState(() => {
     // In the larger view, start where the same chart on the page is
     const onPage = id.endsWith(":modal") ? live.get(id.slice(0, -":modal".length)) : undefined;
     const c = new ChartController(id, seriesKeys, page.defaultWindow, page.extent, seriesLoader());
-    if (onPage) c.setWindow(onPage.window, "link");
+    if (onPage) c.setWindow(onPage.window, "link"); // a user's window: it isn't fitted again
     return c;
   });
 
@@ -89,7 +52,11 @@ export function useChartWindow(id: string, seriesKeys: string[]): ChartControlle
     };
   }, [id, controller]);
 
-  useEffect(() => links?.add(controller), [links, controller]);
+
+  const fit = page.fit;
+  useEffect(() => {
+    controller.setAutoFit(fit);
+  }, [controller, fit]);
 
   const keysId = seriesKeys.join("\n");
   useEffect(() => {
@@ -101,15 +68,24 @@ export function useChartWindow(id: string, seriesKeys: string[]): ChartControlle
     controller.setExtent({ start: es, end: ee });
   }, [controller, es, ee]);
 
-  // New picked days (or a link): every chart goes to them. Not on the first run: the chart starts there already
-  // (or, in the larger view, where its card's chart is).
+  // Other days picked (or a link): every chart goes to the new default. The same choice with the clock moved on (the
+  // hour, so today ends later): only the default moves; a window the user moved stays put.
   const { start: ds, end: de } = page.defaultWindow;
-  const shownDefault = useRef({ ds, de });
+  const selection = page.selection;
+  const shownDefault = useRef({ selection, ds, de });
   useEffect(() => {
-    if (shownDefault.current.ds === ds && shownDefault.current.de === de) return;
-    shownDefault.current = { ds, de };
-    controller.setDefault({ start: ds, end: de });
-  }, [controller, ds, de]);
+    const was = shownDefault.current;
+    if (was.selection === selection && was.ds === ds && was.de === de) return;
+    shownDefault.current = { selection, ds, de };
+    if (was.selection !== selection) controller.setDefault({ start: ds, end: de });
+    else controller.updateDefault({ start: ds, end: de });
+  }, [controller, selection, ds, de]);
+
+  // A page left open keeps up: the latest hour is fetched again every LIVE_REFRESH_MS
+  useEffect(() => {
+    const id = window.setInterval(() => controller.refreshLive(), LIVE_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [controller]);
 
   return controller;
 }

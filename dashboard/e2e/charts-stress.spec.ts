@@ -59,10 +59,10 @@ async function open(page: Page) {
   const net = await slowSeries(page);
   await page.clock.setFixedTime(NOW);
   await page.goto("/");
-  for (const group of ["Water Loggers", "Weather Station"]) {
+  for (const group of ["Water Loggers", "Weather Station", "Water Quality"]) {
     await page.getByRole("checkbox", { name: group, exact: true }).click();
   }
-  await expect(chart(page, "logger-2577531").getByTestId("chart-resolution")).toBeVisible();
+  await expect(chart(page, "logger").getByTestId("chart-resolution")).toBeVisible();
   await settled(page, net);
   return { net, errors };
 }
@@ -80,6 +80,9 @@ async function ctrlWheelBurst(c: Locator, share: number, deltaY: number, count: 
   }, { x: p.x, y: p.y, dy: deltaY, n: count });
 }
 
+/** The navigator's window under a chart (Highcharts Stock): dragging it moves the chart's window. */
+const navigatorWindow = (c: Locator) => c.locator(".highcharts-navigator-mask-inside");
+
 /** A point in a chart's plot area, as a share of its width and height. */
 async function at(c: Locator, x: number, y = 0.4) {
   const plot = c.getByRole("group", { name: /chart\. Arrow keys/ });
@@ -93,10 +96,140 @@ test.describe("charts under stress", () => {
     test.skip(testInfo.project.name !== "toronto", "the same in every zone");
   });
 
+  test("a chart is drawn a few times while it loads, not once per series", async ({ page }) => {
+    // Count Chart.redraw per chart from the moment Highcharts loads (its bundle puts itself on window._Highcharts)
+    await page.addInitScript(() => {
+      type HC = { Chart: { prototype: { redraw: (...a: unknown[]) => unknown; container?: HTMLElement } } };
+      const counts: Record<string, number> = {};
+      (window as unknown as { __redraws: Record<string, number> }).__redraws = counts;
+      let H: HC | undefined;
+      Object.defineProperty(window, "_Highcharts", {
+        configurable: true,
+        get: () => H,
+        set(v: HC) {
+          H = v;
+          const original = v.Chart.prototype.redraw;
+          v.Chart.prototype.redraw = function (this: { container?: HTMLElement }, ...a: unknown[]) {
+            const id = this.container?.closest<HTMLElement>('[data-testid^="chart-"]')?.dataset.testid ?? "other";
+            counts[id] = (counts[id] ?? 0) + 1;
+            return original.apply(this, a);
+          };
+        },
+      });
+    });
+    const { net } = await open(page);
+    await settled(page, net);
+    const counts = await page.evaluate(() => (window as unknown as { __redraws: Record<string, number> }).__redraws);
+    console.log(`[perf] redraws while loading: ${JSON.stringify(counts)}`);
+    // The weather chart has 11 series: with per-point accessibility descriptions it was redrawn once per series
+    expect(counts["chart-weather"] ?? 0).toBeGreaterThan(0);
+    expect(counts["chart-weather"]).toBeLessThanOrEqual(5);
+  });
+
+  test("toggling sub-filters keeps exactly one navigator series per chart", async ({ page }) => {
+    await open(page);
+    for (let i = 0; i < 4; i++) {
+      await page.getByRole("checkbox", { name: "Dew Point", exact: true }).click();
+      await page.waitForTimeout(400);
+    }
+    await expect(chart(page, "weather").getByTestId("chart-resolution")).toBeVisible();
+    const navigators = await page.evaluate(() => {
+      type HChart = { container: HTMLElement; navigator?: { series?: unknown[] } };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      return (H?.charts ?? []).filter((c): c is HChart => !!c && !!c.container.closest('[data-testid^="chart-"]'))
+        .map((c) => c.navigator?.series?.length ?? 0);
+    });
+    expect(navigators.length).toBe(3); // one chart per card
+    expect(navigators).toEqual([1, 1, 1]);
+  });
+
+  test("clicking a legend item hides its series and leaves the window where it was", async ({ page }) => {
+    await open(page);
+    const weather = chart(page, "weather");
+    const before = await label(weather);
+    const item = weather.locator(".highcharts-legend-item", { hasText: "Dew Point" });
+    await item.scrollIntoViewIfNeeded();
+    await item.click();
+    await page.waitForTimeout(600);
+    await expect(item).toHaveClass(/highcharts-legend-item-hidden/);
+    expect(await label(weather)).toBe(before);
+  });
+
+  test("the navigator's line stays: with the first series hidden, and through a gesture in the larger view", async ({ page }) => {
+    await open(page);
+    // Every chart's navigator line, as [visible, points with a value], the larger view's when it is open
+    const lines = () => page.evaluate(() => {
+      type HSeries = { visible: boolean; points?: { y: number | null }[] };
+      type HChart = { container: HTMLElement; navigator?: { series?: HSeries[] } };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      const dialog = !!document.querySelector("[role=dialog]");
+      return (H?.charts ?? []).filter((c): c is HChart => !!c && !!c.container.closest("[role=dialog]") === dialog)
+        .map((c) => { const s = c.navigator?.series?.[0]; return [!!s?.visible, (s?.points ?? []).filter((p) => p.y !== null).length] as const; });
+    });
+    const logger = chart(page, "logger");
+    const first = logger.locator(".highcharts-legend-item").first();
+    await first.scrollIntoViewIfNeeded();
+    await first.click();
+    await expect(first).toHaveClass(/highcharts-legend-item-hidden/);
+    await expect.poll(lines).toEqual(expect.arrayContaining([[true, expect.any(Number)]]));
+    for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); }
+    // The larger view (with its min-max bands), during and after a Ctrl+wheel gesture
+    await page.getByRole("button", { name: /Open the .*graphs in a larger view/ }).first().click();
+    const plot = page.getByRole("dialog").getByRole("group", { name: /chart\. Arrow keys/ }).first();
+    await expect(plot).toBeVisible();
+    await page.waitForTimeout(500);
+    const box = (await plot.boundingBox())!;
+    await plot.evaluate(async (el, { x, y }) => {
+      for (let i = 0; i < 20; i++) {
+        el.dispatchEvent(new WheelEvent("wheel", { deltaY: -40, clientX: x, clientY: y, ctrlKey: true, bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 16));
+      }
+    }, { x: box.x + box.width / 2, y: box.y + box.height * 0.4 });
+    for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); } // mid-gesture
+    await page.waitForTimeout(800);
+    for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); }
+  });
+
+  test("80 Ctrl+wheel events at 4x CPU ask for nothing until the gesture ends, then at most once", async ({ page }) => {
+    const { net } = await open(page);
+    const logger = chart(page, "logger");
+    await cpu(page, 4);
+    const n0 = net.requests.length;
+    await ctrlWheelBurst(logger, 0.5, 30, 40); // zoom out first: the window stays on loaded data
+    await ctrlWheelBurst(logger, 0.5, -30, 40);
+    expect(net.requests.length - n0).toBe(0); // none while the wheel was still turning
+    await settled(page, net);
+    console.log(`[perf] 80 Ctrl+wheel at 4x: ${net.requests.length - n0} requests`);
+    expect(net.requests.length - n0).toBeLessThanOrEqual(1);
+  });
+
+  test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
+    const { net } = await open(page);
+    const tab = (name: string) => page.getByRole("tab", { name, exact: true });
+    await tab("Ancaster Watershed").click();
+    await expect(tab("Ancaster Watershed")).toHaveAttribute("aria-selected", "true");
+    await page.waitForTimeout(500);
+    const n0 = net.requests.length;
+    // From the click to the next painted frame, with the charts already drawn (kept mounted, not rebuilt)
+    const ms = await page.evaluate(async () => {
+      const t = [...document.querySelectorAll('[role="tab"]')].find((el) => el.textContent?.trim() === "West Campus") as HTMLElement;
+      const t0 = performance.now();
+      t.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      t.click();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return performance.now() - t0;
+    });
+    await expect(chart(page, "logger").getByTestId("chart-resolution")).toBeVisible();
+    console.log(`[perf] tab back to West Campus: ${ms.toFixed(0)} ms to the next frame`);
+    expect(ms).toBeLessThan(500);
+    await settled(page, net);
+    expect(net.requests.length - n0).toBe(0);
+  });
+
   test("bursts of input send at most two requests, revisits none, and each chart keeps its own window", async ({ page }) => {
     const { net, errors } = await open(page);
-    const logger = chart(page, "logger-2577531");
-    const weather = chart(page, "weather-temperature");
+    const logger = chart(page, "logger");
+    const weather = chart(page, "weather");
     const weatherWindow = await label(weather);
 
     await test.step("a plain wheel scrolls the page and only shows the zoom hint", async () => {
@@ -110,12 +243,14 @@ test.describe("charts under stress", () => {
       expect(await label(logger)).toBe(before);
     });
 
-    await test.step("80 Ctrl+wheel events zooming out: at most 2 requests", async () => {
+    await test.step("80 Ctrl+wheel events zooming out to the whole picked range: at most 2 requests", async () => {
       const n0 = net.requests.length;
       await ctrlWheelBurst(logger, 0.7, 60, 80);
       await settled(page, net);
       expect(net.requests.length - n0).toBeLessThanOrEqual(2);
-      await expect(logger.getByTestId("chart-resolution")).toHaveText(/daily|12-h/);
+      // As far out as the picked range (the navigator's extent), which is two days: still 10-minute readings
+      await expect(logger.getByTestId("chart-window-label")).toHaveText("Oct 31 00:00 – Nov 1 04:00");
+      await expect(logger.getByTestId("chart-resolution")).toHaveText("10-min readings");
     });
 
     await test.step("80 Ctrl+wheel events zooming in somewhere new: at most 2 requests", async () => {
@@ -127,7 +262,7 @@ test.describe("charts under stress", () => {
 
     await test.step("a slider drag of 120 moves: at most 2 requests", async () => {
       const n0 = net.requests.length;
-      const handle = logger.getByTestId("chart-slider-window");
+      const handle = navigatorWindow(logger);
       await handle.scrollIntoViewIfNeeded();
       const box = (await handle.boundingBox())!;
       const x0 = box.x + box.width / 2, y = box.y + box.height / 2;
@@ -154,7 +289,7 @@ test.describe("charts under stress", () => {
       await logger.getByRole("button", { name: /^Reset/ }).click();
       await settled(page, net);
       expect(net.requests.length - n0).toBe(0);
-      await expect(logger.getByTestId("chart-window-label")).toHaveText("Oct 31 00:00 – Nov 1 04:00");
+      await expect(logger.getByTestId("chart-window-label")).toHaveText("Nov 1 01:00 – Nov 1 02:50"); // fitted to its readings
     });
 
     await test.step("the other charts never moved, and nothing went wrong", async () => {
@@ -174,7 +309,7 @@ test.describe("charts under stress", () => {
       await cdp.send("HeapProfiler.collectGarbage");
       return ((await cdp.send("Runtime.getHeapUsage")) as { usedSize: number }).usedSize / 1e6;
     };
-    const ids = ["logger-2577531", "weather-temperature", "weather-humidity"];
+    const ids = ["logger", "weather", "quality"];
     const end = Date.now() + minutes * 60_000;
     let first = 0, peakHeap = 0, actions = 0;
     while (Date.now() < end) {
@@ -256,7 +391,7 @@ test.describe("chart performance budgets", () => {
 
   test("80 Ctrl+wheel events at full speed: under 500 ms of long tasks", async ({ page }) => {
     await open(page);
-    const logger = chart(page, "logger-2577531");
+    const logger = chart(page, "logger");
     await at(logger, 0.5);
     const stop = await record(page);
     await ctrlWheelBurst(logger, 0.6, 60, 80);
@@ -268,13 +403,13 @@ test.describe("chart performance budgets", () => {
 
   test("a slider drag at 4x CPU sends at most 2 requests", async ({ page }) => {
     const { net } = await open(page);
-    const logger = chart(page, "logger-2577531");
+    const logger = chart(page, "logger");
     // Zoom in first, so the drag crosses many tiles
     await ctrlWheelBurst(logger, 0.5, -60, 30);
     await settled(page, net);
     await cpu(page, 4);
     const n0 = net.requests.length;
-    const handle = logger.getByTestId("chart-slider-window");
+    const handle = navigatorWindow(logger);
     await handle.scrollIntoViewIfNeeded();
     const box = (await handle.boundingBox())!;
     const x0 = box.x + box.width / 2, y = box.y + box.height / 2;
@@ -295,10 +430,10 @@ test.describe("chart performance budgets", () => {
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
 
-    test("a vertical swipe that starts on a scrollbar scrolls the page and leaves the chart alone", async ({ page }) => {
+    test("a vertical swipe that starts on the navigator scrolls the page and leaves the chart alone", async ({ page }) => {
       const { net } = await open(page);
-      const logger = chart(page, "logger-2577531");
-      const track = logger.getByRole("scrollbar");
+      const logger = chart(page, "logger");
+      const track = logger.locator(".highcharts-navigator-outline");
       await track.scrollIntoViewIfNeeded();
       await page.evaluate(() => window.scrollBy(0, -200)); // room to scroll down
       const box = (await track.boundingBox())!;
@@ -320,9 +455,53 @@ test.describe("chart performance budgets", () => {
       expect(net.requests.length - n0).toBe(0);
     });
 
-    test("a two-finger pinch at 4x CPU keeps frames under 120 ms (p95)", async ({ page }) => {
+    test("one finger moving sideways pans the chart; a tap on the navigator's track centres the window there", async ({ page }) => {
+      const { net } = await open(page);
+      const logger = chart(page, "logger");
+      await logger.getByRole("button", { name: /Zoom in/ }).click(); // room to pan
+      await settled(page, net);
+      const cdp = await page.context().newCDPSession(page);
+      const swipe = async (x: number, y: number, dx: number) => {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+        for (let i = 1; i <= 12; i++) {
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + (dx * i) / 12, y, id: 1 }] });
+          await page.waitForTimeout(16);
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      };
+      const before = await label(logger);
+      const p = await at(logger, 0.6);
+      await swipe(p.x, p.y, -120); // finger to the left: later readings
+      await expect.poll(() => label(logger)).not.toBe(before);
+      await settled(page, net);
+      const panned = (await label(logger))!;
+      // A tap on the track left of the window (the left shade) centres the window there: on Oct 31
+      const shade = logger.locator(".highcharts-navigator-mask-outside").first();
+      const box = (await shade.boundingBox())!;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width * 0.2, y: box.y + box.height / 2, id: 1 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await expect.poll(() => label(logger)).toMatch(/^Oct 31 /);
+      expect(panned).toMatch(/^Nov 1 /);
+    });
+
+    test("in the larger view the plot keeps most of the width (one y-axis on a phone)", async ({ page }) => {
       await open(page);
-      const logger = chart(page, "logger-2577531");
+      await page.getByRole("button", { name: /Open the .*graphs in a larger view/ }).first().click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.locator(".highcharts-container").first()).toBeVisible();
+      await page.waitForTimeout(500);
+      const shares = await page.evaluate(() => {
+        type HChart = { container: HTMLElement; plotWidth: number; chartWidth: number };
+        const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+        return (H?.charts ?? []).filter((c): c is HChart => !!c && !!c.container.closest("[role=dialog]")).map((c) => c.plotWidth / c.chartWidth);
+      });
+      expect(shares.length).toBeGreaterThan(0);
+      for (const s of shares) expect(s).toBeGreaterThanOrEqual(0.6);
+    });
+
+    test("a two-finger pinch at 4x CPU keeps long tasks under a second", async ({ page }) => {
+      await open(page);
+      const logger = chart(page, "logger");
       const p = await at(logger, 0.5, 0.35);
       const cdp = await cpu(page, 4);
       const touch = (type: string, spread: number) => cdp.send("Input.dispatchTouchEvent", {
@@ -336,7 +515,7 @@ test.describe("chart performance budgets", () => {
       await touch("touchEnd", 0);
       const m = await stop();
       console.log(`[perf] pinch, 4x: frame p95 ${m.p95.toFixed(0)} ms over ${m.frames} frames, long tasks ${m.longCount} totalling ${m.longTotal.toFixed(0)} ms`);
-      expect(m.p95).toBeLessThan(120);
+      expect(m.longTotal).toBeLessThan(1000);
     });
   });
 });

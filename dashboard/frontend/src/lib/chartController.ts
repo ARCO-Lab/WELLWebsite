@@ -8,6 +8,12 @@
 // chart) follow every frame; the chart itself is redrawn at a pace set by what its last redraw cost (a redraw takes
 // 10-30 ms on a desktop but 100-500 ms on a slow phone, so redrawing every frame there would freeze the page).
 //
+// What it asks for: first, the whole extent (the picked range) at the finest bucket whose tiles over it fit in one
+// request (baseBucket: two weeks or so at 10-minute readings, all of the history at 6 hours). Every coarser bucket is
+// worked out from that in the browser (coarsen, in seriesTiles.ts), so zooming out, the navigator line and the opening
+// view need nothing more. Only a window that needs finer buckets than the base asks again: its tiles, filled up to
+// one request mostly ahead of the way it is moving (fillTiles), so the next steps find them cached.
+//
 // Requests wait until the window has settled. A gesture (a drag, a pinch, a burst of wheel events; see
 // beginGesture) holds them until it ends, however slow its frames are; one that lingers (still going after
 // MAX_WAIT_MS, but moving less than a window's width in that time) fetches the window it is on. Single steps (keys,
@@ -18,7 +24,7 @@
 import { MIN_RANGE_MS, type Range } from "../utils/chartWindow.ts";
 import type { SeriesLoader, SeriesMeta } from "./seriesLoader.ts";
 import {
-  LADDER, bucketFor, coarsestIn, composeSeries, segmentsFor, typicalFor, tilesFor, type ComposedPoint, type Segment,
+  LADDER, MAX_TILES, baseBucket, bucketFor, coarsestIn, composeSeries, fitWindow, segmentsFor, typicalFor, tilesFor, type ComposedPoint, type Segment,
   POINTS_PER_PX, type TileSeries, type Typical,
 } from "./seriesTiles.ts";
 
@@ -26,12 +32,44 @@ export const DEBOUNCE_MS = 250;
 export const MAX_WAIT_MS = 1500; // a gesture this long fetches the tiles of the window it is on, without waiting for its end
 export const GESTURE_IDLE_MS = 3000; // a gesture with no movement for this long is taken as ended (a lost pointerup)
 export const PACE = 1.5; // the next chart redraw starts this many times the last one's cost after it ended
-export const PAD_FRACTION = 0.5; // tiles for half a window on each side are fetched too, after the window's own
-// The bucket every chart's overview (the slider's line, and what shows before finer tiles arrive) is drawn at: the
-// whole history in two daily tiles, the same for every chart, so all charts share them.
-export const OVERVIEW_BUCKET = LADDER[LADDER.length - 1];
+export const AHEAD_SHARE = 2 / 3; // of the tiles a request has room for besides the window's, those ahead of a pan
+// The overview (the navigator's line, and what shows before finer tiles arrive) covers the chart's extent, the picked
+// range, at the bucket that range needs at the chart's width: a two-day range is at 10-minute readings from the start.
+// It is never finer than the chart's base bucket (baseBucket), the one its whole range is loaded at first.
+export const overviewBucket = (extent: Range, plotWidthPx: number, pointsPerPx: number): number =>
+  Math.max(bucketFor(extent.end - extent.start, plotWidthPx, pointsPerPx), baseBucket(extent));
 
-export type WindowReason = "wheel" | "drag" | "pinch" | "slider" | "key" | "button" | "select" | "reset" | "link" | "default";
+/** The tiles to ask for to show a window: none when it is cached already; otherwise its tiles, and as many more as
+ *  one request has room for (MAX_TILES), most of them ahead of where the window is moving (`dir` > 0: later) or
+ *  evenly after a zoom (`dir` 0), so the next pan or zoom finds them cached. The extra tiles stop at the extent
+ *  (`lo`..`hi`) and at tiles already cached, so they stay one run. */
+export function fillTiles(windowTiles: number[], lo: number, hi: number, have: (i: number) => boolean, dir: number,
+  max = MAX_TILES): number[] {
+  if (!windowTiles.length || windowTiles.every(have)) return [];
+  let first = windowTiles[0], last = windowTiles[windowTiles.length - 1];
+  let room = max - (last - first + 1);
+  if (room <= 0) return windowTiles;
+  const ahead = dir === 0 ? Math.ceil(room / 2) : Math.round(room * AHEAD_SHARE);
+  const grow = (later: boolean, n: number) => {
+    let added = 0;
+    while (added < n) {
+      const i = later ? last + 1 : first - 1;
+      if (i < lo || i > hi || have(i)) break;
+      if (later) last = i; else first = i;
+      added++;
+    }
+    return added;
+  };
+  const forward = dir >= 0;
+  room -= grow(forward, ahead);
+  room -= grow(!forward, room);
+  grow(forward, room); // what the other side couldn't use
+  return Array.from({ length: last - first + 1 }, (_, n) => first + n);
+}
+
+export type WindowReason = "wheel" | "drag" | "pinch" | "slider" | "key" | "button" | "select" | "reset" | "link" | "default" | "fit";
+// Window changes that aren't the user's: they don't stop the fit to the data, and aren't announced
+const AUTOMATIC: ReadonlySet<WindowReason> = new Set(["default", "fit"]);
 
 export interface ChartSnapshot {
   window: Range;
@@ -98,6 +136,9 @@ export class ChartController {
   private settledWin: Range;
   private settledByUser = false;
   private lastReason: WindowReason = "default";
+  private autoFit = false; // open on where the series have readings (fitWindow), until the user moves the window
+  private userMoved = false;
+  private fitted: Range | null = null;
   private paceQueued = false;
   private needCompose = true; // tiles arrived, or a gesture ended: compose at the next paced redraw
   private lastTick: Range | null = null; // the window at the last max-wait check
@@ -105,7 +146,7 @@ export class ChartController {
   private lastEnd = 0;
   private listeners = new Set<() => void>();
   private frameListeners = new Set<(w: Range) => void>();
-  private redrawListeners = new Set<(w: Range) => void>();
+  private redrawListeners = new Set<(w: Range, gesture: boolean) => void>();
   private gestureListeners = new Set<(active: boolean) => void>();
   private dataListeners = new Set<(d: ComposedData) => void>();
   private windowListeners = new Set<(w: Range, reason: WindowReason) => void>();
@@ -158,9 +199,10 @@ export class ChartController {
     this.frameListeners.add(cb);
     return () => this.frameListeners.delete(cb);
   }
-  /** Called when the chart should redraw, at a pace its own cost allows, with the window to show. Data listeners run
-   *  just before, in the same turn, so one redraw covers both. */
-  onRedraw(cb: (w: Range) => void): () => void {
+  /** Called when the chart should redraw, at a pace its own cost allows, with the window to show and whether a gesture
+   *  is under way (a chart may draw a cheaper preview then, and redraw fully when it ends: the gesture's end schedules
+   *  one more call). Data listeners run just before, in the same turn, so one redraw covers both. */
+  onRedraw(cb: (w: Range, gesture: boolean) => void): () => void {
     this.redrawListeners.add(cb);
     return () => this.redrawListeners.delete(cb);
   }
@@ -189,6 +231,7 @@ export class ChartController {
     if (next.start === this.win.start && next.end === this.win.end) return;
     this.win = next;
     this.lastReason = reason;
+    if (!AUTOMATIC.has(reason)) this.userMoved = true;
     this.lastMove = now();
     for (const cb of this.windowListeners) cb(next, reason);
     this.scheduleFrame();
@@ -230,10 +273,11 @@ export class ChartController {
         this.endGesture();
         return;
       }
-      // Lingering (moved under a window's width since the last check): fetch where it is. Sweeping: tiles fetched now
-      // would be out of view before they arrived.
+      // Lingering (panned under a window's width since the last check): fetch where it is. Sweeping: tiles fetched now
+      // would be out of view before they arrived. A zoom still going (the span changed) waits for its end too.
       const was = this.lastTick ?? this.win, span = this.win.end - this.win.start;
-      if (Math.abs((this.win.start + this.win.end) / 2 - (was.start + was.end) / 2) < span) this.request(true);
+      const zooming = Math.abs((was.end - was.start) - span) > span * 0.01;
+      if (!zooming && Math.abs((this.win.start + this.win.end) / 2 - (was.start + was.end) / 2) < span) this.request(true);
       this.lastTick = this.win;
       this.armMaxWait();
     }, MAX_WAIT_MS);
@@ -263,20 +307,83 @@ export class ChartController {
     this.setWindow({ start: this.win.start + d, end: this.win.end + d }, reason);
   }
 
-  /** New default window (other days picked, or a link): the chart goes there. */
+  /** New default window (other days picked, or a link): the chart goes there (and fits to the data again). */
   setDefault(w: Range): void {
     this.defaultWin = clampWindow(w, this.ext);
+    this.userMoved = false;
+    this.fitted = null;
     this.setWindow(this.defaultWin, "default");
     this.request();
+  }
+
+  /** The default window moved on its own (the hour moved on, so today's picked range ends later): Reset goes there,
+   *  but a window the user moved stays where it is (only an untouched one follows, or fits to the data again). */
+  updateDefault(w: Range): void {
+    this.defaultWin = clampWindow(w, this.ext);
+    if (this.userMoved) return;
+    if (this.autoFit) {
+      this.fitted = null;
+      this.fitToData();
+    } else {
+      this.setWindow(this.defaultWin, "default");
+    }
+  }
+
+  /** Fetch again what is still filling in (the last hour's tiles, once they are older than the loader's freshness),
+   *  as a page left open does every few minutes; nothing while a gesture is under way. */
+  refreshLive(): void {
+    if (this.gestureActive || this.disposed) return;
+    this.request(false, true);
+  }
+
+  /** Open on where the series have readings within the extent (once its overview has loaded), until the user moves
+   *  the window: a range whose edges have no data never opens on an empty window. Off for a shared link's window. */
+  setAutoFit(on: boolean): void {
+    if (on === this.autoFit) return;
+    this.autoFit = on;
+    this.fitted = null;
+    this.fitToData();
+  }
+
+  // The first and last bucket with a reading, across the series, in the extent's overview, once all of it is loaded
+  private dataBounds(): { first: number | null; last: number | null } | null {
+    const ovB = this.ovB();
+    const need = tilesFor(this.ext, ovB);
+    if (!need.length || this.loadedForAll(ovB).filter((i) => need.includes(i)).length < need.length) return null;
+    let first: number | null = null, last: number | null = null;
+    for (const k of this.keys) {
+      for (const i of need) {
+        const t = this.loader.tile(k, ovB, i);
+        if (!t) continue;
+        for (let j = 0; j < t.t.length; j++) {
+          if (Number.isNaN(t.avg[j]) || t.t[j] + ovB * 1000 <= this.ext.start || t.t[j] >= this.ext.end) continue;
+          if (first === null || t.t[j] < first) first = t.t[j];
+          if (last === null || t.t[j] > last) last = t.t[j];
+        }
+      }
+    }
+    return { first, last };
+  }
+
+  private fitToData(): void {
+    if (!this.autoFit || this.userMoved || this.disposed) return;
+    const b = this.dataBounds();
+    if (!b) return;
+    const fit = fitWindow(this.ext, b.first, b.last, this.ovB(), MIN_RANGE_MS);
+    if (this.fitted && fit.start === this.fitted.start && fit.end === this.fitted.end) return;
+    this.fitted = fit;
+    this.defaultWin = clampWindow(fit, this.ext); // Reset comes back here
+    this.setWindow(this.defaultWin, "fit");
   }
 
   setExtent(extent: Range): void {
     if (extent.start === this.ext.start && extent.end === this.ext.end) return;
     this.ext = extent;
+    this.fitted = null;
     this.defaultWin = clampWindow(this.defaultWin, extent);
     this.win = clampWindow(this.win, extent);
     this.scheduleFrame();
-    this.request();
+    this.request(false, true);
   }
 
   setKeys(keys: string[]): void {
@@ -320,7 +427,7 @@ export class ChartController {
     if (this.maxWait) clearTimeout(this.maxWait);
     this.maxWait = null;
     this.gestureActive = false;
-    for (const part of ["overview", "window", "around"]) this.loader.release(this.owner(part));
+    for (const part of ["overview", "window"]) this.loader.release(this.owner(part));
   }
 
   activate(): void {
@@ -329,46 +436,55 @@ export class ChartController {
     this.request();
   }
 
-  /** One series at the overview bucket only (the whole history, daily), for the slider's line. */
+  /** One series at the overview bucket only, within the extent, for the navigator's line. */
   overview(key: string): ComposedPoint[] {
-    const tiles = [...this.loader.loadedTiles(key, OVERVIEW_BUCKET)];
-    return composeSeries(segmentsFor([{ bucketS: OVERVIEW_BUCKET, tiles }]), (b, i) => this.loader.tile(key, b, i), () => () => null);
+    const ovB = this.ovB();
+    const tiles = [...this.loader.loadedTiles(key, ovB)];
+    const pts = composeSeries(segmentsFor([{ bucketS: ovB, tiles }]), (b, i) => this.loader.tile(key, b, i), () => () => null);
+    return pts.filter((p) => p.x >= this.ext.start && p.x <= this.ext.end);
   }
+
+  /** The overview's bucket (see overviewBucket). */
+  ovB(): number { return overviewBucket(this.ext, this.width, this.density); }
 
   // ---- loading and composing ----
 
   private owner(part: string): string { return `${this.id}:${part}`; }
 
-  /** Ask the loader for the overview tiles, the window's tiles and (after those) the tiles around it; with
-   *  `windowOnly` (the middle of a long gesture), only the window's. */
-  request(windowOnly = false): void {
+  /** Ask the loader for the chart's whole range at its base bucket (one request, once: every coarser bucket is worked
+   *  out from it) and, when the window needs finer buckets than that, its tiles filled up to one request along the
+   *  way it moved (fillTiles); with `windowOnly` (the middle of a long gesture), only the latter. */
+  request(windowOnly = false, refresh = false): void {
     if (this.disposed) return;
     const w = this.win, span = w.end - w.start;
     this.wantB = bucketFor(span, this.width, this.density);
     const keys = this.keys;
     const near = this.visible ? 0 : 2;
-    const fine = this.wantB < OVERVIEW_BUCKET;
-    const inWindow = fine ? tilesFor(w, this.wantB) : [];
-    this.loader.want(this.owner("window"), keys, this.wantB, inWindow, near, () => this.dataChanged(true));
+    const base = baseBucket(this.ext);
+    if (!windowOnly) this.loader.want(this.owner("overview"), keys, base, tilesFor(this.ext, base), near, () => this.dataChanged(false), true, refresh);
+    // Finer than the base: the window's tiles, and more along the way it moved since it last settled
+    let tiles: number[] = [];
+    if (this.wantB < base) {
+      const prev = this.settledWin, b = this.wantB;
+      const zoomed = Math.abs((prev.end - prev.start) - span) > span * 0.01;
+      const dir = zoomed ? 0 : Math.sign((w.start + w.end) - (prev.start + prev.end));
+      const all = tilesFor(this.ext, b);
+      tiles = fillTiles(tilesFor(w, b), all[0], all[all.length - 1], (i) => keys.every((k) => this.loader.fresh(k, b, i, refresh)), dir);
+    }
+    this.loader.want(this.owner("window"), keys, this.wantB, tiles, near, () => this.dataChanged(true), false, refresh);
     if (windowOnly) {
       this.updateSnapshot();
       return;
     }
     this.settledWin = w;
-    this.settledByUser = this.lastReason !== "default";
-    const changed = () => this.dataChanged(false);
-    this.loader.want(this.owner("overview"), keys, OVERVIEW_BUCKET, tilesFor(this.ext, OVERVIEW_BUCKET), near + 1, changed);
-    const around = fine
-      ? tilesFor({ start: Math.max(this.ext.start, w.start - span * PAD_FRACTION), end: Math.min(this.ext.end, w.end + span * PAD_FRACTION) }, this.wantB)
-          .filter((i) => !inWindow.includes(i))
-      : [];
-    this.loader.want(this.owner("around"), keys, this.wantB, around, near + 2, changed);
+    this.settledByUser = !AUTOMATIC.has(this.lastReason);
     this.dataChanged(true);
   }
 
   // Tiles arrived. The window's own are drawn at the next paced redraw; others (the history, the tiles around) are
   // left for the end of a gesture, so arriving data doesn't add redraws to a slow drag.
   private dataChanged(forWindow: boolean): void {
+    this.fitToData();
     if (forWindow || !this.gestureActive) {
       this.needCompose = true;
       this.schedulePaced();
@@ -413,11 +529,12 @@ export class ChartController {
     // Down to what the window needs now, not what was last asked for: finer tiles already cached are drawn while
     // the window is still moving, before it settles and asks.
     const finest = bucketFor(span, this.width, this.density);
+    const ovB = this.ovB();
     for (let n = LADDER.length - 1; n >= 0; n--) {
       const b = LADDER[n];
       if (b < finest) break;
       const loaded = this.loadedForAll(b);
-      const tiles = b === OVERVIEW_BUCKET ? loaded : loaded.filter((i) => nearTiles(b).has(i));
+      const tiles = b === ovB ? loaded : loaded.filter((i) => nearTiles(b).has(i));
       if (tiles.length) levels.push({ bucketS: b, tiles });
     }
     return segmentsFor(levels);
@@ -426,7 +543,7 @@ export class ChartController {
   private compose(): void {
     const segs = this.segments();
     // The tiles in use, and each series' revision: a tile fetched again (the latest hour, filling in) draws anew
-    const sig = `${this.keys.map((k) => `${k}#${this.loader.revision(k)}`).join(",")}|${segs.map((g) => `${g.wallStart}-${g.wallEnd}@${g.bucketS}`).join(",")}`;
+    const sig = `${this.ext.start}-${this.ext.end}|${this.keys.map((k) => `${k}#${this.loader.revision(k)}`).join(",")}|${segs.map((g) => `${g.wallStart}-${g.wallEnd}@${g.bucketS}`).join(",")}`;
     if (sig === this.composedSig) return;
     this.composedSig = sig;
     const series = new Map<string, ComposedPoint[]>();
@@ -438,12 +555,12 @@ export class ChartController {
   }
 
   private makeSnapshot(): ChartSnapshot {
-    const owners = ["overview", "window", "around"].map((p) => this.owner(p));
+    const owners = ["overview", "window"].map((p) => this.owner(p));
     const error = owners.map((o) => this.loader.error(o)).find(Boolean) ?? null;
     let hasData: boolean | null = null;
     if (this.lastData.series.size) {
       const any = [...this.lastData.series.values()].some((pts) => pts.some((p) => p.y !== null));
-      hasData = any ? true : this.loadedForAll(OVERVIEW_BUCKET).length >= tilesFor(this.ext, OVERVIEW_BUCKET).length ? false : null;
+      hasData = any ? true : this.loadedForAll(this.ovB()).length >= tilesFor(this.ext, this.ovB()).length ? false : null;
     }
     return {
       window: this.win,
@@ -506,7 +623,7 @@ export class ChartController {
       this.needCompose = false;
       this.compose();
     }
-    for (const cb of this.redrawListeners) cb(this.win);
+    for (const cb of this.redrawListeners) cb(this.win, this.gestureActive);
     this.updateSnapshot();
     this.lastEnd = now();
     this.lastCost = this.lastEnd - t;
