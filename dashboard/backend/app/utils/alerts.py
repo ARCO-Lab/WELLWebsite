@@ -65,7 +65,7 @@ DEFAULT_REOPEN_HOURS = 6.0
 DEFAULT_DASHBOARD_URL = "https://welldash.mcmaster.ca/"
 DEFAULT_FLAP_CLEAR_MINUTES = 180.0
 FLAP_CLEAR_CAP = timedelta(hours=12)
-RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long is dropped
+RECOVERY_WINDOW = timedelta(hours=24)   # a recovery not emailed for this long is left to the daily digest
 # Low-severity kinds: their recovery waits for the next email that goes out anyway (or the daily digest, which lists
 # every recovery of the last 24 h), rather than sending one of its own. New alerts of these kinds are still emailed.
 DEFAULT_QUIET_KINDS = frozenset({SUSPECT_VALUES})
@@ -407,13 +407,14 @@ def suspect_conditions(freshness, recent, settings):
 
 
 def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, now, settings,
-         muted=lambda key: False):
+         muted=lambda key: False, superseded=None):
     """Compare the conditions found now with the incidents and decide what to store and email.
 
     conditions: {key: Condition}. held: key prefixes that can't be judged this run; their open incidents are left
     exactly as they are. open_incidents: incidents with resolved_at NULL. recently_closed: {key: incident} closed
     within ALERT_REOPEN_HOURS, newest per key. pending_recoveries: cleared, emailed incidents whose recovery email
-    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES).
+    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES). superseded: {key:
+    incident} closed as superseded, newest per key (utils/alert_state.superseded_incidents).
 
     - An incident clears (and its recovery is emailed) once its condition has been gone for ALERT_CLEAR_MINUTES.
       A condition that comes back within ALERT_REOPEN_HOURS of clearing reopens the same incident; if its recovery
@@ -427,21 +428,32 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
       emailed as new. A muted series' incidents close the same way.
+    - A coarser incident replaced by finer ones reopens when its condition comes back while those finer incidents
+      are still open (at any time, not only within ALERT_REOPEN_HOURS): its problem never went away, so it isn't
+      new, and its reminders and flap damping carry on. E.g. loggers silent all winter and the weather station
+      missing uploads now and then: each miss reopens "every LI-COR station silent" rather than emailing it as new.
+    - A suspect-values incident whose series has gone silent is replaced by the silence alert (superseded, no
+      "recovered" email): its readings can't be judged any more, and the silence is what needs acting on.
     """
     result = Plan()
     open_by_key = {i.incident_key: i for i in open_incidents}
     present = set(conditions)
     reopened = set()
+    superseded = superseded or {}
 
     def is_held(key):
         return any(is_under(key, prefix) for prefix in held)
 
     for key, condition in conditions.items():
         incident = open_by_key.get(key)
-        if incident is None and key in recently_closed:
-            incident = recently_closed[key]
-            result.reopen.append(incident)
-            reopened.add(id(incident))
+        if incident is None:
+            parent_row = superseded.get(key)
+            candidates = [i for i in (recently_closed.get(key), parent_row) if i is not None
+                          and (i is not parent_row or carried_on(i, open_incidents))]
+            if candidates:   # the newest, if it both cleared and was superseded lately
+                incident = max(candidates, key=lambda i: aware(i.resolved_at))
+                result.reopen.append(incident)
+                reopened.add(id(incident))
         if incident is None:
             parent = next((i for k, i in open_by_key.items() if k not in present and key.startswith(k + ":")), None)
             result.open_new.append((condition, parent))
@@ -459,9 +471,10 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
         elif now - aware(incident.last_notified_at) >= settings.reminder:
             result.remind.append(incident)
     for key, incident in open_by_key.items():
-        if key in present or is_held(key):
+        silenced = silence_covers(key, present)
+        if key in present or (is_held(key) and not silenced):
             continue
-        if muted(key) or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
+        if muted(key) or silenced or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
             result.supersede.append(incident)
         elif now - aware(incident.last_seen_at) >= clear_window(incident, settings):
             result.resolve.append(incident)
@@ -472,6 +485,24 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
     result.recovered += [i for i in pending_recoveries
                          if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
+
+
+def carried_on(incident, open_incidents):
+    """Whether a superseded incident's problem has been carried on by finer incidents ever since: one of them, keyed
+    under it, is open and was opened no later than the incident was closed (when the finer ones took over)."""
+    return any(i.incident_key.startswith(incident.incident_key + ":")
+               and aware(i.opened_at) <= aware(incident.resolved_at) for i in open_incidents)
+
+
+def silence_covers(key, present):
+    """Whether a suspect-values key ("suspect:<vendor>:<station>:<measurement>") is about a series that a silence
+    alert found now covers: the series itself, its station or the vendor's whole site."""
+    parts = key.split(":", 3)
+    if parts[0] != "suspect" or len(parts) < 4:
+        return False
+    vendor, station, measurement = parts[1:]
+    return any(k in present for k in (f"stale:{vendor}", f"stale:{vendor}:{station}",
+                                      f"stale:{vendor}:{station}:{measurement}"))
 
 
 def clear_window(incident, settings):

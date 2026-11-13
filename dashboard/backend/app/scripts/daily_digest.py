@@ -1,11 +1,13 @@
 # Builds the daily digest of the sensor data: the open email alerts (scripts/check_alerts.py) and those that cleared
-# in the last 24 h (including low-priority recoveries that weren't emailed on their own), stale
+# in the last 24 h (including low-priority recoveries that weren't emailed on their own, and older recoveries the
+# alert emails never managed to send), the sampling download's rows needing a decision (ATTENTION: lines), stale
 # series, implausible values, readings and gaps per group over the last 24 h, the newest reading of every series,
 # the WQData device's primary power and last contact, and yesterday's API traffic (request_metrics, utils/traffic.py). scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
 #
 # The digest is Markdown text, sent with the same content as HTML (utils/email_format.py), like the alert emails.
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
-# SMTP_FROM are optional), and otherwise prints it. It reads the database only, and makes at most one WQData
+# SMTP_FROM are optional), and otherwise prints it. It only reads the database, except to mark the older recoveries
+# it emailed as reported (so the next digest doesn't list them again), and makes at most one WQData
 # request, since WQData's hourly request quota is shared with the 10-minute ingestion.
 #
 #   python scripts/daily_digest.py               build it, then email or print it
@@ -31,6 +33,7 @@ from utils.monitoring import age_minutes, as_site_time, assess_freshness  # noqa
 from utils.timezone import EST_TZ  # noqa: E402
 
 WINDOW = timedelta(hours=24)
+MISSED_LOOKBACK = timedelta(days=14)   # how far back to look for recoveries the alert emails never sent
 WQ_POWER_PARAMETER = 115219   # WQData's Primary Power (V); not stored, so it is read from the API here
 WQ_FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -112,10 +115,13 @@ def read_wqdata(config, now):
     return result
 
 
-def send_email(settings, recipients, subject, body, html=None):
-    """Send one email: `body` as the text part and, if given, `html` as its HTML alternative (multipart)."""
+def send_email(settings, recipients, subject, body, html=None, message_id=None):
+    """Send one email: `body` as the text part and, if given, `html` as its HTML alternative (multipart), and
+    `message_id` as its Message-ID (otherwise the relay sets one)."""
     message = EmailMessage()
     message["From"], message["To"], message["Subject"] = settings["from"], ", ".join(recipients), subject
+    if message_id:
+        message["Message-ID"] = message_id
     message.set_content(body)
     if html:
         message.add_alternative(html, subtype="html")
@@ -150,18 +156,25 @@ def main(argv=None):
     from server import create_app
     from api.routes.latest import query_latest_per_series
 
+    from utils.alerts import RECOVERY_WINDOW
+    from utils.alert_state import alerts_report, mark_recoveries_reported, missed_recoveries, recent_recoveries
+
     now = datetime.now(timezone.utc)
-    with create_app().app_context():
+    app = create_app()
+    with app.app_context():
         freshness = assess_freshness(query_latest_per_series(), now)
         groups, findings = read_groups(db, freshness, now)
         try:
-            from utils.alert_state import alerts_report, recent_recoveries
             incidents = alerts_report()["open"]
             recoveries = recent_recoveries(now - WINDOW)
+            # Recoveries the alert check stopped retrying (an SMTP outage of a day or more): listed here instead.
+            missed = missed_recoveries(now - MISSED_LOOKBACK, now - RECOVERY_WINDOW)
         except Exception as e:   # e.g. the alert tables' migration hasn't run yet
             db.session.rollback()
             incidents = recoveries = {"error": type(e).__name__}
+            missed = []
         traffic = read_traffic(db, now)
+    attention = read_attention(now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     from utils.alerts import Settings, settings_from_env
     try:
@@ -171,13 +184,28 @@ def main(argv=None):
         alert_settings = Settings()
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
                                  incidents, traffic, recoveries, alert_settings.dashboard_url,
-                                 alert_settings.quiet_kinds)
-    return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject))
+                                 alert_settings.quiet_kinds, missed, attention)
+
+    def reported():   # the missed recoveries have now been told: the next digest doesn't list them again
+        with app.app_context():
+            mark_recoveries_reported([r["id"] for r in missed], now)
+
+    return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject), on_sent=reported)
 
 
-def deliver(subject, body, dry_run, env=None, send=send_email, html=None):
-    """Email the digest, or print it when --dry-run or SMTP isn't set up. The exit code: 1 when it should have
-    been emailed and wasn't (bad settings, no recipients, sending failed), so the digest heartbeat reports /fail."""
+def read_attention(now):
+    """The sampling download's ATTENTION: entries of the last 24 h (utils/jobs.recent_attention), or {"error"}."""
+    from utils.jobs import recent_attention
+    try:
+        return recent_attention(now - WINDOW)
+    except (OSError, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def deliver(subject, body, dry_run, env=None, send=send_email, html=None, on_sent=None):
+    """Email the digest, or print it when --dry-run or SMTP isn't set up; `on_sent()` is called once it has been
+    emailed. The exit code: 1 when it should have been emailed and wasn't (bad settings, no recipients, sending
+    failed), so the digest heartbeat reports /fail."""
     env = os.environ if env is None else env
     recipients, invalid = parse_alert_emails(env.get("ALERT_EMAILS"))
     if invalid:
@@ -205,6 +233,11 @@ def deliver(subject, body, dry_run, env=None, send=send_email, html=None):
         print(f"Subject: {subject}\n\n{body}")
         return 1
     print(f"[INFO] Digest emailed to {len(recipients)} recipient(s): {subject}")
+    if on_sent:
+        try:
+            on_sent()
+        except Exception as e:   # the digest went out; at worst the next one lists the same recoveries again
+            print(f"[WARN] Couldn't record what the digest reported: {type(e).__name__}")
     return 0
 
 

@@ -158,7 +158,7 @@ def to_markdown(lines):
 
 
 def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
-                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None):
+                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None, missed=None, attention=None):
     """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
@@ -168,6 +168,9 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
     recoveries: alerts cleared in the last 24 h (utils/alert_state.recent_recoveries()), {"error": ...}, or None.
     quiet_kinds: ALERT_QUIET_KINDS (Settings.quiet_kinds); None is the default.
+    missed: older recoveries the alert emails never sent (utils/alert_state.missed_recoveries()), listed if any.
+    attention: sampling download ATTENTION: entries of the last 24 h (utils/jobs.recent_attention()), {"error": ...},
+    or None to leave them out.
     """
     # Here, not at the top: utils.alerts imports this module.
     from utils.alerts import DEFAULT_QUIET_KINDS, RECOVERED_AS, Settings, is_quiet, status
@@ -181,7 +184,6 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
     problems = len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
-    subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
     lines = [f"WELL dashboard daily digest for the 24 h before {when(now)} (Toronto time).", ""]
 
     if incidents is not None:
@@ -203,6 +205,24 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
                       + ("" if r["recovery_emailed"] else unsent(r))
                       for r in recoveries] or ["  none"]
         lines.append("")
+
+    if missed:   # recovered more than 24 h ago; the alert emails stopped retrying them
+        lines.append("Older recoveries that could not be emailed:")
+        lines += [f"  **{what(r['key'])}**: {RECOVERED_AS.get(r['kind'], 'recovered')}. "
+                  f"{span(r['started_at'], r['resolved_at'])}" for r in missed]
+        lines.append("")
+
+    if attention is not None:
+        lines.append("Sampling data needing a decision (last 24 h):")
+        if isinstance(attention, dict):
+            lines.append(f"  could not be read: {attention.get('error')}")
+        else:
+            lines += [f"  {when(a['at'])}: {a['text']}" for a in attention] or ["  none"]
+            if attention:
+                problems += len(attention)
+                lines += ["", "The [WARN] lines they refer to are in the worker's logs/download_injections.log."]
+        lines.append("")
+    subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
 
     lines.append("Stale series (newest reading older than its limit):")
     lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {when_local(s['newest'])} "

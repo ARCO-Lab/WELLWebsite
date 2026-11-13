@@ -12,8 +12,8 @@
 # whose import failed and is retried, or one re-imported with --force) gets the newer files' scopes (what each
 # covers, recorded in logs/processed.json) and doesn't change the readings they cover: those corrections are held
 # back and reported. Held corrections and stored readings a file covers but no longer has get an ATTENTION: line,
-# which the scheduler sends to Sentry as a warning, and the run's SUMMARY: line counts them with the new and
-# corrected rows.
+# which the scheduler sends to Sentry as a warning and the daily digest lists, and the run's SUMMARY: line counts them
+# with the new and corrected rows.
 #   python scripts/download_data.py                          import every new file
 #   python scripts/download_data.py --force --file 57195     import that file again, even if processed or refused
 #                                                            (its corrections apply, except to readings that a

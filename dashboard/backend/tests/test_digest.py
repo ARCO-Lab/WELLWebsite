@@ -155,6 +155,48 @@ class BuildDigestTests(TestCase):
         self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("request failed: HTTPError (HTTP 429)", body)
 
+    def test_sampling_rows_needing_a_decision(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        entry = {"at": "2026-11-09T21:00:00-05:00",
+                 "text": "aw_2026.csv (ID: 57195): 3 rows present in the DB but not in the latest file were kept"}
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[entry])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: aw_2026.csv (ID: 57195): "
+                      "3 rows present in the DB but not in the latest file were kept\n\nThe [WARN] lines", body)
+        _, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[])
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- none", body)
+        self.assertIn("could not be read: ValueError", build_digest(
+            "2026-11-10", freshness, {}, [], None, attention={"error": "ValueError"})[1])
+        self.assertNotIn("Sampling data", build_digest("2026-11-10", freshness, {}, [], None)[1])
+
+
+class AttentionRecordTests(TestCase):
+    """utils/jobs.record_attention: download_data.py's ATTENTION: lines, kept for the daily digest."""
+
+    def test_records_only_attention_lines_and_keeps_two_weeks(self):
+        import tempfile
+        from utils.jobs import recent_attention, record_attention
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "sampling_attention.json")
+            now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=dt.timezone.utc)
+            self.assertEqual(recent_attention(now, path), [])   # nothing recorded yet
+            self.assertEqual(record_attention(["DEBUG: x", "ATTENTION: old one"], now - dt.timedelta(days=20), path), 1)
+            self.assertEqual(record_attention(["SUMMARY: 1 new", "ATTENTION: a.csv: 2 corrections not applied"],
+                                              now, path), 1)
+            self.assertEqual(record_attention(["OUTPUT: NO_NEW_FILES"], now, path), 0)
+            self.assertEqual([e["text"] for e in recent_attention(now - dt.timedelta(days=30), path)],
+                             ["a.csv: 2 corrections not applied"])   # the 20-day-old one was dropped
+            self.assertEqual(recent_attention(now + dt.timedelta(seconds=1), path), [])
+            with open(path, "w") as f:
+                f.write("{not json")
+            with self.assertRaises(ValueError):
+                recent_attention(now, path)
+            self.assertEqual(record_attention(["ATTENTION: new"], now, path), 1)   # a damaged record is replaced
+            self.assertEqual([e["text"] for e in recent_attention(now, path)], ["new"])
+
 
 class ReadGroupsTests(TestCase):
     def test_counts_gaps_and_findings_from_the_database(self):
@@ -292,6 +334,17 @@ class SendEmailTests(TestCase):
     def test_a_relay_without_login_may_be_plain(self):
         self.assertEqual(self.send(False, user="", password=""), ["ehlo", "send"])
 
+    def test_message_id_when_given(self):
+        import daily_digest
+        sent = []
+        FakeSMTP.offer_starttls, FakeSMTP.instances = True, []
+        settings = {"host": "relay", "port": 587, "user": "", "password": "", "from": "well@x.ca"}
+        with mock.patch.object(daily_digest.smtplib, "SMTP", FakeSMTP), \
+                mock.patch.object(FakeSMTP, "send_message", lambda self, message: sent.append(message)):
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body", None, "<well-alert.ab12@x.ca>")
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body")
+        self.assertEqual([m["Message-ID"] for m in sent], ["<well-alert.ab12@x.ca>", None])
+
 
 class DeliverTests(TestCase):
     SMTP = {"SMTP_HOST": "relay", "SMTP_PORT": "587", "SMTP_FROM": "well@x.ca"}
@@ -324,6 +377,22 @@ class DeliverTests(TestCase):
             raise RuntimeError("relay doesn't offer STARTTLS")
         self.assertEqual(self.deliver({**self.SMTP, "ALERT_EMAILS": "a@x.ca"}, send=refuse)[0], 1)
         self.assertEqual(self.deliver({"SMTP_HOST": "relay", "SMTP_PORT": "x", "ALERT_EMAILS": "a@x.ca"})[0], 1)
+
+    def test_what_it_reported_is_recorded_only_once_emailed(self):
+        import daily_digest
+        smtp = {**self.SMTP, "ALERT_EMAILS": "a@x.ca"}
+
+        def refuse(*a):
+            raise OSError("connection refused")
+        def accept(*a):
+            pass
+        # (env, --dry-run, sender, whether on_sent runs): emailed; dry run; SMTP not set up; sending failed
+        for env, dry_run, send, reported in ((smtp, False, accept, True), (smtp, True, accept, False),
+                                             ({}, False, accept, False), (smtp, False, refuse, False)):
+            calls = []
+            with mock.patch("builtins.print"):
+                daily_digest.deliver("subject", "body", dry_run, env=env, send=send, on_sent=lambda: calls.append(1))
+            self.assertEqual(calls, [1] if reported else [], (env, dry_run, send))
 
 
 if __name__ == "__main__":

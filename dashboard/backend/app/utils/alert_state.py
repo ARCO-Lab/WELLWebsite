@@ -68,6 +68,41 @@ def recently_closed(since):
     return {i.incident_key: i for i in rows}   # later rows win
 
 
+def superseded_incidents():
+    """{incident_key: the newest incident closed as superseded}, so a coarser incident whose problem finer ones
+    carried on can reopen when it comes back (utils/alerts.carried_on). Only those closed since the oldest open
+    incident was opened: an older one can't have been carried on by an incident open now."""
+    i = AlertIncident
+    oldest = db.session.query(db.func.min(i.opened_at)).filter(i.resolved_at.is_(None)).scalar()
+    if oldest is None:
+        return {}
+    rows = (i.query.filter(i.resolved_at >= oldest, i.close_reason == "superseded")
+            .order_by(i.resolved_at, i.id).all())
+    return {r.incident_key: r for r in rows}   # later rows win
+
+
+def missed_recoveries(since, before):
+    """Incidents that cleared between `since` and `before` after being emailed, whose recovery email never went out:
+    the alert check stops retrying RECOVERY_WINDOW after a recovery (utils/alerts.py). The daily digest lists them
+    and, once it has been emailed, marks them as reported (mark_recoveries_reported), so an SMTP outage longer than
+    that doesn't lose them."""
+    i = AlertIncident
+    rows = (i.query.filter(i.resolved_at >= since, i.resolved_at < before, i.close_reason == "cleared",
+                           i.last_notified_at.isnot(None), i.recovery_notified_at.is_(None))
+            .order_by(i.resolved_at, i.id).all())
+    return [{"id": r.id, "kind": r.kind, "key": r.incident_key, "title": r.title, "started_at": iso(r.started_at),
+             "resolved_at": iso(r.resolved_at)} for r in rows]
+
+
+def mark_recoveries_reported(ids, now):
+    """Mark these incidents' recoveries (missed_recoveries ids) as reported, once the digest listing them has been
+    emailed, like an emailed recovery."""
+    if ids:
+        AlertIncident.query.filter(AlertIncident.id.in_(ids)).update({"recovery_notified_at": now},
+                                                                     synchronize_session=False)
+        db.session.commit()
+
+
 def iso(ts):
     """Site (Toronto) time with its offset, like /health/data's checked_at."""
     return aware(ts).astimezone(EST_TZ).isoformat(timespec="seconds") if ts else None

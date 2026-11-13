@@ -404,7 +404,7 @@ and never stops the job. Unset variables mean no ping.
 | `HEALTHCHECK_URL_UPLOAD` | After the monthly Borealis upload (02:00 on the 1st, and daily retries); `/fail` if a month didn't go up. Days with nothing to upload don't ping. |
 | `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
-| `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
+| `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent (including the checks that wait to retry it). |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
 | `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check ([Database backups](#database-backups)). |
 
@@ -425,7 +425,10 @@ goes red both when the site is down and when data stops arriving.
 
 `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a summary of the last
 24 h, in the same Markdown-plus-HTML format as the [email alerts](#email-alerts): the open alerts, the alerts that
-recovered (including the low-priority recoveries that weren't emailed on their own, `ALERT_QUIET_KINDS`); stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
+recovered (including the low-priority recoveries that weren't emailed on their own, `ALERT_QUIET_KINDS`, and, once,
+any older recovery the alert emails couldn't send within 24 h); the sampling download's rows that need a person's
+decision (the `ATTENTION:` lines of `scripts/download_data.py`: stored rows a newer file no longer has, and
+corrections held back because a newer file covers them; recorded in `logs/sampling_attention.json`); stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
 its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly
 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30
 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with
@@ -489,7 +492,12 @@ readings to judge (e.g. the water quality sonde at night). When a single sensor'
 whole-site) one, the sensor's incident is replaced without a "recovered" email. When it shrinks back (say the station
 alert down to the one sensor still silent), the station incident closes without a "recovered" email too, and the
 sensor's incident carries on without a "new" one: the partial recovery isn't emailed, because the remaining problem
-was already reported and the next email (reminder or recovery) names it.
+was already reported and the next email (reminder or recovery) names it. If the wider alert then comes back while
+those narrower incidents are still open, its incident reopens, however long ago it narrowed, rather than being
+emailed as new: say a logger is silent all winter and the weather station misses its uploads now and then, "All
+LI-COR stations silent" is emailed once and then gets its daily reminder while it lasts, not a "new" email per miss.
+A suspect-values alert whose series then goes silent closes without a "recovered" email, and the silence alert takes
+over.
 
 #### The alerts and their settings
 
@@ -504,7 +512,12 @@ The open incidents are also listed in the daily digest and under `alerts` in `GE
 latest call outcome), so the dashboard can show them; they don't change its status code. They are listed by kind, key,
 title and times only; the details and advice are in the emails. Without SMTP settings nothing is emailed: incidents are
 still recorded and the email is written to `logs/alerts.log` instead (in full when its content changes, otherwise one
-line per check), and once SMTP is set up the next check emails the incidents still open. To see what would be sent now
+line per check), and once SMTP is set up the next check emails the incidents still open. An email that fails to
+send (relay down, a timeout) is tried again with a growing delay, on the next check, then after 20 min, 40 min and
+then every hour, unless a check has something new to say, which is tried at once. Each email's `Message-ID` is made
+from the incidents and notifications it carries, so if the relay did deliver an email whose send timed out, its
+retry has the same `Message-ID` and mail systems that de-duplicate show it once. A recovery that still couldn't be
+emailed 24 h after it happened is no longer retried; the next daily digest lists it instead. To see what would be sent now
 without recording or sending anything: `docker compose exec worker python scripts/check_alerts.py --dry-run`. The
 state lives in two tables, `vendor_status` (written by every ingestion run) and `alert_incidents`, created by migration
 `0003_monitoring_alerts.sql` (see [Database migrations](#database-migrations)); until it is applied the alert check
