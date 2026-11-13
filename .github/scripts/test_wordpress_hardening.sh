@@ -67,7 +67,9 @@ update_option('permalink_structure', '/%postname%/');
 flush_rewrite_rules(false);
 echo "theme ", get_stylesheet(), "\n";
 EOF
-WP_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$WP")
+# The container's address on its network, for requests that must not come from 127.0.0.1
+WP_IP=$(docker exec "$WP" hostname -i | awk '{print $1}')
+echo "container address: ${WP_IP:-none}"
 
 echo "== Apache: refused files"
 for p in /xmlrpc.php /wp-comments-post.php /wp-trackback.php /readme.html /license.txt /wp-config-sample.php \
@@ -176,6 +178,7 @@ check "another client still logs in" is "$(login "$PW" -H 'X-Forwarded-For: 203.
 # Posted to the container's network address, the peer is that address, not a trusted proxy, so X-Forwarded-For is
 # ignored: five failures under five made-up addresses still lock out the one real peer. (curl always sends localhost
 # to loopback, whatever --resolve says, hence the address in the URL.)
+check "the container's address is known" is "$([ -n "$WP_IP" ] && [ "$WP_IP" != 127.0.0.1 ] && echo yes)" yes
 for i in 1 2 3 4 5; do LOGIN_HOST=$WP_IP login wrong -H "X-Forwarded-For: 198.51.100.$i" >/dev/null; done
 check "an untrusted peer can't dodge the limit with X-Forwarded-For" \
     is "$(LOGIN_HOST=$WP_IP login "$PW" -H 'X-Forwarded-For: 198.51.100.99')" 200
