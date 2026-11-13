@@ -23,7 +23,8 @@ while (have_posts()) :
     <div class="container">
       <div class="entry-content">
         <?php
-        if ('' !== trim(get_the_content())) {
+        // An empty block-editor paragraph still counts as empty.
+        if ('' !== trim(wp_strip_all_tags(get_the_content()))) {
           the_content();
         } else {
           // A published page nobody has written yet. Point to where the team's contacts are.

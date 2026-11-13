@@ -8,7 +8,11 @@ get_header();
   <div class="container">
     <div class="row align-items-center">
       <div class="col-sm-12">
-        <h1 class="mb-4">Search results for &ldquo;<?php echo esc_html(get_search_query(false)); ?>&rdquo;</h1>
+        <?php if ('' === trim(get_search_query(false))) : ?>
+          <h1 class="mb-4">Search</h1>
+        <?php else : ?>
+          <h1 class="mb-4">Search results for &ldquo;<?php echo esc_html(get_search_query(false)); ?>&rdquo;</h1>
+        <?php endif; ?>
       </div>
     </div>
   </div>
