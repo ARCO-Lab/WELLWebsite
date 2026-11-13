@@ -26,9 +26,6 @@ window.wp = window.wp || {};
 	 */
 	Uploader = function ( options ) {
 		var self = this,
-			isIE =
-				navigator.userAgent.indexOf( 'Trident/' ) !== -1 ||
-				navigator.userAgent.indexOf( 'MSIE ' ) !== -1,
 			elements = {
 				container: 'container',
 				browser: 'browse_button',
@@ -94,17 +91,6 @@ window.wp = window.wp || {};
 			return;
 		}
 
-		// Make sure flash sends cookies (seems in IE it does without switching to urlstream mode)
-		if (
-			! isIE &&
-			'flash' === plupload.predictRuntime( this.plupload ) &&
-			( ! this.plupload.required_features ||
-				! Object.hasOwn( this.plupload.required_features, 'send_binary_string' ) )
-		) {
-			this.plupload.required_features = this.plupload.required_features || {};
-			this.plupload.required_features.send_binary_string = true;
-		}
-
 		// Initialize the plupload instance.
 		this.uploader = new plupload.Uploader( this.plupload );
 		delete this.plupload;
@@ -125,7 +111,7 @@ window.wp = window.wp || {};
 		 * Custom error callback.
 		 *
 		 * Add a new error to the errors collection, so other modules can track
-		 * and display errors. @see wp.Uploader.errors.
+		 * and display errors. {@see wp.Uploader.errors}.
 		 *
 		 * @param {string}        message
 		 * @param {object}        data

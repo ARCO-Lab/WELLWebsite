@@ -4,8 +4,7 @@ import datetime as dt
 import io
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from scripts import download_data  # noqa: E402
@@ -29,7 +28,7 @@ def run_main(*argv):
     return code, download, importer, out.getvalue()
 
 
-class ListFilesTests(unittest.TestCase):
+class ListFilesTests(TestCase):
     def test_list_files_lists_the_new_files_and_exits_without_downloading(self):
         code, download, importer, out = run_main("--list-files")
         self.assertEqual(code, 0)
@@ -43,4 +42,4 @@ class ListFilesTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Deploys the latest `main` to this VM: pulls it, rebuilds only the services whose files changed, checks the
-# site is healthy, and rolls back if it isn't. See the README's "Deploying" section.
+# site is healthy, and rolls back if it isn't. See docs/deploying.md.
 #
 #   ./deploy.sh            deploy now (asks nothing; you're there)
 #   ./deploy.sh --auto     for cron: only deploy a commit whose CI checks all passed, and hold (log, don't
 #                          deploy) changes that need a person: DB migrations, docker-compose.yml, a WordPress
-#                          core update. Each problem is reported once, not on every run; a rolled-back commit
-#                          isn't retried. Prints nothing when there's nothing to do.
+#                          core update, and code CI can't vouch for (HOLD_PATHS). Each problem is reported once,
+#                          not on every run; a rolled-back commit isn't retried. Prints nothing when there's
+#                          nothing to do.
 #   ./deploy.sh --dry-run  show what would happen, change nothing (no log, state or pings)
 #
 # Settings (environment, all optional): DEPLOY_BRANCH (main), DEPLOY_REMOTE (origin), DEPLOY_LOG
 # (deploy.log next to this script), DEPLOY_HEALTHCHECK_URL (a Healthchecks.io ping URL: success pings it,
-# failure pings <url>/fail), GITHUB_REPO (ARCO-Lab/WELLWebsite). DOCKER, CURL, GITHUB_API, DEPLOY_STATE,
+# failure pings <url>/fail), GITHUB_REPO (ARCO-Lab/WELLWebsite), DEPLOY_STATE_DIR (.deploy-state next to this
+# script: the lock, the reported-problem state and the rolled-back marker). DOCKER, CURL, GITHUB_API, DEPLOY_STATE,
 # DEPLOY_HEALTH_TRIES, DEPLOY_HEALTH_WAIT and DEPLOY_WORKER_WAIT exist for tests.
 set -Eeuo pipefail
 
@@ -20,7 +22,7 @@ for arg in "$@"; do
   case "$arg" in
     --auto) AUTO=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -29,18 +31,29 @@ cd "$(dirname "$(readlink -f "$0")")"
 BRANCH=${DEPLOY_BRANCH:-main}
 REMOTE=${DEPLOY_REMOTE:-origin}
 LOG=${DEPLOY_LOG:-$PWD/deploy.log}
-STATE=${DEPLOY_STATE:-${TMPDIR:-/tmp}/well-deploy.state}
+# Not /tmp: RHEL deletes files there after 10 days, which would drop the lock file and the rolled-back marker (so cron
+# would retry a commit it had rolled back). The directory is git-ignored.
+STATE_DIR=${DEPLOY_STATE_DIR:-$PWD/.deploy-state}
+STATE=${DEPLOY_STATE:-$STATE_DIR/state}
+# Where the lock and state were kept before; the state is moved once, below
+LEGACY=${TMPDIR:-/tmp}/well-deploy
 REPO=${GITHUB_REPO:-ARCO-Lab/WELLWebsite}
 API=${GITHUB_API:-https://api.github.com}
 DOCKER=${DOCKER:-docker}
 CURL=${CURL:-curl}
-REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Deploy script")  # job names in .github/workflows/ci.yml
+# --auto holds these for a person to deploy with ./deploy.sh: CI and the automation (.github/, which could also make
+# a bad change pass CI), this script, WordPress PHP under home/ (live the moment it is pulled, with no rebuild or
+# test), wp-config, .htaccess, and the Apache/PHP config in wordpress/. A merged pull request alone is not enough
+# for these, so a change that got past review can't go live unattended.
+HOLD_PATHS='^\.github/|^deploy\.sh$|^home/.*\.php$|(^|/)wp-config[^/]*$|(^|/)\.htaccess$|^wordpress/.*\.(conf|ini)$'
+REQUIRED_CHECKS=("Backend image and tests" "Dashboard build" "Dashboard image" "Deploy script" "End-to-end data (vendors to browser)")  # job names in .github/workflows/ci.yml
 
 # Best effort: an unwritable deploy.log must never stop a deploy halfway (tee still prints the line either way)
 log() {
   if [ "$DRY" = 1 ]; then echo "$*"; return 0; fi
   { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; } 2>/dev/null || true
 }
+# Pings DEPLOY_HEALTHCHECK_URL (if set) with the suffix in $1 ("" for success, /fail); a failed ping is ignored.
 ping_health() {
   if [ "$DRY" = 0 ] && [ -n "${DEPLOY_HEALTHCHECK_URL:-}" ]; then
     "$CURL" -fsS -m 10 --retry 3 -o /dev/null "$DEPLOY_HEALTHCHECK_URL$1" || true
@@ -69,6 +82,7 @@ trap 'on_err $? "$LINENO" "$BASH_COMMAND"' ERR
 # The last commit that was deployed and rolled back. Kept apart from $STATE (which `once` overwrites) so no other
 # problem can erase it; cleared by a healthy deploy or a deploy by hand.
 ROLLED_BACK=$STATE.rolled-back
+# Leaves NEW undeployed for a person (reason in $*): logs HELD once, pings /fail, and exits without an error.
 hold() {
   once "held $NEW"
   log "HELD $(git rev-parse --short "$NEW"): $* Deploy it by hand with ./deploy.sh once that's done."
@@ -77,11 +91,23 @@ hold() {
 }
 
 # One run at a time (cron every few minutes, plus a person running it by hand)
-exec 9>"${TMPDIR:-/tmp}/well-deploy.lock"
-if ! flock -n 9; then
+busy() {
   [ "$AUTO" = 1 ] && exit 0
   echo "Another deploy is running." >&2
   exit 1
+}
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/lock"
+flock -n 9 || busy
+# A run of the previous version of this script locks the old file instead, so while that file exists, take it too.
+# Opened read-only, so a file that isn't ours (another user's, in /tmp) is skipped rather than an error.
+if [ -e "$LEGACY.lock" ] && { exec 8<"$LEGACY.lock"; } 2>/dev/null; then flock -n 8 || busy; fi
+# Move the state the previous version kept in /tmp, once, so a problem already reported isn't reported again and a
+# rolled-back commit still isn't retried. Only for the default location, and not on a dry run.
+if [ "$DRY" = 0 ] && [ -z "${DEPLOY_STATE:-}" ]; then
+  for suffix in "" .rolled-back; do
+    if [ -f "$LEGACY.state$suffix" ] && [ ! -e "$STATE$suffix" ]; then mv -f "$LEGACY.state$suffix" "$STATE$suffix" 2>/dev/null || true; fi
+  done
 fi
 
 # Keep deploy.log (which also gets cron's stderr) to about DEPLOY_LOG_MAX bytes (5 MB): move it to deploy.log.1
@@ -146,34 +172,54 @@ fi
 # --no-renames: a moved file counts at both its old and new path, so the services on both sides rebuild
 CHANGED=$(git -c core.quotePath=false diff --name-only --no-renames "$OLD" "$NEW")
 if [ "$AUTO" = 1 ]; then
+  # git prints a name with a quote, backslash or control character quoted and escaped ("home/a\".php"), which none
+  # of the patterns below would match, so such a change is held whatever it is.
+  if grep -q '^"' <<<"$CHANGED"; then hold "it changes a file whose name has quotes, backslashes or control characters: $(grep -m 3 '^"' <<<"$CHANGED" | tr '\n' ' ')"; fi
   if grep -q '^dashboard/backend/app/db/migrations/' <<<"$CHANGED"; then hold "it adds or changes a database migration, which must be applied by hand first."; fi
   if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then hold "it changes docker-compose.yml, which can restart or re-network the whole stack."; fi
   if grep -qx 'home/wp-includes/version.php' <<<"$CHANGED"; then hold "it updates WordPress core, which needs its database update run from wp-admin."; fi
+  if held=$(grep -E "$HOLD_PATHS" <<<"$CHANGED"); then
+    hold "it changes files a person must deploy (CI, deploy.sh, WordPress PHP or config): $(head -5 <<<"$held" | tr '\n' ' ')"
+  fi
 fi
 
 SERVICES=()
+# Adds services to the rebuild list, once each. ALL means the whole stack.
 add() { local s; for s in "$@"; do [[ " ${SERVICES[*]-} " == *" $s "* ]] || SERVICES+=("$s"); done; }
 if grep -q '^dashboard/frontend/' <<<"$CHANGED"; then add dashboard; fi
-if grep -q '^dashboard/backend/' <<<"$CHANGED"; then add backend worker export_worker; fi
+if grep -q '^dashboard/backend/' <<<"$CHANGED"; then
+  add backend worker export_worker
+  # welldash² (the ops service) runs the backend image too, but only where it was turned on; rebuild it if it runs.
+  if [ -n "$("$DOCKER" compose ps -q ops 2>/dev/null || true)" ]; then add ops; fi
+fi
 if grep -qx 'docker-compose.yml' <<<"$CHANGED"; then add ALL; fi
+# Apache/PHP config files in wordpress/ are bind-mounted into the wordpress container one file at a time. Apache and
+# PHP read them only at start, and git replaces a changed file with a new one, so the running container keeps the old
+# copy until it's recreated. Compose sees no change in its own config, so a plain `up -d` wouldn't recreate it.
+RECREATE=()
+if grep -Eq '^wordpress/.*\.(conf|ini)$' <<<"$CHANGED"; then RECREATE=(wordpress); fi
 # Everything else needs no rebuild: WordPress is the stock wordpress image with home/ bind-mounted, so home/ is
-# live once merged; docs, tests and CI aren't deployed.
+# live once merged (which is why --auto holds its PHP, HOLD_PATHS); docs, tests and CI aren't deployed.
 
-summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}"
+summary="$(git rev-parse --short "$OLD")..$(git rev-parse --short "$NEW") ($(git log --format=%s -1 "$NEW" | cut -c1-70)); services: ${SERVICES[*]:-none}${RECREATE[*]:+; recreate: ${RECREATE[*]}}"
 if [ "$DRY" = 1 ]; then echo "Would deploy $summary"; exit 0; fi
 
+# Rebuilds and starts the services in SERVICES, and recreates those in RECREATE. Returns 1 if compose fails.
 rebuild() {
-  [ ${#SERVICES[@]} -eq 0 ] && return 0
-  if [[ " ${SERVICES[*]} " == *" ALL "* ]]; then
-    "$DOCKER" compose up -d --build
-  else
-    "$DOCKER" compose up -d --build --no-deps "${SERVICES[@]}"
+  if [[ " ${SERVICES[*]-} " == *" ALL "* ]]; then
+    "$DOCKER" compose up -d --build || return 1
+  elif [ ${#SERVICES[@]} -gt 0 ]; then
+    "$DOCKER" compose up -d --build --no-deps "${SERVICES[@]}" || return 1
+  fi
+  if [ ${#RECREATE[@]} -gt 0 ]; then
+    "$DOCKER" compose up -d --force-recreate --no-deps "${RECREATE[@]}" || return 1
   fi
 }
 
 # The site's pages. Returns 0, or sets PROBLEM to what's wrong and returns 1. $1: how many times to try
-# /api/latest (5 s apart), the slowest to come back after a rebuild. The checks set PROBLEM rather than print it so
-# they're called straight from `if`, where the ERR trap doesn't apply, not from a $(...) subshell.
+# /api/latest and the WordPress home page (5 s apart), the slowest to come back after a rebuild or recreate. The
+# checks set PROBLEM rather than print it so they're called straight from `if`, where the ERR trap doesn't apply,
+# not from a $(...) subshell.
 site_ok() {
   local code=000
   for _ in $(seq 1 "$1"); do
@@ -184,38 +230,85 @@ site_ok() {
   if [ "$code" != 200 ]; then PROBLEM="dashboard /api/latest answered $code"; return 1; fi
   code=$("$CURL" -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:8081/ || true)
   if [ "$code" != 200 ]; then PROBLEM="dashboard home answered $code"; return 1; fi
-  code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
+  # Tried as often as /api/latest: a recreated wordpress container answers only once Apache has started
+  for _ in $(seq 1 "$1"); do
+    code=$("$CURL" -s -o /dev/null -m 20 -w '%{http_code}' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/ || true)
+    [ "$code" = 200 ] && break
+    sleep "${DEPLOY_HEALTH_WAIT:-5}"
+  done
   if [ "$code" != 200 ]; then PROBLEM="WordPress home answered $code"; return 1; fi
 }
 
 # The rebuilt background workers serve no page, and compose restarts them when they crash (Docker even reports a
 # restarting container as Running), so a single "is it running" sample proves nothing. Instead: note each rebuilt
 # worker's container and restart count right after the rebuild...
-WORKERS=()
+WORKERS=() OPS_WATCH=""
+container_state() { # <service>: "<service>:<container id>:<restart count>"
+  local id
+  id=$("$DOCKER" compose ps -q "$1" 2>/dev/null | head -1 || true)
+  echo "$1:$id:$("$DOCKER" inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || echo '?')"
+}
 note_workers() {
-  local s id
+  local s
   WORKERS=()
   for s in worker export_worker; do
     [[ " ${SERVICES[*]-} " == *" $s "* || " ${SERVICES[*]-} " == *" ALL "* ]] || continue
-    id=$("$DOCKER" compose ps -q "$s" 2>/dev/null | head -1 || true)
-    WORKERS+=("$s:$id:$("$DOCKER" inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || echo '?')")
+    WORKERS+=("$(container_state "$s")")
   done
+  # welldash² (ops) is watched the same way when it was rebuilt by name, but only reported (ops_report): it isn't
+  # public, so it never rolls the site back, even if it was already failing before the deploy.
+  OPS_WATCH=""
+  if [[ " ${SERVICES[*]-} " == *" ops "* ]]; then OPS_WATCH=$(container_state ops); fi
 }
 # ...then, a minute after the rebuild, require each to be the same container, running, and not restarted since
-workers_ok() {
-  local w s id count now
-  [ ${#WORKERS[@]} -eq 0 ] && return 0
-  now=$(( $(date +%s) - REBUILT_AT ))
+wait_after_rebuild() {
+  local now=$(( $(date +%s) - REBUILT_AT ))
   if [ "$now" -lt "${DEPLOY_WORKER_WAIT:-60}" ]; then sleep $(( ${DEPLOY_WORKER_WAIT:-60} - now )); fi
-  for w in "${WORKERS[@]}"; do
-    IFS=: read -r s id count <<<"$w"
-    if [ -z "$id" ]; then PROBLEM="no $s container after the rebuild"; return 1; fi
-    now=$("$DOCKER" inspect -f '{{.State.Status}} {{.RestartCount}}' "$id" 2>/dev/null || echo "gone")
-    if [ "$now" != "running $count" ]; then
-      PROBLEM="the $s container didn't stay up (status and restart count: '$now', right after the rebuild: restart count $count)"
-      return 1
-    fi
+}
+stayed_up() { # "<service>:<id>:<count>" from container_state; returns 0, or sets PROBLEM and returns 1
+  local s id count now
+  IFS=: read -r s id count <<<"$1"
+  if [ -z "$id" ]; then PROBLEM="no $s container after the rebuild"; return 1; fi
+  now=$("$DOCKER" inspect -f '{{.State.Status}} {{.RestartCount}}' "$id" 2>/dev/null || echo "gone")
+  if [ "$now" != "running $count" ]; then
+    PROBLEM="the $s container didn't stay up (status and restart count: '$now', right after the rebuild: restart count $count)"
+    return 1
+  fi
+}
+workers_ok() {
+  local w
+  [ ${#WORKERS[@]} -eq 0 ] && return 0
+  wait_after_rebuild
+  for w in "${WORKERS[@]}"; do stayed_up "$w" || return 1; done
+}
+ops_report() {
+  [ -n "$OPS_WATCH" ] || return 0
+  wait_after_rebuild
+  if ! stayed_up "$OPS_WATCH"; then
+    log "welldash² needs a look: $PROBLEM. The public site is fine and the deploy is kept; see docker compose logs ops"
+  fi
+}
+
+# After a healthy deploy that built images, frees what old builds hold on disk: dangling images (old builds no longer
+# tagged) and the build cache beyond its 5 GB most recently used. The images the containers ran before this deploy
+# (noted in KEEP_IMAGES) are kept as rollback points. Volumes are never touched. Best effort: logs what it freed,
+# and a failure is only logged, never fails a healthy deploy. Called with ||, so the ERR trap doesn't apply.
+KEEP_IMAGES=""
+prune_old_builds() {
+  local id removed=0 kept=0 before after cache root
+  [ ${#SERVICES[@]} -gt 0 ] || return 0
+  root=$("$DOCKER" info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+  before=$(df -Pk "${root:-/}" 2>/dev/null | awk 'NR == 2 {print $4}' || true)
+  for id in $("$DOCKER" image ls -q --no-trunc -f dangling=true 2>/dev/null || true); do
+    if grep -qxF "${id#sha256:}" <<<"$KEEP_IMAGES"; then kept=$((kept + 1)); continue; fi
+    # One still used by a container (even a stopped one) is refused by docker and left in place
+    if "$DOCKER" image rm "$id" >/dev/null 2>&1; then removed=$((removed + 1)); fi
   done
+  cache=$("$DOCKER" builder prune -f --reserved-space 5GB 2>&1 | grep -i '^total' | tr -s ' \t' ' ' || true)
+  after=$(df -Pk "${root:-/}" 2>/dev/null | awk 'NR == 2 {print $4}' || true)
+  local disk=""
+  if [ -n "$before" ] && [ -n "$after" ]; then disk="; free disk went from $((before / 1024)) MB to $((after / 1024)) MB"; fi
+  log "pruned $removed old image(s) (kept $kept as rollback points) and the build cache (${cache:-nothing freed})$disk"
 }
 
 rebuild_and_check() {  # returns 0, or sets PROBLEM and returns 1
@@ -243,8 +336,12 @@ if ! err=$(git merge -q --ff-only "$NEW" 2>&1); then
   fail "couldn't fast-forward to $(git rev-parse --short "$NEW") ($summary): $(head -3 <<<"$err" | tr '\n' ' ')"
 fi
 log "deploying $summary"
+# Image ids without the sha256: prefix, one per line, as `docker image ls --no-trunc` gives them once stripped
+if [ ${#SERVICES[@]} -gt 0 ]; then KEEP_IMAGES=$("$DOCKER" compose images -q 2>/dev/null | sed 's/^sha256://' || true); fi
 if rebuild_and_check; then
   log "deployed $(git rev-parse --short HEAD); healthy"
+  ops_report
+  prune_old_builds || log "pruning old images failed; the deploy is kept"
   clear_state
   rm -f "$ROLLED_BACK" 2>/dev/null || true
   ping_health ""

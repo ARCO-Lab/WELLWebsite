@@ -1,9 +1,10 @@
-# This file defines the QualityService class for fetching water quality data from an external API.
-# It handles API authentication, paginated data retrieval, and time range management.
+# This file defines the QualityService class for fetching the water quality sonde's readings from the WQData API.
+# It handles the API key, WQData's paging and throttling, and points split across pages. WQData times are UTC.
 
 import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from config import Config
+from utils.fetching import BadVendorResponse
 from datetime import datetime, timezone
 
 
@@ -15,7 +16,7 @@ def describe_request_error(e):
     return f"{type(e).__name__} (HTTP {status})" if status else type(e).__name__
 
 def merge_point(points, point):
-    """Add a WQData point to  (timestamp -> point). A timestamp seen before (a point split across two
+    """Add a WQData point to `points` (timestamp -> point). A timestamp seen before (a point split across two
     pages) gets the values it didn't have yet, by parameterId, instead of a second entry."""
     ts = point.get("timestamp")
     seen = points.get(ts)
@@ -36,16 +37,20 @@ class QualityService:
         self.api_key = api_key
         self.device_id = device_id
         self.sleep = time.sleep
+        # The error that ended the last get_quality_data() call early, or None if every request succeeded. That
+        # call returns what it read rather than raising, so the ingestion checks this to tell an outage from
+        # "no new readings" (it records the outcome for the email alerts, utils/alert_state.py).
+        self.last_error = None
 
     def get_headers(self):
         # WQData uses apiKey in query params, not headers
         return {}  
 
     def get_default_time_range(self):
-        # Returns a default time range for data queries
+        # The range used when get_quality_data() is called without one (the example run at the bottom of this
+        # file; ingestion always passes its own): from the sonde's first readings to now, in UTC.
         now = datetime.now(timezone.utc)
         end_time = now.strftime("%Y-%m-%d %H:%M:%S")
-        # Adjust this to fit your project-specific time range
         start_time = "2025-05-08 11:00:00" # start_time = "2025-05-08 11:00:00"
         return start_time, end_time
 
@@ -56,8 +61,9 @@ class QualityService:
         request starts at that point, not after it, so a point whose values were split between two pages is read
         whole: repeats of a timestamp are merged. info.more isn't reliable on its own (a 14-day request said
         more=false on its 4th page with count 6,963 of total 12,591), so paging stops only once a response holds
-        every value it says its range has (info.count >= info.total). A failed request ends the paging with what
-        was read so far, as does hitting MAX_PAGES; both are logged.
+        every value it says its range has (info.count >= info.total). A failed request, or a page that doesn't move
+        the start on, ends the paging with what was read so far and is kept in self.last_error; hitting MAX_PAGES
+        also ends it, without an error (the next run carries on). All three are logged.
         """
         if not start_time or not end_time:
             start_time, end_time = self.get_default_time_range()
@@ -65,6 +71,7 @@ class QualityService:
         url = f"{self.api_url}/devices/{self.device_id}/parameters/data"
         points = {}   # timestamp -> point, in the order received
         current_start = start_time
+        self.last_error = None
 
         for page in range(self.MAX_PAGES):
             if page:
@@ -74,8 +81,11 @@ class QualityService:
                 response = requests.get(url, params=params, timeout=(10, 120))
                 response.raise_for_status()
                 body = response.json()
+                if not isinstance(body, dict) or not isinstance(body.get("data") or [], list):
+                    raise BadVendorResponse("WQData replied without a data list")
             except (requests.exceptions.RequestException, ValueError) as e:
                 print(f"[ERROR] Failed to fetch quality data from {current_start} UTC: {describe_request_error(e)}")
+                self.last_error = e
                 break
 
             for point in body.get("data") or []:
@@ -87,8 +97,11 @@ class QualityService:
                 break
             last = info.get("lastDataPointTimestamp")
             if not last or last <= current_start:   # same fixed format, so string order is time order
-                print(f"[ERROR] WQData paging didn't advance past {current_start} UTC "
-                      f"(count {count}, total {total}); stopping with what was read")
+                # Kept as the call's error, so the run fails and the alerts see it: recorded as a success, the
+                # next run would stall at the same place with nothing but a later "sensor silent" alert.
+                self.last_error = BadVendorResponse(
+                    f"WQData paging didn't advance past {current_start} UTC (count {count}, total {total})")
+                print(f"[ERROR] {self.last_error}; stopping with what was read")
                 break
             current_start = last
         else:

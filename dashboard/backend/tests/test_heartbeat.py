@@ -5,8 +5,7 @@ import pathlib
 import subprocess
 import sys
 import types
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import requests
 
@@ -32,7 +31,7 @@ class FakeGet:
         return types.SimpleNamespace(status_code=self.status)
 
 
-class PingHeartbeatTests(unittest.TestCase):
+class PingHeartbeatTests(TestCase):
     def test_unset_is_a_no_op(self):
         get = FakeGet()
         self.assertFalse(ping_heartbeat("ingestion", env={}, get=get))
@@ -66,7 +65,7 @@ class PingHeartbeatTests(unittest.TestCase):
         get.assert_called_once_with(URL, timeout=2)
 
 
-class SchedulerHeartbeatTests(unittest.TestCase):
+class SchedulerHeartbeatTests(TestCase):
     def setUp(self):
         self.pings = []
         for patch in (
@@ -88,21 +87,33 @@ class SchedulerHeartbeatTests(unittest.TestCase):
         return mock.patch.object(scheduler_temp, "datetime", Clock)
 
     def test_ingestion_success_and_failure(self):
-        with mock.patch.object(scheduler_temp, "inject_all_new_data", lambda: None):
-            scheduler_temp.api_injection_job()
-        with mock.patch.object(scheduler_temp, "inject_all_new_data", side_effect=RuntimeError("ingestion failed for: WQData")):
-            scheduler_temp.api_injection_job()
+        with mock.patch.object(scheduler_temp, "alert_check_job") as alerts:
+            with mock.patch.object(scheduler_temp, "inject_all_new_data", lambda: None):
+                scheduler_temp.api_injection_job()
+            with mock.patch.object(scheduler_temp, "inject_all_new_data", side_effect=RuntimeError("ingestion failed for: WQData")):
+                scheduler_temp.api_injection_job()
         self.assertEqual(self.pings, [("ingestion", "success"), ("ingestion", "fail")])
+        self.assertEqual(alerts.call_count, 2)   # the alert check runs after failed runs too
+
+    def test_alert_check_pings_and_never_raises(self):
+        app = mock.MagicMock()
+        with mock.patch.dict(sys.modules, {"inject_from_api": types.SimpleNamespace(app=app)}),                 mock.patch.object(scheduler_temp, "timestamped_print_alerts", lambda *a: None),                 mock.patch.object(scheduler_temp, "capture_job_error") as captured:
+            for result in ({"email": "sent"}, {"email": None}, {"email": "failed"}, RuntimeError("database down")):
+                with mock.patch.object(scheduler_temp.check_alerts, "run", side_effect=[result]):
+                    scheduler_temp.alert_check_job()
+        self.assertEqual(self.pings, [("alerts", "success"), ("alerts", "success"), ("alerts", "fail"),
+                                      ("alerts", "fail")])
+        self.assertEqual(captured.call_count, 1)   # only the crash goes to Sentry
 
     def test_upload_pings_only_when_a_month_was_due(self):
         with self.at(2), mock.patch.object(scheduler_temp, "load_uploaded_months", lambda p: set()), \
                 mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"), \
-                mock.patch.object(scheduler_temp, "upload_job", lambda y, m: True), \
+                mock.patch.object(scheduler_temp, "upload_job", lambda *a: True), \
                 mock.patch.object(scheduler_temp, "record_uploaded_month", lambda *a: None):
             scheduler_temp.monthly_upload_check()
         with self.at(2), mock.patch.object(scheduler_temp, "load_uploaded_months", lambda p: set()), \
                 mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"), \
-                mock.patch.object(scheduler_temp, "upload_job", lambda y, m: False):
+                mock.patch.object(scheduler_temp, "upload_job", lambda *a: False):
             scheduler_temp.monthly_upload_check()
         with self.at(2), mock.patch.object(scheduler_temp, "load_uploaded_months", lambda p: {"2026-10"}), \
                 mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"):
@@ -135,4 +146,4 @@ class SchedulerHeartbeatTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

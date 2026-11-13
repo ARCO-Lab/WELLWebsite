@@ -98,6 +98,16 @@ if (well_should_force_https_urls()) {
 }
 
 /**
+ * Version string for a theme CSS/JS file: its modification time. WordPress adds it to the URL
+ * (?ver=...), so an edited file gets a new URL and browsers can cache each URL for a long time
+ * (see wordpress/zz-performance.conf). Falls back to '1.0' if the file is missing.
+ */
+function well_asset_version($relative_path) {
+    $mtime = @filemtime(get_template_directory() . $relative_path);
+    return $mtime ? (string) $mtime : '1.0';
+}
+
+/**
  * This function is the proper WordPress way to load all of our theme's
  * CSS stylesheets and JavaScript files.
  */
@@ -126,25 +136,20 @@ function well_theme_enqueue_assets() {
             'well-' . $file, // A unique name for each stylesheet, e.g., 'well-theme'
             get_template_directory_uri() . '/css/' . $file . '.css',
             ['well-google-fonts'], // Dependency
-            '1.0'
+            well_asset_version('/css/' . $file . '.css')
         );
     }
 
-    // 3. Enqueue McMaster header styles
-    wp_enqueue_style(
-        'well-mcmaster-header',
-        get_template_directory_uri() . '/css/mcmaster-header.css',
-        ['well-google-fonts'],
-        '1.0'
-    );
-
     // --- JAVASCRIPT (.js files) ---
 
-    // 4. Enqueue all the theme's JS files from the /js/ folder.
+    // 3. Enqueue all the theme's JS files from the /js/ folder.
     // We list 'jquery' as a dependency since many old themes use it.
+    // js/video_slider.js is not loaded: it is for YouTube hero videos this site doesn't have, and
+    // it loaded the YouTube player API on every page before stopping with an error.
     $js_files = [
-        'popper.min', 'theme.min', 'ekko-lightbox.min', 'header_footer',
-        'hfcopy', 'mcmaster', 'countdown-timer', 'video_slider',
+        'popper.min', 'theme.min', 'ekko-lightbox.min',
+        // 'header_footer', // off: it reads a directory_uri variable the theme never sets (an error on every page), and working it would load hfcopy.js twice and add McMaster header markup the site has never shown.
+        'hfcopy', 'mcmaster', 'countdown-timer',
         'wp-form-name-fields', 'comm100-wrapper'
     ];
 
@@ -153,19 +158,10 @@ function well_theme_enqueue_assets() {
             'well-' . str_replace('.min', '', $file), // A unique name for each script, e.g., 'well-popper'
             get_template_directory_uri() . '/js/' . $file . '.js',
             ['jquery'], // Dependency
-            '1.0',
+            well_asset_version('/js/' . $file . '.js'),
             true // Load the script in the footer
         );
     }
-
-    // 5. Enqueue McMaster header JavaScript
-    wp_enqueue_script(
-        'well-mcmaster-header-js',
-        get_template_directory_uri() . '/js/mcmaster-header.js',
-        ['jquery'],
-        '1.0',
-        true
-    );
 }
 
 // This is the WordPress "hook" that tells WordPress to run our function at the right time.
@@ -217,6 +213,115 @@ function well_enqueue_flickity_assets() {
     );
 }
 add_action('wp_enqueue_scripts', 'well_enqueue_flickity_assets');
+
+/**
+ * Open the connections to Google Fonts early. The Poppins stylesheet comes from fonts.googleapis.com
+ * and its font files from fonts.gstatic.com; without this the browser finds the second host only
+ * after the first stylesheet has downloaded.
+ */
+function well_resource_hints($urls, $relation_type) {
+    if ('preconnect' === $relation_type) {
+        $urls[] = 'https://fonts.googleapis.com';
+        $urls[] = array('href' => 'https://fonts.gstatic.com', 'crossorigin');
+    }
+    return $urls;
+}
+add_filter('wp_resource_hints', 'well_resource_hints', 10, 2);
+
+/**
+ * Print an <img> for a photo the theme ships pre-sized in img/media/ as <name>-<width>.webp
+ * (made from the originals in wp-content/uploads by wordpress/theme-images.mjs).
+ *
+ * The templates used to link the uploaded originals directly: camera photos up to 4032 px and
+ * 13 MB, shown at 300-1300 px. With srcset and sizes the browser downloads only the copy its
+ * screen needs; width and height let it reserve the space before the image arrives.
+ *
+ * $widths: the copies that exist, e.g. array(414, 720, 1080); array() for a single <name>.webp.
+ * $size:   the largest copy's width and height in pixels, e.g. array(1080, 463).
+ * $attrs:  other attributes (alt, class, sizes, loading, fetchpriority, ...).
+ */
+function well_media_img($name, $widths, $size, $attrs = array()) {
+    $base = get_template_directory_uri() . '/img/media/' . $name;
+    if (empty($widths)) {
+        $src = $base . '.webp';
+    } else {
+        $srcset = array();
+        foreach ($widths as $w) {
+            $srcset[] = esc_url($base . '-' . $w . '.webp') . ' ' . (int) $w . 'w';
+        }
+        $attrs = array('srcset' => implode(', ', $srcset)) + $attrs;
+        // Browsers that ignore srcset get a middle size.
+        $src = $base . '-' . $widths[(int) floor((count($widths) - 1) / 2)] . '.webp';
+    }
+
+    $attrs = array(
+        'src'      => $src,
+        'width'    => (int) $size[0],
+        'height'   => (int) $size[1],
+        'decoding' => 'async',
+    ) + $attrs;
+
+    $html = '<img';
+    foreach ($attrs as $key => $value) {
+        if ('src' === $key) {
+            $html .= ' src="' . esc_url($value) . '"';
+        } elseif ('srcset' === $key) {
+            $html .= ' srcset="' . esc_attr($value) . '"';
+        } else {
+            $html .= ' ' . $key . '="' . esc_attr($value) . '"';
+        }
+    }
+    echo $html . '>';
+}
+
+/**
+ * The query behind every list of news on the site: the home page's "Latest News" carousel,
+ * the News page and the "Related News" list under a post. A news item is any published post,
+ * newest first, whatever its category, so a post shows up in all three places as soon as it
+ * is published (scheduled posts appear on their date, drafts never do).
+ *
+ * $count:   how many posts to show (per page, when $paged is given).
+ * $exclude: post IDs to leave out, e.g. the post being read.
+ * $paged:   page number for a paginated list such as the News page; 0 for a single block of
+ *           posts. With a page number WordPress also counts all posts, so max_num_pages is set.
+ */
+function well_news_query($count, $exclude = array(), $paged = 0) {
+    $args = array(
+        'post_type'           => 'post',
+        'post_status'         => 'publish',
+        'posts_per_page'      => (int) $count,
+        'post__not_in'        => array_map('intval', (array) $exclude),
+        'ignore_sticky_posts' => true,
+    );
+    if ($paged > 0) {
+        $args['paged'] = (int) $paged;
+    } else {
+        $args['no_found_rows'] = true; // no pagination, so skip counting every post
+    }
+    return new WP_Query($args);
+}
+
+/**
+ * Print the current post's featured image at the top of a news card, cropped to 16:9 by the
+ * card-img-mask classes. Prints nothing when the post has no featured image, so the card
+ * keeps its text-only layout. The image is decorative: the card's title link right below it
+ * names the post, so it gets an empty alt and screen readers skip it.
+ *
+ * Uses the media library's copies (srcset and sizes), so a phone downloads a small one.
+ */
+function well_news_card_image() {
+    if (!has_post_thumbnail()) {
+        return;
+    }
+    echo '<div class="card-img-mask card-img-mask-top">';
+    the_post_thumbnail('medium_large', array(
+        'alt'     => '',
+        'class'   => 'card-img-top',
+        'sizes'   => '(min-width: 992px) 350px, (min-width: 768px) 50vw, 100vw',
+        'loading' => 'lazy',
+    ));
+    echo '</div>';
+}
 
 /**
  * Add McMaster navigation menu items (as used in the original site)
@@ -288,5 +393,30 @@ function well_remove_auto_sizes_from_content_images($content) {
     return $content;
 }
 add_filter('the_content', 'well_remove_auto_sizes_from_content_images', 20);
+
+/**
+ * Count page views with GoatCounter (https://www.goatcounter.com): no cookies, nothing stored in the browser, and
+ * GoatCounter keeps only aggregated counts. The site shares one GoatCounter site with the dashboard, so each path is
+ * counted with the host in front ("well.mcmaster.ca/news/"), which keeps the two sites' "/" apart. Query strings are
+ * left out of the path. Nothing is counted for logged-in users (editors checking their pages), in previews, or on
+ * any host other than well.mcmaster.ca (count.js also skips localhost and pages shown inside a frame).
+ */
+function well_goatcounter_script() {
+    if (is_admin() || is_user_logged_in() || is_preview() || is_customize_preview()) {
+        return;
+    }
+    ?>
+<script>
+window.goatcounter = {
+    path: function (p) {
+        var host = location.hostname.replace(/^www\./, '');
+        return host === 'well.mcmaster.ca' ? host + p.split(/[?#]/)[0] : null;
+    }
+};
+</script>
+<script data-goatcounter="https://well.goatcounter.com/count" async src="https://gc.zgo.at/count.js"></script>
+    <?php
+}
+add_action('wp_footer', 'well_goatcounter_script');
 
 ?>

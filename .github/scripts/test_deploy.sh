@@ -35,8 +35,14 @@ bad_head() { [ -n "${BAD_WORKER_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" 
 case "$*" in
   "compose up"*) touch "$T/rebuilt"
     if [ -n "${BREAK_LOG:-}" ]; then rm -f "$DEPLOY_LOG"; mkdir -p "$DEPLOY_LOG"; fi ;;  # deploy.log unwritable mid-deploy
+  "compose ps -q ops") [ -n "${OPS_RUNNING:-}" ] && echo "id-ops" ;;   # welldash²: off unless the test turns it on
   "compose ps -q "*) if [ "$4" = "${MISSING:-}" ] && bad_head; then :; else echo "id-$4"; fi ;;
   "inspect -f {{.RestartCount}} "*) echo 0 ;;
+  # Pruning: the stack's containers run image "running"; "running" and "old" are dangling (the rebuild replaced
+  # "running"). With $PRUNE_FAIL every prune command fails.
+  "compose images -q") echo running ;;
+  "image ls -q --no-trunc -f dangling=true") [ -n "${PRUNE_FAIL:-}" ] && exit 1; printf 'sha256:running\nsha256:old\n' ;;
+  "image rm "*|"builder prune"*) [ -n "${PRUNE_FAIL:-}" ] && exit 1; case "$*" in "builder prune"*) printf 'ID\nTotal:\t1.5GB\n' ;; esac ;;
   "inspect -f {{.State.Status}} {{.RestartCount}} "*)
     if [ "$4" = "id-${CRASHING:-}" ] && bad_head; then echo "running 2"; else echo "running 0"; fi ;;
 esac
@@ -50,6 +56,13 @@ for a in "$@"; do
     http://hc.test/*) echo "ping $a" >> "$STUB_LOG"; exit 0 ;;
   esac
 done
+case "$*" in
+  *127.0.0.1:8080*)
+    # WordPress: 500 while $WP_BAD_SHA is checked out; with $WP_SLOW_START, 000 on the first call after a
+    # rebuild/recreate (Apache not listening yet), then the usual answers
+    if [ -n "${WP_BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$WP_BAD_SHA" ]; then printf 500; exit 0; fi
+    if [ -n "${WP_SLOW_START:-}" ] && [ -f "$T/rebuilt" ] && [ ! -f "$T/wp-started" ]; then touch "$T/wp-started"; printf 000; exit 0; fi ;;
+esac
 case "$*" in
   *http_code*)
     if [ -n "${BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_SHA" ]; then printf 500
@@ -69,7 +82,8 @@ def run(name, c):
     return {"name": name, "status": "in_progress" if c == "pending" else "completed",
             "conclusion": None if c == "pending" else c}
 print(json.dumps({"check_runs": [run("Backend image and tests", sys.argv[1]), run("Dashboard build", sys.argv[2]),
-                                 run("Deploy script", "success")]}))
+                                 run("Dashboard image", "success"), run("Deploy script", "success"),
+                                 run("End-to-end data (vendors to browser)", "success")]}))
 EOF
 }
 change() { # commit and push edits to the given paths
@@ -101,6 +115,15 @@ check "frontend change: rebuilds only the dashboard, no worker check" 'rc 0 && h
 sync_vm; change dashboard/backend/app/x.py; ci success success; deploy --auto
 check "--auto, CI passed: rebuilds backend, worker, export_worker" 'rc 0 && head_is_remote && ran "--no-deps backend worker export_worker"'
 check "backend change: checks both workers' containers" 'ran "compose ps -q worker" && ran "compose ps -q export_worker" && ran "inspect -f {{.State.Status}} {{.RestartCount}} id-export_worker"'
+
+check "backend change, welldash² not running: not rebuilt" '! ran "export_worker ops"'
+
+sync_vm; change dashboard/backend/app/x.py; OPS_RUNNING=1 deploy
+check "backend change, welldash² running: rebuilt with the backend, and checked like the workers" 'rc 0 && ran "--no-deps backend worker export_worker ops" && ran "inspect -f {{.State.Status}} {{.RestartCount}} id-ops" && said "healthy"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/backend/app/x.py
+OPS_RUNNING=1 BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=ops deploy
+check "welldash² crash-looping after a backend change: reported, but the deploy is kept" 'rc 0 && head_is_remote && said "welldash² needs a look" && said "ops container didn'"'"'t stay up" && ! said "rolling back"'
 
 sync_vm; change dashboard/backend/app/x.py; ci pending success; deploy --auto
 check "--auto, CI still running: waits, changes nothing" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && [ ! -s "$T/out" ]'
@@ -147,6 +170,40 @@ check "by hand, docker-compose.yml change: rebuilds everything, checks both work
 
 sync_vm; change README.md; deploy
 check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! ran "compose"'
+
+# HOLD_PATHS: code a merged pull request alone mustn't put live. Each is held by --auto even with CI green.
+for path in .github/workflows/ci.yml home/index.php home/wp-content/plugins/p/p.php home/.htaccess \
+  home/wp-config.php wp-config-extra.php wordpress/apache-hardening.conf wordpress/php-hardening.ini; do
+  sync_vm; change "$path"; ci success success; deploy --auto
+  check "--auto, $path changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "a person must deploy" && said "$path" && ! ran "compose"'
+done
+# Names git prints quoted ("home/a\".php") match none of the patterns, so they're held whatever they are
+for path in 'home/a".php' 'home/b\c.php' "docs/tab	name.md"; do
+  sync_vm; change "$path"; ci success success; deploy --auto
+  check "--auto, a name git quotes ($path): held" 'rc 0 && ! head_is_remote && said "HELD" && said "quotes, backslashes or control characters" && ! ran "compose"'
+done
+# deploy.sh itself: a comment line, so the VM's copy still runs once a later test pulls it
+sync_vm; (cd "$T/work" && echo "# edited" >> deploy.sh && git commit -qam "edit deploy.sh" && git push -q origin HEAD:main)
+ci success success; deploy --auto
+check "--auto, deploy.sh changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "deploy.sh"'
+sync_vm; change home/wp-content/themes/t/style.css; ci success success; deploy --auto
+check "--auto, non-PHP files under home/: deployed" 'rc 0 && head_is_remote && ! said "HELD"'
+
+sync_vm; change wordpress/zz-performance.conf; deploy
+check "by hand, WordPress Apache/PHP config change: recreates only the wordpress container, then checks the site" 'rc 0 && head_is_remote && ran "compose up -d --force-recreate --no-deps wordpress" && ! ran "--build" && said "recreate: wordpress" && said "healthy"'
+
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change wordpress/php-hardening.ini
+WP_BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "WordPress config change that breaks WordPress only: rolls back and recreates wordpress with the old config" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "WordPress home answered 500" && [ "$(grep -c "force-recreate --no-deps wordpress" "$STUB_LOG")" = 2 ] && said "healthy again"'
+
+sync_vm; rm -f "$T/wp-started"; change wordpress/zz-performance.conf; WP_SLOW_START=1 deploy
+check "recreated wordpress not answering on the first try: waits for it, deploys, no rollback" 'rc 0 && head_is_remote && said "healthy" && ! said "rolling back" && [ -f "$T/wp-started" ]'
+
+sync_vm; change wordpress/theme-images.mjs; deploy
+check "other files in wordpress/ (not .conf/.ini): nothing restarted" 'rc 0 && head_is_remote && ! ran "compose"'
+
+sync_vm; (cd "$T/work" && echo 1 >> docker-compose.yml && mkdir -p wordpress && echo 1 >> wordpress/zz-performance.conf && git add -A && git commit -qm both && git push -q origin HEAD:main); deploy
+check "by hand, docker-compose.yml and a WordPress config change: rebuilds everything and recreates wordpress" 'rc 0 && ran "compose up -d --build" && ran "compose up -d --force-recreate --no-deps wordpress"'
 
 sync_vm; (cd "$T/work" && git mv dashboard/frontend/page.tsx dashboard/backend/app/page.tsx && git commit -qm move && git push -q origin HEAD:main); deploy
 check "a file moved between services: both sides rebuild" 'rc 0 && ran "--no-deps dashboard backend worker export_worker"'
@@ -236,6 +293,44 @@ HEALTH_CODE=502 deploy --auto
 check "--auto, site already unhealthy: reported only once" 'rc 0 && [ ! -s "$T/out" ]'
 HEALTH_CODE=502 deploy
 check "by hand, site already unhealthy: deploys anyway, no rollback" 'rc 1 && head_is_remote && said "deploying anyway" && said "still unhealthy"'
+
+sync_vm; change dashboard/frontend/page.tsx; deploy
+check "healthy deploy that built images: prunes dangling images except the replaced one, and the build cache, never volumes" 'rc 0 && ran "image rm sha256:old" && ! ran "image rm sha256:running" && ran "builder prune -f --reserved-space 5GB" && ! ran "volume" && said "pruned 1 old image(s) (kept 1 as rollback points)" && said "Total: 1.5GB" && grep -q "pruned 1" "$DEPLOY_LOG"'
+
+sync_vm; change README.md; deploy
+check "deploy that built nothing: prunes nothing" 'rc 0 && ! ran "prune" && ! ran "image rm"'
+
+sync_vm; change dashboard/frontend/page.tsx; PRUNE_FAIL=1 deploy
+check "pruning fails: the healthy deploy is kept, no /fail" 'rc 0 && head_is_remote && said "healthy" && said "pruned 0 old image(s)" && ! said "FAILED"'
+
+sync_vm; change dashboard/frontend/page.tsx; BAD_SHA=$(git -C "$T/work" rev-parse HEAD) deploy
+check "rolled back: prunes nothing" 'rc 1 && said "rolling back" && ! ran "prune" && ! ran "image rm"'
+
+# The lock, held here on a descriptor of this shell: the deploy's own lock attempt on the same file must fail
+sync_vm; change dashboard/frontend/page.tsx; mkdir -p "$T/vm/.deploy-state"; exec 7>"$T/vm/.deploy-state/lock"; flock 7; deploy
+check "another deploy holds the lock: by hand, says so and changes nothing" 'rc 1 && said "Another deploy is running" && ! head_is_remote && [ ! -s "$STUB_LOG" ]'
+deploy --auto
+check "another deploy holds the lock: --auto exits quietly" 'rc 0 && [ ! -s "$T/out" ] && ! head_is_remote'
+exec 7>&-
+exec 7>"$T/well-deploy.lock"; flock 7; deploy
+check "a run of the previous version holds the old lock in TMPDIR: waits for it too" 'rc 1 && said "Another deploy is running" && ! head_is_remote'
+exec 7>&-
+deploy
+check "lock released: deploys" 'rc 0 && head_is_remote'
+rm -f "$T/well-deploy.lock"
+
+# Default state location (DEPLOY_STATE empty): a rolled-back marker left in TMPDIR by the previous version is moved
+sync_vm; rm -rf "$T/vm/.deploy-state"; change dashboard/frontend/page.tsx; ci success success
+git -C "$T/work" rev-parse HEAD > "$T/well-deploy.state.rolled-back"; echo "held x" > "$T/well-deploy.state"
+DEPLOY_STATE='' deploy --auto
+check "old state in TMPDIR: moved into .deploy-state once, and the rolled-back commit still isn't retried" 'rc 0 && ! head_is_remote && [ ! -s "$T/out" ] && [ ! -e "$T/well-deploy.state.rolled-back" ] && [ ! -e "$T/well-deploy.state" ] && [ "$(cat "$T/vm/.deploy-state/state.rolled-back")" = "$(git -C "$T/work" rev-parse HEAD)" ] && [ "$(cat "$T/vm/.deploy-state/state")" = "held x" ]'
+DEPLOY_STATE='' deploy
+check "default state location: a deploy by hand clears it" 'rc 0 && head_is_remote && [ ! -e "$T/vm/.deploy-state/state.rolled-back" ] && [ ! -e "$T/vm/.deploy-state/state" ]'
+
+# --help prints the comment block at the top (line 2 up to the first line that isn't a comment), all of it and no more
+bash "$ROOT/deploy.sh" --help > "$T/out" 2>&1; echo $? > "$T/rc"
+awk 'NR > 1 && !/^#/ { exit } NR > 1' "$ROOT/deploy.sh" > "$T/header"
+check "--help: exactly the header comment" 'rc 0 && cmp -s "$T/out" "$T/header"'
 
 echo "$pass passed, $failures failed"
 [ "$failures" = 0 ]

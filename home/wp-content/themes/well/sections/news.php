@@ -9,17 +9,15 @@
       <div class="col-md-12 col-sm-10 col-xs-10 mx-auto">
         <div class="flickity-carousel multi-carousel multi-carousel-eq-height" data-flickity='{ "cellAlign": "left", "contain": true, "groupCells": "true" }'>
           <?php
-          // Query for the latest 6 posts
-          $news_query = new WP_Query([
-            'post_type' => 'post',
-            'posts_per_page' => 6, // Show latest 6 posts
-          ]);
+          // The latest 6 published posts (well_news_query() in functions.php explains what counts as news)
+          $news_query = well_news_query(6);
           if ($news_query->have_posts()) :
             while ($news_query->have_posts()) : $news_query->the_post(); ?>
               <div class="col-lg-4">
                 <div class="card card-shadow border-top-0">
                   <div class="card-main border-top h-100">
                     <div class="card border-0 no-shadow card-hover">
+                      <?php well_news_card_image(); ?>
                       <div class="card-body pb-0">
                         <h3 class="card-title">
                           <a href="<?php the_permalink(); ?>">

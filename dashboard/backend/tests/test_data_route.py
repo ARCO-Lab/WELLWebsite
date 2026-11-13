@@ -78,6 +78,19 @@ class DataRouteTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/data?start=2026-11-01").status_code, 400)
         self.assertEqual(self.client.get("/api/data?start=x&end=y&group_type=Weather").status_code, 400)
 
+    def test_a_range_longer_than_max_days_is_refused_before_counting(self):
+        days = data_route.MAX_DAYS
+        self.assertEqual(self.get(T0, T0 + dt.timedelta(days=days), ["Weather"], limit=100).status_code, 200)
+        with mock.patch.object(db.session, "query", side_effect=AssertionError("counted")):
+            r = self.get(T0, T0 + dt.timedelta(days=days, minutes=10), ["Weather"], limit=100)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.get_json()["max_days"], days)
+        # A naive bound and one with an offset are compared as local times, not refused with a 500
+        r = self.client.get("/api/data?start=2026-11-01T00:00:00&end=2026-11-01T05:00:00%2B00:00&group_type=Weather")
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get("/api/data?start=2000-01-01T00:00:00Z&end=2026-11-01T00:00:00&group_type=Weather")
+        self.assertEqual(r.status_code, 400)
+
 
 class MaxRowsSettingTests(unittest.TestCase):
     """DATA_MAX_ROWS is parsed once at import; a bad value falls back to the default instead of failing requests."""

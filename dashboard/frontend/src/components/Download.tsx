@@ -1,7 +1,11 @@
 // This file defines the Download component for exporting filtered sensor or sampling data as a CSV file.
-// It builds the CSV structure based on active filters, groups, and selected metrics/sites.
+// It turns the active filters, groups, selected metrics/sites and dates into an export request; the backend builds
+// the CSV. A small export downloads directly (/api/exports/sync); a large one is queued as a job that this
+// component polls until its file is ready (/api/exports/jobs, through lib/exportJob). If the component leaves the
+// page while it waits (switching tabs unmounts it), it stops polling, and when it comes back it says the export was
+// left unfinished and Download Data picks the same job up again. A line under the button says which days it exports.
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Download as DownloadIcon, X } from "lucide-react";
 import { Button } from "@/components/animations/button";
 import {
@@ -10,55 +14,22 @@ import {
   CREEK_ID_MAP,
   SAMPLING_METRICS,
 } from "@/components/config/filters";
+import { dayStamp, siteDayBounds } from "@/utils/siteTime";
+import { format } from "date-fns";
+import {
+  ExportError, ExportStopped, NetworkError, pollUntilReady, readError, readJson, request as requestWith,
+} from "@/lib/exportJob";
 
-// An error whose message was written for the user; any other error is shown as a generic message.
-class ExportError extends Error {}
+const request = (input: string, init: RequestInit | undefined, signal: AbortSignal) =>
+  requestWith((i, o) => fetch(i, o), input, init, signal);
 
-// fetch() itself failed: the request got no reply (offline, DNS failure, connection reset).
-class NetworkError extends ExportError {
-  constructor() {
-    super("Could not reach the server. Check your connection.");
-  }
-}
+// A queued export left unfinished when its Download button left the page, by tab, so the button can offer to pick
+// it up when it comes back (as long as the filters and dates are still the same).
+interface PendingJob { jobId: string; pollIntervalSeconds: number; selectionKey: string }
+const leftUnfinished: Record<"sensor" | "sampling", PendingJob | null> = { sensor: null, sampling: null };
 
-// Shown for a queued export that failed on the server. The job's own error_message isn't shown: the server
-// keeps only safe text there, but this way nothing internal can reach the page whatever the backend stores.
-const JOB_FAILED_MESSAGE = "The server couldn't build this export. Please try again later.";
-const RETRYABLE_STATUSES = [502, 503, 504];
-const POLL_RETRY_DELAYS_S = [2, 4, 8, 16]; // waits before each retry of a status check that failed
-const POLL_MAX_MINUTES = 30; // stop waiting on a job after this long (Try again resumes it)
-
-const sleep = (seconds: number) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-
-// fetch(), with the errors fetch() itself throws turned into a NetworkError.
-async function request(input: string, init?: RequestInit): Promise<Response> {
-  try {
-    return await fetch(input, init);
-  } catch {
-    throw new NetworkError();
-  }
-}
-
-// The JSON body of a successful reply. A proxy or server error page can arrive with a 200 too.
-async function readJson(res: Response) {
-  try {
-    return await res.json();
-  } catch {
-    throw new ExportError("The server sent an unexpected reply.");
-  }
-}
-
-// The message for a failed API reply: the JSON body's `error` if there is one, otherwise the fallback and status.
-// The proxies pass the backend's reply through, so an unexpected failure can be an HTML page instead of JSON.
-async function readError(res: Response, fallback: string): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.error === "string" && body.error) return body.error;
-  } catch {
-    // Not JSON; use the fallback.
-  }
-  return `${fallback} (HTTP ${res.status})`;
-}
+// For useSyncExternalStore's "is this the browser yet" (true in the browser, false on the server and in hydration)
+const noSubscription = () => () => {};
 
 interface DownloadProps {
   activeGroups: {
@@ -75,17 +46,6 @@ interface DownloadProps {
   samplingSubFilters?: { [key: string]: string[] };
   startDate: Date | null;
   endDate: Date | null;
-  data: {
-    measurement_type: string;
-    value: number;
-    unit: string;
-    recorded_at: string;
-    group_type?: string;
-    logger_id?: string;
-    site_id?: string;
-    station_id?: string;
-    creek_id?: string;
-  }[];
   isSampling?: boolean;
 }
 
@@ -98,9 +58,8 @@ const METRIC_NAME_MAP: Record<string, string> = {
   // Add more as needed
 };
 
-const formatDate = (date: Date) => {
-  return date.toISOString().split("T")[0].replace(/-/g, "");
-};
+// The picked day itself (toISOString() gave the UTC date, a day off for viewers east of UTC)
+const formatDate = dayStamp;
 
 const Download: React.FC<DownloadProps> = ({
   activeGroups,
@@ -109,17 +68,23 @@ const Download: React.FC<DownloadProps> = ({
   samplingSubFilters = {},
   startDate,
   endDate,
-  data,
   isSampling = false,
 }) => {
+  const tab = isSampling ? "sampling" : "sensor";
   const [isExporting, setIsExporting] = useState(false);
   const [statusText, setStatusText] = useState<string>("");
   // The last export's failure, shown under the button until it is dismissed or a new export starts. It is not hidden
   // on a timer: exports can take a while, and someone who looked away would never learn why no file arrived.
   const [errorText, setErrorText] = useState<string>("");
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   // The queued export still being waited on, kept so Try again can resume it instead of queueing a duplicate.
-  const resumeJobRef = useRef<{ jobId: string; pollIntervalSeconds: number; selectionKey: string } | null>(null);
+  const resumeJobRef = useRef<PendingJob | null>(null);
+  // Aborted when the component unmounts, which stops the export it is running.
+  const abortRef = useRef<AbortController | null>(null);
+  // The selection of an export left unfinished on an earlier visit to this tab (see leftUnfinished): while it is still
+  // the selection, a note says the export can be picked up.
+  const [unfinishedKey, setUnfinishedKey] = useState<string | null>(() => leftUnfinished[tab]?.selectionKey ?? null);
 
   // Changes whenever the filters or dates change. (The parent passes new objects on every render, so the props
   // themselves can't be compared.)
@@ -133,10 +98,32 @@ const Download: React.FC<DownloadProps> = ({
     endDate?.getTime() ?? null,
   ]);
 
+  // A failure can arrive after the page was scrolled on (exports take a while), or the message can open below the
+  // window's bottom edge: bring it into view.
+  useEffect(() => {
+    if (!errorText || isExporting) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    errorRef.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+  }, [errorText, isExporting]);
+
   // An error about the previous selection no longer applies once the selection changes.
   useEffect(() => {
     setErrorText("");
   }, [selectionKey]);
+
+  // Coming back to a tab whose export was left unfinished: offer to pick it up. Leaving: stop waiting, and remember
+  // the queued job (if there is one) for next time.
+  useEffect(() => {
+    // handleDownload resumes it only while the selection is the same
+    if (leftUnfinished[tab]) resumeJobRef.current = leftUnfinished[tab];
+    leftUnfinished[tab] = null;
+    return () => {
+      if (abortRef.current && !abortRef.current.signal.aborted) {
+        abortRef.current.abort();
+        leftUnfinished[tab] = resumeJobRef.current;
+      }
+    };
+  }, [tab]);
 
   const getFileName = () => {
     if (isSampling) {
@@ -167,11 +154,8 @@ const Download: React.FC<DownloadProps> = ({
       throw new ExportError("Start and end date are required");
     }
 
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+    // The picked days in Toronto time, wherever the viewer is
+    const { start, end } = siteDayBounds(startDate, endDate);
 
     if (isSampling) {
       const selectedCreeks = Object.entries(activeCreeks)
@@ -197,8 +181,8 @@ const Download: React.FC<DownloadProps> = ({
 
       return {
         domain: "sampling",
-        start: start.toISOString(),
-        end: end.toISOString(),
+        start,
+        end,
         creek_ids: selectedCreeks.map((creekKey) => CREEK_ID_MAP[creekKey as keyof typeof CREEK_ID_MAP]),
         site_ids: Array.from(siteIds),
         measurement_types: Array.from(measurementTypes),
@@ -274,8 +258,8 @@ const Download: React.FC<DownloadProps> = ({
 
     const payload = {
       domain: "sensor",
-      start: start.toISOString(),
-      end: end.toISOString(),
+      start,
+      end,
       group_types: groupTypes,
       station_ids: selectedStationIds,
       measurement_types: Array.from(selectedMetrics),
@@ -284,7 +268,7 @@ const Download: React.FC<DownloadProps> = ({
     return payload;
   };
 
-  const triggerDownload = async (response: Response, fallbackFileName: string) => {
+  const triggerDownload = async (response: Response, fallbackFileName: string, signal: AbortSignal) => {
     if (!response.ok) {
       throw new ExportError(await readError(response, "Failed to download export"));
     }
@@ -293,8 +277,10 @@ const Download: React.FC<DownloadProps> = ({
     try {
       blob = await response.blob();
     } catch {
+      if (signal.aborted) throw new ExportStopped();
       throw new NetworkError(); // the connection dropped while the file was arriving
     }
+    if (signal.aborted) throw new ExportStopped(); // left the page meanwhile: no download out of nowhere
     const disposition = response.headers.get("content-disposition") || "";
     const fileNameMatch = disposition.match(/filename="?([^";]+)"?/i);
     const fileName = fileNameMatch?.[1] || fallbackFileName;
@@ -306,67 +292,19 @@ const Download: React.FC<DownloadProps> = ({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  // Waits for a queued export to finish. A status check that gets no reply or a 502/503/504 (the server
-  // restarting or briefly overloaded) is retried with growing waits, since the job keeps running meanwhile;
-  // a 404 or a failed/expired job is final.
-  const pollUntilReady = async (jobId: string, pollIntervalSeconds: number) => {
-    const deadline = Date.now() + POLL_MAX_MINUTES * 60_000;
-    let retries = 0;
-    for (;;) {
-      if (Date.now() > deadline) {
-        throw new ExportError("The export is taking longer than expected. Press Try again to keep waiting for it.");
-      }
-
-      let statusRes: Response | null = null;
-      try {
-        statusRes = await request(`/api/exports/jobs/${encodeURIComponent(jobId)}`);
-      } catch (error) {
-        if (!(error instanceof NetworkError)) throw error;
-      }
-      if (!statusRes || RETRYABLE_STATUSES.includes(statusRes.status)) {
-        if (retries >= POLL_RETRY_DELAYS_S.length) {
-          throw statusRes
-            ? new ExportError(await readError(statusRes, "Failed to check the export's progress"))
-            : new NetworkError();
-        }
-        setStatusText("Reconnecting");
-        await sleep(POLL_RETRY_DELAYS_S[retries++]);
-        continue;
-      }
-      if (!statusRes.ok) {
-        if (statusRes.status === 404) resumeJobRef.current = null;
-        throw new ExportError(await readError(statusRes, "Failed to check the export's progress"));
-      }
-      retries = 0;
-
-      const status = await readJson(statusRes);
-      const progress = typeof status.progress_pct === "number" ? status.progress_pct.toFixed(1) : "0.0";
-      setStatusText(`Preparing export (${status.status}${status.status === "running" ? ` ${progress}%` : ""})`);
-
-      if (status.status === "ready") {
-        return;
-      }
-      if (status.status === "failed") {
-        resumeJobRef.current = null;
-        throw new ExportError(JOB_FAILED_MESSAGE);
-      }
-      if (status.status === "expired") {
-        resumeJobRef.current = null;
-        throw new ExportError("Export expired before download");
-      }
-
-      await sleep(Math.max(1, pollIntervalSeconds));
-    }
+    // Revoked later: Safari can cancel a download whose URL is revoked straight after the click
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
 
   const handleDownload = async () => {
     if (isExporting) return; // the button stays focusable while busy, so guard against a second export
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
     try {
       setIsExporting(true);
       setErrorText("");
+      setUnfinishedKey(null);
 
       // A queued export whose progress checks failed is picked up again rather than queued twice,
       // as long as the filters and dates haven't changed since.
@@ -376,54 +314,45 @@ const Download: React.FC<DownloadProps> = ({
         setStatusText("Checking on the export");
       } else {
         setStatusText("Estimating export size");
-        console.log("[Download] Starting export...");
 
         const payload = buildExportPayload();
-        console.log("[Download] Payload:", payload);
 
         const estimateRes = await request("/api/exports/estimate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-        });
-        console.log("[Download] Estimate response status:", estimateRes.status);
+        }, signal);
 
         if (!estimateRes.ok) {
           throw new ExportError(await readError(estimateRes, "Failed to estimate export size"));
         }
 
         const estimate = await readJson(estimateRes);
-        console.log("[Download] Estimate result:", estimate);
         const recommendedMode = estimate.recommended_mode || "async";
 
         if (recommendedMode === "sync") {
           setStatusText("Generating file");
-          console.log("[Download] Using SYNC mode");
           const syncRes = await request("/api/exports/sync", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
-          });
-          console.log("[Download] Sync response status:", syncRes.status);
-          await triggerDownload(syncRes, getFileName());
+          }, signal);
+          await triggerDownload(syncRes, getFileName(), signal);
           return;
         }
 
-        console.log("[Download] Using ASYNC mode");
         setStatusText("Queueing export job");
         const createJobRes = await request("/api/exports/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-        });
-        console.log("[Download] Create job response status:", createJobRes.status);
+        }, signal);
 
         if (!createJobRes.ok) {
           throw new ExportError(await readError(createJobRes, "Failed to queue export job"));
         }
 
         const created = await readJson(createJobRes);
-        console.log("[Download] Job created:", created);
         job = {
           jobId: String(created.job_id),
           pollIntervalSeconds: Number(created.poll_interval_seconds || 3),
@@ -432,21 +361,34 @@ const Download: React.FC<DownloadProps> = ({
         resumeJobRef.current = job;
       }
 
-      await pollUntilReady(job.jobId, job.pollIntervalSeconds);
+      try {
+        await pollUntilReady(job.jobId, job.pollIntervalSeconds, {
+          fetchImpl: (i, o) => fetch(i, o),
+          signal,
+          onStatus: setStatusText,
+        });
+      } catch (error) {
+        if (error instanceof ExportError && error.jobGone) resumeJobRef.current = null;
+        throw error;
+      }
 
       setStatusText("Downloading file");
-      const downloadRes = await request(`/api/exports/jobs/${encodeURIComponent(job.jobId)}/download`);
+      const downloadRes = await request(`/api/exports/jobs/${encodeURIComponent(job.jobId)}/download`, undefined, signal);
       // 404/410: the job or its file is gone (expired or cleaned up), so Try again must start a new export.
       if (downloadRes.status === 404 || downloadRes.status === 410) resumeJobRef.current = null;
-      await triggerDownload(downloadRes, getFileName());
+      await triggerDownload(downloadRes, getFileName(), signal);
       resumeJobRef.current = null;
     } catch (error) {
+      if (error instanceof ExportStopped || signal.aborted) return; // unmounted: nothing is shown any more
       console.error("[Download] ERROR:", error);
       // Only messages written for the user are shown; anything else (a bug, an odd reply) gets a plain one.
       setErrorText(error instanceof ExportError ? error.message : "Something went wrong. Please try again.");
     } finally {
-      setIsExporting(false);
-      setStatusText("");
+      if (!signal.aborted) {
+        setIsExporting(false);
+        setStatusText("");
+      }
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
@@ -466,6 +408,16 @@ const Download: React.FC<DownloadProps> = ({
       }
     })();
 
+  // The days the export covers, in words: the picked days, not what a zoomed chart shows. Only once mounted: the page
+  // is prerendered at build time with that day's default dates, and the browser's first render must match it.
+  const mounted = useSyncExternalStore(noSubscription, () => true, () => false);
+  const rangeText = mounted && startDate && endDate
+    ? (dayStamp(startDate) === dayStamp(endDate)
+      ? format(startDate, "MMM d, yyyy")
+      : `${format(startDate, startDate.getFullYear() === endDate.getFullYear() ? "MMM d" : "MMM d, yyyy")} – ${format(endDate, "MMM d, yyyy")}`)
+    : null;
+  const rangeId = `download-range-${tab}`;
+
   // Moves focus back to the Download button when the alert (and the control in it that had focus) goes away.
   const focusButton = () => buttonRef.current?.focus();
 
@@ -478,13 +430,25 @@ const Download: React.FC<DownloadProps> = ({
         disabled={!hasActiveData}
         aria-disabled={isExporting || undefined}
         aria-busy={isExporting || undefined}
+        aria-describedby={rangeText ? rangeId : undefined}
         className="btn-mcmaster-primary w-full aria-disabled:pointer-events-none aria-disabled:opacity-50"
       >
         <DownloadIcon className="h-4 w-4 mr-2" />
         {isExporting ? statusText || "Preparing export" : "Download Data"}
       </Button>
+      {rangeText && (
+        <p id={rangeId} className="text-center text-xs text-muted">
+          Exports {rangeText} (Eastern Time), the picked days, not a chart’s zoom
+        </p>
+      )}
+      {unfinishedKey === selectionKey && !isExporting && (
+        <p role="status" className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          An export was still being prepared when you left this tab. Press Download Data to pick it up.
+        </p>
+      )}
       {errorText && !isExporting && (
         <div
+          ref={errorRef}
           className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
           role="alert"
         >

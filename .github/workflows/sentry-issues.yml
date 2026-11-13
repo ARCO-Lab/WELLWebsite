@@ -1,0 +1,52 @@
+# Once a day, opens a GitHub issue (labelled "sentry") for each unresolved Sentry error that doesn't have one yet,
+# comments when an open one's event count jumps, and adds a "Seen again" comment (without reopening) to a closed one
+# that Sentry still receives (.github/scripts/sentry_issues.py). Test events ("Sentry test") are skipped.
+# It needs the repository secret SENTRY_API_TOKEN, a read-only Sentry token (org:read, project:read, event:read);
+# without it, the run passes with a warning. See .github/workflows/README.md, "Sentry errors as GitHub issues".
+name: Sentry issues
+
+on:
+  schedule:
+    - cron: "17 13 * * *"   # 13:17 UTC daily; an odd minute avoids GitHub's busy top-of-the-hour queue
+  workflow_dispatch:
+    inputs:
+      stats_period:
+        description: "Sentry issues with events in the last ... (e.g. 24h, 14d)"
+        default: "14d"
+        type: string
+      dry_run:
+        description: "Only print what would be written to GitHub"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sentry-issues
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Forks have neither the secret nor any business opening issues here.
+    if: ${{ github.repository == 'ARCO-Lab/WELLWebsite' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      # The runner's own Python; the script uses only the standard library.
+      - name: Open or update the Sentry issues
+        env:
+          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
+          SENTRY_ORG: well-cs
+          SENTRY_STATS_PERIOD: ${{ inputs.stats_period || '14d' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then set -- --dry-run; fi
+          python3 .github/scripts/sentry_issues.py "$@"

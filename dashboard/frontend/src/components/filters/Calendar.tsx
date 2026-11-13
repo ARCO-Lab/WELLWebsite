@@ -12,6 +12,7 @@ import {
 } from "@/components/animations/popover";
 import { Label } from "@/components/animations/Label";
 import { format } from "date-fns";
+import { DATA_START, siteDay } from "@/utils/siteTime";
 
 interface Props {
   startDate: Date | null | undefined;
@@ -20,24 +21,21 @@ interface Props {
   onEndChange: (date: Date | null) => void;
 }
 
-// The first month with data (sensors from 2025-05-08, sampling from 2025-05-01): the month/year dropdowns
-// start here, so older months can't be picked by accident.
-const DATA_START = new Date(2025, 4, 1);
-
 const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndChange }) => {
   const disabledStyles = {
     disabled: { opacity: 0.5 },
   };
-  // Today in Toronto wall-clock time, like the default dates, so a viewer in another time zone can still pick
-  // the default end date (and its month) late in the evening.
-  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
+  // Today's date in Toronto, like the default dates, so a viewer in another time zone can still pick the default
+  // end date (and its month) late in the evening.
+  const today = siteDay();
 
   // The page is prerendered once at build time, so the server HTML holds the default dates of the build day,
   // while the browser computes them for today. Showing the dates only after mounting keeps the first browser
   // render identical to the server HTML (no React hydration mismatch); the buttons keep their fixed height.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  const label = (date: Date | null | undefined) => (!mounted ? "" : date ? format(date, "PPP") : "Pick a date");
+  // "Nov 10, 2026": short enough to fit the narrow sidebar at 1024 px ("November 10th, 2026" ran past the button).
+  const label = (date: Date | null | undefined) => (!mounted ? "" : date ? format(date, "PP") : "Pick a date");
   // Each button is named by its label plus its date ("Start Date November 10th, 2026"), so screen readers know
   // which date it is, and it still has a name ("Start Date") while the date is blank. useId keeps the ids unique
   // (this component is on both tabs) and the same on server and browser.
@@ -51,8 +49,18 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
   const pickerProps = {
     captionLayout: "dropdown" as const,
     fixedWeeks: true,
-    startMonth: DATA_START,
+    startMonth: DATA_START, // the first month with data, so older months can't be picked by accident
     endMonth: today,
+  };
+
+  // When a picker opens, focus goes to the picked day (or, with none, the day the arrow keys start from), not to
+  // the month dropdown that the popover would focus first.
+  const focusPickedDay = (e: Event) => {
+    e.preventDefault();
+    const root = e.currentTarget as HTMLElement;
+    const day = root.querySelector<HTMLElement>('[data-day][data-selected-single="true"]')
+      ?? root.querySelector<HTMLElement>('[data-day][tabindex="0"]');
+    day?.focus();
   };
 
   return (
@@ -68,20 +76,19 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
               aria-labelledby={`${id}-start-label ${id}-start-value`}
             >
               <CalendarIcon className="mr-2 h-4 w-4" aria-hidden="true" />
-              <span id={`${id}-start-value`}>{label(startDate)}</span>
+              <span id={`${id}-start-value`} className="min-w-0 truncate">{label(startDate)}</span>
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
+          <PopoverContent className="w-auto p-0" align="start" onOpenAutoFocus={focusPickedDay}>
             <CalendarComponent
               mode="single"
-              required={false}
+              required // a date can't be cleared: the charts would fall back to a range the Filters don't show
               selected={startDate || undefined}
               defaultMonth={startDate || undefined}
               onSelect={(date) => onStartChange(date ?? null)}
               disabled={(date) => date > today || (endDate ? date > endDate : false)}
               {...pickerProps}
               modifiersStyles={disabledStyles}
-              initialFocus
             />
           </PopoverContent>
         </Popover>
@@ -98,20 +105,19 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
               aria-labelledby={`${id}-end-label ${id}-end-value`}
             >
               <CalendarIcon className="mr-2 h-4 w-4" aria-hidden="true" />
-              <span id={`${id}-end-value`}>{label(endDate)}</span>
+              <span id={`${id}-end-value`} className="min-w-0 truncate">{label(endDate)}</span>
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
+          <PopoverContent className="w-auto p-0" align="start" onOpenAutoFocus={focusPickedDay}>
             <CalendarComponent
               mode="single"
-              required={false}
+              required // a date can't be cleared: the charts would fall back to a range the Filters don't show
               selected={endDate || undefined}
               defaultMonth={endDate || undefined}
               onSelect={(date) => onEndChange(date ?? null)}
               disabled={(date) => date > today || (startDate ? date < startDate : false)}
               {...pickerProps}
               modifiersStyles={disabledStyles}
-              initialFocus
             />
           </PopoverContent>
         </Popover>

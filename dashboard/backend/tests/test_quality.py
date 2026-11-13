@@ -4,13 +4,13 @@ import contextlib
 import io
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import requests
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.services import quality  # noqa: E402
+from utils.fetching import BadVendorResponse  # noqa: E402
 
 KEY = "secret-wqdata-key-123"
 URL = "https://wqdata.example/api"
@@ -56,7 +56,7 @@ def fetch(responses, max_pages=None):
     return points, out.getvalue(), [c.kwargs["params"]["from"] for c in get.call_args_list]
 
 
-class QualityPagingTests(unittest.TestCase):
+class QualityPagingTests(TestCase):
     def test_keeps_paging_when_more_is_false_but_count_is_below_total(self):
         """Seen on WQData: a 14-day request's 4th page said more=false with count 6,963 of total 12,591."""
         points, _, froms = fetch([
@@ -90,6 +90,14 @@ class QualityPagingTests(unittest.TestCase):
         self.assertEqual(len(froms), 2)
         self.assertEqual(len(points), 1)
         self.assertIn("didn't advance", log)
+        # Kept as the call's error (not a success), so the run fails and the alerts see the stall.
+        service = quality.QualityService(URL, KEY, "1")
+        service.sleep = lambda s: None
+        with mock.patch.object(quality.requests, "get", side_effect=[stuck, stuck]), contextlib.redirect_stdout(io.StringIO()):
+            service.get_quality_data(START, END)
+        self.assertIsInstance(service.last_error, BadVendorResponse)
+        self.assertIn("paging didn't advance past 2026-11-02 00:00:00 UTC (count 1, total 9)", str(service.last_error))
+        self.assertNotIn(KEY, str(service.last_error))
 
     def test_the_page_cap_is_logged(self):
         pages = [page([(f"2026-11-0{d} 00:00:00", [1])], more=True, count=1, total=9) for d in range(2, 5)]
@@ -99,7 +107,7 @@ class QualityPagingTests(unittest.TestCase):
         self.assertIn("stopped after 3 pages", log)
 
 
-class QualityErrorLoggingTests(unittest.TestCase):
+class QualityErrorLoggingTests(TestCase):
     def test_the_raw_error_text_would_contain_the_key(self):
         self.assertIn(KEY, str(http_error(429)))  # why the message must not be printed as-is
 
@@ -117,4 +125,4 @@ class QualityErrorLoggingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

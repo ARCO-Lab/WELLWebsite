@@ -2,10 +2,13 @@
 //
 // MapLibre GL with OpenFreeMap's vector tiles (OpenStreetMap data, no API key, no cookies); Satellite uses
 // Esri World Imagery. If the vector style can't be loaded, the map falls back to plain OpenStreetMap tiles.
-// Clicking (or tapping) a marker shows or hides that sensor/site on the dashboard, in sync with the Filters panel,
-// and pins a card with its details, a Show/Hide button and a Google Maps link. Hovering or focusing a marker
-// previews the card. From the keyboard, Enter/Space on a marker opens the card and moves focus into it without
-// changing the data; the card's Show/Hide button does that, and Escape closes the card and returns to the marker.
+// Clicking (or tapping) a marker pins a card with its details, a Show/Hide button and a Google Maps link, and shows
+// that sensor/site on the dashboard if it isn't shown yet (in sync with the Filters panel). It never hides one: a
+// click meant to read the card used to untick data. Hiding is the card's Hide button, or the Filters panel.
+// Hovering or focusing a marker previews the card. From the keyboard, Enter/Space on a marker opens the card and
+// moves focus into it without changing the data, and Escape closes the card and returns to the marker.
+// Until the base map has drawn (MapLibre's code, the style and the first tiles can take a while on a slow
+// connection), a "Loading map…" note shows over it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapGL, { Marker, Popup, NavigationControl, FullscreenControl, type MapRef } from "@vis.gl/react-maplibre";
@@ -19,6 +22,7 @@ import {
   SENSOR_STATION_COORDINATES,
   SAMPLING_SITE_COORDINATES,
 } from "@/components/config/filters";
+import { LoadingOverlay } from "@/components/LoadingOverlay";
 import styles from "./Map.module.css";
 
 // --- PROPS ---
@@ -90,6 +94,7 @@ const lookOf = (group: string) => GROUP_LOOK[group] ?? { color: "#475569", name:
 // (the water quality sensor sits ~4 m from Logger 3).
 const OVERLAP_METRES = 25;
 
+// Approximate distance between two sites in metres (flat-earth maths, accurate enough at this scale).
 function metresBetween(a: Site, b: Site) {
   const dy = (a.lat - b.lat) * 110_540;
   const dx = (a.lng - b.lng) * 111_320 * Math.cos((a.lat * Math.PI) / 180);
@@ -124,6 +129,8 @@ function Map<G extends { [key: string]: boolean }>({
   const [satellite, setSatellite] = useState(false);
   const [vectorFailed, setVectorFailed] = useState(false);
   const styleLoaded = useRef(false);
+  // False until the base map has drawn for the first time.
+  const [drawn, setDrawn] = useState(false);
 
   // The card shown for a marker: on hover/focus it follows the pointer; a click (or Enter/Space) pins it until
   // the map is clicked, it's closed or Escape is pressed. `focus` asks for focus to move into the card.
@@ -360,6 +367,8 @@ function Map<G extends { [key: string]: boolean }>({
         onLoad={(e) => {
           styleLoaded.current = true;
           tidyStyle();
+          // MapLibre's canvas takes focus (arrow keys pan, + and - zoom) but has no name of its own
+          e.target.getCanvas().setAttribute("aria-label", `Map of the ${isSampling ? "sampling sites" : "sensors"}. Arrow keys pan, plus and minus zoom.`);
           // On narrow maps, start with the map credits folded into their (i) button, as MapLibre does itself
           // after the first pan; otherwise the text covers much of a phone-sized map.
           const container = e.target.getContainer();
@@ -368,6 +377,7 @@ function Map<G extends { [key: string]: boolean }>({
           }
         }}
         onStyleData={tidyStyle}
+        onIdle={() => setDrawn(true)}
         onError={(e) => {
           // Only a failure to load the style itself switches to the fallback tiles: the style document, or a
           // source's TileJSON while the style is still loading. A missing tile, sprite or font isn't worth
@@ -403,7 +413,9 @@ function Map<G extends { [key: string]: boolean }>({
                 style={{ ["--marker-color" as string]: look.color }}
                 aria-haspopup="dialog"
                 aria-expanded={!!card?.pinned && cardSite === site}
-                aria-label={`${site.label} (${look.name}). ${active ? "Shown" : "Not shown"} on the dashboard. Opens its details card.`}
+                aria-label={`${site.label} (${look.name}). ${active
+                  ? "Shown on the dashboard. Opens its details card."
+                  : "Not shown on the dashboard. Opens its details card; a click also shows it."}`}
                 onMouseEnter={() => { cancelHide(); setCard((c) => (c?.pinned ? c : { site, pinned: false })); }}
                 onMouseLeave={scheduleHide}
                 onFocus={() => {
@@ -416,14 +428,14 @@ function Map<G extends { [key: string]: boolean }>({
                   e.stopPropagation();
                   cancelHide();
                   // Enter/Space only opens the card and moves focus into it; a mouse click or tap (and a screen
-                  // reader's click) also shows or hides the data, as before.
+                  // reader's click) also shows the data if it isn't shown yet, but never hides it.
                   const fromKeys = keyActivation.current;
                   keyActivation.current = false;
                   if (fromKeys) {
                     setCard({ site, pinned: true, focus: true });
                     return;
                   }
-                  handleMarkerClick(site);
+                  if (!active) handleMarkerClick(site);
                   setCard({ site, pinned: true });
                 }}
               >
@@ -449,6 +461,8 @@ function Map<G extends { [key: string]: boolean }>({
         )}
       </MapGL>
 
+      {!drawn && <LoadingOverlay label="Loading map…" className="bg-[#eef2f3]/60" />}
+
       {cardSite && cardLook && narrow && (
         <div className="absolute inset-x-2 bottom-2 z-20 overflow-hidden rounded-xl bg-card shadow-lg ring-1 ring-black/5">
           {siteCard(cardSite, cardLook, cardActive, true)}
@@ -456,7 +470,7 @@ function Map<G extends { [key: string]: boolean }>({
       )}
 
       {/* Map / Satellite */}
-      <div className="absolute left-2 top-2 z-10 flex overflow-hidden rounded-md border border-black/10 bg-white text-xs font-medium shadow-sm" role="group" aria-label="Map type">
+      <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-3.75rem)] flex-wrap overflow-hidden rounded-md border border-black/10 bg-white text-xs font-medium shadow-sm" role="group" aria-label="Map type">
         {[["Map", false], ["Satellite", true]].map(([name, value]) => (
           <button
             key={name as string}

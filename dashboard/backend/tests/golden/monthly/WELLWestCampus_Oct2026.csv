@@ -1,0 +1,4 @@
+ID,Timestamp (America/Toronto),Group,Latitude,Longitude,Air Temperature: °C,Rain: mm,,Group,Latitude,Longitude,Turbidity: FNU,Water Temperature: °C,,Group,Sensor,Latitude,Longitude,Water Surface Elevation: m asl,Water Temperature: °C,Sensor,Latitude,Longitude,Water Surface Elevation: m asl,Water Temperature: °C
+1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,12.5,0.0,,Quality,43.2647,-79.9284,3.2,,,Logger,Logger 1,43.2671,-79.92883,85.123,11.0,Logger 3,43.26472,-79.92844,,
+2,2026-10-31T01:00:00,Weather,43.26611,-79.92866,1.5,,,Quality,43.2647,-79.9284,,,,Logger,Logger 1,43.2671,-79.92883,,,Logger 3,43.26472,-79.92844,,
+3,2026-10-31T23:45:00,Weather,43.26611,-79.92866,-2.5,,,Quality,43.2647,-79.9284,4.0,6.25,,Logger,Logger 1,43.2671,-79.92883,85.2,4.0,Logger 3,43.26472,-79.92844,84.95,

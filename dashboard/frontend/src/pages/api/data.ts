@@ -9,7 +9,7 @@ import { proxyToBackend } from "@/lib/proxyBackend";
 
 export const config = {
   api: {
-    // The backend caps responses at DATA_MAX_ROWS (about 50 MB of JSON); don't warn about large bodies below that.
+    // The backend caps responses at DATA_MAX_ROWS (about 17 MB of JSON by default); don't warn about large bodies.
     responseLimit: false,
   },
 };
@@ -27,7 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: "Missing or invalid query parameters" });
   }
 
-  // Construct query string for your Flask API
+  // The query string for the backend's /api/data: the range, and one group_type per selected group
   const params = new URLSearchParams();
   params.append("start", start as string);
   params.append("end", end as string);

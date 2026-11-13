@@ -1,0 +1,295 @@
+# The daily maintainer's run, called by daily-maintainer.yml (which picks the token and with it the publish job's
+# permissions). Not started on its own.
+#
+# Three jobs, so no token that can write to the repository is ever in the job where Claude runs (a job's secrets are
+# all in its runner's memory, so a later step can't be shielded from an earlier one; separate jobs are):
+#   prepare  - finds the commit identity and collects the inputs, with the PAT and the Sentry token;
+#   maintain - Claude, with a read-only workflow token and no PAT: it only commits on local maint/* branches, which
+#              a step after it bundles for the next job;
+#   publish  - no model: maintainer_publish.py checks each branch (name, size, paths), pushes it and opens its pull
+#              request with the write token, then the summary is emailed.
+name: Daily maintainer run
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: '"pat" (WELL_MAINTAINER_PAT writes) or "github_token" (the workflow token writes)'
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
+      max_prs:
+        type: number
+        default: 3
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+      checks: read
+      security-events: read   # code scanning alerts, for the inputs
+    outputs:
+      login: ${{ steps.identity.outputs.login }}
+      id: ${{ steps.identity.outputs.id }}
+    steps:
+      - name: Check the optional secrets
+        env:
+          SENTRY: ${{ secrets.SENTRY_API_TOKEN }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+        run: |
+          [ -n "$SENTRY" ] || echo "::warning::SENTRY_API_TOKEN is not set: Sentry is not queried"
+          [ -n "$SMTP_HOST" ] || echo "::warning::SMTP_HOST is not set: the summary is not emailed"
+
+      # Commits carry the token owner's name and GitHub noreply address (<id>+<login>@users.noreply.github.com),
+      # read from the API rather than written here; without the PAT, github-actions[bot]'s.
+      - name: Find the commit identity
+        id: identity
+        env:
+          PAT: ${{ secrets.WELL_MAINTAINER_PAT }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = pat ]; then
+            user=$(curl -sf -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
+              https://api.github.com/user) || { echo "::error::WELL_MAINTAINER_PAT was rejected (expired?)"; exit 1; }
+            login=$(jq -r .login <<<"$user"); id=$(jq -r .id <<<"$user")
+          else
+            login='github-actions[bot]'; id=41898282
+          fi
+          echo "login=$login" >> "$GITHUB_OUTPUT"; echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Commits and pull requests as $login"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Sentry token and the PAT (to read alerts) are used here only, in a job Claude doesn't run in.
+      - name: Collect the inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAINTAINER_LOGIN: ${{ steps.identity.outputs.login }}
+          ALERTS_TOKEN: ${{ secrets.WELL_MAINTAINER_PAT }}
+          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/maintainer"
+          python3 .github/scripts/maintainer_inputs.py "$RUNNER_TEMP/maintainer/inputs.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: maintainer-inputs
+          path: ${{ runner.temp }}/maintainer/inputs.json
+          retention-days: 7
+
+  maintain:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Read-only in both modes: whatever Claude runs can't push, open, merge or label anything.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+      checks: read
+    env:
+      ASSIGNEE: lukhsaankumar   # every pull request is assigned to this account (set by the publish job)
+    outputs:
+      outcome: ${{ steps.claude.outcome }}
+      result: ${{ steps.claude.outputs.structured_output }}
+      before: ${{ steps.before.outputs.sha }}
+      branches: ${{ steps.bundle.outputs.branches }}
+    steps:
+      # Records every outbound connection this job makes (audit mode: nothing is blocked yet). Once a few runs show
+      # what it needs, switch to egress-policy: block with the allowlist in .github/workflows/README.md, "Daily
+      # maintainer", so code Claude runs can't send anything elsewhere.
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: audit
+
+      # Outside the checkout, so nothing Claude writes there can end up in a commit.
+      - name: Set the work directory
+        run: echo "WORK_DIR=$RUNNER_TEMP/maintainer" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Remember main's commit
+        id: before
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: maintainer-inputs
+          path: ${{ runner.temp }}/maintainer
+
+      # The tools CI uses, so Claude can run the same checks.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      - name: Write the prompt
+        id: prompt
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_PRS: ${{ inputs.max_prs }}
+          MODE: ${{ inputs.mode }}
+          LOGIN: ${{ needs.prepare.outputs.login }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "prompt<<MAINTAINER_PROMPT_EOF"
+            echo "DATE: $(date -u +%Y-%m-%d)"
+            echo "REPOSITORY: $GITHUB_REPOSITORY"
+            echo "RUN_URL: $RUN_URL"
+            echo "MAX_PRS: $MAX_PRS"
+            echo "DRY_RUN: $DRY_RUN"
+            echo "TOKEN_MODE: $MODE"
+            echo "ASSIGNEE: $ASSIGNEE"
+            echo "MAINTAINER_LOGIN: $LOGIN"
+            echo "INPUTS_FILE: $WORK_DIR/inputs.json"
+            echo "WORK_DIR: $WORK_DIR"
+            echo
+            cat .github/maintainer/PROMPT.md
+            echo "MAINTAINER_PROMPT_EOF"
+            echo "schema=$(jq -c . .github/maintainer/report-schema.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The step's timeout leaves time for the bundle after it. --add-dir lets Claude read the inputs outside the
+      # checkout. github_token is this job's read-only token: Claude can fetch and read, never write.
+      - name: Claude
+        id: claude
+        continue-on-error: true
+        timeout-minutes: 75
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed  # v1.0.271
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"   # Claude's own credential stays out of the commands it runs
+        with:
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          bot_name: ${{ needs.prepare.outputs.login }}
+          bot_id: ${{ needs.prepare.outputs.id }}
+          settings: .github/maintainer/settings.json
+          claude_args: >-
+            --max-turns 400
+            --add-dir ${{ runner.temp }}/maintainer
+            --json-schema '${{ steps.prompt.outputs.schema }}'
+            ${{ vars.MAINTAINER_MODEL && format('--model {0}', vars.MAINTAINER_MODEL) || '' }}
+
+      # Every local maint/* branch, for the publish job, which decides what of it is pushed. Only the commits that
+      # aren't on main go in (the publish job has main's history), not the whole repository. Hooks are off: Claude
+      # could have written to .git.
+      - name: Bundle the maint/* branches
+        id: bundle
+        if: ${{ !cancelled() }}
+        run: |
+          n=$(git -c core.hooksPath=/dev/null for-each-ref --format='%(refname)' refs/heads/maint/ | wc -l)
+          # git refuses to write a bundle with no commits in it (every maint/* branch already on main)
+          if [ "$n" -gt 0 ] && [ "$(git rev-list --count --branches='maint/*' --not origin/main)" -gt 0 ]; then
+            git -c core.hooksPath=/dev/null bundle create "$RUNNER_TEMP/branches.bundle" --branches='maint/*' \
+              --not origin/main
+          else
+            n=0
+          fi
+          echo "branches=$n" >> "$GITHUB_OUTPUT"
+          echo "$n maint/* branch(es) bundled"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: ${{ !cancelled() && steps.bundle.outputs.branches != '' && steps.bundle.outputs.branches != '0' }}
+        with:
+          name: maintainer-branches
+          path: ${{ runner.temp }}/branches.bundle
+          retention-days: 7
+
+  publish:
+    needs: [prepare, maintain]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No permissions here: the job gets what daily-maintainer.yml grants (write only in the workflow-token mode).
+    env:
+      ASSIGNEE: lukhsaankumar
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          token: ${{ inputs.mode == 'pat' && secrets.WELL_MAINTAINER_PAT || github.token }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        if: ${{ needs.maintain.outputs.branches != '' && needs.maintain.outputs.branches != '0' }}
+        with:
+          name: maintainer-branches
+          path: ${{ runner.temp }}/branches
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: maintainer-inputs
+          path: ${{ runner.temp }}/maintainer
+
+      # Only scripts from this checkout of main run here; the branches are only fetched as data and checked.
+      - name: Check and publish the branches
+        id: publish
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ inputs.mode == 'pat' && secrets.WELL_MAINTAINER_PAT || github.token }}
+          GH_TOKEN: ${{ inputs.mode == 'pat' && secrets.WELL_MAINTAINER_PAT || github.token }}
+          MAINTAINER_LOGIN: ${{ needs.prepare.outputs.login }}
+          TOKEN_MODE: ${{ inputs.mode }}
+          CLAUDE_RESULT: ${{ needs.maintain.outputs.result }}
+          BUNDLE: ${{ runner.temp }}/branches/branches.bundle
+          MAX_PRS: ${{ inputs.max_prs }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_RESULT: ${{ runner.temp }}/publish.json
+        run: python3 .github/scripts/maintainer_publish.py
+
+      - name: Remember main's commit after the run
+        id: after
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" >> "$GITHUB_OUTPUT"
+
+      - name: Email the summary
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAINTAINER_LOGIN: ${{ needs.prepare.outputs.login }}
+          TOKEN_MODE: ${{ inputs.mode }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE_OUTCOME: ${{ needs.maintain.outputs.outcome || needs.maintain.result }}
+          CLAUDE_RESULT: ${{ needs.maintain.outputs.result }}
+          INPUTS_FILE: ${{ runner.temp }}/maintainer/inputs.json
+          PUBLISH_FILE: ${{ runner.temp }}/publish.json
+          MAIN_BEFORE: ${{ needs.maintain.outputs.before }}
+          MAIN_AFTER: ${{ steps.after.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
+        run: python3 .github/scripts/maintainer_summary.py
+
+      - name: Fail the run if Claude or publishing failed
+        if: ${{ needs.maintain.outputs.outcome != 'success' || steps.publish.outcome != 'success' }}
+        env:
+          CLAUDE: ${{ needs.maintain.outputs.outcome || needs.maintain.result }}
+          PUBLISH: ${{ steps.publish.outcome }}
+        run: |
+          echo "::error::Claude ended with '$CLAUDE', publishing with '$PUBLISH'; see the logs above"
+          exit 1

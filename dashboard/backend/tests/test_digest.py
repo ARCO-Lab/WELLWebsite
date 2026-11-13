@@ -5,8 +5,7 @@ import datetime as dt
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -30,7 +29,7 @@ def utc(naive_site_time):
     return naive_site_time.replace(tzinfo=EST_TZ).astimezone(dt.timezone.utc)
 
 
-class AlertEmailTests(unittest.TestCase):
+class AlertEmailTests(TestCase):
     def test_parsing(self):
         self.assertEqual(parse_alert_emails("a@mcmaster.ca"), (["a@mcmaster.ca"], []))
         self.assertEqual(parse_alert_emails(" a@mcmaster.ca, b@x.org ;c@y.ca  A@mcmaster.ca,,"),
@@ -41,7 +40,7 @@ class AlertEmailTests(unittest.TestCase):
             self.assertEqual(parse_alert_emails(empty), ([], []))
 
 
-class SmtpSettingsTests(unittest.TestCase):
+class SmtpSettingsTests(TestCase):
     def test_needs_host_and_port(self):
         self.assertIsNone(smtp_settings({}))
         self.assertIsNone(smtp_settings({"SMTP_HOST": "smtp.mcmaster.ca"}))
@@ -61,7 +60,7 @@ class SmtpSettingsTests(unittest.TestCase):
             smtp_settings({"SMTP_HOST": "relay", "SMTP_PORT": "25"})   # no sender
 
 
-class GapTests(unittest.TestCase):
+class GapTests(TestCase):
     def test_gaps_over_30_minutes(self):
         ts = [T0 + dt.timedelta(minutes=m) for m in (0, 10, 20, 60, 70, 80)]
         end = T0 + dt.timedelta(minutes=90)
@@ -79,7 +78,7 @@ class GapTests(unittest.TestCase):
         self.assertEqual(find_gaps(ts, T0, ts[-1]), [])
 
 
-class AnomalyTests(unittest.TestCase):
+class AnomalyTests(TestCase):
     def test_dissolved_oxygen_near_zero(self):
         found = anomalies("Quality", "4501", "ODO", [0.0, 0.01, 0.02, 0.0])
         self.assertEqual(len(found), 1)
@@ -124,7 +123,7 @@ class AnomalyTests(unittest.TestCase):
         self.assertEqual(anomalies("Quality", "4501", "ODO", []), [])
 
 
-class BuildDigestTests(unittest.TestCase):
+class BuildDigestTests(TestCase):
     def test_text(self):
         now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
         latest = [
@@ -137,12 +136,12 @@ class BuildDigestTests(unittest.TestCase):
         subject, body = build_digest("2026-11-10", freshness, groups, ["4501 ODO: dissolved oxygen is about 0"],
                                      {"power_min": 12.1, "power_max": 13.4, "power_readings": 59,
                                       "last_point": "2026-11-10 06:50:00", "last_point_age_minutes": 10})
-        self.assertEqual(subject, "WELL daily digest 2026-11-10: 2 to check")
-        self.assertIn("Logger 2 Water Temperature: newest 2026-11-10T01:00:00 (6.0 h ago; limit 3 h)", body)
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 2 to check")
+        self.assertIn("Logger 2 Water Temperature: newest Tue Nov 10, 01:00 (6.0 h ago; limit 3 h)", body)
         self.assertIn("Weather: 140 rows of 144 expected (1 series), 140 of 144 time slots", body)
-        self.assertIn("gap 11-10 05:00 to 11-10 06:00 (60 min)", body)
+        self.assertIn("gap Tue Nov 10, 05:00 → Tue Nov 10, 06:00 (60 min)", body)
         self.assertIn("primary power: 12.1 to 13.4 V over 59 readings", body)
-        self.assertIn("last contact (newest data point): 2026-11-10 06:50:00 (10 min ago)", body)
+        self.assertIn("last contact (newest data point): Tue Nov 10, 06:50 (10 min ago)", body)
         self.assertIn("dissolved oxygen", body)
 
     def test_all_ok_and_wqdata_error(self):
@@ -150,13 +149,14 @@ class BuildDigestTests(unittest.TestCase):
         latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
                    "recorded_at": "2026-11-10T06:50:00"}]
         freshness = assess_freshness(latest, now, env={})
-        self.assertEqual(build_digest("2026-11-10", freshness, {}, [], None)[0], "WELL daily digest 2026-11-10: all OK")
+        self.assertEqual(build_digest("2026-11-10", freshness, {}, [], None)[0],
+                         "[WELL] Daily digest 2026-11-10: all OK")
         subject, body = build_digest("2026-11-10", freshness, {}, [], {"error": "HTTPError (HTTP 429)"})
-        self.assertEqual(subject, "WELL daily digest 2026-11-10: 1 to check")
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("request failed: HTTPError (HTTP 429)", body)
 
 
-class ReadGroupsTests(unittest.TestCase):
+class ReadGroupsTests(TestCase):
     def test_counts_gaps_and_findings_from_the_database(self):
         import daily_digest
         from server import create_app
@@ -214,7 +214,7 @@ class ReadGroupsTests(unittest.TestCase):
         self.assertEqual(len(groups["Weather"]["timestamps"]), 18)
 
 
-class WqdataTests(unittest.TestCase):
+class WqdataTests(TestCase):
     def test_one_request_power_and_last_point(self):
         import daily_digest
         body = {"data": [
@@ -270,7 +270,7 @@ class FakeSMTP:
         self.calls.append("send")
 
 
-class SendEmailTests(unittest.TestCase):
+class SendEmailTests(TestCase):
     def send(self, offer_starttls, user="u@x.ca", password="pw"):
         import daily_digest
         FakeSMTP.offer_starttls, FakeSMTP.instances = offer_starttls, []
@@ -293,7 +293,7 @@ class SendEmailTests(unittest.TestCase):
         self.assertEqual(self.send(False, user="", password=""), ["ehlo", "send"])
 
 
-class DeliverTests(unittest.TestCase):
+class DeliverTests(TestCase):
     SMTP = {"SMTP_HOST": "relay", "SMTP_PORT": "587", "SMTP_FROM": "well@x.ca"}
 
     def deliver(self, env, dry_run=False, send=None):
@@ -327,4 +327,4 @@ class DeliverTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

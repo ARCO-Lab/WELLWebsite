@@ -1,0 +1,70 @@
+{
+  "about": [
+    "What the dashboard must show after the vendor responses in licor.json and wqdata.json go through ingestion.",
+    "Ingestion runs three times (ingest.py): at 07:35Z, at 08:00Z, and at 08:00Z again, which must add nothing.",
+    "The browser's clock is set to 08:00Z on 2026-11-01 (03:00 in Toronto), so the default date range is Oct 31 to Nov 1, in every browser time zone (17:00 Nov 1 in Tokyo, 08:00 in London).",
+    "The download (every group ticked, the default days) must hold every row below, and be named for those two days.",
+    "Times in rows are Toronto wall-clock time, as recorded_at stores them. Clocks went back at 06:00Z (02:00 EDT -> 01:00 EST).",
+    "Water Surface Elevation = z - L * cos(theta) + sensor depth, with Logger 1's z = 39.701, L = 1.525, theta = 57.7 degrees (utils/parsers.py), i.e. 38.88611266718051 + depth."
+  ],
+  "ingestion_runs_utc": ["2026-11-01T07:35:00Z", "2026-11-01T08:00:00Z", "2026-11-01T08:00:00Z"],
+  "browser_now_utc": "2026-11-01T08:00:00Z",
+  "download_filename": "WELLWestCampus_WaterLogger_WaterQuality_WeatherStation_20261031_20261101.csv",
+  "rows": [
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-10-31T01:00:00", "value": 11.2, "note": "05:00Z: 01:00 on the first day shown, so an export that reads wall-clock time as UTC drops it"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-10-31T12:00:00", "value": 9.5, "note": "16:00Z, EDT"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-11-01T01:00:00", "value": 4.1, "note": "05:00Z, 01:00 EDT. 06:00Z (3.9) is 01:00 EST, the same wall-clock time, and is dropped"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-11-01T01:30:00", "value": 4.0, "note": "05:30Z, sent twice by the vendor, stored once. 06:30Z (3.8) is dropped like 06:00Z"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:00:00", "value": 3.7, "note": "07:00Z, EST"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:30:00", "value": 3.6},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Air Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:40:00", "value": 3.55, "note": "07:40Z, only fetched by the second run"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Relative Humidity", "unit": "%", "recorded_at": "2026-11-01T01:00:00", "value": 91.5, "note": "LI-COR calls it RH"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Relative Humidity", "unit": "%", "recorded_at": "2026-11-01T02:40:00", "value": 92.25},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Soil Temperature", "unit": "°C", "recorded_at": "2026-11-01T01:00:00", "value": 8.2, "note": "sensor 22154270-1, which LI-COR calls Temperature"},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Soil Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:40:00", "value": 8.125},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Wind Direction", "unit": "°", "recorded_at": "2026-11-01T02:40:00", "value": 151.62},
+    {"group_type": "Weather", "station_id": "22051538", "measurement_type": "Solar Radiation", "unit": "W/m²", "recorded_at": "2026-11-01T02:40:00", "value": 0, "note": "a real zero, not missing. The battery (-B) readings aren't stored"},
+    {"group_type": "Logger", "station_id": "2577531", "measurement_type": "Water Surface Elevation", "unit": "m asl", "recorded_at": "2026-11-01T01:00:00", "value": 39.29811266718051, "note": "depth 0.412 at 05:00Z. 06:00Z (0.415) falls in the repeated hour and is dropped"},
+    {"group_type": "Logger", "station_id": "2577531", "measurement_type": "Water Surface Elevation", "unit": "m asl", "recorded_at": "2026-11-01T02:00:00", "value": 39.30411266718051, "note": "depth 0.418"},
+    {"group_type": "Logger", "station_id": "2577531", "measurement_type": "Water Surface Elevation", "unit": "m asl", "recorded_at": "2026-11-01T02:40:00", "value": 39.30711266718051, "note": "depth 0.421"},
+    {"group_type": "Logger", "station_id": "2577531", "measurement_type": "Water Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:40:00", "value": 7.31, "note": "channel -3. Channels -2 and -4 aren't stored"},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "Water Temperature", "unit": "°C", "recorded_at": "2026-10-31T12:00:00", "value": 9.4},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "Water Temperature", "unit": "°C", "recorded_at": "2026-11-01T01:10:00", "value": 9.0, "note": "05:10Z, EDT. 06:10Z (8.95) is 01:10 EST and is dropped"},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "Water Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:10:00", "value": 8.9},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "Water Temperature", "unit": "°C", "recorded_at": "2026-11-01T02:50:00", "value": 8.85, "note": "07:50Z, only fetched by the second run"},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "ODO", "unit": "mg/L", "recorded_at": "2026-10-31T12:00:00", "value": 10.1},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "ODO", "unit": "mg/L", "recorded_at": "2026-11-01T01:10:00", "value": 10.3},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "ODO", "unit": "mg/L", "recorded_at": "2026-11-01T02:10:00", "value": 10.4, "note": "the 07:50Z point has no ODO value"},
+    {"group_type": "Quality", "station_id": "4501", "measurement_type": "Conductivity", "unit": "uS/cm", "recorded_at": "2026-10-31T12:00:00", "value": 512.3, "note": "the only conductivity reading: 05:10Z says N/A, which isn't stored. Parameter 115219 (device power) isn't stored"}
+  ],
+  "latest_data": {
+    "Weather Metrics": {
+      "as_of": "2026-11-01T02:40:00",
+      "tiles": [
+        {"label": "Air Temperature", "value": "3.55", "unit": "°C"},
+        {"label": "Relative Humidity", "value": "92.25", "unit": "%"},
+        {"label": "Wind Direction", "value": "152°", "unit": "SSE", "note": "151.62 degrees, shown rounded with its compass point"},
+        {"label": "Solar Radiation", "value": "0", "unit": "W/m²"},
+        {"label": "Soil Temperature", "value": "8.13", "unit": "°C", "note": "8.125 to two decimals"}
+      ],
+      "no_data": ["Wind Speed", "Gust Speed", "Dew Point", "Rainfall", "Pressure", "Water Content"]
+    },
+    "Water Quality Metrics": {
+      "as_of": "2026-11-01T02:50:00",
+      "tiles": [
+        {"label": "Dissolved oxygen", "value": "10.4", "unit": "mg/L"},
+        {"label": "Conductivity", "value": "512.3", "unit": "µS/cm", "last_reading": "2026-10-31T12:00:00", "note": "over 3 hours old, so the tile says when it was taken"},
+        {"label": "Water temperature", "value": "8.85", "unit": "°C"}
+      ],
+      "no_data": ["Dissolved solids", "Oxygen saturation", "Suspended solids", "Turbidity", "Salinity"]
+    },
+    "Water Logger Metrics": {
+      "as_of": "2026-11-01T02:40:00",
+      "tiles": [
+        {"caption": "Logger 1", "label": "Water surface", "value": "39.31", "unit": "m asl"},
+        {"caption": "Logger 1", "label": "Water temperature", "value": "7.31", "unit": "°C"}
+      ],
+      "no_data_captions": ["Logger 2", "Logger 3", "Logger 4", "Logger 5"]
+    }
+  }
+}

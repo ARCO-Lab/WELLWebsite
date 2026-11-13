@@ -1,7 +1,9 @@
 // This file defines the main dashboard page for the WELL project, including sensor and sampling tabs, filters, graphs, metrics, map, and AI analysis.
 // It manages all dashboard state, handles modal logic, and coordinates data fetching and UI layout.
+// Each West Campus chart has its own zoom window and loads its own data (hooks/useChartWindow); the page gives them,
+// through ChartPageContext, the window they start at (the picked days, or a shared link's window) and the data's extent.
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import type MapComponent from "@/components/map/Map";
@@ -16,6 +18,7 @@ import WeatherMetrics from "@/components/metrics/WeatherMetrics";
 import QualityMetrics from "@/components/metrics/QualityMetrics";
 import LoggerMetrics from "@/components/metrics/LoggerMetrics";
 import CreekMetrics from "@/components/metrics/CreekMetrics";
+import { LATEST_CARD_CLASS, LATEST_PANEL_CLASS, LatestDataError, latestGroupsClass } from "@/components/metrics/MetricList";
 import Calendar from "@/components/filters/Calendar";
 import Information from "@/components/Information";
 import Download from "@/components/Download";
@@ -23,25 +26,88 @@ import Modal from "@/components/Modal";
 import ExpandableCard from "@/components/ExpandableCard";
 import EmptyState from "@/components/EmptyState";
 import StickyPanel from "@/components/StickyPanel";
+import { GraphFrame, LoadingOverlay } from "@/components/LoadingOverlay";
 // AI ANALYSIS DISABLED: AI Analysis cards (uncomment here and in both cards below to restore)
 // import AIAnalysis from "@/components/AIAnalysis";
-import useFilteredData from "@/hooks/useFilteredData";
+import { ChartPageContext, type ChartPage } from "@/hooks/useChartWindow";
+import {
+  clampToNow, daysCovering, hourStart, pickedDaysRange, searchWithWindow, windowFromSearch, type Range,
+} from "@/utils/chartWindow";
 import useLatestMetrics from "@/hooks/useLatestMetrics";
 import useSampledData from "@/hooks/useSampledData";
 import useRecentSamples from "@/hooks/useRecentSamples";
-import { SENSOR_FILTER_CONFIG, SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
+import { SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
+import { DATA_START, siteDay } from "@/utils/siteTime";
+import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
+import { useEmbedFrame } from "@/lib/embed";
+import useSelectionLink from "@/hooks/useSelectionLink";
 
 type ActiveFilters = { [key: string]: string[] };
+type SensorGroup = "weather" | "quality" | "gauges";
 
 // next/dynamic drops the map's generic props (sensor groups or creeks); keep them so both setters type-check.
-const Map = dynamic(() => import("@/components/map/Map"), { ssr: false }) as typeof MapComponent;
+// Until MapLibre's code has loaded, a box of the map's size says so (the map then shows its own note until it draws).
+const Map = dynamic(() => import("@/components/map/Map"), {
+  ssr: false,
+  loading: () => (
+    <div className="relative h-full min-h-[14rem] w-full rounded-lg border border-input-border bg-[#eef2f3]">
+      <LoadingOverlay label="Loading map…" />
+    </div>
+  ),
+}) as typeof MapComponent;
 
-export default function Dashboard() {
+// The chart code, fetched as soon as a graph is wanted, so the graph cards can say "Loading graph…" in a box of a
+// chart's height until it is there (instead of a bare title that later jumps open).
+const loadMetricChart = () => import("@/components/graphs/highcharts/MetricChart");
+const loadSampleChart = () => import("@/components/graphs/highcharts/SampleChart");
 
-  const [inIframe, setInIframe] = useState(false);
+function useCodeReady(load: () => Promise<unknown>, wanted: boolean): boolean {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (!wanted || ready) return;
+    let live = true;
+    // On failure too: the chart's own loader then shows what went wrong
+    load().then(() => live && setReady(true), () => live && setReady(true));
+    return () => { live = false; };
+  }, [load, wanted, ready]);
+  return ready;
+}
+
+// Graph cards side by side while each can be at least this wide, else stacked: rem-based, so large text stacks them.
+const GRAPH_GRID: Record<number, string> = {
+  1: "grid-cols-1",
+  2: "grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))]",
+};
+const getGraphGridClass = (count: number) => GRAPH_GRID[count] ?? "grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))]";
+
+// embedded: the page inside the WordPress site's iframe (pages/embed.tsx, served at /?embed=1; see lib/embed.ts).
+// It has no header or footer, in the server HTML too, and tells the WordPress page its height.
+export default function Dashboard({ embedded = false }: { embedded?: boolean }) {
+
+  const mainRef = useRef<HTMLElement>(null);
+  useEmbedFrame(mainRef, embedded);
 
   const [activeTab, setActiveTab] = useState<"sensor" | "sampling">("sensor");
+  // A tab once opened stays mounted while another is shown: switching back is then instant, with its map, charts and
+  // data as they were, instead of rebuilding them all (seconds on a phone). The hidden one keeps its width, out of the
+  // flow and unrendered (content-visibility), so showing it again needs no reflow either.
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(["sensor"]));
+  // The tab bar and the shown panel switch at once (shownTab); the page's own state follows in a
+  // transition, so the click isn't held up by re-rendering the whole dashboard
+  const [shownTab, setShownTab] = useState<"sensor" | "sampling">("sensor");
+  const showTab = useCallback((value: string) => {
+    setShownTab(value as "sensor" | "sampling");
+    startTransition(() => {
+      setActiveTab(value as "sensor" | "sampling");
+      setVisited((v) => (v.has(value) ? v : new Set([...v, value])));
+    });
+  }, []);
+  // A shared link's ?tab= opens that tab like a click would
+  const openTab = useCallback((v: React.SetStateAction<"sensor" | "sampling">) => {
+    if (typeof v === "function") setActiveTab(v);
+    else showTab(v);
+  }, [showTab]);
   
   const [activeGroups, setActiveGroups] = useState({
     gauges: false,
@@ -107,34 +173,93 @@ export default function Dashboard() {
     }, {} as ActiveFilters);
 
 
-  // Dates for the SENSOR Tab
-  const [startDate, setStartDate] = useState<Date | null>(() => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    return new Date(yesterday.toLocaleString("en-US", { timeZone: "America/Toronto" }));
-  });
-  const [endDate, setEndDate] = useState<Date | null>(() => {
-    const today = new Date();
-    return new Date(today.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+  // A shared link's ?tab=, ?groups= and ?creeks= tick what its sender had ticked, and the link follows the ticks
+  useSelectionLink({
+    activeTab, setActiveTab: openTab, activeGroups, setActiveGroups, setSubFilters, activeCreeks, setActiveCreeks,
+    setSamplingSubFilters, setOpen, setChevronState,
   });
 
-  // Dates for the SAMPLING Tab
-  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => {
-    const twoMonthsAgo = new Date();
-    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-    return new Date(twoMonthsAgo.toLocaleString("en-US", { timeZone: "America/Toronto" }));
-  });
-  const [samplingEndDate, setSamplingEndDate] = useState<Date | null>(() => {
-    const today = new Date();
-    return new Date(today.toLocaleString("en-US", { timeZone: "America/Toronto" }));
-  });
+  // Dates are calendar days at the site (Toronto), whatever the viewer's time zone (utils/siteTime).
+  // Dates for the SENSOR Tab: yesterday and today
+  const [startDate, setStartDate] = useState<Date | null>(() => siteDay(-1));
+  const [endDate, setEndDate] = useState<Date | null>(() => siteDay());
+
+  // Dates for the SAMPLING Tab: all of it, from the first samples (May 1, 2025) to today
+  const [samplingStartDate, setSamplingStartDate] = useState<Date | null>(() => new Date(DATA_START));
+  const [samplingEndDate, setSamplingEndDate] = useState<Date | null>(() => siteDay());
 
   const [analysisType, setAnalysisType] = useState<"recent" | "alltime">("alltime");
   const [previousActiveCount, setPreviousActiveCount] = useState(0);
   const [previousActiveCreekCount, setPreviousActiveCreekCount] = useState(0);
 
-  const { data, loading, error } = useFilteredData(activeGroups, startDate, endDate);
-  const { metrics: latestMetrics, loading: latestLoading } = useLatestMetrics();
+  // The clock the charts go by: the start of the current hour, kept in state so rendering never reads the time. The
+  // data's extent ends at the next whole hour, and so do today's picked days (clampToNow), so a page left open moves
+  // on with the hours.
+  const [clock, setClock] = useState(() => hourStart(Date.now()));
+  // The user picked dates (or opened a link): they no longer roll over at midnight
+  const [datesChosenState, setDatesChosen] = useState(false);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setClock(hourStart(Date.now()));
+      // Dates the user hasn't chosen follow the calendar: yesterday and today roll over at Toronto midnight
+      if (!datesChosenState) {
+        const today = siteDay();
+        setEndDate((d) => (d && d.toDateString() === today.toDateString() ? d : today));
+        setStartDate((d) => (d && d.toDateString() === siteDay(-1).toDateString() ? d : siteDay(-1)));
+      }
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, [datesChosenState]);
+
+  // A shared link's window (?from=&to=, read once on load): it is where every chart starts and goes back to on
+  // Reset, and the date pickers show the days it covers. Picking other days drops it.
+  const [linkWindow, setLinkWindow] = useState<Range | null>(null);
+  const chooseDates = useCallback(() => setDatesChosen(true), []);
+  const changeStartDate = useCallback((d: Date | null) => { chooseDates(); setStartDate(d); setLinkWindow(null); }, [chooseDates]);
+  const changeEndDate = useCallback((d: Date | null) => { chooseDates(); setEndDate(d); setLinkWindow(null); }, [chooseDates]);
+  const [urlRead, setUrlRead] = useState(false);
+  useEffect(() => {
+    const w = windowFromSearch(window.location.search, Date.now());
+    if (w) {
+      const { startDay, endDay } = daysCovering(w);
+      chooseDates();
+      setStartDate(startDay);
+      setEndDate(endDay);
+      setLinkWindow(w);
+    }
+    setUrlRead(true);
+  }, [chooseDates]);
+
+  // The charts' extent is the picked days, up to the next whole hour (so a page left open moves on with the hours);
+  // a shared link's window is shown as it is, otherwise each chart fits to where its data is within the days
+  const nowEnd = clock + 3_600_000;
+  const picked = startDate && endDate ? clampToNow(pickedDaysRange(startDate, endDate), clock + 1) : null;
+  const extentStart = Math.min(picked?.start ?? nowEnd - 2 * 86_400_000, linkWindow?.start ?? Infinity);
+  const extentEnd = Math.max(picked?.end ?? nowEnd, linkWindow?.end ?? -Infinity);
+  const defaultStart = linkWindow?.start ?? extentStart;
+  const defaultEnd = linkWindow?.end ?? extentEnd;
+  const chartPage = useMemo<ChartPage>(() => ({
+    defaultWindow: { start: defaultStart, end: Math.max(defaultEnd, defaultStart + 3_600_000) },
+    extent: { start: extentStart, end: Math.max(extentEnd, extentStart + 3_600_000) },
+    fit: !linkWindow,
+    // The user's choice; default days rolling over at midnight aren't one (a window the user moved stays put)
+    selection: linkWindow ? `link:${linkWindow.start}-${linkWindow.end}`
+      : datesChosenState ? `days:${startDate?.toDateString()}-${endDate?.toDateString()}` : "default",
+  }), [defaultStart, defaultEnd, extentStart, extentEnd, linkWindow, datesChosenState, startDate, endDate]);
+
+  // The link keeps the charts' starting window: the picked days (when they aren't the default ones) or the link's
+  // window. replaceState, so it adds no history entries.
+  const defaultDays = useRef({ start: startDate?.toDateString(), end: endDate?.toDateString() });
+  useEffect(() => {
+    if (!urlRead) return;
+    const isDefault = !linkWindow && startDate?.toDateString() === defaultDays.current.start
+      && endDate?.toDateString() === defaultDays.current.end;
+    const search = searchWithWindow(window.location.search, isDefault ? null : { start: defaultStart, end: defaultEnd });
+    if (search !== window.location.search) {
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
+    }
+  }, [urlRead, linkWindow, startDate, endDate, defaultStart, defaultEnd]);
+  const { metrics: latestMetrics, loading: latestLoading, error: latestError, retrying: retryingLatest, retry: retryLatest } = useLatestMetrics();
 
   const { data: samplingData, loading: isSamplingLoading, error: samplingError } = useSampledData(
     activeCreeks,
@@ -142,9 +267,21 @@ export default function Dashboard() {
     samplingEndDate
   );
   
-  const { samples: recentSamples, loading: recentSamplesLoading } = useRecentSamples();
+  const { samples: recentSamples, loading: recentSamplesLoading, error: recentSamplesError, retrying: retryingRecentSamples, retry: retryRecentSamples } = useRecentSamples();
 
   const isAnyCreekActive = Object.values(activeCreeks).some(v => v);
+
+  // Sampling is done in campaigns, so a picked range can hold no samples at all. Then the graphs say so, with the
+  // date of the most recent samples and a button for the two months up to it, rather than moving the picked dates
+  // on their own (which would hide that the data isn't recent).
+  const latestSampleDay = useMemo(() => {
+    let latest = "";
+    for (const sample of recentSamples) if (sample.recorded_at > latest) latest = sample.recorded_at;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(latest); // site wall-clock time; its date is the sampling day
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+  }, [recentSamples]);
+  const samplingRangeEmpty = isAnyCreekActive && !isSamplingLoading && !samplingError && samplingData.length === 0
+    && !!samplingStartDate && !!samplingEndDate;
     
 
   const samplingMetricComponents = Object.entries(activeCreeks)
@@ -180,6 +317,13 @@ export default function Dashboard() {
   const activeCount = Object.values(activeGroups).filter(Boolean).length;
   const activeCreekCount = Object.values(activeCreeks).filter(Boolean).length;
 
+  // Graph cards wait for the chart code (a placeholder of a chart's height) and are aria-busy while data loads
+  const sensorChartsReady = useCodeReady(loadMetricChart, activeCount > 0);
+  const samplingChartsReady = useCodeReady(loadSampleChart, activeCreekCount > 0);
+  const sensorGraph = (graph: React.ReactNode) => (
+    <GraphFrame busy={!sensorChartsReady} waiting={!sensorChartsReady}>{graph}</GraphFrame>
+  );
+
 
   useEffect(() => {
     setPreviousActiveCount(activeCount);
@@ -189,13 +333,6 @@ export default function Dashboard() {
     setPreviousActiveCreekCount(activeCreekCount);
   }, [activeCreekCount]);
 
-  useEffect(() => {
-    try {
-      setInIframe(window.self !== window.top);
-    } catch {
-      setInIframe(true);
-    }
-  }, []);
 
 
 
@@ -214,11 +351,11 @@ export default function Dashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const cachedGraphs = {
-    weather: <WeatherGraph key="weather" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} loading={loading} error={error} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
-    quality: <QualityGraph key="quality" activeGroups={activeGroups} startDate={startDate} endDate={endDate} subFilters={normalizedSubFilters} data={data} loading={loading} error={error} />,
+    weather: <WeatherGraph key="weather" activeGroups={activeGroups} subFilters={normalizedSubFilters} weatherTab={weatherTab} setWeatherTab={setWeatherTab} />,
+    quality: <QualityGraph key="quality" activeGroups={activeGroups} subFilters={normalizedSubFilters} />,
     // modalOpen is only for the copy the modal renders (it injects it); passing it here redrew every
     // on-page logger chart whenever any modal opened
-    gauges: <LoggerGraph key="gauges" startDate={startDate} endDate={endDate} subFilters={subFilters.gauges} data={data} loading={loading} error={error} />,
+    gauges: <LoggerGraph key="gauges" subFilters={subFilters.gauges} />,
   };
   
   const graphComponents = [];
@@ -231,54 +368,40 @@ export default function Dashboard() {
   if (activeGroups.weather) metricComponents.push(cachedMetrics.weather);
   if (activeGroups.quality) metricComponents.push(cachedMetrics.quality);
 
-  // Dynamic grid classes for responsive graphs
-  const getGraphGridClass = (count: number) => {
-    if (count === 1) {
-      return "grid-cols-1";
-    }
-    if (count === 2) {
-      return "grid-cols-1 lg:grid-cols-2";
-    }
-    // For 3 or more items, use a 3-column grid and let it wrap.
-    if (count >= 3) {
-      return "grid-cols-1 md:grid-cols-2 lg:grid-cols-3";
-    }
-    // Default for 0 items.
-    return "grid-cols-1";
-  };
 
-  const [modalContent, setModalContent] = useState<React.ReactNode | null>(null);
-  const [modalData, setModalData] = useState<any>(null);
-  const [modalType, setModalType] = useState<"weather" | "logger" | "gauges" | "quality" | "sampling">("weather");
-  const [modalSubtypes, setModalSubtypes] = useState<string[]>([]);
-
-
+  // The modal remembers only what it shows (a group or creek, and metrics or graphs). Its content is built from the
+  // live components on every render, so it follows loading, new data, errors and the zoom window. (Storing the
+  // element itself froze its props when it was opened: a chart opened while loading stayed on "Loading data…".)
+  const [modalSpec, setModalSpec] = useState<{
+    key: string; // weather / quality / gauges, or a creek
+    type: "weather" | "logger" | "gauges" | "quality" | "sampling";
+  } | null>(null);
 
   const openModal = (
-    content: React.ReactNode, 
+    key: string,
     analysisType: "recent" | "alltime",
     type: "weather" | "logger" | "gauges" | "quality" | "sampling",
-    subtypes: string[] = []
   ) => {
-    setModalContent(content);
     setAnalysisType(analysisType);
-    setModalType(type);
-    setModalSubtypes(subtypes);
-    
-    // Set the correct data source based on the type
-    if (type === 'sampling') {
-      setModalData(analysisType === 'recent' ? recentSamples : samplingData);
-    } else {
-      setModalData(analysisType === 'recent' ? latestMetrics : data);
-    }
-
+    setModalSpec({ key, type });
     setIsModalOpen(true);
   };
 
   const closeModal = () => {
-    setModalContent(null);
+    setModalSpec(null);
     setIsModalOpen(false);
   };
+
+  const modalIsSampling = modalSpec?.type === "sampling";
+  const modalContent = !modalSpec ? null
+    : modalIsSampling
+      ? (analysisType === "recent" ? samplingMetricComponents : samplingGraphComponents).find((c) => c.key === modalSpec.key) ?? null
+      : (analysisType === "recent" ? cachedMetrics : cachedGraphs)[modalSpec.key as SensorGroup] ?? null;
+  const modalSubtypes = !modalSpec ? [] : (modalIsSampling ? samplingSubFilters : subFilters)[modalSpec.key] || [];
+  const modalData = modalIsSampling
+    ? (analysisType === "recent" ? recentSamples : samplingData)
+    : (analysisType === "recent" ? latestMetrics : null);
+  const modalType = modalSpec?.type ?? "weather";
 
   // Names for the "open in a larger view" buttons.
   const groupNames: Record<string, string> = { gauges: "water logger", weather: "weather", quality: "water quality" };
@@ -289,10 +412,13 @@ export default function Dashboard() {
         <title>Dashboard | Watershed and Ecosystems Living Lab</title>
       </Head>
 
-      {/* Header is hidden in iframe mode */}
-      {!inIframe && <Header />}
-      <main className="min-h-screen bg-background text-foreground">
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'sensor' | 'sampling')} className="p-6">
+      {/* No header or footer when embedded. In any other frame, CSS hides them (data-site-chrome, globals.css). */}
+      {!embedded && <div data-site-chrome><Header /></div>}
+      <ChartPageContext.Provider value={chartPage}>
+      {/* Embedded, the page is as tall as its content (the iframe is sized to it), never the iframe's height */}
+      <main id="main-content" tabIndex={-1} ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground focus:outline-none`}>
+        {/* relative: a visited tab that isn't shown is kept, out of the flow, at the page's width (see TabsContent below) */}
+        <Tabs value={shownTab} onValueChange={showTab} className="relative p-6">
           
           {/* Title and tab triggers */}
           <div className="col-span-full mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -306,12 +432,13 @@ export default function Dashboard() {
           </div>
 
           {/* Sensor Tab Content (Your existing dashboard) */}
-          <TabsContent value="sensor" className="mt-0">
+          <TabsContent value="sensor" className="mt-0 data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sensor") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
-              <div className="col-span-full grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
+              {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
+              <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
                 
                 {/* Filters Sidebar: always shown in full, and kept in view on large screens (StickyPanel) */}
-                <div className="lg:col-span-1">
+                <div className="min-w-0 grow basis-[13rem]">
                   <StickyPanel className="mcmaster-card h-fit p-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                       Filters
@@ -319,7 +446,7 @@ export default function Dashboard() {
                     </h2>
                     <div className="space-y-4">
                       <FilterPanel
-                        activeTab={activeTab}
+                        activeTab="sensor" // this panel's own tab: the other stays mounted when hidden
                         activeGroups={activeGroups}
                         setActiveGroups={setActiveGroups}
                         subFilters={{
@@ -340,11 +467,12 @@ export default function Dashboard() {
                       <Calendar
                         startDate={startDate}
                         endDate={endDate}
-                        onStartChange={setStartDate}
-                        onEndChange={setEndDate}
+                        onStartChange={changeStartDate}
+                        onEndChange={changeEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                        <Download
+                        {/* Only on the shown tab: leaving the tab unmounts it, which stops an export's status checks */}
+                        {shownTab === "sensor" && <Download
                           activeGroups={activeGroups}
                           subFilters={{
                             weather: subFilters.weather || [],
@@ -353,42 +481,40 @@ export default function Dashboard() {
                           }}
                           startDate={startDate}
                           endDate={endDate}
-                          data={data}
                           isSampling={false}
-                        />
+                        />}
                       </div>
                     </div>
                   </StickyPanel>
                 </div>
 
                 {/* Main Content Area */}
-                <div className="lg:col-span-3 space-y-6">
+                <div className="min-w-0 grow-[3] basis-[40rem] space-y-6">
                   
                   {/* Top Row: Latest Data + Map */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="flex flex-wrap gap-6">
                     
-                    {/* Latest Data: one scrolling strip per group */}
-                    <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
-                        <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
+                    {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds). Beside the map it is as tall as the map (the row stretches it); stacked, as tall as its groups. */}
+                    <div className="min-w-0 grow basis-[14rem]">
+                      <div className={`mcmaster-card flex h-full flex-col p-6 ${LATEST_PANEL_CLASS}`}>
+                        <h2 tabIndex={-1} className="flex flex-wrap items-center justify-between gap-x-2 mb-4 text-xl font-poppins font-bold text-primary focus:outline-none">
                           Latest Data
                           <Information id={3} />
                         </h2>
+                        {latestError && metricComponents.length > 0 && (
+                          <LatestDataError hasValues={latestMetrics.length > 0} retrying={retryingLatest} onRetry={retryLatest} />
+                        )}
                         {metricComponents.length === 0 ? (
                           <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its latest readings.</EmptyState>
                         ) : (
-                          <div className="min-w-0 space-y-3">
+                          <div className={latestGroupsClass(metricComponents.length)}>
                             {metricComponents.map((comp, index) => (
                               <ExpandableCard
                                 key={comp.key as string}
                                 label={`the latest ${groupNames[comp.key as string] ?? ""} readings`}
-                                onOpen={() => openModal(
-                                  React.cloneElement(comp, { metrics: latestMetrics, loading: latestLoading }),
-                                  "recent",
-                                  comp.key as "weather" | "quality" | "gauges",
-                                  subFilters[comp.key as string] || []
-                                )}
-                                className={`rounded-lg p-3 pr-9 ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
+                                onOpen={() => openModal(comp.key as string, "recent", comp.key as "weather" | "quality" | "gauges")}
+                                placement="corner" // the group's title line keeps the corner free (a float)
+                                className={`${LATEST_CARD_CLASS} ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
                                 {comp}
@@ -399,9 +525,9 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Map (taller on phones, where it's full width) */}
-                    <div className="lg:col-span-2">
-                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-[24rem] lg:h-[30rem]">
+                    {/* Map (taller on phones, where it's full width; beside Latest Data, as tall as it) */}
+                    <div className="min-w-0 grow-[2] basis-[24rem]">
+                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-full sm:min-h-[24rem] lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Map
                           <Information id={2} />
@@ -430,81 +556,32 @@ export default function Dashboard() {
                     </h2>
                     
                     {(() => {
-                      // --- START: NEW DYNAMIC LAYOUT LOGIC ---
-
-                      // 1. Calculate how many loggers are actually selected
-                      const loggerConfig = SENSOR_FILTER_CONFIG.gauges;
-                      const allLoggerIds = Object.keys(loggerConfig.sites);
-                      let selectedLoggerCount = 0;
-                      if (subFilters.gauges?.includes('All Loggers')) {
-                        selectedLoggerCount = allLoggerIds.length;
-                      } else {
-                        selectedLoggerCount = subFilters.gauges?.filter(id => allLoggerIds.includes(id)).length || 0;
-                      }
-
-                      // 2. Get the graph components that are currently active
-                      const loggerGraph = activeGroups.gauges ? cachedGraphs.gauges : null;
-                      const weatherGraph = activeGroups.weather ? cachedGraphs.weather : null;
-                      const qualityGraph = activeGroups.quality ? cachedGraphs.quality : null;
-
-                      if (!loggerGraph && !weatherGraph && !qualityGraph) {
+                      const graphs = [
+                        activeGroups.gauges ? cachedGraphs.gauges : null,
+                        activeGroups.weather ? cachedGraphs.weather : null,
+                        activeGroups.quality ? cachedGraphs.quality : null,
+                      ].filter((g): g is React.ReactElement => g !== null);
+                      if (graphs.length === 0) {
                         return <EmptyState>Tick a group under Filters, or click a sensor on the map, to see its graphs.</EmptyState>;
                       }
-
-                      // 3. RENDER SPECIAL LAYOUT: If more than 2 loggers are selected
-                      if (selectedLoggerCount > 2) {
-                        const otherGraphs = [weatherGraph, qualityGraph].filter(Boolean);
-                        return (
-                          <div className="space-y-6">
-                            {/* Row 1: Logger Graph takes the full width */}
-                            {loggerGraph && (
-                              <ExpandableCard
-                                label="the water logger graphs"
-                                onOpen={() => openModal(loggerGraph, "alltime", "logger", subFilters.gauges || [])}
-                                className="p-4 animate-fade-in-up"
-                              >
-                                {loggerGraph}
-                              </ExpandableCard>
-                            )}
-                            {/* Row 2: Weather and Quality graphs in a responsive grid below */}
-                            <div className={`grid gap-6 ${getGraphGridClass(otherGraphs.length)}`}>
-                              {otherGraphs.map((comp) =>
-                                comp && (
-                                  <ExpandableCard
-                                    key={comp.key}
-                                    label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                    onOpen={() => openModal(comp, "alltime", comp.key as "weather" | "quality" | "gauges", subFilters[comp.key as string] || [])}
-                                    className="p-4 animate-fade-in-up"
-                                  >
-                                    {comp}
-                                  </ExpandableCard>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      // 4. RENDER NORMAL LAYOUT: If 2 or fewer loggers are selected
-                      const allGraphs = [loggerGraph, weatherGraph, qualityGraph].filter(Boolean);
+                      // One card per group, full width, one under the other: each card lays out its own charts in
+                      // one to three columns, by its width
                       return (
-                        <div className={`grid gap-6 ${getGraphGridClass(allGraphs.length)}`}>
-                          {allGraphs.map((comp, index) => (
-                            comp ? (
-                              <ExpandableCard
-                                key={comp.key}
-                                label={`the ${groupNames[comp.key as string] ?? ""} graph`}
-                                onOpen={() => openModal(comp, "alltime", comp.key as "weather" | "quality" | "gauges", subFilters[comp.key as string] || [])}
-                                className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
-                                style={{ animationDelay: `${index * 150}ms` }}
-                              >
-                                {comp}
-                              </ExpandableCard>
-                            ) : null
+                        <div className="space-y-6">
+                          {graphs.map((comp, index) => (
+                            <ExpandableCard
+                              key={comp.key}
+                              label={`the ${groupNames[comp.key as string] ?? ""} graphs`}
+                              onOpen={() => openModal(comp.key as string, "alltime", comp.key as "weather" | "quality" | "gauges")}
+                              openOnClick={false} // a tap on a chart shows its tooltip; only the button opens the larger view
+                              className={`p-4 animate-fade-in-up ${activeCount !== previousActiveCount ? 'animate-scale-in' : ''}`}
+                              style={{ animationDelay: `${index * 150}ms` }}
+                            >
+                              {sensorGraph(comp)}
+                            </ExpandableCard>
                           ))}
                         </div>
                       );
-                      // --- END: NEW DYNAMIC LAYOUT LOGIC ---
                     })()}
                   </div>
 
@@ -533,12 +610,13 @@ export default function Dashboard() {
           {/* Sampling Tab Content (New) */}
 
 
-          <TabsContent value="sampling">
+          <TabsContent value="sampling" className="data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sampling") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
-              <div className="col-span-full grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
+              {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
+              <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
                 
                 {/* Filters Sidebar: always shown in full, and kept in view on large screens (StickyPanel) */}
-                <div className="lg:col-span-1">
+                <div className="min-w-0 grow basis-[13rem]">
                   <StickyPanel className="mcmaster-card h-fit p-6">
                     <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                       Filters
@@ -546,7 +624,7 @@ export default function Dashboard() {
                     </h2>
                     <div className="space-y-4">
                       <FilterPanel
-                        activeTab={activeTab}
+                        activeTab="sampling"
                         activeGroups={{}}  // Empty object for sampling mode
                         setActiveGroups={() => {}}  // Empty function for sampling mode
                         subFilters={{}}  // Empty object for sampling mode
@@ -567,16 +645,15 @@ export default function Dashboard() {
                         onEndChange={setSamplingEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                      <Download
+                      {shownTab === "sampling" && <Download
                         activeGroups={{ gauges: false, weather: false, quality: false }}  // All false for sampling mode
                         subFilters={{ weather: [], quality: [], gauges: [] }}  // Empty for sampling mode
                         activeCreeks={activeCreeks}  // ✅ Correct prop name
                         samplingSubFilters={samplingSubFilters}  // ✅ Correct prop name
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
-                        data={samplingData}
                         isSampling={true}
-                      />
+                      />}
                       {/* For researchers adding sampling files: the standard format, with example rows */}
                       <p className="pt-1 text-center text-sm text-muted">
                         Adding sampling data?{" "}
@@ -591,33 +668,32 @@ export default function Dashboard() {
 
 
                 {/* Main Content Area */}
-                <div className="lg:col-span-3 space-y-6">
+                <div className="min-w-0 grow-[3] basis-[40rem] space-y-6">
                   
                   {/* Top Row: Latest Data + Map */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6"> 
+                  <div className="flex flex-wrap gap-6">
                     
-                    {/* Latest Data: one scrolling strip per group */}
-                    <div className="lg:col-span-1">
-                      <div className="mcmaster-card flex flex-col p-6 lg:min-h-[30rem]">
-                        <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
+                    {/* Latest Data: one scrolling strip per group; the groups share the panel (whole, halves, thirds). Beside the map it is as tall as the map (the row stretches it); stacked, as tall as its groups. */}
+                    <div className="min-w-0 grow basis-[14rem]">
+                      <div className={`mcmaster-card flex h-full flex-col p-6 ${LATEST_PANEL_CLASS}`}>
+                        <h2 tabIndex={-1} className="flex flex-wrap items-center justify-between gap-x-2 mb-4 text-xl font-poppins font-bold text-primary focus:outline-none">
                           Latest Data
                           <Information id={8} />
                         </h2>
+                        {recentSamplesError && samplingMetricComponents.length > 0 && (
+                          <LatestDataError hasValues={recentSamples.length > 0} retrying={retryingRecentSamples} onRetry={retryRecentSamples} />
+                        )}
                         {samplingMetricComponents.length === 0 ? (
                           <EmptyState>Tick a creek under Filters, or click a site on the map, to see its latest samples.</EmptyState>
                         ) : (
-                          <div className="min-w-0 space-y-3">
+                          <div className={latestGroupsClass(samplingMetricComponents.length)}>
                             {samplingMetricComponents.map((comp, index) => (
                               <ExpandableCard
                                 key={comp.key as string}
                                 label="the latest samples"
-                                onOpen={() => openModal(
-                                  React.cloneElement(comp, { metrics: recentSamples, loading: recentSamplesLoading }),
-                                  "recent",
-                                  "sampling",
-                                  comp.props.subFilters
-                                )}
-                                className={`rounded-lg p-3 pr-9 ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
+                                onOpen={() => openModal(comp.key as string, "recent", "sampling")}
+                                placement="corner" // the group's title line keeps the corner free (a float)
+                                className={`${LATEST_CARD_CLASS} ${activeCreekCount !== previousActiveCreekCount ? 'animate-scale-in' : ''}`}
                                 style={{ animationDelay: `${index * 100}ms` }}
                               >
                                 {comp}
@@ -628,9 +704,9 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Map (taller on phones, where it's full width) */}
-                    <div className="lg:col-span-2">
-                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-[24rem] lg:h-[30rem]">
+                    {/* Map (taller on phones, where it's full width; beside Latest Data, as tall as it) */}
+                    <div className="min-w-0 grow-[2] basis-[24rem]">
+                      <div className="mcmaster-card flex h-[26rem] flex-col p-6 sm:h-full sm:min-h-[24rem] lg:min-h-[30rem]">
                         <h2 className="flex items-center justify-between mb-4 text-xl font-poppins font-bold text-primary">
                           Map
                           <Information id={7} />
@@ -660,18 +736,42 @@ export default function Dashboard() {
                     
                     {(() => {
                       const count = samplingGraphComponents.length;
-                      const creekGraphCard = (comp: React.ReactElement<any>, key: React.Key) => (
+                      const creekGraphCard = (comp: React.ReactElement<React.ComponentProps<typeof CreekGraph>>, key: React.Key) => (
                         <ExpandableCard
                           key={key}
                           label={`the ${SAMPLING_FILTER_CONFIG[comp.props.creekKey as keyof typeof SAMPLING_FILTER_CONFIG]?.label ?? "creek"} graphs`}
-                          onOpen={() => openModal(comp, "alltime", "sampling", comp.props.subFilters)}
+                          onOpen={() => openModal(String(comp.key), "alltime", "sampling")}
                           className="p-4 animate-fade-in-up"
                         >
-                          {comp}
+                          <GraphFrame busy={!samplingChartsReady || isSamplingLoading} waiting={!samplingChartsReady}>{comp}</GraphFrame>
                         </ExpandableCard>
                       );
                       if (count === 0) {
                         return <EmptyState>Tick a creek under Filters, or click a site on the map, to see its graphs.</EmptyState>;
+                      }
+                      if (samplingRangeEmpty) {
+                        const day = (d: Date) => format(d, "MMM d, yyyy");
+                        const before = latestSampleDay && samplingStartDate && latestSampleDay < samplingStartDate;
+                        const suggestedStart = latestSampleDay ? subMonths(latestSampleDay, 2) : null;
+                        return (
+                          <div className="rounded-lg border border-input-border bg-gray-50 p-4 text-sm text-foreground">
+                            <p className="font-medium">
+                              No samples from {day(samplingStartDate!)} to {day(samplingEndDate!)} for the ticked {count === 1 ? "creek" : "creeks"}.
+                            </p>
+                            {latestSampleDay && (
+                              <p className="mt-1 text-muted">The most recent samples (from any creek) were taken on {day(latestSampleDay)}.</p>
+                            )}
+                            {before && suggestedStart && latestSampleDay && (
+                              <button
+                                type="button"
+                                onClick={() => { setSamplingStartDate(suggestedStart); setSamplingEndDate(latestSampleDay); }}
+                                className="btn-mcmaster-primary mt-3 min-h-10 rounded-md px-4 py-2 text-sm font-medium"
+                              >
+                                Show {format(suggestedStart, suggestedStart.getFullYear() === latestSampleDay.getFullYear() ? "MMM d" : "MMM d, yyyy")} – {day(latestSampleDay)}
+                              </button>
+                            )}
+                          </div>
+                        );
                       }
                       // If 3 or fewer graphs, render them in a single row with the existing logic.
                       if (count <= 3) {
@@ -688,7 +788,7 @@ export default function Dashboard() {
                         return (
                           <div className="space-y-6">
                             {/* Top Row is always 3 columns */}
-                            <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+                            <div className={`grid gap-6 ${getGraphGridClass(3)}`}>
                               {topRow.map((comp, index) => creekGraphCard(comp, index))}
                             </div>
                             {/* Bottom Row's columns are based on how many items are left */}
@@ -739,7 +839,8 @@ export default function Dashboard() {
            {modalContent}
         </Modal>
       </main>
-      {!inIframe && <Footer />}
+      </ChartPageContext.Provider>
+      {!embedded && <div data-site-chrome><Footer /></div>}
     </>
   );
 }

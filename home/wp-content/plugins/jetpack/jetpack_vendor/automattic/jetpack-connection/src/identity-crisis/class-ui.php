@@ -89,7 +89,7 @@ class UI {
 	 * @return string
 	 */
 	private static function get_initial_state() {
-		return 'var JP_IDENTITY_CRISIS__INITIAL_STATE=JSON.parse(decodeURIComponent("' . rawurlencode( wp_json_encode( static::get_initial_state_data() ) ) . '"));';
+		return 'var JP_IDENTITY_CRISIS__INITIAL_STATE=' . wp_json_encode( static::get_initial_state_data(), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ) . ';';
 	}
 
 	/**
@@ -124,7 +124,10 @@ class UI {
 			'isDevelopmentSite'              => $is_development_site,
 
 			/**
-			 * Use the filter to provide custom HTML elecontainer ID.
+			 * Use the filter to provide custom HTML container element ID.
+			 *
+			 * The element may be added after the page loads, within 60 seconds of it;
+			 * the screen is rendered into it once.
 			 *
 			 * @since 0.10.0
 			 *
@@ -186,9 +189,11 @@ class UI {
 	/**
 	 * Get the site platform.
 	 *
+	 * @since 9.15.0 Public, so the Connectors card can send the same value to Tracks.
+	 *
 	 * @return string
 	 */
-	private static function get_platform() {
+	public static function get_platform() {
 		$host = new Host();
 
 		if ( $host->is_woa_site() ) {

@@ -34,10 +34,12 @@ the format page.
 - Files without the prefix (e.g. `lancaster_data.csv`) and `WELLAncasterWatershed_SAMPLE.*` are ignored.
 
 ## Upload
-1. Log into the Dataverse repository and open the WELL dataset.
+1. Log into Borealis (borealisdata.ca) and open the WELL sampling dataset (in the WELL collection).
 2. Upload the file (Dataverse may show a CSV as `.tab` after upload; that's expected, the original is what's
    imported).
 3. Check that the filename follows the naming convention.
+4. **Publish the dataset** (Publish Dataset, or ask a curator to). The weekly import reads only the published
+   version, so a file still in the draft isn't imported; the import log says when a draft is waiting.
 
 ## Troubleshooting
 
@@ -48,8 +50,10 @@ it is imported on the next weekly run. Running `scripts/check_sampling_csv.py` o
 **I need a new site or parameter.** Contact the WELL dashboard team first: the dashboard needs to know where a site is
 and how to show a parameter, and until then rows with it are rejected.
 
-**I uploaded a corrected value.** Readings already stored are never overwritten automatically. The import log reports
-the difference and the SQL to remove the old reading; after that, importing the file again stores the new value.
+**I uploaded a corrected value.** Upload the corrected file as a new file. When it is imported, each stored reading
+whose value it changes takes the new value, and the import log lists every change (`[CORRECTED]` lines, old and new
+value). Readings you removed from the file are not deleted: the log reports them as "rows present in the DB but not
+in the latest file" (also sent to Sentry), and a maintainer deletes them if that was intended.
 
 **Can I upload multiple files at once?** Yes. Each file is checked and imported on its own, and re-importing a file
 (or one that overlaps another) never stores a reading twice.

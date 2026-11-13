@@ -6,8 +6,7 @@ import subprocess
 import sys
 import tempfile
 import types
-import unittest
-from unittest import mock
+from unittest import SkipTest, TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -20,7 +19,7 @@ try:
     from zoneinfo import ZoneInfo
     ZoneInfo("America/Toronto")
 except Exception:  # pragma: no cover
-    raise unittest.SkipTest("no time zone database on this machine")
+    raise SkipTest("no time zone database on this machine")
 
 
 def finished(stdout, code=0):
@@ -31,21 +30,30 @@ def finished(stdout, code=0):
     return run
 
 
-class MonthlyUploadCheckTests(unittest.TestCase):
+class MonthlyUploadCheckTests(TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.record = os.path.join(self.dir.name, "uploaded_months.json")
-        self.logs, self.cmds = [], []
+        self.sharepoint_record = os.path.join(self.dir.name, "sharepoint_uploaded_months.json")
+        self.logs, self.cmds, self.pings = [], [], []
+        no_sharepoint = {k: v for k, v in os.environ.items() if not k.startswith("SHAREPOINT_")}
         for patch in (
             mock.patch.object(scheduler_temp, "uploaded_months_path", self.record),
             mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"),
+            mock.patch.object(scheduler_temp, "sharepoint_uploaded_months_path", self.sharepoint_record),
+            mock.patch.object(scheduler_temp, "SHAREPOINT_FIRST_MONTH", "2026-10"),
             mock.patch.object(scheduler_temp, "timestamped_print_upload", lambda *a: self.logs.append(" ".join(map(str, a)))),
+            mock.patch.object(scheduler_temp, "ping_heartbeat", lambda *a: self.pings.append(a)),
+            mock.patch.dict(os.environ, no_sharepoint, clear=True),
         ):
             patch.start()
             self.addCleanup(patch.stop)
 
+    scripts = None
+
     def check(self, when_utc, run):
+        self.scripts = self.scripts if self.scripts is not None else []
         class Clock(dt.datetime):
             @classmethod
             def now(cls, tz=None):
@@ -53,6 +61,7 @@ class MonthlyUploadCheckTests(unittest.TestCase):
 
         def recording(cmd, timeout):
             self.cmds.append(cmd[-3:])
+            self.scripts.append(os.path.basename(cmd[1]))
             return run(cmd, timeout)
 
         with mock.patch.object(scheduler_temp, "datetime", Clock), mock.patch.object(scheduler_temp, "run_bounded", recording):
@@ -98,5 +107,33 @@ class MonthlyUploadCheckTests(unittest.TestCase):
         self.assertEqual(self.logs, [])
 
 
+    def test_sharepoint_is_off_without_its_settings(self):
+        self.check(dt.datetime(2026, 11, 1, 7, tzinfo=dt.timezone.utc), finished("Successfully uploaded x to Borealis\n"))
+        self.assertEqual(self.scripts, ["upload_data.py"])
+        self.assertEqual(self.pings, [("upload", "success")])
+
+    def test_sharepoint_runs_after_borealis_with_its_own_record(self):
+        def run(cmd, timeout):
+            if cmd[1].endswith("upload_data.py"):   # Borealis fails; the SharePoint copy still goes up
+                raise subprocess.CalledProcessError(1, cmd, output="ERROR: HTTP 401", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, "Successfully uploaded x.csv to SharePoint (added)\n", "")
+        with mock.patch.dict(os.environ, {"SHAREPOINT_TENANT_ID": "t", "SHAREPOINT_CLIENT_ID": "c",
+                                          "SHAREPOINT_CLIENT_SECRET": "s", "SHAREPOINT_SITE": "https://x/sites/W"}):
+            self.check(dt.datetime(2026, 11, 1, 7, tzinfo=dt.timezone.utc), run)
+        self.assertEqual(self.scripts, ["upload_data.py", "sharepoint_upload.py"])
+        self.assertEqual(self.recorded(), set())
+        self.assertEqual(scheduler_temp.load_uploaded_months(self.sharepoint_record), {"2026-10"})
+        self.assertEqual(self.pings, [("upload", "fail"), ("sharepoint", "success")])
+
+    def test_incomplete_sharepoint_settings_are_reported_once_a_day(self):
+        with mock.patch.dict(os.environ, {"SHAREPOINT_SITE": "https://x/sites/W"}):
+            for hour in range(24):
+                self.check(dt.datetime(2026, 11, 2, hour, tzinfo=dt.timezone.utc), finished("Successfully uploaded"))
+        errors = [line for line in self.logs if "[ERROR]" in line]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("SHAREPOINT_TENANT_ID", errors[0])
+        self.assertEqual(self.pings, [("upload", "success"), ("sharepoint", "fail")])
+
+
 if __name__ == "__main__":
-    unittest.main()
+    main()

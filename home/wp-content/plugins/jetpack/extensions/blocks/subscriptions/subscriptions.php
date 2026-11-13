@@ -53,6 +53,7 @@ function register_block() {
 	 * Do not proceed if the newsletter feature (Subscriptions module) is not enabled
 	 */
 	if ( ! ( new Modules() )->is_active( 'subscriptions' ) ) {
+		Jetpack_Gutenberg::set_extension_unavailable( 'subscriptions', 'missing_module', array( 'module' => 'subscriptions' ) );
 		return;
 	}
 
@@ -79,23 +80,38 @@ function register_block() {
 		'post',
 		META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS,
 		array(
-			'show_in_rest'  => true,
-			'single'        => true,
-			'type'          => 'string',
-			'auth_callback' => function () {
+			'show_in_rest'      => true,
+			'single'            => true,
+			'type'              => 'string',
+			/* translators: Keep the quoted values, block names and meta keys in English. */
+			'description'       => __( 'Who can read the post on the site: "everybody" (the default, also when empty), "subscribers" (free and paid) or "paid_subscribers" (paid only). Anyone without access sees a subscribe prompt instead. "everybody" and "subscribers" posts are emailed to all subscribers, "paid_subscribers" posts only to paid ones; with newsletter categories on, only to those subscribed to one of its categories or to all content. To show a free preview, add a Paywall block (jetpack/paywall) where it should end: everything above it stays public, the post is emailed to all subscribers and cut off at the paywall for anyone without access, and an "everybody" post becomes subscribers-only below the block. "paid_subscribers" works only on sites that already have a paid newsletter tier. Without one, the owner first connects Stripe and adds a tier under Monetize > Payment Settings in the WordPress.com dashboard (Jetpack Cloud on self-hosted sites). If unsure a tier exists, check with the site owner first.', 'jetpack' ),
+			// The REST schema already rejects non-strings, but non-REST writers
+			// (importers, XML-RPC, WP-CLI, direct update_post_meta, sync) only pass
+			// through sanitize_meta(). Coerce anything that isn't a string to ''
+			// ("everybody") so a corrupt value can't be persisted and later fatal the
+			// strict string-typed access checks.
+			'sanitize_callback' => function ( $value ) {
+				return is_string( $value ) ? $value : '';
+			},
+			'auth_callback'     => function () {
 				return wp_get_current_user()->has_cap( 'edit_posts' );
 			},
 		)
 	);
 
+	// The meta is a "don't send" flag, so invert the blog option (which defaults to true = "send").
+	$dont_email_default = ! get_option( 'wpcom_newsletter_send_default', true );
+
 	register_post_meta(
 		'post',
 		META_NAME_FOR_POST_DONT_EMAIL_TO_SUBS,
 		array(
-			'default'       => false,
+			'default'       => $dont_email_default,
 			'show_in_rest'  => true,
 			'single'        => true,
 			'type'          => 'boolean',
+			/* translators: Keep the quoted values, block names and meta keys in English. */
+			'description'   => __( 'Set to true to publish without emailing the post to subscribers. The email is sent once, when the post goes live, so this has to be set in the request that publishes it, or any time before the date of a scheduled post. Once the post is published, changing it neither sends nor recalls the email. The default comes from the site\'s newsletter settings and can be either value, so send it explicitly when the email matters.', 'jetpack' ),
 			'auth_callback' => function () {
 				return wp_get_current_user()->has_cap( 'edit_posts' );
 			},
@@ -109,6 +125,8 @@ function register_block() {
 			'show_in_rest'  => true,
 			'single'        => true,
 			'type'          => 'integer',
+			/* translators: Keep the quoted values, block names and meta keys in English. */
+			'description'   => __( 'Only applies when _jetpack_newsletter_access is "paid_subscribers": the ID of the monthly paid newsletter tier a reader needs. Subscribers on that tier, its yearly plan or a plan priced the same or higher in the same currency can read the post and get the email. Unset or 0 lets every paid subscriber in, which is the right value unless the site owner names a specific tier. An ID that matches no tier is ignored.', 'jetpack' ),
 			'auth_callback' => function () {
 				return wp_get_current_user()->has_cap( 'edit_posts' );
 			},
@@ -122,6 +140,8 @@ function register_block() {
 			'show_in_rest'  => true,
 			'single'        => true,
 			'type'          => 'boolean',
+			/* translators: Keep the quoted values, block names and meta keys in English. */
+			'description'   => __( 'Computed on every save: true when the post has a Paywall block or its _jetpack_newsletter_access is "subscribers" or "paid_subscribers". Any value sent here is overwritten; change _jetpack_newsletter_access or the content instead.', 'jetpack' ),
 			'auth_callback' => function () {
 				return wp_get_current_user()->has_cap( 'edit_posts' );
 			},
@@ -138,6 +158,8 @@ function register_block() {
 					META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS,
 					META_NAME_FOR_POST_DONT_EMAIL_TO_SUBS,
 					META_NAME_CONTAINS_PAYWALLED_CONTENT,
+					META_NAME_FOR_POST_TIER_ID_SETTINGS,
+					META_NAME_CONTAINS_PAID_CONTENT,
 				)
 			);
 		}
@@ -153,9 +175,6 @@ function register_block() {
 	// Hide existing comments
 	add_filter( 'get_comment', __NAMESPACE__ . '\maybe_gate_existing_comments' );
 
-	// Gate the excerpt for a post
-	add_filter( 'get_the_excerpt', __NAMESPACE__ . '\jetpack_filter_excerpt_for_newsletter', 10, 2 );
-
 	// Add a 'Newsletter' column to the Edit posts page
 	// We only display the "Newsletter" column if we have configured the paid newsletter plan
 	if ( defined( 'WP_ADMIN' ) && WP_ADMIN && Jetpack_Memberships::has_configured_plans_jetpack_recurring_payments( 'newsletter' ) ) {
@@ -167,6 +186,8 @@ function register_block() {
 	add_action( 'init', __NAMESPACE__ . '\maybe_prevent_super_cache_caching' );
 
 	add_action( 'wp_after_insert_post', __NAMESPACE__ . '\add_paywalled_content_post_meta', 99, 2 );
+
+	add_filter( 'rest_pre_insert_post', __NAMESPACE__ . '\reject_unknown_access_level', 10, 2 );
 
 	add_filter(
 		'jetpack_options_whitelist',
@@ -202,6 +223,65 @@ function is_wpcom() {
 }
 
 /**
+ * Rejects a REST request that sets an unknown access level, before the post is saved.
+ *
+ * The access check treats an unknown value as "everybody", so a typo like "paid"
+ * would publish a paid post to everyone. This runs here rather than as a schema
+ * enum because core checks meta against the schema only after the post is saved.
+ *
+ * @param \stdClass|\WP_Error $prepared_post Post about to be saved.
+ * @param \WP_REST_Request    $request       Request being handled.
+ * @return \stdClass|\WP_Error
+ */
+function reject_unknown_access_level( $prepared_post, $request ) {
+	// A missing value is left alone, and null deletes the meta, which core handles.
+	if (
+		is_wp_error( $prepared_post )
+		|| ! $request instanceof \WP_REST_Request
+		|| ! isset( $request['meta'][ META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS ] )
+	) {
+		return $prepared_post;
+	}
+
+	// Autosaves never store this meta, and the autosaves controller doesn't check
+	// for an error here, so rejecting would drop the author's autosaved edits.
+	if ( str_ends_with( strtolower( $request->get_route() ), '/autosaves' ) ) {
+		return $prepared_post;
+	}
+
+	// PAID_SUBSCRIBERS_ALL_TIERS is left out: no editor or API client sets it, and
+	// WordPress.com would email such a post to every subscriber.
+	$allowed      = array(
+		Abstract_Token_Subscription_Service::POST_ACCESS_LEVEL_EVERYBODY,
+		Abstract_Token_Subscription_Service::POST_ACCESS_LEVEL_SUBSCRIBERS,
+		Abstract_Token_Subscription_Service::POST_ACCESS_LEVEL_PAID_SUBSCRIBERS,
+	);
+	$access_level = $request['meta'][ META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS ];
+	// REST returns '' for a post with no value set and the editor sends it back on
+	// save; the access check reads '' as "everybody".
+	if ( '' === $access_level || in_array( $access_level, $allowed, true ) ) {
+		return $prepared_post;
+	}
+
+	// The editor sends every meta value back on save, so a post that already holds an
+	// unknown value must still save as long as the request doesn't change it.
+	if ( ! empty( $prepared_post->ID ) && get_post_meta( $prepared_post->ID, META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS, true ) === $access_level ) {
+		return $prepared_post;
+	}
+
+	return new \WP_Error(
+		'rest_invalid_param',
+		sprintf(
+			/* translators: 1: meta key, 2: comma-separated list of allowed values. Both are displayed in English. */
+			__( '%1$s must be one of %2$s.', 'jetpack' ),
+			META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS,
+			'"' . implode( '", "', $allowed ) . '"'
+		),
+		array( 'status' => 400 )
+	);
+}
+
+/**
  * Adds a 'Newsletter' column after the 'Title' column in the post list
  *
  * @param array $columns An array of column names.
@@ -231,7 +311,8 @@ function add_paywalled_content_post_meta( int $post_id, \WP_Post $post ) {
 
 	$access_level = get_post_meta( $post_id, META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS, true );
 
-	$is_paywalled = false;
+	// A Paywall block gates the post whatever the stored access level; see Jetpack_Memberships::get_post_access_level().
+	$is_paywalled = has_block( \Automattic\Jetpack\Extensions\Paywall\BLOCK_NAME, $post );
 	switch ( $access_level ) {
 		case Abstract_Token_Subscription_Service::POST_ACCESS_LEVEL_PAID_SUBSCRIBERS_ALL_TIERS:
 		case Abstract_Token_Subscription_Service::POST_ACCESS_LEVEL_PAID_SUBSCRIBERS:
@@ -257,7 +338,7 @@ function render_newsletter_access_rows( $column_id, $post_id ) {
 		return;
 	}
 
-	$access_level = get_post_meta( $post_id, META_NAME_FOR_POST_LEVEL_ACCESS_SETTINGS, true );
+	$access_level = Jetpack_Memberships::get_post_access_level( $post_id );
 
 	switch ( $access_level ) {
 		case Abstract_Token_Subscription_Service::POST_ACCESS_LEVEL_PAID_SUBSCRIBERS_ALL_TIERS:
@@ -307,7 +388,7 @@ function fetch_subscriber_counts() {
 					'status'  => 'failed',
 					'code'    => $xml->getErrorCode(),
 					'message' => $xml->getErrorMessage(),
-					'value'   => ( isset( $subs_count['value'] ) ) ? $subs_count['value'] : array(
+					'value'   => $subs_count['value'] ?? array(
 						'total_subscribers' => 0,
 						'email_subscribers' => 0,
 						'social_followers'  => 0,
@@ -824,6 +905,7 @@ function render_for_website( $data, $classes, $styles ) {
 									required="required"
 									type="email"
 									name="email"
+									autocomplete="email"
 									%1$s
 									style="%2$s"
 									placeholder="%3$s"
@@ -979,28 +1061,6 @@ function render_email( $block_content, array $parsed_block, $rendering_context )
 		$button_parsed_block,
 		$rendering_context
 	);
-}
-
-/**
- * Filter excerpts looking for subscription data.
- *
- * @param string   $excerpt The extrapolated excerpt string.
- * @param \WP_Post $post    The current post being processed (in `get_the_excerpt`).
- *
- * @return mixed
- */
-function jetpack_filter_excerpt_for_newsletter( $excerpt, $post = null ) {
-	// The blogmagazine theme is overriding WP core `get_the_excerpt` filter and only passing the excerpt
-	// TODO: Until this is fixed, return the excerpt without gating. See https://github.com/Automattic/jetpack/pull/28102#issuecomment-1369161116
-	if ( $post instanceof \WP_Post && str_contains( $post->post_content, '<!-- wp:jetpack/subscriptions -->' ) ) {
-		$excerpt .= sprintf(
-			// translators: %s is the permalink url to the current post.
-			__( "<p><a href='%s'>View post</a> to subscribe to site newsletter.</p>", 'jetpack' ),
-			get_post_permalink()
-		);
-	}
-
-	return $excerpt;
 }
 
 /**

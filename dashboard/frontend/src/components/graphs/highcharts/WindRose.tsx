@@ -1,85 +1,41 @@
-// This file defines the WindRose component for rendering wind rose diagrams using Highcharts.
-// It bins wind speed and direction data, then displays frequency distributions in a polar column chart.
+// This file defines the WindRose component: how often the wind blew from each of 16 directions at each speed, as a
+// stacked polar column chart. The counts come binned from /api/windrose (see hooks/useWindRose), so no raw readings
+// are downloaded for it. Its legend (the speed classes), its scale and the period it covers are always shown: a rose
+// without them can't be read.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Highcharts from 'highcharts/highcharts-more';
 import HighchartsReact from 'highcharts-react-official';
-import { fabClasses } from '@mui/material';
+import type { WindRoseResponse } from '@/hooks/useWindRose';
 
-const directions16 = [
-  "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"
-];
-
-const speedBins = [
-  { name: "<0.5 m/s", from: 0, to: 0.5, color: '#3366CC' },
-  { name: "0.5-2 m/s", from: 0.5, to: 2, color: '#DC3912' },
-  { name: "2-4 m/s", from: 2, to: 4, color: '#FF9900' },
-  { name: "4-6 m/s", from: 4, to: 6, color: '#109618' },
-  { name: "6-8 m/s", from: 6, to: 8, color: '#990099' },
-  { name: "8-10 m/s", from: 8, to: 10, color: '#0099C6' },
-  { name: ">10 m/s", from: 10, to: Infinity, color: '#DD4477' }
-];
-
-interface WindDataPoint {
-  direction: number;
-  speed: number;
-}
-
-interface SpeedBin {
-  name: string;
-  from: number;
-  to: number;
-  color: string;
-}
-
-interface WindRoseSeries {
-  name: string;
-  color: string;
-  data: number[];
-  type: 'column';
-}
-
-function getWindRoseSeries(data: WindDataPoint[]): WindRoseSeries[] {
-  // Bins wind data into direction and speed categories for charting
-  const counts: number[][] = speedBins.map(() => Array(directions16.length).fill(0));
-  let total = 0;
-
-  data.forEach(({ direction, speed }) => {
-    let dir = direction % 360;
-    if (dir < 0) dir += 360;
-    const dirIdx = Math.floor((dir + 11.25) / 22.5) % 16;
-    const binIdx = speedBins.findIndex((bin: SpeedBin) => speed >= bin.from && speed < bin.to);
-
-    if (binIdx !== -1) {
-      counts[binIdx][dirIdx]++;
-      total++;
-    }
-  });
-
-  return speedBins.map((bin: SpeedBin, i: number) => ({
-    name: bin.name,
-    color: bin.color,
-    data: counts[i].map((count: number) => total ? Math.round((count / total) * 100 * 10) / 10 : 0),
-    type: 'column'
-  }));
-}
+// One colour per speed class, slowest first (the backend's speed_classes, in order)
+const CLASS_COLORS = ['#3366CC', '#DC3912', '#FF9900', '#109618', '#990099', '#0099C6', '#DD4477'];
 
 interface WindRoseProps {
-  data: WindDataPoint[];
+  data: WindRoseResponse | null;
+  speed: 'Wind Speed' | 'Gust Speed';
   title?: string;
-  showLegend?: boolean;
+  period?: string; // the dates it covers, e.g. "Nov 10 00:00 – Nov 11 16:00"
 }
 
-const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
-  const series = getWindRoseSeries(data);
+const WindRose: React.FC<WindRoseProps> = ({ data, speed, title, period }) => {
+  const rose = data?.roses[speed];
+  const total = rose?.total ?? 0;
+  const series = (data?.speed_classes ?? []).map((c, i) => ({
+    name: c.name,
+    color: CLASS_COLORS[i % CLASS_COLORS.length],
+    data: rose?.percent[i] ?? [],
+    type: 'column' as const,
+  }));
   const [chartHeight, setChartHeight] = useState(400);
+  const [narrow, setNarrow] = useState(false); // the legend goes under the rose on a phone
 
   useEffect(() => {
     const updateHeight = () => {
       if (typeof window === 'undefined') return;
+      setNarrow(window.innerWidth < 640);
       if (window.innerWidth < 480) {
-        setChartHeight(280);
+        setChartHeight(380);
       } else if (window.innerWidth < 768) {
         setChartHeight(320);
       } else {
@@ -103,14 +59,13 @@ const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
       text: title || 'Wind Rose',
       style: { fontFamily: "'Poppins', Arial, sans-serif" }
     },
-    subtitle: showLegend !== false
-      ? {
-          text: data.length > 0 ? `Based on ${data.length} observations` : 'No data available',
-          style: { fontFamily: "'Poppins', Arial, sans-serif" }
-        }
-      : { text: "", style: { fontFamily: "'Poppins', Arial, sans-serif" } },
+    credits: { enabled: false },
+    subtitle: {
+      text: [period, total > 0 ? `${total.toLocaleString('en-US')} readings` : 'No readings in this period'].filter(Boolean).join(' · '),
+      style: { fontFamily: "'Poppins', Arial, sans-serif" }
+    },
     xAxis: {
-      categories: directions16,
+      categories: data?.sectors ?? [],
       tickmarkPlacement: 'on',
       lineWidth: 0,
       labels: { style: { fontFamily: "'Poppins', Arial, sans-serif" } }
@@ -122,14 +77,13 @@ const WindRose: React.FC<WindRoseProps> = ({ data, title, showLegend }) => {
       title: { text: 'Frequency (%)', style: { fontFamily: "'Poppins', Arial, sans-serif" } },
       labels: { format: '{value}%', style: { fontFamily: "'Poppins', Arial, sans-serif" } },
       reversedStacks: false,
-      visible: showLegend !== false,
     },
     legend: {
-      enabled: showLegend !== false,
-      align: 'right',
-      verticalAlign: 'top',
-      y: 100,
-      layout: 'vertical',
+      enabled: true,
+      align: narrow ? 'center' : 'right',
+      verticalAlign: narrow ? 'bottom' : 'top',
+      y: narrow ? 0 : 100,
+      layout: narrow ? 'horizontal' : 'vertical',
       itemStyle: { fontFamily: "'Poppins', Arial, sans-serif" }
     },
     tooltip: { 

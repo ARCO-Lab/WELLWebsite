@@ -54,20 +54,36 @@ __pycache__/
 *.pyc
 
 Makefile
-backend/app/scripts/run_scheduler.sh
 backend/app/logs/db_injections.log
 backend/app/samplingExcel/
-backend/app/sampleUpload/
 
-
-# WordPress cache (runtime generated)
-home/wp-content/cache/
-home/wp-content/upgrade/
-
-# WordPress config and secrets (Docker creates from env vars)
-home/wp-config.php
-home/wp-config-docker.php
 
 wordpress_backup.sql
 # Local snapshot of the VM (not tracked)
 well-vm/
+
+# Nightly database dumps (scripts/backup_db.py), bind-mounted into the worker
+/backups/
+# Nightly WordPress backups (wordpress/backup.sh)
+/wp-backups/
+
+# deploy.sh: its lock, the problem it last reported, and the last commit it rolled back
+/.deploy-state/
+
+# home/ is the WordPress site: core and plugins exactly as released (see .gitattributes). The
+# generic rules above (build/, logs, *.log, *.css.map, out/, ...) would hide release files there,
+# so re-include all of home/ and ignore only what is site state or secrets. Keep this block last.
+!home/**
+# WordPress cache (runtime generated)
+home/wp-content/cache/
+home/wp-content/upgrade/
+# WordPress config and secrets (Docker creates from env vars)
+home/wp-config.php
+home/wp-config-docker.php
+# Runtime and local junk that the re-include above would otherwise expose. No release file under
+# home/ matches these today (checked with git ls-files); if a future release ships one, narrow the rule.
+# WP_DEBUG_LOG writes home/wp-content/debug.log, which must never be committed.
+home/**/*.log
+home/**/.env*
+home/**/node_modules/
+home/**/.DS_Store

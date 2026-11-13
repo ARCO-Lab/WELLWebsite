@@ -92,6 +92,20 @@ def capture_job_error(exc, source=None):
         sentry_sdk.capture_exception(exc)
 
 
+def capture_job_warning(message):
+    """Report a problem that didn't fail the job (e.g. the backup worked but old dumps weren't deleted) at warning
+    level, at most once per REPEAT_AFTER_S for the same message. No-op when reporting is off."""
+    if not sentry_sdk.is_initialized():
+        return
+    key = (threading.current_thread().name, "warning", _collapse_numbers(str(message)))
+    now = time.monotonic()
+    with _last_sent_lock:
+        if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
+            return
+        _last_sent[key] = now
+    sentry_sdk.capture_message(scrub_urls(str(message)), level="warning")
+
+
 def _is_subprocess_error(exc):
     return isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired))
 

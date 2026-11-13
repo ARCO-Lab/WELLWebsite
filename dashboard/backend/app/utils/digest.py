@@ -1,13 +1,17 @@
 """The pure parts of the daily digest (scripts/daily_digest.py): settings, gap finding, implausible-value rules
-and the text itself. No database, network or SMTP here, so all of it is unit-tested."""
+and the text itself, written as Markdown like the alert emails (utils/email_format.py). No database, network or SMTP
+here, so all of it is unit-tested."""
 import math
 import os
 import re
 import statistics
-from datetime import timedelta
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
+from utils.email_format import footer, since, span, what, when, when_local
 from utils.parsers import LOGGER_CONFIG
 from utils.timezone import EST_TZ
+from utils.traffic import traffic_lines
 
 INTERVAL = timedelta(minutes=10)   # every sensor reports every 10 minutes
 GAP = timedelta(minutes=30)        # a stretch longer than this without readings is listed as a gap
@@ -124,11 +128,6 @@ def anomalies(group, station_id, measurement_type, values):
     return found
 
 
-def site(ts):
-    """An aware time as site (Toronto) time, for display; naive times are already site time."""
-    return ts.astimezone(EST_TZ) if ts.tzinfo else ts
-
-
 def fmt_age(minutes):
     if minutes is None:
         return "never"
@@ -139,21 +138,74 @@ def fmt_age(minutes):
     return f"{minutes / 1440:.1f} days"
 
 
-def build_digest(day, freshness, groups, findings, wqdata):
-    """(subject, body) of the digest.
+def to_markdown(lines):
+    """The digest's lines as Markdown: a line ending in ":" at the left margin is a `## ` heading, an indented line
+    (with or without its "- ") a bullet, a line indented twice a nested bullet, and any other line a paragraph."""
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out.append("")
+        elif not line.startswith(" ") and stripped.endswith(":") and not stripped.startswith(("- ", "**")):
+            out += [f"## {stripped[:-1]}", ""]
+        elif line.startswith("    "):
+            out.append(f"  - {stripped[2:] if stripped.startswith('- ') else stripped}")
+        elif line.startswith("  "):
+            out.append(f"- {stripped[2:] if stripped.startswith('- ') else stripped}")
+        else:
+            out.append(stripped)
+    return out
+
+
+def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
+                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None):
+    """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
     last 24 h of the live series. findings: anomaly strings. wqdata: {"error"} or {"power_min", "power_max", "power_readings",
-    "last_point", "last_point_age_minutes", optional "note"} or None when skipped.
+    "last_point", "last_point_age_minutes", optional "note"} or None when skipped. incidents: the open email alerts
+    (utils/alert_state.alerts_report()["open"]), {"error": ...} if they couldn't be read, or None to leave them out.
+    traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
+    recoveries: alerts cleared in the last 24 h (utils/alert_state.recent_recoveries()), {"error": ...}, or None.
+    quiet_kinds: ALERT_QUIET_KINDS (Settings.quiet_kinds); None is the default.
     """
+    # Here, not at the top: utils.alerts imports this module.
+    from utils.alerts import DEFAULT_QUIET_KINDS, RECOVERED_AS, Settings, is_quiet, status
+    quiet = Settings(quiet_kinds=DEFAULT_QUIET_KINDS if quiet_kinds is None else quiet_kinds)
+
+    def unsent(r):
+        # A recovery not emailed yet: a quiet kind's waits for the next email; any other's is being retried.
+        return ". Not emailed yet (low priority)" if is_quiet(SimpleNamespace(**r), quiet) else ". Email pending"
+
+    now = datetime.fromisoformat(freshness["checked_at"])
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
     problems = len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
-    subject = f"WELL daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
-    lines = [f"WELL dashboard daily digest for the 24 h before {freshness['checked_at']} (site time)", ""]
+    subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
+    lines = [f"WELL dashboard daily digest for the 24 h before {when(now)} (Toronto time).", ""]
+
+    if incidents is not None:
+        lines.append("Open alerts (each was emailed when it began):")
+        if isinstance(incidents, dict):
+            lines.append(f"  could not be read: {incidents.get('error')}")
+        else:
+            lines += [f"  **{what(i['key'])}**: {status(SimpleNamespace(**i), now)}. {since(i['started_at'], now)}"
+                      for i in incidents] or ["  none"]
+        lines.append("")
+
+    if recoveries is not None:
+        lines.append("Alerts recovered in the last 24 h:")
+        if isinstance(recoveries, dict):
+            lines.append(f"  could not be read: {recoveries.get('error')}")
+        else:
+            lines += [f"  **{what(r['key'])}**: {RECOVERED_AS.get(r['kind'], 'recovered')}. "
+                      f"{span(r['started_at'], r['resolved_at'])}"
+                      + ("" if r["recovery_emailed"] else unsent(r))
+                      for r in recoveries] or ["  none"]
+        lines.append("")
 
     lines.append("Stale series (newest reading older than its limit):")
-    lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {s['newest']} "
+    lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {when_local(s['newest'])} "
               f"({fmt_age(s['age_minutes'])} ago; limit {s['max_age_hours']:g} h)" for s in stale] or ["  none"]
     lines.append("")
 
@@ -172,7 +224,7 @@ def build_digest(day, freshness, groups, findings, wqdata):
                      f"{len(info['timestamps'])} of {expected_per_series} time slots{note}")
         for start, end in info["gaps"]:
             minutes = int((end - start).total_seconds() // 60)
-            lines.append(f"    gap {site(start):%m-%d %H:%M} to {site(end):%m-%d %H:%M} ({fmt_age(minutes)})")
+            lines.append(f"    gap {when_local(start)} → {when_local(end)} ({fmt_age(minutes)})")
     lines.append("")
 
     lines.append("WQData device:")
@@ -187,7 +239,7 @@ def build_digest(day, freshness, groups, findings, wqdata):
             lines.append(f"  primary power: {wqdata['power_min']:g} to {wqdata['power_max']:g} V "
                          f"over {wqdata['power_readings']} readings")
         if wqdata.get("last_point"):
-            lines.append(f"  last contact (newest data point): {wqdata['last_point']} "
+            lines.append(f"  last contact (newest data point): {when_local(wqdata['last_point'])} "
                          f"({fmt_age(wqdata['last_point_age_minutes'])} ago)")
         else:
             lines.append("  last contact: no data points in the last 24 h")
@@ -195,11 +247,15 @@ def build_digest(day, freshness, groups, findings, wqdata):
             lines.append(f"  note: {wqdata['note']}")
     lines.append("")
 
+    if traffic is not None:
+        lines += traffic_lines(traffic, EST_TZ) + [""]
+
     lines.append("Newest reading per series:")
     for group, info in sorted(freshness["groups"].items()):
         lines.append(f"  {group} (limit {info['max_age_hours']:g} h"
                      + (f", quiet {info['quiet_hours']}" if info["quiet_hours"] else "") + "):")
         for s in info["series"]:
-            lines.append(f"    {series_label(s['station_id'], s['measurement_type'])}: {s['newest']} "
+            lines.append(f"    {series_label(s['station_id'], s['measurement_type'])}: {when_local(s['newest'])} "
                          f"({fmt_age(s['age_minutes'])} ago){'' if s['status'] == 'ok' else ', ' + s['status']}")
+    lines = to_markdown(lines) + [""] + footer(dashboard_url)
     return subject, "\n".join(lines) + "\n"

@@ -2,9 +2,14 @@
 # by CI like any other pull request. Minor and patch bumps are grouped into one pull request per ecosystem; major
 # bumps come one per pull request, so each breaking change is reviewed on its own.
 #
-# Only the dashboard and the CI workflows are covered. WordPress core and plugins under home/ are updated through
+# The dashboard, the images docker-compose.yml runs and the CI workflows are covered. WordPress core and plugins under home/ are updated through
 # WordPress itself, not here, so no entry points at home/ (the package.json and composer.json files in there are
 # the plugin vendors' own build manifests and are never installed on the server).
+#
+# Security updates are separate: Dependabot opens them for alerts on any manifest in the repository, home/ included,
+# whether or not an entry here covers it. They can't work under home/ (no lockfile, or a manifest a WordPress update
+# has since removed), so an alert on a manifest under home/ is dismissed in the repository's Dependabot alerts, and
+# fixed by updating WordPress or the plugin.
 version: 2
 
 updates:
@@ -21,6 +26,21 @@ updates:
         update-types: [minor, patch]
     assignees: [lukhsaankumar]
 
+  # Playwright and the PostgreSQL client used by the end-to-end checks (pinned; CI runs them on every PR).
+  - package-ecosystem: npm
+    directory: /dashboard/e2e
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 1
+    groups:
+      e2e-npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    assignees: [lukhsaankumar]
+
   # requirements.txt pins every package, dependencies of dependencies included, so each bump is explicit.
   - package-ecosystem: pip
     directory: /dashboard/backend
@@ -33,6 +53,18 @@ updates:
     groups:
       pip-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # numpy 2.5 needs Python 3.12 and the image runs 3.11. SQLAlchemy 2.1 defaults to psycopg 3, which isn't
+      # installed (it crashed the worker on 2026-11-10). Both move by hand, with a deliberate Python 3.12 / psycopg 3
+      # upgrade, rather than in the grouped pull request, which would otherwise fail CI every week.
+      - dependency-name: numpy
+        versions: [">=2.5"]
+      - dependency-name: sqlalchemy
+        versions: [">=2.1"]
+      # celery 5.7.0 requires exactly python-dateutil 2.9.0.post0, so dateutil 4 cannot be installed with it.
+      # Remove when a celery release after 5.7.0 drops the ==2.9.0.post0 pin (celery/celery#11031).
+      - dependency-name: python-dateutil
+        versions: [">=3"]
     assignees: [lukhsaankumar]
 
   # Base images of the two images built on the server.
@@ -59,7 +91,29 @@ updates:
         versions: ["~> 23.0", "~> 25.0"]
     assignees: [lukhsaankumar]
 
-  # Actions used in .github/workflows.
+  # The images docker-compose.yml runs as they are (MySQL, WordPress with its PHP and Apache, Redis). WordPress core
+  # itself comes from home/, so a wordpress image bump changes PHP and Apache, not WordPress. A docker-compose.yml
+  # change is held by deploy.sh --auto, so these are deployed by hand (./deploy.sh) after merging.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 3
+    groups:
+      compose-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # MySQL 8 converts the data directory on first start and can't go back to 5.7: an upgrade done by hand, with
+      # a backup, not a weekly pull request.
+      - dependency-name: mysql
+        update-types: ["version-update:semver-major"]
+    assignees: [lukhsaankumar]
+
+  # Actions used in .github/workflows. They are pinned to commit SHAs with the release in a comment; Dependabot
+  # updates both.
   - package-ecosystem: github-actions
     directory: /
     schedule:

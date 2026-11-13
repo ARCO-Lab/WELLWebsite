@@ -2,8 +2,8 @@
 Contributors: matt, ryan, andy, mdawaffe, tellyworth, josephscott, lessbloat, eoigal, cfinke, automattic, jgs, procifer, stephdau, kbrownkd, bluefuton, derekspringer, lschuyler, andyperdomo, akismetantispam
 Tags: comments, spam, antispam, anti-spam, contact form
 Requires at least: 5.8
-Tested up to: 6.8.1
-Stable tag: 5.4
+Tested up to: 7.1
+Stable tag: 5.7.2
 License: GPLv2 or later
 
 The best anti-spam protection to block spam comments and spam in a contact form. The most trusted antispam solution for WordPress and WooCommerce.
@@ -31,6 +31,44 @@ Upload the Akismet plugin to your blog, activate it, and then enter your Akismet
 1, 2, 3: You're done!
 
 == Changelog ==
+
+= 5.7.2 =
+*Release Date - 19 August 2026*
+
+* Fix Fluent Forms integration on WordPress versions older than 6.1.
+
+= 5.7.1 =
+*Release Date - 17 August 2026*
+
+* Fix link styling and hover previews in the Comments screen for the upcoming WordPress 7.1.
+* Display external links consistently.
+
+= 5.7 =
+*Release Date - 23 April 2026*
+
+* Add Abilities API support for stats and comment checking, including MCP tool integration.
+* Add support for the new Connectors page in the upcoming WordPress 7.0.
+* Improve detection of automated spam submissions on the front end.
+* Make comment history sorting more resilient when called with invalid data.
+* Use wp_get_inline_script_tag() for safer inline script output, and other small security enhancements.
+* Add action hooks to allow customization of the admin page header and footer.
+* Accessibility improvements.
+
+= 5.6 =
+*Release Date - 12 November 2025*
+
+* Improve caching of compatible plugins.
+* Explain the key features of Akismet more clearly on the setup page.
+* Improve the configuration process to better explain errors when they occur.
+* Setup UI cleanup and refresh.
+* Improve messaging related to usage limits.
+
+= 5.5 =
+*Release Date - 15 July 2025*
+
+* Enable webhooks so that Akismet can process comments asynchronously to detect more types of spam.
+* Only include the Akismet widget CSS when the Akismet widget is present
+* Improve contrast/readability for certain UI elements
 
 = 5.4 =
 *Release Date - 7 May 2025*

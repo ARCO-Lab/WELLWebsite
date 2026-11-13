@@ -17,3 +17,8 @@ os.environ["DATABASE_URL"] = "sqlite://"
 # sends to memory only.
 for _name in ("SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_COMPONENT"):
     os.environ[_name] = ""
+
+# Apps built on a PostgreSQL test database would count their requests (utils/traffic.py) and write them from a
+# background thread into whatever request_metrics table exists then, another test's included. tests/test_traffic.py
+# turns it back on for the one test that checks it.
+os.environ["REQUEST_METRICS"] = "0"

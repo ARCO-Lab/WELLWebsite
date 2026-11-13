@@ -1,23 +1,29 @@
-# This file defines the /api/data route for retrieving raw sensor measurements for the dashboard's charts.
-# A range with more readings than the charts can handle is refused with a 413 instead of being loaded.
-# Gunicorn runs 3 sync workers and a worker can't notice that the browser left: once a request passes the
-# count, its worker stays busy until the query and jsonify finish (or until gunicorn's 30 s timeout kills it),
-# even if nobody is waiting for the answer. The row cap is what bounds that time.
+# This file defines the /api/data route: raw sensor readings for a range. The dashboard no longer calls it (charts use
+# /api/series, the wind rose /api/windrose), but it stays available. A range longer than MAX_DAYS is refused with a
+# 400 before anything is counted, and one with more than MAX_ROWS readings with a 413 instead of being loaded.
+# A request can't notice that the browser left: once it passes the count, its gunicorn thread stays busy until
+# the query and jsonify finish, even if nobody is waiting for the answer. The row cap bounds that time, along
+# with DB_STATEMENT_TIMEOUT_MS (config.py), which cancels any one query that runs too long.
 
 import logging
 import os
-from datetime import datetime
+from datetime import timedelta
 
 from flask import request, jsonify
 
 from db.database import db
 from db.models import SensorMeasurement
+from utils.timezone import site_range
 
 log = logging.getLogger(__name__)
 
-# More readings than this make a JSON payload of ~50 MB and take the browser too long to draw; about 90 days
-# of every sensor group. Larger ranges get a 413 that tells the user to narrow the range or use Download.
-DEFAULT_MAX_ROWS = 300_000
+# More readings than this are refused with a 413 that tells the user to narrow the range or use Download. 100,000
+# readings are about 17 MB of JSON and a few hundred MB of Python objects while they are serialised: about a month of
+# every sensor group.
+DEFAULT_MAX_ROWS = 100_000
+# The longest range one request may ask for. Without it, counting the readings of any range (the whole history, say)
+# could keep a thread and the database busy for the whole statement timeout.
+MAX_DAYS = 31
 
 
 def parse_max_rows(value):
@@ -38,11 +44,7 @@ def parse_max_rows(value):
 MAX_ROWS = parse_max_rows(os.getenv("DATA_MAX_ROWS"))
 
 
-# AI ANALYSIS DISABLED: `latest_summaries` was filled by a per-request background thread that summarized the
-# returned rows with pandas (scripts/downsample.py) for the AI routes. Nothing reads it while those routes are
-# off, so commit 5b501eb deleted the thread (not commented out). The parameter stays so the route
-# registration is unchanged.
-def register_data_route(app, latest_summaries):
+def register_data_route(app):
     @app.route("/api/data", methods=["GET"])
     def get_filtered_data():
         # Parse query parameters
@@ -54,11 +56,14 @@ def register_data_route(app, latest_summaries):
             return jsonify({"error": "Missing required parameters"}), 400
 
         try:
-            # Convert to datetime objects
-            start_dt = datetime.fromisoformat(start)
-            end_dt = datetime.fromisoformat(end)
-        except ValueError:
+            # As naive Toronto wall time, like recorded_at: a bound with an offset (...Z) is converted, one without
+            # is taken as local time (utils/timezone.site_range), so the session's TimeZone doesn't matter.
+            start_dt, end_dt = site_range(start, end)
+        except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
+        if end_dt - start_dt > timedelta(days=MAX_DAYS):  # both naive local times now
+            return jsonify({"error": f"Pick a range of at most {MAX_DAYS} days, or use Download for longer ones.",
+                            "max_days": MAX_DAYS}), 400
 
         filters = (
             SensorMeasurement.group_type.in_(group_types),

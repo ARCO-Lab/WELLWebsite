@@ -13,9 +13,8 @@ them the same way, so both layouts end up as identical rows.
 The site and parameter lists below are the only place they are defined for imports; the dashboard's own lists are in
 dashboard/frontend/src/components/config/filters.tsx and must name the same sites and parameters.
 
-Provisional, to confirm with the lab (each is marked "TO CONFIRM WITH THE LAB" where it is decided below, and listed in
-the format page's "To confirm with the lab" section): the site list, the parameter list and units, the below-detection
-convention, and the replicate and QC-flag rules.
+Decision points are marked "TO CONFIRM WITH THE LAB" below: the site list, the parameter list and units, the
+below-detection convention, and the replicate and QC-flag rules.
 """
 import csv
 import difflib
@@ -174,6 +173,8 @@ def parse_site(text):
 
 
 def parse_date(text):
+    """A sampling date, accepted only as YYYY-MM-DD: 03/04/2025 could be either day/month or month/day, so it is
+    refused rather than guessed."""
     text = str(text).strip()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         try:
@@ -462,6 +463,7 @@ def _cell_text(value):
 
 
 def _cell_time(value):
+    # The HH:MM of an Excel date cell that has a time, or "" for a date alone (read as midnight).
     if hasattr(value, "to_pydatetime"):
         value = value.to_pydatetime()
     return value.strftime("%H:%M") if isinstance(value, datetime) and value.time() != time(0, 0) else ""

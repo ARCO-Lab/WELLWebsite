@@ -15,6 +15,33 @@ namespace Automattic\Jetpack\Forms\ContactForm;
 class Feedback_Author {
 
 	/**
+	 * Background colors for the "initials" identity avatars, drawn from the
+	 * Color Studio palette's 50 shades (https://color-studio.blog/).
+	 *
+	 * Only the 50-level shades are safe here: the white initials clear WCAG AA
+	 * against them, and the warmer ones (orange, yellow, green, celadon) sit right
+	 * on the 4.5:1 line. Swapping in a lighter tint would quietly drop below AA.
+	 *
+	 * Keep in sync with IDENTITY_BG_COLORS in
+	 * projects/js-packages/components/components/gravatar/index.tsx, which colors
+	 * the same authors in the Forms dashboard.
+	 *
+	 * Hex values without the leading `#`, as Gravatar's `bg_color` param expects.
+	 *
+	 * @var string[]
+	 */
+	const IDENTITY_BG_COLORS = array(
+		'3858e9', // Blue 50.
+		'984a9c', // Purple 50.
+		'c9356e', // Pink 50.
+		'd63638', // Red 50.
+		'b26200', // Orange 50.
+		'9d6e00', // Yellow 50.
+		'008a20', // Green 50.
+		'008763', // Celadon 50.
+	);
+
+	/**
 	 * The name of the author.
 	 *
 	 * @var string
@@ -36,16 +63,34 @@ class Feedback_Author {
 	private $url;
 
 	/**
+	 * The first name of the author.
+	 *
+	 * @var string
+	 */
+	private $first_name = '';
+
+	/**
+	 * The last name of the author.
+	 *
+	 * @var string
+	 */
+	private $last_name = '';
+
+	/**
 	 * Constructor for Feedback_Author.
 	 *
 	 * @param string $name  The name of the author.
 	 * @param string $email The email of the author.
 	 * @param string $url   The URL of the author.
+	 * @param string $first_name The first name of the author.
+	 * @param string $last_name  The last name of the author.
 	 */
-	public function __construct( $name = '', $email = '', $url = '' ) {
-		$this->name  = $name;
-		$this->email = $email;
-		$this->url   = $url;
+	public function __construct( $name = '', $email = '', $url = '', $first_name = '', $last_name = '' ) {
+		$this->name       = $name;
+		$this->email      = $email;
+		$this->url        = $url;
+		$this->first_name = $first_name;
+		$this->last_name  = $last_name;
 	}
 
 	/**
@@ -56,10 +101,14 @@ class Feedback_Author {
 	 * @return Feedback_Author The Feedback_Author instance.
 	 */
 	public static function from_submission( $post_data, $form ) {
+		$first = isset( $post_data['first-name'] ) ? sanitize_text_field( wp_unslash( $post_data['first-name'] ) ) : '';
+		$last  = isset( $post_data['last-name'] ) ? sanitize_text_field( wp_unslash( $post_data['last-name'] ) ) : '';
 		return new self(
 			self::get_computed_author_info( $post_data, 'name', 'pre_comment_author_name', $form ),
 			self::get_computed_author_info( $post_data, 'email', 'pre_comment_author_email', $form ),
-			self::get_computed_author_info( $post_data, 'url', 'pre_comment_author_url', $form )
+			self::get_computed_author_info( $post_data, 'url', 'pre_comment_author_url', $form ),
+			$first,
+			$last
 		);
 	}
 
@@ -105,18 +154,54 @@ class Feedback_Author {
 	 * @return string The display name of the author.
 	 */
 	public function get_display_name(): string {
-		return empty( $this->name ) ? $this->email : $this->name;
+		$name = $this->get_name();
+		return empty( $name ) ? $this->email : $name;
+	}
+
+	/**
+	 * Pick a stable background color for an email's identity avatar, so the
+	 * same address always renders on the same Color Studio color.
+	 *
+	 * Uses the first 8 hex chars of the normalized email's SHA-256, matching
+	 * `getIdentityBackgroundColor()` in the shared Gravatar component
+	 * (projects/js-packages/components/components/gravatar/index.tsx).
+	 *
+	 * @param string $email Email address the avatar is rendered for.
+	 * @return string A hex color from IDENTITY_BG_COLORS.
+	 */
+	private static function get_identity_background_color( string $email ): string {
+		$hash  = hash( 'sha256', strtolower( trim( $email ) ) );
+		$index = hexdec( substr( $hash, 0, 8 ) ) % count( self::IDENTITY_BG_COLORS );
+
+		return self::IDENTITY_BG_COLORS[ $index ];
 	}
 
 	/**
 	 * Get the avatar URL of the author.
 	 *
-	 * If the email is not set, it will return an empty string.
+	 * Uses Gravatar's "initials" default so that users without a Gravatar
+	 * get a colored circle with their initials — matching the dashboard.
+	 *
+	 * @see https://docs.gravatar.com/api/avatars/images/#default-image
 	 *
 	 * @return string The avatar URL of the author.
 	 */
 	public function get_avatar_url(): string {
-		return ! empty( $this->email ) ? get_avatar_url( $this->email ) : '';
+		if ( empty( $this->email ) ) {
+			return '';
+		}
+
+		$hash = md5( strtolower( trim( $this->email ) ) );
+		$name = $this->get_name();
+
+		if ( empty( $name ) ) {
+			// Use the email prefix as a fallback for initials.
+			$name = strstr( $this->email, '@', true );
+		}
+
+		$bg_color = self::get_identity_background_color( $this->email );
+
+		return "https://gravatar.com/avatar/{$hash}?d=initials&s=96&bg_color={$bg_color}&name=" . rawurlencode( $name );
 	}
 
 	/**
@@ -125,6 +210,16 @@ class Feedback_Author {
 	 * @return string The name of the author.
 	 */
 	public function get_name() {
+		if ( $this->first_name && $this->last_name ) {
+			$raw = trim( $this->first_name . ' ' . $this->last_name );
+			return Contact_Form_Plugin::strip_tags(
+				stripslashes(
+					/** This filter is already documented in core/wp-includes/comment-functions.php */
+					apply_filters( 'pre_comment_author_name', addslashes( $raw ) )
+				)
+			);
+		}
+		// This name value is filtered upstream when class is instantiated.
 		return $this->name;
 	}
 
@@ -144,5 +239,23 @@ class Feedback_Author {
 	 */
 	public function get_url() {
 		return $this->url;
+	}
+
+	/**
+	 * Get the first name of the author (if provided separately).
+	 *
+	 * @return string
+	 */
+	public function get_first_name() {
+		return $this->first_name;
+	}
+
+	/**
+	 * Get the last name of the author (if provided separately).
+	 *
+	 * @return string
+	 */
+	public function get_last_name() {
+		return $this->last_name;
 	}
 }

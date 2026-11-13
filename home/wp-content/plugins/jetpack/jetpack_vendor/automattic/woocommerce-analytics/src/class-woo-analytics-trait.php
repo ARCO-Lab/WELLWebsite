@@ -90,7 +90,7 @@ trait Woo_Analytics_Trait {
 			$products[] = $data;
 		}
 
-		return wp_json_encode( $products );
+		return wp_json_encode( $products, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG );
 	}
 
 	/**
@@ -172,6 +172,7 @@ trait Woo_Analytics_Trait {
 
 		$this->cart_checkout_templates_in_use = wp_is_block_theme()
 			&& class_exists( '\Automattic\WooCommerce\Blocks\Package' )
+			// @phan-suppress-current-line UnusedPluginSuppression @phan-suppress-next-line PhanUndeclaredClassMethod -- If the class exists (as of WooCommerce 8.5.0), the method exists. See also: https://github.com/phan/phan/issues/1204
 			&& version_compare( \Automattic\WooCommerce\Blocks\Package::get_version(), '10.6.0', '>=' );
 
 		// Cart/Checkout *pages* are in use if the templates are not in use. Return their content and do nothing else.
@@ -253,40 +254,64 @@ trait Woo_Analytics_Trait {
 	}
 
 	/**
-	 * Default event properties which should be included with all events.
+	 * Request-scoped — not for page output, see `get_page_common_properties()`.
+	 *
+	 * Default event properties for events the server fires itself on an uncached
+	 * request. See `WC_Analytics_Tracking::get_common_properties()`.
 	 *
 	 * @return array Array of standard event props.
 	 */
 	public function get_common_properties() {
-		$site_info = array(
-			'blog_id'        => Jetpack_Connection::get_site_id(),
-			'store_id'       => defined( '\\WC_Install::STORE_ID_OPTION' ) ? get_option( \WC_Install::STORE_ID_OPTION ) : false,
-			'ui'             => $this->get_user_id(),
-			'url'            => home_url(),
-			'woo_version'    => WC()->version,
-			'wp_version'     => get_bloginfo( 'version' ),
-			'store_admin'    => in_array( array( 'administrator', 'shop_manager' ), wp_get_current_user()->roles, true ) ? 1 : 0,
-			'device'         => wp_is_mobile() ? 'mobile' : 'desktop',
-			'store_currency' => get_woocommerce_currency(),
-			'timezone'       => wp_timezone_string(),
-			'is_guest'       => ( $this->get_user_id() === null ) ? 1 : 0,
-		);
-
+		$common_properties = WC_Analytics_Tracking::get_common_properties();
 		/**
 		 * Allow defining custom event properties in WooCommerce Analytics.
+		 *
+		 * See `WC_Analytics_Tracking::get_properties()` for the full contract
+		 * around `$is_client_supplied`.
 		 *
 		 * @module woocommerce-analytics
 		 *
 		 * @since 12.5
+		 * @since 0.18.0 Added the `$is_client_supplied` parameter. This call site
+		 *               also began passing `$event_name`, which the hook already had.
 		 *
-		 * @param array $properties Array of event props to be filtered.
+		 * @param array  $properties Array of event props to be filtered.
+		 * @param string $event_name Event name. Empty string here: this call builds
+		 *                           common properties, not properties for a specific event.
+		 * @param bool   $is_client_supplied Whether the props came from an untrusted client.
 		 */
 		$properties = apply_filters(
 			'jetpack_woocommerce_analytics_event_props',
-			$site_info
+			$common_properties,
+			'',
+			false
 		);
 
 		return $properties;
+	}
+
+	/**
+	 * Default event properties for the client, excluding anything derived from
+	 * the current request.
+	 *
+	 * Used for the properties embedded in front-end page HTML, which is cached
+	 * and replayed to later visitors. See
+	 * `WC_Analytics_Tracking::get_page_common_properties()`.
+	 *
+	 * @since 0.16.7
+	 *
+	 * @return array Array of standard event props.
+	 */
+	public function get_page_common_properties() {
+		$common_properties = WC_Analytics_Tracking::get_page_common_properties();
+
+		/** This filter is documented in src/class-woo-analytics-trait.php */
+		return apply_filters(
+			'jetpack_woocommerce_analytics_event_props',
+			$common_properties,
+			'',
+			false
+		);
 	}
 
 	/**
@@ -330,7 +355,7 @@ trait Woo_Analytics_Trait {
 	}
 
 	/**
-	 * Gets product categories or varation attributes as a formatted concatenated string
+	 * Gets product categories or variation attributes as a formatted concatenated string
 	 *
 	 * @param object $product WC_Product.
 	 * @return string
@@ -347,7 +372,7 @@ trait Woo_Analytics_Trait {
 		} else {
 			$out        = array();
 			$categories = get_the_terms( $product->get_id(), 'product_cat' );
-			if ( $categories ) {
+			if ( is_array( $categories ) ) {
 				foreach ( $categories as $category ) {
 					$out[] = $category->name;
 				}
@@ -616,9 +641,48 @@ trait Woo_Analytics_Trait {
 	 * - For regular pages, it builds the breadcrumb from the page's ancestors, ordered from top-level to current.
 	 * - For all other cases, it returns the current page's title.
 	 *
+	 * Titles are capped before being returned; see `cap_page_string()`.
+	 *
 	 * @return array The breadcrumb trail as an array of titles.
 	 */
 	private function get_breadcrumb_titles() {
+		return array_map( array( $this, 'cap_page_string' ), $this->build_breadcrumb_titles() );
+	}
+
+	/**
+	 * Limit the length of a caller-influenced string bound for the page output.
+	 *
+	 * Breadcrumb titles come from `post_title`, which core does not bound, so this
+	 * is their only limit. The search term is already blanked by
+	 * `WP_Query::parse_query()` above 1600 bytes; capping it further keeps the
+	 * search pixel URL, which carries the term twice, from being rejected outright.
+	 *
+	 * Truncated values keep an ellipsis so they stay distinguishable downstream
+	 * from a value that genuinely ended at the limit.
+	 *
+	 * @since 0.16.7
+	 *
+	 * @param string $value The value bound for the page output.
+	 * @return string The value, truncated if it exceeded the limit.
+	 */
+	private function cap_page_string( $value ) {
+		$max_length = 200;
+
+		$value = (string) $value;
+
+		if ( mb_strlen( $value ) <= $max_length ) {
+			return $value;
+		}
+
+		return mb_substr( $value, 0, $max_length - 1 ) . '…';
+	}
+
+	/**
+	 * Build the uncapped breadcrumb trail. See `get_breadcrumb_titles()`.
+	 *
+	 * @return array The breadcrumb trail as an array of titles.
+	 */
+	private function build_breadcrumb_titles() {
 		if ( is_front_page() ) {
 			return array( __( 'Home', 'woocommerce-analytics' ) );
 		}

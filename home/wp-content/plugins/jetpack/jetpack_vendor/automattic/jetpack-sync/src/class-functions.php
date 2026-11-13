@@ -11,6 +11,7 @@ use Automattic\Jetpack\Connection\Manager;
 use Automattic\Jetpack\Connection\Urls;
 use Automattic\Jetpack\Constants;
 use Automattic\Jetpack\Modules as Jetpack_Modules;
+use Automattic\Jetpack\Status;
 
 /**
  * Utility functions to generate data synced to wpcom
@@ -71,7 +72,7 @@ class Functions {
 	public static function sanitize_taxonomy( $taxonomy ) {
 
 		// Lets clone the taxonomy object instead of modifing the global one.
-		$cloned_taxonomy = json_decode( wp_json_encode( $taxonomy ) );
+		$cloned_taxonomy = json_decode( wp_json_encode( $taxonomy, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
 
 		// recursive taxonomies are no fun.
 		if ( $cloned_taxonomy === null ) {
@@ -392,7 +393,7 @@ class Functions {
 		 * Return the main network site WPCOM ID for multi-site installs
 		 */
 		$current_network = get_network();
-		switch_to_blog( $current_network->blog_id );
+		switch_to_blog( (int) $current_network->blog_id );
 		$wpcom_blog_id = \Jetpack_Options::get_option( 'id' );
 		restore_current_blog();
 		return $wpcom_blog_id;
@@ -471,7 +472,7 @@ class Functions {
 			if ( $plugin_file_singular === null ) {
 				return $plugins_action_links;
 			}
-			return ( isset( $plugins_action_links[ $plugin_file_singular ] ) ? $plugins_action_links[ $plugin_file_singular ] : null );
+			return ( $plugins_action_links[ $plugin_file_singular ] ?? null );
 		}
 		return array();
 	}
@@ -593,6 +594,24 @@ class Functions {
 	}
 
 	/**
+	 * Returns the site's visibility as a `blog_public` value, or -1 when Jetpack considers the site private.
+	 *
+	 * Lets `jetpack_is_private_site` report the site as private to WordPress.com without changing
+	 * the `blog_public` option itself, since core and other plugins do not expect a -1 there.
+	 *
+	 * @since 5.2.0
+	 *
+	 * @return int -1 when private, otherwise the stored `blog_public` value.
+	 */
+	public static function get_site_visibility() {
+		if ( ( new Status() )->is_private_site() ) {
+			return -1;
+		}
+
+		return (int) get_option( 'blog_public', 1 );
+	}
+
+	/**
 	 * Wraps data in a way so that we can distinguish between objects and array and also prevent object recursion.
 	 *
 	 * @since 1.21.0
@@ -604,7 +623,19 @@ class Functions {
 	 */
 	public static function json_wrap( &$any, $seen_nodes = array() ) {
 		if ( is_object( $any ) ) {
-			$input        = get_object_vars( $any );
+			$input = get_object_vars( $any );
+
+			// WordPress 6.9 introduced lazy-loading of WP_User `roles`, `caps`, and `allcaps` properties.
+			// It also made said properties protected, so we need to access them and set them as keys manually.
+			if ( $any instanceof \WP_User ) {
+				$roles            = $any->roles;
+				$caps             = $any->caps;
+				$allcaps          = $any->allcaps;
+				$input['roles']   = $roles;
+				$input['caps']    = $caps;
+				$input['allcaps'] = $allcaps;
+			}
+
 			$input['__o'] = 1;
 		} else {
 			$input = &$any;

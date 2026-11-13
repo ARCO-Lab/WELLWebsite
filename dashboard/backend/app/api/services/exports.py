@@ -1,15 +1,181 @@
 import csv
+import math
 import os
-from datetime import datetime
+import shutil
+from contextlib import closing, contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_, select
 
+from config import Config
 from db.database import db
-from db.models import SamplingMeasurement, SensorMeasurement
-from utils.timezone import EST_TZ
+from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
+from db.ordering import bytewise, sampling_order
+from utils.timezone import EST_TZ, est_now
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
+
+# Rows fetched from the database at a time while an export is written (and how often its progress is saved).
+STREAM_BATCH_ROWS = 5000
+
+# A text cell starting with one of these is read as a formula by Excel and other spreadsheets, so a value such as
+# "=HYPERLINK(...)" stored in a site or measurement name could run when the CSV is opened. Such cells get a leading
+# apostrophe, which spreadsheets show as plain text. Numbers are never changed: -3.2 stays a number.
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+# Times in the CSV files are written as stored: America/Toronto wall-clock time (EST or EDT, whichever was in effect),
+# ISO 8601 without an offset. The time column's header names the zone, so a file read on its own says how to read
+# its times. (No offset is written because the stored time doesn't say which of the two 01:xx it was in the hour
+# repeated when clocks fall back.) The monthly Borealis file (scripts/upload_data.py) uses the same header.
+TIMESTAMP_HEADER = f"Timestamp ({EST_TZ.key})"
+RECORDED_AT_HEADER = f"recorded_at ({EST_TZ.key})"
+
+
+def safe_csv_cell(value):
+    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def csv_cell(value):
+    """A cell as the CSV files write it: a missing value (None, or NaN as some older rows store) is an empty
+    field, never "nan"; text goes through safe_csv_cell."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return safe_csv_cell(value)
+
+
+class SafeCsvWriter:
+    """csv.writer whose cells are passed through csv_cell."""
+
+    def __init__(self, file_obj):
+        self._writer = csv.writer(file_obj)
+
+    def writerow(self, row):
+        self._writer.writerow([csv_cell(cell) for cell in row])
+
+    def writerows(self, rows):
+        for row in rows:
+            self.writerow(row)
+
+
+@contextmanager
+def _streaming_connection():
+    """A connection of its own that reads results STREAM_BATCH_ROWS at a time (a server-side cursor on
+    PostgreSQL) instead of loading them all. Separate from db.session, whose progress commits would otherwise end
+    the transaction the cursor lives in.
+
+    On PostgreSQL its transaction is REPEATABLE READ, so every query on it sees the same snapshot: the sensor
+    export's header query and its rows agree even while new readings arrive (a range ending "now")."""
+    with db.engine.connect() as conn:
+        if conn.dialect.name == "postgresql":
+            conn = conn.execution_options(isolation_level="REPEATABLE READ")
+        yield conn.execution_options(stream_results=True, yield_per=STREAM_BATCH_ROWS)
+
+
+def _iso(value) -> str:
+    return value.isoformat() if value else ""
+
+
+# A queued job that hasn't started after this long has lost its task (Redis restarted, say), and a running job
+# past the hard time limit has lost its worker process: neither will finish. The hourly cleanup marks them failed,
+# and until then they don't count against the job limits.
+QUEUED_STALE_AFTER = timedelta(hours=1)
+
+
+def running_stale_after() -> timedelta:
+    return timedelta(seconds=Config.EXPORT_HARD_TIME_LIMIT_SECONDS) + timedelta(minutes=5)
+
+
+def _wall_to_utc(wall_time: datetime) -> datetime:
+    """A naive local wall time (as est_now() stores them) as a UTC instant. An ambiguous time (the hour repeated
+    when clocks fall back) is read as the later instant, so a job never looks older than it is."""
+    return wall_time.replace(tzinfo=EST_TZ, fold=1).astimezone(timezone.utc)
+
+
+def job_is_stuck(job, now_utc: Optional[datetime] = None) -> bool:
+    """Whether a queued or running job will never finish (see QUEUED_STALE_AFTER). Ages are real elapsed time:
+    naive wall times would make a job look an hour older or younger across a DST change."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if job.status == "queued":
+        since, limit = job.created_at, QUEUED_STALE_AFTER
+    elif job.status == "running":
+        since, limit = job.started_at or job.created_at, running_stale_after()
+    else:
+        return False
+    return since is not None and now_utc - _wall_to_utc(since) > limit
+
+
+def live_jobs(now_utc: Optional[datetime] = None) -> List:
+    """The export jobs that are queued or running and may still finish. There are only ever a few queued or
+    running rows (the hourly cleanup settles the rest), so the age check is done here rather than in SQL."""
+    candidates = db.session.query(ExportJob).filter(ExportJob.status.in_(("queued", "running"))).all()
+    return [job for job in candidates if not job_is_stuck(job, now_utc)]
+
+
+def jobs_started_since(fingerprint: str, since_utc: datetime) -> int:
+    """How many jobs this visitor started since since_utc, whatever became of them (for the hourly quota). Rows
+    are kept for weeks (tasks/exports.py JOB_ROW_RETENTION), and created_at is naive wall time, so rows from a little
+    before are fetched and their real ages checked here (wall times are an hour off across a DST change)."""
+    wall_cutoff = since_utc.astimezone(EST_TZ).replace(tzinfo=None) - timedelta(hours=1)
+    rows = (db.session.query(ExportJob.created_at, ExportJob.error_message)
+            .filter(ExportJob.requester_fingerprint == fingerprint, ExportJob.created_at >= wall_cutoff).all())
+    # A job that couldn't be queued (Redis down) never ran, so it doesn't use up the quota
+    return sum(1 for created_at, error in rows
+               if _wall_to_utc(created_at) >= since_utc and error != EXPORT_QUEUE_DOWN_MESSAGE)
+
+
+# Shown on the Download panel when a background export can't be queued (the job is marked failed with it too, by
+# api/routes/exports.py). Such a job never ran, so it doesn't count against the visitor's hourly quota.
+EXPORT_QUEUE_DOWN_MESSAGE = ("Large exports are unavailable right now. Please try again in a few minutes, "
+                             "or pick a shorter range to download directly.")
+
+
+# A ready job is handed to another request for the same export only if its file has at least this long left, so
+# the second download can't find it expired, and only if its data can't have changed: its range ended a day before
+# the job was made (readings that old are settled), or it was built in the last REUSE_FRESH.
+REUSE_MIN_LEFT = timedelta(minutes=10)
+REUSE_FRESH = timedelta(minutes=10)
+REUSE_SETTLED = timedelta(days=1)
+
+
+def reusable_job(filters: Dict, now_utc: Optional[datetime] = None):
+    """A ready job whose payload is exactly these normalised filters and whose file can be sent instead of building
+    the same export again, or None."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    end = datetime.fromisoformat(filters["end"])
+    candidates = (db.session.query(ExportJob)
+                  .filter(ExportJob.status == "ready", ExportJob.domain == filters["domain"],
+                          ExportJob.expires_at.isnot(None), ExportJob.artifact_path.isnot(None))
+                  .order_by(ExportJob.completed_at.desc()).all())
+    for job in candidates:
+        if job.payload != filters or _wall_to_utc(job.expires_at) - now_utc < REUSE_MIN_LEFT:
+            continue
+        settled = end < job.created_at - REUSE_SETTLED
+        fresh = job.completed_at is not None and now_utc - _wall_to_utc(job.completed_at) < REUSE_FRESH
+        if (settled or fresh) and os.path.isfile(job.artifact_path):
+            return job
+    return None
+
+
+# What a failed job reports to the page when the cause isn't a validation error.
+EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again later."
+# For an export stopped at the time limit, or found stuck while running.
+EXPORT_TOO_SLOW_MESSAGE = "This export took too long to build. Try a shorter date range."
+
+
+def settle_if_stuck(job, now_utc: Optional[datetime] = None) -> bool:
+    """Mark a queued or running job that will never finish (job_is_stuck) failed, without committing. Returns
+    whether it did. Used by the hourly cleanup, and by the job status route so the page learns at once."""
+    if not job_is_stuck(job, now_utc):
+        return False
+    job.error_message = EXPORT_TOO_SLOW_MESSAGE if job.status == "running" else EXPORT_FAILED_MESSAGE
+    job.status = "failed"
+    job.completed_at = est_now()
+    return True
+
 
 SENSOR_FILTER_CONFIG = {
     "gauges": {
@@ -39,18 +205,26 @@ def normalize_export_payload(payload: Dict) -> Dict:
         raise ValueError("Payload must be a JSON object")
 
     domain = payload.get("domain")
-    if domain not in ALLOWED_DOMAINS:
+    if not isinstance(domain, str) or domain not in ALLOWED_DOMAINS:
         raise ValueError("Invalid domain. Expected 'sensor' or 'sampling'.")
 
     start = payload.get("start")
     end = payload.get("end")
     if not start or not end:
         raise ValueError("Missing required fields: start, end")
+    if not isinstance(start, str) or not isinstance(end, str):
+        raise ValueError("start and end must be ISO datetime strings")
 
     try:
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
-    except ValueError as exc:
+        # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in
+        # the session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone
+        # the export would be hours off. So aware times become site wall-clock time here, before they are compared
+        # (comparing an aware with a naive time raises TypeError). OverflowError: a time such as
+        # 0001-01-01T00:00+05:00 has no local time.
+        start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+    except (ValueError, OverflowError) as exc:
         raise ValueError("Invalid ISO datetime in start/end") from exc
 
     if start_dt > end_dt:
@@ -90,6 +264,29 @@ def normalize_export_payload(payload: Dict) -> Dict:
     return normalized
 
 
+# About how many bytes of CSV one reading takes (a sensor export's wide rows hold several readings each; a
+# sampling row is one reading of ~80 bytes, but sampling exports are small): enough to tell whether a file fits.
+EXPORT_BYTES_PER_ROW = 80
+
+
+def disk_space_error(estimated_rows: int) -> Optional[str]:
+    """None when EXPORTS_DIR's disk can take an export of this many readings and still keep EXPORT_MIN_FREE_MB free;
+    otherwise the message for the user. The database shares this disk on the VM, so a full disk would stop
+    ingestion: running short of space refuses exports rather than filling it."""
+    directory = Config.EXPORTS_DIR
+    while directory and not os.path.isdir(directory):  # not created yet: check the disk it will be on
+        parent = os.path.dirname(directory)
+        directory = parent if parent != directory else ""
+    try:
+        free = shutil.disk_usage(directory or ".").free
+    except OSError:
+        return None  # can't tell: don't refuse every export over it
+    needed = max(0, estimated_rows) * EXPORT_BYTES_PER_ROW + Config.EXPORT_MIN_FREE_MB * 1024 * 1024
+    if free >= needed:
+        return None
+    return "The server is short of disk space, so it can't prepare this export right now. Please try again later."
+
+
 def estimate_rows(payload: Dict) -> int:
     filters = normalize_export_payload(payload)
     if filters["domain"] == "sensor":
@@ -97,6 +294,11 @@ def estimate_rows(payload: Dict) -> int:
     else:
         query = _sampling_query(filters)
     return int(query.count())
+
+
+def _site_naive(ts: datetime) -> datetime:
+    """An aware time as naive site (America/Toronto) wall-clock time; naive times are taken as site time already."""
+    return ts.astimezone(EST_TZ).replace(tzinfo=None) if ts.tzinfo is not None else ts
 
 
 def _local_date(value: str) -> str:
@@ -141,18 +343,18 @@ def write_export_csv(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     if filters["domain"] == "sensor":
-        rows_written = _write_sensor_frontend_style_csv(filters, output_path)
+        rows_written = _write_sensor_frontend_style_csv(filters, output_path, progress_callback, total)
         if progress_callback:
             progress_callback(rows_written, total)
         return rows_written
 
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
+        writer = SafeCsvWriter(csv_file)
         writer.writerow(
             [
                 "domain",
-                "recorded_at",
+                RECORDED_AT_HEADER,
                 "group_type",
                 "station_id",
                 "creek_id",
@@ -163,23 +365,26 @@ def write_export_csv(
             ]
         )
 
-        for row in iter_export_rows(filters):
-            writer.writerow(
-                [
-                    row.get("domain", ""),
-                    row.get("recorded_at", ""),
-                    row.get("group_type", ""),
-                    row.get("station_id", ""),
-                    row.get("creek_id", ""),
-                    row.get("site_id", ""),
-                    row.get("measurement_type", ""),
-                    row.get("value", ""),
-                    row.get("unit", ""),
-                ]
-            )
-            rows_written += 1
-            if progress_callback and rows_written % 5000 == 0:
-                progress_callback(rows_written, total)
+        # closing(): if writing fails part way, the generator is closed at once, which returns its connection
+        # instead of leaving it checked out mid-transaction until garbage collection.
+        with closing(iter_export_rows(filters)) as rows:
+            for row in rows:
+                writer.writerow(
+                    [
+                        row.get("domain", ""),
+                        row.get("recorded_at", ""),
+                        row.get("group_type", ""),
+                        row.get("station_id", ""),
+                        row.get("creek_id", ""),
+                        row.get("site_id", ""),
+                        row.get("measurement_type", ""),
+                        row.get("value", ""),
+                        row.get("unit", ""),
+                    ]
+                )
+                rows_written += 1
+                if progress_callback and rows_written % STREAM_BATCH_ROWS == 0:
+                    progress_callback(rows_written, total)
 
     if progress_callback:
         progress_callback(rows_written, total)
@@ -188,30 +393,35 @@ def write_export_csv(
 
 
 def iter_export_rows(filters: Dict) -> Iterable[Dict]:
-    if filters["domain"] == "sensor":
-        query = _sensor_query(filters)
-        for r in query.order_by(SensorMeasurement.recorded_at).yield_per(5000):
-            yield {
-                "domain": "sensor",
-                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else "",
-                "group_type": r.group_type or "",
-                "station_id": r.station_id or "",
-                "creek_id": "",
-                "site_id": "",
-                "measurement_type": r.measurement_type or "",
-                "value": r.value,
-                "unit": r.unit or "",
-            }
+    """The export's readings, one dict each, in time order, streamed from the database (_streaming_connection)."""
+    sensor = filters["domain"] == "sensor"
+    if sensor:
+        model = SensorMeasurement
+        columns = (model.recorded_at, model.group_type, model.station_id, model.measurement_type, model.value,
+                   model.unit)
+        conditions = _sensor_conditions(filters)
     else:
-        query = _sampling_query(filters)
-        for r in query.order_by(SamplingMeasurement.recorded_at).yield_per(5000):
+        model = SamplingMeasurement
+        columns = (model.recorded_at, model.creek_id, model.site_id, model.measurement_type, model.value, model.unit)
+        conditions = _sampling_conditions(filters)
+
+    with _streaming_connection() as conn:
+        # Rows that share a time come in a fixed order: sampling by site, then parameter (db/ordering.py); sensor
+        # readings by station, then measurement.
+        if sensor:
+            order = (model.recorded_at, bytewise(model.station_id, conn.dialect.name),
+                     bytewise(model.measurement_type, conn.dialect.name))
+        else:
+            order = sampling_order(conn.dialect.name)
+        statement = select(*columns).where(*conditions).order_by(*order)
+        for r in conn.execute(statement):
             yield {
-                "domain": "sampling",
-                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else "",
-                "group_type": "",
-                "station_id": "",
-                "creek_id": r.creek_id or "",
-                "site_id": r.site_id or "",
+                "domain": filters["domain"],
+                "recorded_at": _iso(r.recorded_at),
+                "group_type": (r.group_type or "") if sensor else "",
+                "station_id": (r.station_id or "") if sensor else "",
+                "creek_id": "" if sensor else (r.creek_id or ""),
+                "site_id": "" if sensor else (r.site_id or ""),
                 "measurement_type": r.measurement_type or "",
                 "value": r.value,
                 "unit": r.unit or "",
@@ -219,13 +429,21 @@ def iter_export_rows(filters: Dict) -> Iterable[Dict]:
 
 
 def _sensor_query(filters: Dict):
+    return db.session.query(SensorMeasurement).filter(*_sensor_conditions(filters))
+
+
+def _sampling_query(filters: Dict):
+    return db.session.query(SamplingMeasurement).filter(*_sampling_conditions(filters))
+
+
+def _sensor_conditions(filters: Dict) -> List:
     start_dt = datetime.fromisoformat(filters["start"])
     end_dt = datetime.fromisoformat(filters["end"])
 
-    query = db.session.query(SensorMeasurement).filter(
+    conditions = [
         SensorMeasurement.recorded_at.between(start_dt, end_dt),
         SensorMeasurement.group_type.in_(filters["group_types"]),
-    )
+    ]
 
     group_measurement_types = filters.get("group_measurement_types") or {}
     if group_measurement_types:
@@ -243,39 +461,37 @@ def _sensor_query(filters: Dict):
                 per_group_clauses.append(SensorMeasurement.group_type == group)
 
         if per_group_clauses:
-            query = query.filter(or_(*per_group_clauses))
+            conditions.append(or_(*per_group_clauses))
     elif filters.get("measurement_types"):
-        query = query.filter(SensorMeasurement.measurement_type.in_(filters["measurement_types"]))
+        conditions.append(SensorMeasurement.measurement_type.in_(filters["measurement_types"]))
 
     if filters.get("station_ids"):
-        query = query.filter(
+        conditions.append(
             or_(
                 SensorMeasurement.group_type != "Logger",
                 SensorMeasurement.station_id.in_(filters["station_ids"]),
             )
         )
 
-    return query
+    return conditions
 
 
-def _sampling_query(filters: Dict):
+def _sampling_conditions(filters: Dict) -> List:
     start_dt = datetime.fromisoformat(filters["start"])
     end_dt = datetime.fromisoformat(filters["end"])
 
-    query = db.session.query(SamplingMeasurement).filter(
-        SamplingMeasurement.recorded_at.between(start_dt, end_dt)
-    )
+    conditions = [SamplingMeasurement.recorded_at.between(start_dt, end_dt)]
 
     if filters.get("creek_ids"):
-        query = query.filter(SamplingMeasurement.creek_id.in_(filters["creek_ids"]))
+        conditions.append(SamplingMeasurement.creek_id.in_(filters["creek_ids"]))
 
     if filters.get("measurement_types"):
-        query = query.filter(SamplingMeasurement.measurement_type.in_(filters["measurement_types"]))
+        conditions.append(SamplingMeasurement.measurement_type.in_(filters["measurement_types"]))
 
     if filters.get("site_ids"):
-        query = query.filter(SamplingMeasurement.site_id.in_(filters["site_ids"]))
+        conditions.append(SamplingMeasurement.site_id.in_(filters["site_ids"]))
 
-    return query
+    return conditions
 
 
 def _as_string_list(value):
@@ -302,51 +518,82 @@ def _as_group_metric_map(value):
     return normalized
 
 
-def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
+def _sensor_columns_summary(conn, conditions) -> Dict:
+    """What the header of a sensor export needs, from one GROUP BY query instead of every row: the metrics seen in
+    each group, the logger stations seen, and each metric's unit (the one of its latest reading)."""
+    latest = func.max(SensorMeasurement.recorded_at)
+    summary = conn.execute(
+        select(
+            SensorMeasurement.group_type,
+            SensorMeasurement.measurement_type,
+            SensorMeasurement.station_id,
+            SensorMeasurement.unit,
+            latest,
+        )
+        .where(*conditions)
+        .group_by(
+            SensorMeasurement.group_type,
+            SensorMeasurement.measurement_type,
+            SensorMeasurement.station_id,
+            SensorMeasurement.unit,
+        )
+    ).all()
+
+    metrics = {"Weather": set(), "Quality": set(), "Logger": set()}
+    logger_stations = set()
+    unit_seen_at = {}  # metric -> (latest reading, unit)
+    for group_type, measurement_type, station_id, unit, seen_at in summary:
+        metric = measurement_type or ""
+        unit = unit or ""
+        if metric not in unit_seen_at or (seen_at, unit) > unit_seen_at[metric]:
+            unit_seen_at[metric] = (seen_at, unit)
+        if group_type in ("Weather", "Quality"):
+            metrics[group_type].add(metric)
+        elif group_type == "Logger" and station_id:
+            metrics["Logger"].add(metric)
+            logger_stations.add(str(station_id))
+
+    return {
+        "metrics": metrics,
+        "logger_stations": logger_stations,
+        "units_by_metric": {metric: unit for metric, (_, unit) in unit_seen_at.items()},
+    }
+
+
+def _write_sensor_frontend_style_csv(
+    filters: Dict,
+    output_path: str,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    total: int = 0,
+) -> int:
+    # The header query and the rows share one connection, and so one snapshot (_streaming_connection).
+    with _streaming_connection() as conn:
+        return _write_sensor_csv(conn, filters, output_path, progress_callback, total)
+
+
+def _write_sensor_csv(
+    conn,
+    filters: Dict,
+    output_path: str,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    total: int = 0,
+) -> int:
     """
     Export sensor data matching the exact CSV format from upload_data.py
     Structure: [ID, Timestamp, Weather section, blank, Quality section, blank, Logger section]
     Each section has Group label, then metrics. Logger section repeats Sensor+metrics for each logger.
+
+    Readings are streamed in time order, STREAM_BATCH_ROWS at a time, and each CSV row is written as soon as its
+    timestamp's readings are all in, so memory stays flat however long the range. Returns the readings exported.
     """
     requested_groups = set(filters.get("group_types", []))
-
-    query = _sensor_query(filters)
-    records = query.order_by(SensorMeasurement.recorded_at).all()
-
-    # Build lookup dictionaries by group and timestamp
-    weather_data = {}  # (timestamp, metric) -> value
-    quality_data = {}  # (timestamp, metric) -> value
-    logger_data = {}   # (timestamp, station_id, metric) -> value
-    
-    all_timestamps = set()
-    all_weather_metrics = set()
-    all_quality_metrics = set()
-    all_logger_metrics = set()
-    all_logger_stations = set()
-    units_by_metric = {}
-
-    # First pass: collect all data and organize by group
-    for record in records:
-        timestamp = record.recorded_at.isoformat() if record.recorded_at else ""
-        metric = record.measurement_type or ""
-        value = record.value
-        unit = record.unit or ""
-        group_type = record.group_type or ""
-        station_id = str(record.station_id or "") if record.station_id else ""
-
-        all_timestamps.add(timestamp)
-        units_by_metric[metric] = unit
-
-        if group_type == "Weather" and "Weather" in requested_groups:
-            weather_data[(timestamp, metric)] = value
-            all_weather_metrics.add(metric)
-        elif group_type == "Quality" and "Quality" in requested_groups:
-            quality_data[(timestamp, metric)] = value
-            all_quality_metrics.add(metric)
-        elif group_type == "Logger" and "Logger" in requested_groups and station_id:
-            logger_data[(timestamp, station_id, metric)] = value
-            all_logger_metrics.add(metric)
-            all_logger_stations.add(station_id)
+    conditions = _sensor_conditions(filters)
+    summary = _sensor_columns_summary(conn, conditions)
+    units_by_metric = summary["units_by_metric"]
+    all_weather_metrics = summary["metrics"]["Weather"]
+    all_quality_metrics = summary["metrics"]["Quality"]
+    all_logger_metrics = summary["metrics"]["Logger"]
+    all_logger_stations = summary["logger_stations"]
 
     # Set up which groups we should include (based on request, not just what has data)
     include_weather = "Weather" in requested_groups
@@ -376,89 +623,108 @@ def _write_sensor_frontend_style_csv(filters: Dict, output_path: str) -> int:
         extras = sorted(all_logger_stations.difference(set(configured_ids)))
         effective_logger_stations.extend(extras)
 
+    def metric_header(metric):
+        unit = units_by_metric.get(metric, "")
+        unit = unit.replace(" asl", "").strip() if unit else ""
+        return f"{metric}: {unit}" if unit else metric
+
     # Build header row - ALWAYS include requested groups in the output order: Weather, Quality, Logger
-    headers = ["ID", "Timestamp"]
-    
+    headers = ["ID", TIMESTAMP_HEADER]
+
     # Weather section: Include if requested (even if no data)
     if include_weather:
         headers.append("Group")
-        for metric in weather_metrics:
-            unit = units_by_metric.get(metric, "")
-            unit = unit.replace(" asl", "").strip() if unit else ""
-            headers.append(f"{metric}: {unit}" if unit else metric)
-    
+        headers.extend(metric_header(metric) for metric in weather_metrics)
+
     # Blank column separator between Weather and Quality
     if include_quality and include_weather:
         headers.append("")
-    
+
     # Quality section: Include if requested (even if no data)
     if include_quality:
         headers.append("Group")
-        for metric in quality_metrics:
-            unit = units_by_metric.get(metric, "")
-            unit = unit.replace(" asl", "").strip() if unit else ""
-            headers.append(f"{metric}: {unit}" if unit else metric)
-    
+        headers.extend(metric_header(metric) for metric in quality_metrics)
+
     # Blank column separator between Quality and Logger
     if include_logger and (include_weather or include_quality):
         headers.append("")
-    
+
     # Logger section: Include if requested (even if no data)
     if include_logger:
         headers.append("Group")
-        if effective_logger_stations:
-            for station_id in effective_logger_stations:
-                headers.append("Sensor")
-                for metric in logger_metrics:
-                    unit = units_by_metric.get(metric, "")
-                    unit = unit.replace(" asl", "").strip() if unit else ""
-                    headers.append(f"{metric}: {unit}" if unit else metric)
+        for _ in effective_logger_stations:
+            headers.append("Sensor")
+            headers.extend(metric_header(metric) for metric in logger_metrics)
 
+    def csv_row(row_num, timestamp, weather_data, quality_data, logger_data):
+        row = [row_num, timestamp]
+        if include_weather:
+            row.append("Weather")
+            row.extend(weather_data.get(metric, "") for metric in weather_metrics)
+        if include_quality and include_weather:
+            row.append("")
+        if include_quality:
+            row.append("Quality")
+            row.extend(quality_data.get(metric, "") for metric in quality_metrics)
+        if include_logger and (include_weather or include_quality):
+            row.append("")
+        if include_logger:
+            row.append("Logger")
+            for station_id in effective_logger_stations:
+                row.append(_get_logger_label(station_id))
+                row.extend(logger_data.get((station_id, metric), "") for metric in logger_metrics)
+        return row
+
+    # Readings of one time in a fixed order (station, then metric): where two stations of a group report the same
+    # metric, the cell is always the same one's.
+    readings = (
+        select(
+            SensorMeasurement.recorded_at,
+            SensorMeasurement.group_type,
+            SensorMeasurement.station_id,
+            SensorMeasurement.measurement_type,
+            SensorMeasurement.value,
+        )
+        .where(*conditions)
+        .order_by(SensorMeasurement.recorded_at, bytewise(SensorMeasurement.station_id, conn.dialect.name),
+                  bytewise(SensorMeasurement.measurement_type, conn.dialect.name))
+    )
+
+    records = 0
+    row_num = 0
     with open(output_path, "w", newline="", encoding="utf-8") as file_obj:
-        writer = csv.writer(file_obj)
+        writer = SafeCsvWriter(file_obj)
         writer.writerow(headers)
 
-        # Write data rows
-        sorted_timestamps = sorted(all_timestamps)
-        for row_num, timestamp in enumerate(sorted_timestamps, 1):
-            csv_row = [row_num, timestamp]
+        # The readings of one timestamp: metric -> value for Weather and Quality, (station, metric) -> value for
+        # loggers. Rows arrive ordered by time, so a new timestamp means the previous one is complete.
+        current = None
+        weather_data, quality_data, logger_data = {}, {}, {}
+        for recorded_at, group_type, station_id, measurement_type, value in conn.execute(readings):
+            if records == 0 or recorded_at != current:
+                if records:
+                    row_num += 1
+                    writer.writerow(csv_row(row_num, _iso(current), weather_data, quality_data, logger_data))
+                current = recorded_at
+                weather_data, quality_data, logger_data = {}, {}, {}
 
-            # Weather section data
-            if include_weather:
-                csv_row.append("Weather")
-                for metric in weather_metrics:
-                    csv_row.append(weather_data.get((timestamp, metric), ""))
+            records += 1
+            metric = measurement_type or ""
+            if group_type == "Weather" and include_weather:
+                weather_data[metric] = value
+            elif group_type == "Quality" and include_quality:
+                quality_data[metric] = value
+            elif group_type == "Logger" and include_logger and station_id:
+                logger_data[(str(station_id), metric)] = value
 
-            # Blank separator
-            if include_quality and include_weather:
-                csv_row.append("")
+            if progress_callback and records % STREAM_BATCH_ROWS == 0:
+                progress_callback(records, total)
 
-            # Quality section data
-            if include_quality:
-                csv_row.append("Quality")
-                for metric in quality_metrics:
-                    csv_row.append(quality_data.get((timestamp, metric), ""))
+        if records:
+            row_num += 1
+            writer.writerow(csv_row(row_num, _iso(current), weather_data, quality_data, logger_data))
 
-            # Blank separator
-            if include_logger and (include_weather or include_quality):
-                csv_row.append("")
-
-            # Logger section data
-            if include_logger:
-                csv_row.append("Logger")
-                for station_id in effective_logger_stations:
-                    csv_row.append(_get_logger_label(station_id))
-                    for metric in logger_metrics:
-                        csv_row.append(logger_data.get((timestamp, station_id, metric), ""))
-
-            if len(csv_row) < len(headers):
-                csv_row.extend([""] * (len(headers) - len(csv_row)))
-            elif len(csv_row) > len(headers):
-                csv_row = csv_row[: len(headers)]
-
-            writer.writerow(csv_row)
-
-    return len(records)
+    return records
 
 
 def _get_station_coords(station_id: str):
