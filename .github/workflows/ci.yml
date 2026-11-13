@@ -243,7 +243,7 @@ jobs:
   static:
     name: Lint Python, shell and compose
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -320,6 +320,12 @@ jobs:
             php -v | head -1; n=0; bad=0
             for f in $(find /theme -name "*.php"); do n=$((n + 1)); php -l "$f" || bad=1; done
             echo "$n files checked"; exit $bad'
+
+      # A throwaway WordPress install in the compose image, with this commit's home/ and wordpress/ files: the files
+      # Apache refuses, PHP under uploads, the security headers, and the must-use plugin's hiding of account names,
+      # failed-login limit, comments and version.
+      - name: WordPress hardening on a throwaway install
+        run: bash .github/scripts/test_wordpress_hardening.sh
 
   deploy-script:
     name: Deploy script

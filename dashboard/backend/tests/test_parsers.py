@@ -142,6 +142,88 @@ class BadValues(unittest.TestCase):
         self.assertEqual([(r.measurement_type, r.value) for r in rows], [("Turbidity", 1.5)])
 
 
+class BadRecords(unittest.TestCase):
+    """A record without a usable timestamp (or otherwise malformed) is skipped and counted, never failing the rest."""
+
+    def rows(self, fn, *args):
+        import contextlib
+        import io
+        out = io.StringIO()
+        skipped = parsers.SkippedRecords(args[-1])
+        with contextlib.redirect_stdout(out):
+            rows = fn(*args[:-1], skipped=skipped)
+        self.assertEqual(out.getvalue(), "")   # a caller that passes its own counter reports it
+        with contextlib.redirect_stdout(out):
+            skipped.report()
+        return rows, skipped, out.getvalue()
+
+    def test_licor_time_needs_an_offset(self):
+        self.assertEqual(parsers.licor_time("2026-11-10 04:00:00Z"), dt.datetime(2026, 11, 10, 4, tzinfo=UTC))
+        self.assertEqual(parsers.licor_time("2026-11-10T00:00:00-04:00"), dt.datetime(2026, 11, 10, 4, tzinfo=UTC))
+        # No offset: LI-COR sends UTC, but the zone isn't guessed; such a time would be stored hours off.
+        for raw, message in (("2026-11-10 04:00:00", "has no UTC offset"), (None, "unreadable timestamp None"),
+                             ("10/11/2026 4:00", "unreadable timestamp"), (1762747200, "unreadable timestamp"),
+                             ("x" * 100, r"^unreadable timestamp 'x{36}\.\.\.$")):   # shortened for the log
+            with self.assertRaisesRegex(parsers.BadRecord, message):
+                parsers.licor_time(raw)
+
+    def test_licor_rows_skip_and_count_unreadable_records(self):
+        records = [licor("21948438-1", 5.0, ts=None), licor("22154270-1", 9.1),
+                   licor("21948438-2", 80.0, kind="RH", unit="%", ts="garbled"),
+                   licor("22168653-3", 4.4, kind="Water Temperature", ts="2026-11-10 04:00:00"),   # no offset
+                   "not a record", licor("22168654-3", 4.4, kind="Water Temperature")]
+        rows, skipped, out = self.rows(parsers.licor_rows, records, {"Weather", "Logger"}, STATION, UTC, "LI-COR")
+        self.assertEqual(sorted((k[0], k[1]) for k in rows),
+                         [("22051538", "Soil Temperature"), ("2577532", "Water Temperature")])
+        self.assertEqual(skipped.count, 4)
+        self.assertEqual(skipped.summary(), "4 unreadable record(s), e.g. unreadable timestamp None from sensor "
+                                            "'21948438-1'")
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1)   # one line however many were skipped
+        self.assertTrue(lines[0].startswith("[WARN] LI-COR: skipped 4 unreadable record(s)"))
+
+    def test_licor_rows_report_on_their_own_without_a_counter(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rows = parsers.licor_rows([licor("21948438-1", 5.0, ts="2026-11-10 04:00:00")], {"Weather"}, STATION, UTC)
+        self.assertEqual(rows, {})
+        self.assertIn("has no UTC offset", out.getvalue())
+
+    def test_quality_rows_skip_and_count_malformed_entries(self):
+        good = {"timestamp": "2026-11-09 02:00:00", "values": [{"parameterId": 125001, "value": "8.5"}]}
+        entries = [{"timestamp": None, "values": []}, {"timestamp": "yesterday", "values": []},
+                   {"timestamp": "2026-11-09 02:10:00", "values": [{"value": "1.0"}]},   # no parameterId
+                   {"values": []}, {"timestamp": "2026-11-09 02:20:00", "values": None}, good]
+        rows, skipped, out = self.rows(parsers.quality_rows, entries, "4501", UTC, "WQData")
+        self.assertEqual([(k[1], r["value"]) for k, r in rows.items()], [("Water Temperature", 8.5)])
+        self.assertEqual(skipped.count, 5)
+        self.assertIn("e.g. malformed record (TypeError) at None", skipped.summary())
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertNotIn("values", out)   # an example names the problem and the time, never the whole record
+
+    def test_one_bad_reading_keeps_the_other_readings_of_its_time(self):
+        entry = {"timestamp": "2026-11-09 02:00:00", "values": [
+            {"parameterId": 125001, "value": "8.5"}, {"value": "1.0"}, "garbage", {"parameterId": [1], "value": "2"},
+            {"parameterId": 125008, "value": "1.5"}]}
+        rows, skipped, out = self.rows(parsers.quality_rows, [entry], "4501", UTC, "WQData")
+        self.assertEqual(sorted((k[1], r["value"]) for k, r in rows.items()),
+                         [("Turbidity", 1.5), ("Water Temperature", 8.5)])
+        self.assertEqual(skipped.count, 3)   # each bad reading counted
+        self.assertEqual(skipped.sample, "malformed record (KeyError) at '2026-11-09 02:00:00'")
+        self.assertEqual(len(out.splitlines()), 1)
+        # Called directly (no counter), the bad readings are still skipped.
+        self.assertEqual(len(parsers.parse_quality_entry(entry, "4501")), 2)
+
+    def test_nothing_skipped_says_nothing(self):
+        skipped = parsers.SkippedRecords("WQData")
+        self.assertIsNone(skipped.summary())
+        logs = []
+        skipped.report(logs.append)
+        self.assertEqual(logs, [])
+
+
 class Units(unittest.TestCase):
     """A LI-COR sensor reporting in another unit than expected is skipped and reported, not stored mislabelled."""
 

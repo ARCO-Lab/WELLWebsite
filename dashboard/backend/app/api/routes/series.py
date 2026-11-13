@@ -29,31 +29,45 @@
 # tile's start or one second before it (what the dashboard sends), as times without an offset; at most MAX_TILES
 # tiles. Anything else gets a 400 (check_tiles). Without a bucket, the bucket is picked from the span (pick_bucket)
 # and any range is accepted; either way a request for more than MAX_BUCKETS buckets per series is refused with a 400.
+# start and end must fall in the years utils/timezone.FIRST_YEAR to LAST_YEAR.
 # series, station_id, measurement_type: only these series, so one chart fetches only what it draws. `series` names
 # whole series ("Logger|2577531|Water Temperature") and stands in for group_type; station_id and measurement_type
 # narrow the groups asked for. Each can be repeated, up to MAX_FILTERS values; a value may not contain "," or "|"
-# (no station or measurement name does, and a key is split on "|").
+# (no station or measurement name does, and a key is split on "|"), nor a control character (api/validation.py).
+# Values that name no existing series (api/services/catalog.py) are dropped before anything else, so they cost no
+# query and no cache entry; a filter left with no values matches nothing, and the answer is an empty list of series.
 #
-# Caching: start is rounded up and end down to a 10-minute mark. Readings fall on those marks, so this selects the
-# same readings as the request (no bucket is added at either edge). Only tile requests are kept in Redis
-# (utils/response_cache.py): there are only so many tiles, so the cache can't be filled by asking for ranges shifted
-# a few minutes at a time, which any range without a bucket could do. The answer is kept for an hour for a range that
-# ended over a day ago, 5 minutes for one that ended over an hour ago, 1 minute otherwise, under a key that is a hash
-# of all its parameters.
+# Caching: only tile requests use Redis (utils/response_cache.py), and they store each series' part of each tile on
+# its own, under (bucket, tile start, series) (tile_cache_key). A request lists the series it covers (from
+# api/services/catalog.py, narrowed by its groups and filters), reads all their tile entries in one round trip,
+# queries only the series and tiles that are missing, stores those, and builds the answer from the entries. So the
+# number of keys is bounded by series x tiles, however the series are combined in requests: a dashboard card asks
+# for its series together, and another card or a made-up combination of the same series reuses their entries. An
+# entry is kept for an hour once its tile ended over a day ago, 5 minutes once it ended over an hour ago, 1 minute
+# otherwise; an empty entry for a minute only. A tile that ends before its group's earliest reading or starts after
+# now is answered empty with no query, no Redis read and no entry, so asking for years without data fills nothing.
+# A series that is new since the catalog was last read (at most catalog.REFRESH_S ago) is missing from the answer
+# until then.
+# Requests without a bucket are never stored: they can be any range, shifted a few minutes at a time, so storing them
+# would let anyone fill Redis. The dashboard asks for tiles only; the bucket-less form is for scripts such as the load
+# test, and the dashboard's proxy counts it as a slow request (lib/rateLimit.ts). Its start is rounded up and its end
+# down to a 10-minute mark, where readings fall, so it selects the same readings.
 # Browsers may keep an answer for a range that ended over a day ago for BROWSER_SETTLED_AGE, and any other for a
-# minute at most, and no longer than the cached copy has left (see browser_cache_control).
+# minute at most, and no longer than the cached copies have left (see browser_cache_control).
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import current_app, jsonify, request
 from sqlalchemy import text
 
+from api.services.catalog import earliest_readings, known_series
+from api.validation import bad_text
 from db.database import db
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ
+from utils.timezone import EST_TZ, check_site_years
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
 LADDER = (600, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600)
@@ -138,6 +152,15 @@ def tile_start(t, bucket):
     return t - (t - WALL_EPOCH) % tile
 
 
+def whole_buckets(start, end, bucket):
+    """A range (naive wall-clock times) widened to whole buckets: start back to its bucket's start, end on to one
+    second before the next bucket's, so every range within the same buckets shares one cache key (/api/windrose)."""
+    size = timedelta(seconds=bucket)
+    first = start - (start - WALL_EPOCH) % size
+    last = end - (end - WALL_EPOCH) % size + size - ONE_SECOND
+    return first, last
+
+
 def check_tiles(start, end, bucket):
     """A tile request's range (naive wall-clock times) -> (start, end), with an end on a tile's start moved to one
     second before it, so both ways of asking for the same tiles share a cache key. ValueError, with the message for
@@ -173,14 +196,107 @@ def browser_cache_control(end, now, seconds_left=None):
     return f"public, max-age={age}"
 
 
-def cache_key(bucket, start, end, groups, filters=None):
-    """Everything the answer depends on (the query's parameters, after snap_range), as a hash of their JSON: an
-    unambiguous encoding, so no request can produce another's key (joining values with separators let a single
-    value containing one stand for two values, and store its empty answer for a real tile)."""
-    filters = filters or {}
-    parts = [bucket, start.isoformat(), end.isoformat(), sorted(set(groups))]
-    parts += [sorted(set(filters[name])) if filters.get(name) else None for name in ("st", "m", "k")]
-    return "series:v4:" + hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+def tile_cache_key(bucket, start, series):
+    """The cache key of one series' part of the tile of `bucket` buckets starting at `start` (naive wall-clock time);
+    `series` is (group_type, station_id, measurement_type). A hash of their JSON: an unambiguous encoding, so no
+    series can produce another's key (joining values with separators let a single value containing one stand for
+    two)."""
+    parts = [bucket, start.isoformat(), list(series)]
+    return "series:tile:v1:" + hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+
+def _bytewise(series):
+    return tuple(part.encode() for part in series)
+
+
+def covered_series(groups, filters):
+    """The series (group_type, station_id, measurement_type) a request covers: those in the catalog in its groups
+    that every filter it has allows, in byte order of their names."""
+    st, m, k = (set(filters[name]) if filters.get(name) else None for name in ("st", "m", "k"))
+    return sorted((s for s in known_series() if s[0] in groups and (st is None or s[1] in st)
+                   and (m is None or s[2] in m) and (k is None or "|".join(s) in k)), key=_bytewise)
+
+
+def _tile_of(t_ms, bucket):
+    """The start of the tile (naive wall-clock time) a row's bucket time `t` (epoch ms, as the query returns it)
+    falls in. Converting the instant back to wall-clock time gives the bucket's naive start again, also inside the
+    hour repeated when clocks fall back."""
+    local = datetime.fromtimestamp(t_ms / 1000, timezone.utc).astimezone(EST_TZ).replace(tzinfo=None)
+    return tile_start(local, bucket)
+
+
+ARRAYS = ("t", "avg", "min", "max", "n")
+
+
+def tile_entry(pieces):
+    """One series' part of one tile, as stored: columnar()'s objects for it (one per unit, usually one), each with its
+    arrays as JSON text without the brackets. Building the answer then joins text instead of parsing and writing
+    every number again, which for 8 tiles of 25 series (2.7 MB) took about 0.2 s of CPU per cached request."""
+    return json.dumps([{"head": {k: v for k, v in p.items() if k not in ARRAYS},
+                        **{f: json.dumps(p[f], separators=(",", ":"))[1:-1] for f in ARRAYS}} for p in pieces],
+                      separators=(",", ":")).encode()
+
+
+def series_json(series_pieces):
+    """The JSON text of one series object of the answer, from its tiles' stored pieces in time order (all of one
+    unit): its head, then each array with the tiles' parts joined."""
+    head = json.dumps(series_pieces[0]["head"], separators=(",", ":"))[:-1]
+    arrays = ",".join(f'"{f}":[' + ",".join(p[f] for p in series_pieces if p[f]) + "]" for f in ARRAYS)
+    return f"{head},{arrays}}}"
+
+
+def tile_answer(bucket, start, end, series, now):
+    """The JSON text of the `series` list of a tile request's answer (tiles of `bucket` from `start` to `end`, from
+    check_tiles) built from the per-series tile entries (see "Caching" at the top), and the fewest seconds any entry
+    read from Redis has left (None when none was)."""
+    size = timedelta(seconds=TILE_BUCKETS * bucket)
+    tiles = []
+    t = start
+    while t <= end:
+        tiles.append(t)
+        t += size
+    # A tile that ends before its group's earliest reading, or starts after now, can hold nothing: it is answered
+    # empty, with no query and no cache entry, so asking for years without data costs nothing and fills nothing.
+    earliest = earliest_readings()
+    parts = {(tile, s): [] for tile in tiles for s in series
+             if s[0] not in earliest or tile + size - ONE_SECOND < earliest[s[0]] or tile > now}
+    keys = {(tile, s): tile_cache_key(bucket, tile, s) for tile in tiles for s in series if (tile, s) not in parts}
+    stored = response_cache.get_many(list(keys.values()))
+    parts.update({pair: json.loads(stored[key][0]) for pair, key in keys.items() if key in stored})  # numbers: text
+    left = min((hit[1] for hit in stored.values()), default=None)
+
+    missing = [pair for pair in keys if pair not in parts]
+    if missing:
+        want = sorted({s for _, s in missing}, key=_bytewise)
+        first = min(tile for tile, _ in missing)
+        last = max(tile for tile, _ in missing) + size - ONE_SECOND
+        db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
+        rows = db.session.execute(SQL, {
+            "b": bucket, "s": first, "e": last, "g": sorted({s[0] for s in want}),
+            "st": sorted({s[1] for s in want}), "m": sorted({s[2] for s in want}), "k": ["|".join(s) for s in want],
+        }).fetchall()
+        by_pair = {}
+        for row in rows:
+            by_pair.setdefault((_tile_of(row[4], bucket), tuple(row[:3])), []).append(row)
+        to_store = []
+        for pair in missing:
+            pieces = columnar(by_pair.get(pair, []))
+            body = tile_entry(pieces)
+            parts[pair] = json.loads(body)
+            # An empty one is stored too, so it isn't asked for again, but only briefly: it is a key that real data
+            # never needs, and readings may yet arrive (a backfill)
+            ttl = max_age(pair[0] + size - ONE_SECOND, now) if pieces else MAX_AGE_RECENT
+            to_store.append((keys[pair], body, ttl))
+        response_cache.put_many(to_store)
+
+    out = []
+    for s in series:
+        by_unit = {}
+        for tile in tiles:
+            for piece in parts[(tile, s)]:
+                by_unit.setdefault(piece["head"]["unit"], []).append(piece)
+        out.extend(series_json(by_unit[unit]) for unit in sorted(by_unit, key=lambda u: (u or "").encode()))
+    return "[" + ",".join(out) + "]", left
 
 
 def parse_filters(args):
@@ -191,6 +307,8 @@ def parse_filters(args):
         values = [v for v in args.getlist(param) if v]
         if len(values) > MAX_FILTERS:
             raise ValueError(f"At most {MAX_FILTERS} values for {param}")
+        if any(bad_text(v) for v in values):
+            raise ValueError(f"{param} values may not contain control characters")
         if name != "k" and any("," in v or "|" in v for v in values):
             raise ValueError(f"{param} values may not contain ',' or '|'")
         filters[name] = values or None
@@ -206,11 +324,22 @@ def parse_filters(args):
     return filters, sorted({k[0] for k in keys})
 
 
+def known_filters(filters):
+    """`filters` (from parse_filters) without the values that name no existing series (api/services/catalog.py),
+    and whether a filter that had values is left with none (so the request matches nothing)."""
+    if not any(filters.values()):
+        return filters, False
+    series = known_series()
+    known = {"st": {s for _, s, _ in series}, "m": {m for _, _, m in series}, "k": {"|".join(s) for s in series}}
+    kept = {name: [v for v in values if v in known[name]] if values else values for name, values in filters.items()}
+    return kept, any(filters[name] and not kept[name] for name in filters)
+
+
 def parse_bucket(value):
     """The bucket a request asks for (seconds), or None; ValueError unless it is one of LADDER."""
     if value is None or value == "":
         return None
-    bucket = int(value) if value.isdigit() else None
+    bucket = int(value) if value.isascii() and value.isdigit() else None  # isdigit alone also takes "²"
     if bucket not in LADDER:
         raise ValueError(f"bucket must be one of {', '.join(str(b) for b in LADDER)} (seconds)")
     return bucket
@@ -270,6 +399,10 @@ def register_series_route(app):
             start_dt, end_dt = local_naive(start_in), local_naive(end_in)
         except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no local time
             return jsonify({"error": "Invalid date format"}), 400
+        try:
+            check_site_years(start_dt, end_dt)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
         if start_in.tzinfo and end_in.tzinfo:
             # Two real instants: compare those. Their wall-clock times can run backwards inside the hour repeated
             # when clocks fall back (05:30Z -> 01:30 EDT, 06:10Z -> 01:10 EST), so the naive bounds are put in
@@ -288,25 +421,30 @@ def register_series_route(app):
                 start_dt, end_dt = check_tiles(start_dt, end_dt, asked_bucket)
             except ValueError as error:
                 return jsonify({"error": str(error)}), 400
+            except OverflowError:  # a tile past datetime's last year; check_site_years keeps requests well short
+                return jsonify({"error": "Invalid date range"}), 400
         bucket = asked_bucket or pick_bucket(span)
         if span / bucket > MAX_BUCKETS:
             return jsonify({"error": f"That is more than {MAX_BUCKETS} points per series: pick a shorter range or a "
                                      "larger bucket."}), 400
         now = datetime.now(EST_TZ).replace(tzinfo=None)
-        age = max_age(end_dt, now)
-        start_dt, end_dt = snap_range(start_dt, end_dt)
-        # Only tile requests use the shared cache (see "Caching" at the top)
-        key = cache_key(bucket, start_dt, end_dt, groups, filters) if asked_bucket else None
-        hit = response_cache.get(key) if key else None
+        filters, matches_nothing = known_filters(filters)
+        if matches_nothing:
+            # Nothing to look up, and nothing worth keeping in the cache
+            response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": []})
+            response.headers["Cache-Control"] = browser_cache_control(end_dt, now, BROWSER_MAX_AGE)
+            return response
         seconds_left = None
-        if hit is not None:
-            body, seconds_left = hit
+        if asked_bucket:
+            series, seconds_left = tile_answer(bucket, start_dt, end_dt, covered_series(groups, filters), now)
+            body = (f'{{"aggregated":{json.dumps(bucket > LADDER[0])},"bucket_seconds":{bucket},'
+                    f'"series":{series}}}\n')
             response = current_app.response_class(body, mimetype="application/json")
         else:
+            # Never stored (see "Caching" at the top)
+            start_dt, end_dt = snap_range(start_dt, end_dt)
             db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
             rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups, **filters}).fetchall()
             response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": columnar(rows)})
-            if key:
-                response_cache.put(key, response.get_data(), age)
         response.headers["Cache-Control"] = browser_cache_control(end_dt, now, seconds_left)
         return response

@@ -101,6 +101,16 @@ class MonthlyUploadCheckTests(TestCase):
         self.assertEqual(self.cmds, [])
         self.assertEqual(len([line for line in self.logs if "[ERROR]" in line]), 1)
 
+    def test_a_record_that_cant_be_written_pings_fail(self):
+        # The month went up, but logs/ is full or read-only: the run must still reach someone
+        with mock.patch.object(scheduler_temp, "record_uploaded_month", side_effect=OSError(28, "No space left")), \
+                mock.patch.object(scheduler_temp, "capture_job_error") as captured:
+            self.check(dt.datetime(2026, 11, 1, 7, tzinfo=dt.timezone.utc), finished("Successfully uploaded x.csv\n"))
+        self.assertEqual(self.pings, [("upload", "fail")])
+        captured.assert_called_once()
+        self.assertTrue(any("recording it in" in line and "No space left" in line for line in self.logs), self.logs)
+        self.assertEqual(self.recorded(), set())
+
     def test_nothing_runs_outside_the_upload_hour(self):
         self.check(dt.datetime(2026, 11, 1, 2, tzinfo=dt.timezone.utc), finished("Successfully uploaded"))
         self.assertEqual(self.cmds, [])

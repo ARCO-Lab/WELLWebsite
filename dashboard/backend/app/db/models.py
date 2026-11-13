@@ -92,6 +92,10 @@ class VendorStatus(db.Model):
     last_error_kind = db.Column(db.String(32))                  # auth, quota, server, timeout, network, ...
     last_http_status = db.Column(db.Integer)
     last_error = db.Column(db.Text)                             # type and HTTP status only, never a URL or key
+    # Added by db/migrations/0006_*.sql: the end of the newest request whose readings were all stored, and the
+    # records of the latest answer that couldn't be read (a count and one example; NULL when all were read).
+    fetched_until = db.Column(db.DateTime(timezone=True))
+    last_skipped = db.Column(db.Text)
 
 
 class AlertIncident(db.Model):

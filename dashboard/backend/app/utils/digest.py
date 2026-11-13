@@ -158,7 +158,8 @@ def to_markdown(lines):
 
 
 def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
-                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None):
+                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None, unset_heartbeats=None,
+                 leftover_databases=None):
     """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
@@ -168,6 +169,10 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
     recoveries: alerts cleared in the last 24 h (utils/alert_state.recent_recoveries()), {"error": ...}, or None.
     quiet_kinds: ALERT_QUIET_KINDS (Settings.quiet_kinds); None is the default.
+    unset_heartbeats: the HEALTHCHECK_URL_* settings that aren't set (utils/heartbeat.unset_heartbeats), listed first
+    as a problem, since those jobs report nothing if they stop; None or [] to leave it out.
+    leftover_databases: restore drill databases still on the server while no drill runs (utils/backup.py), each a
+    full copy of the live database; listed as a problem. None or [] to leave it out.
     """
     # Here, not at the top: utils.alerts imports this module.
     from utils.alerts import DEFAULT_QUIET_KINDS, RECOVERED_AS, Settings, is_quiet, status
@@ -180,9 +185,21 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     now = datetime.fromisoformat(freshness["checked_at"])
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
-    problems = len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
+    problems = (len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
+                + (1 if unset_heartbeats else 0) + (1 if leftover_databases else 0))
     subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
     lines = [f"WELL dashboard daily digest for the 24 h before {when(now)} (Toronto time).", ""]
+
+    if unset_heartbeats:
+        lines.append("Heartbeats not set (these jobs, or the whole worker, could stop with nobody told):")
+        lines += [f"  - `{name}`" for name in unset_heartbeats]
+        lines.append("")
+
+    if leftover_databases:
+        lines.append("Restore drill databases left behind (each a full copy of the database; the next backup drops "
+                     "them, or drop them by hand):")
+        lines += [f"  - `{name}`" for name in leftover_databases]
+        lines.append("")
 
     if incidents is not None:
         lines.append("Open alerts (each was emailed when it began):")

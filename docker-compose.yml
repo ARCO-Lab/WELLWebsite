@@ -25,8 +25,18 @@ x-unprivileged: &unprivileged
     - ALL
 
 networks:
+  # front and internal_api are pinned so the host firewall rule for PostgreSQL (docs/hosting.md, "Host firewall") can
+  # name a fixed subnet. Every service that needs the database (backend, worker, export_worker and ops) is on
+  # internal_api. Unpinned, Docker hands out /24s from its pool in creation order, so recreating the networks could
+  # swap these two.
   front:
+    ipam:
+      config:
+        - subnet: 10.20.1.0/24
   internal_api:
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
   # Only wordpress and ops (welldash²) join it, so welldash² can check WordPress without joining front, where MySQL is.
   # Its subnet is fixed so firewall rules can name it; it needs no access to the VM's PostgreSQL.
   wp_probe:
@@ -70,6 +80,9 @@ services:
       - ./wordpress/apache-hardening.conf:/etc/apache2/conf-enabled/zz-hardening.conf:ro
       # Browser caching and compression for the site (wordpress/zz-performance.conf explains each rule).
       - ./wordpress/zz-performance.conf:/etc/apache2/conf-enabled/zz-performance.conf:ro
+      # Replaces the image's remoteip.conf, so Apache doesn't believe X-Forwarded-For from private addresses
+      # (wordpress/remoteip.conf explains).
+      - ./wordpress/remoteip.conf:/etc/apache2/conf-enabled/remoteip.conf:ro
     # On every address by default. WORDPRESS_BIND (and DASHBOARD_BIND below) publishes it on that one address
     # instead, e.g. the VM's address that haproxy connects to; then set DEPLOY_SITE_HOST to it for deploy.sh's
     # checks. Docker-published ports bypass the host's INPUT rules either way: docs/hosting.md has the DOCKER-USER
@@ -97,6 +110,15 @@ services:
       WP_SITEURL: ${WP_SITEURL}
       # External dashboard base URL for theme template embedding
       DASHBOARD_URL: ${DASHBOARD_URL}
+      # The proxies whose X-Forwarded-For the failed-login limit believes (mu-plugins/well-hardening.php), as this
+      # container sees them connect; same meaning as the dashboard's TRUSTED_PROXY_IPS. Set but empty trusts none.
+      WELL_TRUSTED_PROXY_IPS: ${WELL_TRUSTED_PROXY_IPS-130.113.68.30}
+      # Run by wp-config.php (the wordpress image writes it from wp-config-docker.php, which evaluates this variable;
+      # the VM's copy was made that way). Turns off editing theme and plugin PHP from wp-admin, so an administrator
+      # login alone can't run code. Plugin and core updates from wp-admin still work (DISALLOW_FILE_MODS would
+      # block them). Takes effect when the container is recreated.
+      WORDPRESS_CONFIG_EXTRA: |
+        defined('DISALLOW_FILE_EDIT') || define('DISALLOW_FILE_EDIT', true);
 
   # --- Flask backend (Gunicorn), no public port ---
   backend:
@@ -315,7 +337,12 @@ services:
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-${BACKEND_DATABASE_URL}}
       OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:-}
       OPS_SECRET_KEY: ${OPS_SECRET_KEY:-}
-      OPS_COOKIE_SECURE: ${OPS_COOKIE_SECURE:-0}
+      # Unset: the session cookie is marked Secure whenever the request is HTTPS (ops/app.py). 1: always.
+      OPS_COOKIE_SECURE: ${OPS_COOKIE_SECURE:-}
+      # Passed in as well as used below, so welldash² refuses to start when it is unset or every address
+      # (ops/settings.py); OPS_ALLOW_ANY_ADDRESS=1 accepts 0.0.0.0 on purpose.
+      OPS_BIND: ${OPS_BIND:-}
+      OPS_ALLOW_ANY_ADDRESS: ${OPS_ALLOW_ANY_ADDRESS:-}
       OPS_LOGS_DIR: /ops/logs
       OPS_GITHUB_TOKEN: ${OPS_GITHUB_TOKEN:-}
       SENTRY_API_TOKEN: ${OPS_SENTRY_API_TOKEN:-}
@@ -325,9 +352,9 @@ services:
       OPS_GOATCOUNTER_CODE: ${OPS_GOATCOUNTER_CODE:-}
       OPS_GOATCOUNTER_TOKEN: ${OPS_GOATCOUNTER_TOKEN:-}
     ports:
-      # Set OPS_BIND in .env (ops README): 127.0.0.1 for an SSH tunnel, or the VM's campus address. Docker's
-      # published ports bypass the host firewall, so 0.0.0.0 would publish it on every address the VM has; unset, it
-      # is published on the loopback only, never everywhere.
+      # OPS_BIND is required (ops README): 127.0.0.1 for an SSH tunnel, or the VM's campus address. Docker's published
+      # ports bypass the host firewall, so 0.0.0.0 would publish it on every address the VM has. The loopback
+      # fallback only matters while the service refuses to start for want of OPS_BIND.
       - "${OPS_BIND:-127.0.0.1}:${OPS_PORT:-8090}:8090"
     extra_hosts:
       - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself
