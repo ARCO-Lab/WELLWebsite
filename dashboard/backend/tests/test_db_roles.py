@@ -146,8 +146,10 @@ class DatabaseRoles(unittest.TestCase):
         return self.psycopg2.connect(**backup.psycopg2_kwargs(backup.parse_database_url(self.url(role))))
 
     def refused(self, role, statement):
-        """The SQLSTATE PostgreSQL answers `statement` with, run as `role` (None if it succeeded); rolled back."""
+        """The SQLSTATE PostgreSQL answers `statement` with, run as `role` (None if it succeeded); rolled back.
+        CREATE DATABASE can't run in a transaction, so it runs in autocommit."""
         conn = self.connect(role)
+        conn.autocommit = statement.startswith("CREATE DATABASE")
         try:
             with conn.cursor() as cur:
                 cur.execute(statement)

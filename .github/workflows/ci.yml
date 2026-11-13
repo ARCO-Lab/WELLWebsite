@@ -69,6 +69,8 @@ jobs:
             docker exec -i ci-postgres psql -U postgres -d "$db" -X -q -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql
           done
           docker exec ci-postgres psql -U postgres -qc "ALTER ROLE well_app PASSWORD 'ci'"
+          # Test setup only: test_ops builds its tables in a schema of its own, which needs CREATE on the database
+          docker exec ci-postgres psql -U postgres -qc "GRANT CREATE ON DATABASE app_tests TO well_app"
           modules=$(cd dashboard/backend && grep -lE "TEST_POSTGRES_URL|MIGRATE_TEST_DATABASE_URL" tests/test_*.py \
                     | grep -v -e test_backup_db -e test_db_roles | sed -e 's#/#.#' -e 's#\.py$##')
           echo "$modules"
