@@ -5,6 +5,11 @@
 # The dashboard, the images docker-compose.yml runs and the CI workflows are covered. WordPress core and plugins under home/ are updated through
 # WordPress itself, not here, so no entry points at home/ (the package.json and composer.json files in there are
 # the plugin vendors' own build manifests and are never installed on the server).
+#
+# Security updates are separate: Dependabot opens them for alerts on any manifest in the repository, home/ included,
+# whether or not an entry here covers it. They can't work under home/ (no lockfile, or a manifest a WordPress update
+# has since removed), so an alert on a manifest under home/ is dismissed in the repository's Dependabot alerts, and
+# fixed by updating WordPress or the plugin.
 version: 2
 
 updates:

@@ -8,7 +8,8 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { proxyToBackend } from "../src/lib/proxyBackend.ts";
+import { proxyToBackend, setRateLimiter } from "../src/lib/proxyBackend.ts";
+import { DEFAULT_LIMITS, RateLimiter } from "../src/lib/rateLimit.ts";
 
 const SIZE = 4 * 1024 * 1024; // more than the proxy's stream buffers, so a slow browser makes it pause reading
 const CHUNK = Buffer.alloc(64 * 1024, "x");
@@ -252,4 +253,36 @@ test("connections to a keep-alive backend (like gunicorn's --keep-alive) are reu
   assert.equal(sockets.length, 2);
   assert.equal(sockets[0], sockets[1], "the second request must reuse the first connection");
   assert.deepEqual(errors, []);
+});
+
+test("an address over the rate limit gets a 429 with Retry-After, and the backend isn't called", async (t) => {
+  setRateLimiter(new RateLimiter({ ...DEFAULT_LIMITS, burst: 2, perMinute: 1 }));
+  t.after(() => setRateLimiter(null));
+  const url = await startProxy(t, "/bad-request");
+  const seen = backendRequests.length;
+  const results = [];
+  await captureErrors(async () => {
+    for (let i = 0; i < 3; i++) results.push(await get(url));
+  });
+  assert.deepEqual(results.map((r) => r.status), [400, 400, 429]);
+  assert.equal(results[2].headers["retry-after"], "60");
+  assert.match(JSON.parse(results[2].body.toString()).error, /Too many requests/);
+  assert.equal(backendRequests.length, seen + 2);
+});
+
+test("an address may have only so many slow requests in flight; a finished one frees its place", async (t) => {
+  setRateLimiter(new RateLimiter({ ...DEFAULT_LIMITS, slowConcurrent: 1 }));
+  t.after(() => setRateLimiter(null));
+  const url = await startProxy(t, "/api/windrose?start=a&end=b");
+  await captureErrors(async () => {
+    const seen = backendRequests.length;
+    const first = get(url, { pauseMs: 300 }); // its 4 MB body is still being sent while the next one asks
+    await waitFor(() => backendRequests.length > seen);
+    const second = await get(url);
+    assert.equal(second.status, 429);
+    assert.equal(second.headers["retry-after"], "2");
+    assert.equal((await first).status, 200);
+    await new Promise((r) => setTimeout(r, 50)); // the proxy sees its response close just after the browser has it
+    assert.equal((await get(url)).status, 200);
+  });
 });

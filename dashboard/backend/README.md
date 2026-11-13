@@ -73,8 +73,8 @@ Routes are in `app/api/routes/`:
 - `/api/series`: the sensor charts (below)
 - `/api/windrose`: the wind rose, counted in PostgreSQL: how often the wind blew from each of 16 directions at each
   speed class, for a range (details in `app/api/routes/windrose.py`)
-- `/api/data`: raw readings for a range; capped by `DATA_MAX_ROWS` (413 beyond it). The dashboard page no longer
-  calls it, but its API route still passes it through
+- `/api/data`: raw readings for a range of at most 31 days (400 beyond it), capped by `DATA_MAX_ROWS` (413 beyond
+  it). The dashboard page no longer calls it, but its API route still passes it through
 - `/api/latest`: the newest reading of every series (the Latest Data panel)
 - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement;
   `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
@@ -88,21 +88,33 @@ Routes are in `app/api/routes/`:
 (nothing is precomputed): about 2,000 points per series (raw 10-minute readings up to ~2 weeks, coarser buckets beyond;
 ranges longer than ~5.5 years are capped at daily buckets, so they get more), using an index on (sensor group, time).
 A chart can also ask for one series at a fixed bucket size (`bucket=`, `series=`): the dashboard loads each chart in
-fixed tiles of a few hundred buckets, and a request for more than `MAX_BUCKETS` buckets per series gets a 400.
+fixed tiles, and a request for more than `MAX_BUCKETS` buckets per series gets a 400.
+
+The contract for a request with `bucket=` (what `dashboard/frontend/src/lib/seriesTiles.ts` sends): it asks for whole
+tiles. A tile is 360 buckets (`TILE_BUCKETS`), and tiles start at multiples of their length counted on Toronto's wall
+clock from 1970-01-01T00:00 (for 10-minute buckets, every 2.5 days: 2026-09-26T12:00, 2026-09-29T00:00, ...).
+`start` must be a tile's start and `end` a later tile's start or one second before it, as times without an offset,
+and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start. Only
+these tile requests are kept in the Redis cache: there are only so many tiles, so asking for ranges shifted a few
+minutes at a time can't fill Redis. Requests without `bucket=` take any range and are computed every time. A change to
+the dashboard's tile size or batch size must change `TILE_BUCKETS` or `MAX_TILES` in `app/api/routes/series.py`
+with it.
 Times with an offset (`...Z`) are real instants, times without one are Toronto local time. Each series has an `agg`
 field saying what its `avg` array holds: `mean` for most measurements, `sum` for Rain (the bucket total; `min`/`max`
 stay the smallest and largest single reading), and `vector_mean` for Wind Direction (350° and 10° average to 0°;
 `min`/`max` are null, since a linear min/max of angles means nothing). Details in `app/api/routes/series.py`.
 
-**Raw readings.** `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group, ~50 MB of JSON) is the most
-readings one `/api/data` request may return (the charts use `/api/series` and the wind rose `/api/windrose`); a
-larger range gets a 413 asking the user to narrow it or use Download. It is read once by each
+**Raw readings.** `/api/data` refuses a range longer than 31 days with a 400 before counting anything, so it can't
+be made to count the whole history. `DATA_MAX_ROWS` (default `100000`, about a month of every sensor group, ~17 MB
+of JSON) is the most readings one request may return (the charts use `/api/series` and the wind rose
+`/api/windrose`); a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each
 gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number
 logs a warning and uses the default. The cap matters because the backend can't tell when a browser gives up: the
 Next.js proxy stops waiting, but the backend thread stays busy until the query and JSON encoding finish.
 
-**Origins.** Flask accepts requests from any origin (`CORS(app)` in `server.py`); what keeps it private is that it has
-no public port, so only the dashboard container reaches it.
+**Origins.** Flask sends no CORS headers, so no page on another site may read its answers: browsers never call it
+directly (it has no public port; the dashboard's API routes call it from the server). The dashboard's API routes also
+limit how many requests each address may make (see the [dashboard README](../frontend/README.md#rate-limits-and-security-headers)).
 
 ### How the API stays responsive under load
 
@@ -113,7 +125,7 @@ not in `app/.env`, which they take precedence over):
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (tile requests only, see above) and `/api/windrose` keep answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Answers over 3 MB aren't stored (the largest tile request the dashboard makes is about 2.2 MB). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
 `/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public,
 max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that
@@ -167,6 +179,18 @@ larger one is queued in Redis as an export job and built by the `export_worker` 
 the job and then downloads the file, which stays in the `exports_data` volume for `EXPORT_FILE_TTL_MINUTES`. The
 queue's limits (`EXPORT_MAX_ROWS`, `EXPORT_MAX_ACTIVE_JOBS`, `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` and the time and
 memory limits) are in [docs/configuration.md](../../docs/configuration.md#dashboardbackendappenv-backend-worker-export-worker).
+
+The exports share the VM's disk with the database, so three more limits keep them from filling it:
+
+- **Free space.** An export that would leave less than `EXPORT_MIN_FREE_MB` (default 2048) free on the exports disk,
+  counting its estimated size, is refused with a 507, both when it is asked for and again when the worker starts it.
+- **Jobs per hour.** Each visitor (by IP address) may start `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` (default 6) jobs
+  an hour, finished and failed ones included (429 with `Retry-After` beyond that).
+- **Reuse.** A request for exactly the same export as a ready job (same normalised filters) gets that job back (200,
+  `"reused": true`) instead of a new one, when its file has at least 10 minutes left and its data can't have changed:
+  the range ended a day before the job was made, or the job finished in the last 10 minutes.
+
+A body that isn't a JSON object, or start/end that aren't ISO date strings, gets a 400.
 The file layouts are a public format, pinned by the [golden files](tests/golden/README.md).
 
 ## Off-VM copies: Borealis and SharePoint

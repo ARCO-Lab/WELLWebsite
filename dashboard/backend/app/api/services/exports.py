@@ -1,6 +1,7 @@
 import csv
 import math
 import os
+import shutil
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
@@ -114,6 +115,51 @@ def live_jobs(now_utc: Optional[datetime] = None) -> List:
     return [job for job in candidates if not job_is_stuck(job, now_utc)]
 
 
+def jobs_started_since(fingerprint: str, since_utc: datetime) -> int:
+    """How many jobs this visitor started since since_utc, whatever became of them (for the hourly quota). Rows
+    are kept for weeks (tasks/exports.py JOB_ROW_RETENTION), and created_at is naive wall time, so rows from a little
+    before are fetched and their real ages checked here (wall times are an hour off across a DST change)."""
+    wall_cutoff = since_utc.astimezone(EST_TZ).replace(tzinfo=None) - timedelta(hours=1)
+    rows = (db.session.query(ExportJob.created_at, ExportJob.error_message)
+            .filter(ExportJob.requester_fingerprint == fingerprint, ExportJob.created_at >= wall_cutoff).all())
+    # A job that couldn't be queued (Redis down) never ran, so it doesn't use up the quota
+    return sum(1 for created_at, error in rows
+               if _wall_to_utc(created_at) >= since_utc and error != EXPORT_QUEUE_DOWN_MESSAGE)
+
+
+# Shown on the Download panel when a background export can't be queued (the job is marked failed with it too, by
+# api/routes/exports.py). Such a job never ran, so it doesn't count against the visitor's hourly quota.
+EXPORT_QUEUE_DOWN_MESSAGE = ("Large exports are unavailable right now. Please try again in a few minutes, "
+                             "or pick a shorter range to download directly.")
+
+
+# A ready job is handed to another request for the same export only if its file has at least this long left, so
+# the second download can't find it expired, and only if its data can't have changed: its range ended a day before
+# the job was made (readings that old are settled), or it was built in the last REUSE_FRESH.
+REUSE_MIN_LEFT = timedelta(minutes=10)
+REUSE_FRESH = timedelta(minutes=10)
+REUSE_SETTLED = timedelta(days=1)
+
+
+def reusable_job(filters: Dict, now_utc: Optional[datetime] = None):
+    """A ready job whose payload is exactly these normalised filters and whose file can be sent instead of building
+    the same export again, or None."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    end = datetime.fromisoformat(filters["end"])
+    candidates = (db.session.query(ExportJob)
+                  .filter(ExportJob.status == "ready", ExportJob.domain == filters["domain"],
+                          ExportJob.expires_at.isnot(None), ExportJob.artifact_path.isnot(None))
+                  .order_by(ExportJob.completed_at.desc()).all())
+    for job in candidates:
+        if job.payload != filters or _wall_to_utc(job.expires_at) - now_utc < REUSE_MIN_LEFT:
+            continue
+        settled = end < job.created_at - REUSE_SETTLED
+        fresh = job.completed_at is not None and now_utc - _wall_to_utc(job.completed_at) < REUSE_FRESH
+        if (settled or fresh) and os.path.isfile(job.artifact_path):
+            return job
+    return None
+
+
 # What a failed job reports to the page when the cause isn't a validation error.
 EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again later."
 # For an export stopped at the time limit, or found stuck while running.
@@ -159,25 +205,27 @@ def normalize_export_payload(payload: Dict) -> Dict:
         raise ValueError("Payload must be a JSON object")
 
     domain = payload.get("domain")
-    if domain not in ALLOWED_DOMAINS:
+    if not isinstance(domain, str) or domain not in ALLOWED_DOMAINS:
         raise ValueError("Invalid domain. Expected 'sensor' or 'sampling'.")
 
     start = payload.get("start")
     end = payload.get("end")
     if not start or not end:
         raise ValueError("Missing required fields: start, end")
+    if not isinstance(start, str) or not isinstance(end, str):
+        raise ValueError("start and end must be ISO datetime strings")
 
     try:
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
-    except ValueError as exc:
+        # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in
+        # the session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone
+        # the export would be hours off. So aware times become site wall-clock time here, before they are compared
+        # (comparing an aware with a naive time raises TypeError). OverflowError: a time such as
+        # 0001-01-01T00:00+05:00 has no local time.
+        start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+    except (ValueError, OverflowError) as exc:
         raise ValueError("Invalid ISO datetime in start/end") from exc
-
-    # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in the
-    # session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone the export
-    # would be hours off. So aware times become site wall-clock time here, before they are compared (comparing an
-    # aware with a naive time raises TypeError).
-    start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
 
     if start_dt > end_dt:
         raise ValueError("start must be before end")
@@ -214,6 +262,29 @@ def normalize_export_payload(payload: Dict) -> Dict:
         normalized["site_ids"] = _as_string_list(payload.get("site_ids", []))
 
     return normalized
+
+
+# About how many bytes of CSV one reading takes (a sensor export's wide rows hold several readings each; a
+# sampling row is one reading of ~80 bytes, but sampling exports are small): enough to tell whether a file fits.
+EXPORT_BYTES_PER_ROW = 80
+
+
+def disk_space_error(estimated_rows: int) -> Optional[str]:
+    """None when EXPORTS_DIR's disk can take an export of this many readings and still keep EXPORT_MIN_FREE_MB free;
+    otherwise the message for the user. The database shares this disk on the VM, so a full disk would stop
+    ingestion: running short of space refuses exports rather than filling it."""
+    directory = Config.EXPORTS_DIR
+    while directory and not os.path.isdir(directory):  # not created yet: check the disk it will be on
+        parent = os.path.dirname(directory)
+        directory = parent if parent != directory else ""
+    try:
+        free = shutil.disk_usage(directory or ".").free
+    except OSError:
+        return None  # can't tell: don't refuse every export over it
+    needed = max(0, estimated_rows) * EXPORT_BYTES_PER_ROW + Config.EXPORT_MIN_FREE_MB * 1024 * 1024
+    if free >= needed:
+        return None
+    return "The server is short of disk space, so it can't prepare this export right now. Please try again later."
 
 
 def estimate_rows(payload: Dict) -> int:

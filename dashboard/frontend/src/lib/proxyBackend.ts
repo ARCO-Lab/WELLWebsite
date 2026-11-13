@@ -4,7 +4,8 @@
 // not parsed or buffered: large responses don't sit in the memory of the one Node process serving every visitor,
 // and Next's res.send(Buffer) (which JSON-stringifies the whole buffer to make an ETag) is avoided.
 // It stops waiting for the backend if the browser goes away, answers 502 only when the backend can't be reached,
-// and 504 when the backend hasn't started answering within BACKEND_TIMEOUT_MS.
+// and 504 when the backend hasn't started answering within BACKEND_TIMEOUT_MS. A visitor over the per-address
+// limits of lib/rateLimit.ts gets a 429 with Retry-After, and the backend isn't called.
 //
 // The backend is called with node:http, not fetch. The fetch built into Node 22 and 24 (undici 6 and 7) throws an
 // uncatchable AssertionError (`assert(!this.paused)`), which ends the whole server, when the backend closes the
@@ -17,11 +18,14 @@ import type { ClientRequest, IncomingMessage } from "http";
 import { pipeline } from "stream/promises";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { clientIp, logClientIpSample } from "./clientIp.ts";
+import { ClientCounter, RateLimiter, isSlow } from "./rateLimit.ts";
 
 // Headers worth forwarding; Content-Disposition and Content-Length matter for CSV downloads, and Cache-Control
 // lets browsers reuse /api/latest and /api/series answers for as long as the backend allows. The body bytes are
 // passed on as received, so an encoding the backend applied (it doesn't today) stays valid with its length.
-const FORWARDED_HEADERS = ["content-type", "content-disposition", "content-length", "content-encoding", "cache-control"];
+const FORWARDED_HEADERS = [
+  "content-type", "content-disposition", "content-length", "content-encoding", "cache-control", "retry-after",
+];
 
 // Longer than the backend's own limits (25 s per query, gunicorn's 60 s), so normally the backend answers first
 // with its own message. It only covers the wait for the first bytes: a large CSV download may stream for longer.
@@ -38,6 +42,18 @@ const backendAgent = new http.Agent({ keepAlive: true, timeout: 5_000 });
 
 const UNREACHABLE = { error: "The data service didn't respond. Please try again." };
 const TIMED_OUT = { error: "The data service took too long to answer. Please try again." };
+const TOO_MANY = { error: "Too many requests from your address. Please wait a moment and try again." };
+
+// One limiter and one address counter for the process, made on first use so the limiter reads the RATE_LIMIT_*
+// variables at run time. Kept on globalThis: the build may give each API route its own copy of this module, and the
+// limits must be per address across all routes.
+type Shared = { limiter: RateLimiter | null; counter: ClientCounter | null };
+const shared: Shared = ((globalThis as { __wellProxy?: Shared }).__wellProxy ??= { limiter: null, counter: null });
+
+/** Replaces the process's limiter (tests use it to start from fresh counts or other limits). */
+export function setRateLimiter(next: RateLimiter | null): void {
+  shared.limiter = next;
+}
 
 // What the API routes send to the backend: a method, headers and an optional (JSON) string body.
 export type BackendInit = {
@@ -58,6 +74,19 @@ export async function proxyToBackend(
   const headers: Record<string, string> = { ...init.headers };
   const ip = clientIp(req);
   logClientIpSample(req, ip);
+  shared.counter ??= new ClientCounter(Date.now());
+  const counted = shared.counter.record(ip, Date.now());
+  if (counted) console.info(counted);
+
+  shared.limiter ??= new RateLimiter();
+  const verdict = shared.limiter.check(ip, isSlow(path, init.method));
+  if (!verdict.ok) {
+    res.setHeader("Retry-After", String(verdict.retryAfterS));
+    return res.status(429).json(TOO_MANY);
+  }
+  // A slow request stops counting as in flight when its answer is finished or the browser goes away
+  res.once("close", verdict.release);
+
   if (ip) headers["X-Forwarded-For"] = ip;
   if (init.body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(init.body));
 
