@@ -15,6 +15,8 @@ from datetime import datetime
 
 from sqlalchemy.engine import make_url
 
+from db.database import CONNECT_ARGS
+
 # Dumps this job writes, and the only files it ever deletes: welldb-YYYYmmdd-HHMM.dump (Toronto time).
 DUMP_PREFIX = "welldb-"
 DUMP_PATTERN = re.compile(r"^welldb-(\d{8})-(\d{4})\.dump$")
@@ -172,8 +174,9 @@ def stale_partials(names):
 
 
 def psycopg2_kwargs(settings):
-    """Keyword arguments for psycopg2.connect (the password goes in as an argument, never in a printed DSN)."""
-    kwargs = {"dbname": settings["database"]}
+    """Keyword arguments for psycopg2.connect (the password goes in as an argument, never in a printed DSN), with the
+    app's connect timeout and TCP keepalives (db/database.py); a connect_timeout in the URL wins."""
+    kwargs = {"dbname": settings["database"], **CONNECT_ARGS}
     for key in ("host", "port", "user", "password"):
         if settings.get(key):
             kwargs[key] = settings[key]
