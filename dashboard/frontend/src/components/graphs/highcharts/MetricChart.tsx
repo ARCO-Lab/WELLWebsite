@@ -35,6 +35,7 @@ import 'highcharts/highcharts-more'; // arearange, for the min-max bands
 // Screen-reader descriptions for every chart (Highcharts warns without it)
 import 'highcharts/modules/accessibility';
 import HighchartsReact from 'highcharts-react-official';
+import { bitmapPreview, noPreview, type GesturePreview } from './gesturePreview';
 import ChartToolbar, { windowLabel } from '@/components/graphs/ChartToolbar';
 import { retryAllCharts, useChartWindow } from '@/hooks/useChartWindow';
 import type { ChartController, ChartSnapshot, ComposedData } from '@/lib/chartController';
@@ -57,7 +58,12 @@ const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
 const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
 const HINT_EVERY_MS = 30_000;
 const NAV_HANDLE_PX = 14; // how near a navigator handle a finger must land to take it
-const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
+const TOUCH_SLOP_PX = 6;
+// The bitmap preview is off: measured on this chart it was slower than the paced redraws where it mattered (a drag
+// at 4x CPU slowdown: frame p95 over 900 ms against 28 ms; a fast navigator drag 83 ms against 21 ms), since setting
+// it up costs a redraw of three windows and a pause of PREVIEW_IDLE_MS costs another
+const BITMAP_PREVIEW = false;
+const PREVIEW_IDLE_MS = 180; // a gesture still for this long gets a real redraw (its preview is only stretched) // a finger must move this far before its direction decides what it does // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
 // Axis dates on the 24-hour clock, like the rest of the dashboard (Highcharts would follow the browser locale: 1 PM)
 const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
   millisecond: '%H:%M:%S', second: '%H:%M:%S', minute: '%H:%M', hour: '%H:%M', day: '%b %e', week: '%b %e',
@@ -356,7 +362,25 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       (chart.get(EXTENT_ID) as Highcharts.Series | undefined)?.setData(extentData(e), false, false, false);
       dirty = true;
     };
-    const place = (w: { start: number; end: number }) => {
+    // During a gesture the window moves in a preview (gesturePreview.ts) rather than by redrawing the chart, unless
+    // its data changed; the chart is redrawn for real PREVIEW_IDLE_MS after the last move, and when the gesture ends.
+    // A gesture that sweeps past what the preview drew (a fast navigator drag, a long zoom out) goes on with real
+    // redraws at the controller's pace: drawing the preview again and again would cost more.
+    const preview: GesturePreview = BITMAP_PREVIEW ? bitmapPreview(chart, chart.container, () => controller.extent) : noPreview;
+    let idle = 0;
+    let sweeping = false;
+    const place = (w: { start: number; end: number }, gesture = false) => {
+      window.clearTimeout(idle);
+      if (gesture && !sweeping && !preview.covers(w)) sweeping = true;
+      if (gesture && !dirty && !sweeping) {
+        preview.move(w);
+        idle = window.setTimeout(() => place(controller.window), PREVIEW_IDLE_MS);
+        return;
+      }
+      if (preview.active) {
+        preview.end();
+        dirty = true; // the series are still drawn for the preview's wider span
+      }
       const axis = chart.xAxis[0];
       if (Math.abs((axis.min ?? 0) - w.start) > 1 || Math.abs((axis.max ?? 0) - w.end) > 1) {
         chart.tooltip?.hide(0);
@@ -396,11 +420,20 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     const a11y = (on: boolean) => chart.update({ accessibility: { enabled: on } }, false);
     const offGesture = controller.onGesture((active) => {
       bands(!active);
+      sweeping = false;
       window.clearTimeout(a11yTimer);
       if (active) a11y(false);
-      else a11yTimer = window.setTimeout(() => { a11y(true); chart.redraw(false); }, 300);
+      else {
+        if (preview.active) place(controller.window);
+        a11yTimer = window.setTimeout(() => { a11y(true); chart.redraw(false); }, 300);
+      }
     });
-    return () => { offData(); offRedraw(); offGesture(); offLegend(); window.clearTimeout(a11yTimer); };
+    return () => {
+      offData(); offRedraw(); offGesture(); offLegend();
+      window.clearTimeout(a11yTimer);
+      window.clearTimeout(idle);
+      preview.end();
+    };
   }, [controller, keys, options]);
 
   // A new picked range (or the hour moving on): the navigator and the x-axis span it
