@@ -44,8 +44,10 @@
 # number of keys is bounded by series x tiles, however the series are combined in requests: a dashboard card asks
 # for its series together, and another card or a made-up combination of the same series reuses their entries. An
 # entry is kept for an hour once its tile ended over a day ago, 5 minutes once it ended over an hour ago, 1 minute
-# otherwise. A series that is new since the catalog was last read (at most catalog.REFRESH_S ago) is missing from the
-# answer until then.
+# otherwise; an empty entry for a minute only. A tile that ends before its group's earliest reading or starts after
+# now is answered empty with no query, no Redis read and no entry, so asking for years without data fills nothing.
+# A series that is new since the catalog was last read (at most catalog.REFRESH_S ago) is missing from the answer
+# until then.
 # Requests without a bucket are never stored: they can be any range, shifted a few minutes at a time, so storing them
 # would let anyone fill Redis. The dashboard asks for tiles only; the bucket-less form is for scripts such as the load
 # test, and the dashboard's proxy counts it as a slow request (lib/rateLimit.ts). Its start is rounded up and its end
@@ -60,7 +62,7 @@ from datetime import datetime, timedelta, timezone
 from flask import current_app, jsonify, request
 from sqlalchemy import text
 
-from api.services.catalog import known_series
+from api.services.catalog import earliest_readings, known_series
 from api.validation import bad_text
 from db.database import db
 from utils import response_cache
@@ -253,9 +255,14 @@ def tile_answer(bucket, start, end, series, now):
     while t <= end:
         tiles.append(t)
         t += size
-    keys = {(tile, s): tile_cache_key(bucket, tile, s) for tile in tiles for s in series}
+    # A tile that ends before its group's earliest reading, or starts after now, can hold nothing: it is answered
+    # empty, with no query and no cache entry, so asking for years without data costs nothing and fills nothing.
+    earliest = earliest_readings()
+    parts = {(tile, s): [] for tile in tiles for s in series
+             if s[0] not in earliest or tile + size - ONE_SECOND < earliest[s[0]] or tile > now}
+    keys = {(tile, s): tile_cache_key(bucket, tile, s) for tile in tiles for s in series if (tile, s) not in parts}
     stored = response_cache.get_many(list(keys.values()))
-    parts = {pair: json.loads(stored[key][0]) for pair, key in keys.items() if key in stored}  # numbers stay text
+    parts.update({pair: json.loads(stored[key][0]) for pair, key in keys.items() if key in stored})  # numbers: text
     left = min((hit[1] for hit in stored.values()), default=None)
 
     missing = [pair for pair in keys if pair not in parts]
@@ -273,9 +280,13 @@ def tile_answer(bucket, start, end, series, now):
             by_pair.setdefault((_tile_of(row[4], bucket), tuple(row[:3])), []).append(row)
         to_store = []
         for pair in missing:
-            body = tile_entry(columnar(by_pair.get(pair, [])))  # an empty one is stored too, so it isn't asked again
+            pieces = columnar(by_pair.get(pair, []))
+            body = tile_entry(pieces)
             parts[pair] = json.loads(body)
-            to_store.append((keys[pair], body, max_age(pair[0] + size - ONE_SECOND, now)))
+            # An empty one is stored too, so it isn't asked for again, but only briefly: it is a key that real data
+            # never needs, and readings may yet arrive (a backfill)
+            ttl = max_age(pair[0] + size - ONE_SECOND, now) if pieces else MAX_AGE_RECENT
+            to_store.append((keys[pair], body, ttl))
         response_cache.put_many(to_store)
 
     out = []

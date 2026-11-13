@@ -406,10 +406,11 @@ class SeriesSqlTests(unittest.TestCase):
         r = self.get(f"{tile_query(today, 600)}&group_type=Weather")
         self.assertEqual(r.headers["Cache-Control"], "public, max-age=42")
 
-        # Two tiles: each series' entries for each tile, and one answer with both tiles' points in order
+        # Two tiles (this one and the next, which has no readings): each series' entries for each tile, and one
+        # answer with both tiles' points in order
         stored.clear()
-        before = start - dt.timedelta(seconds=TILE_BUCKETS * 600)
-        two = self.get(f"start={before.isoformat()}&end={end.isoformat()}&bucket=600&group_type=Weather").get_json()
+        after = end + dt.timedelta(seconds=TILE_BUCKETS * 600)
+        two = self.get(f"start={start.isoformat()}&end={after.isoformat()}&bucket=600&group_type=Weather").get_json()
         self.assertEqual(len(stored), 2 * len(weather))
         air2 = next(s for s in two["series"] if s["measurement_type"] == "Air Temperature")
         self.assertEqual(air2["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
@@ -448,6 +449,41 @@ class SeriesSqlTests(unittest.TestCase):
         for body in (uncached, first, second):
             self.assertEqual((body["bucket_seconds"], body["aggregated"]), (600, False))
             self.assertEqual(body["series"], direct)
+
+    def test_tiles_before_the_first_reading_or_after_now_cost_no_query_and_no_entry(self):
+        stored = self.fake_cache()
+        from utils import response_cache
+        future = to_local_naive(dt.datetime.now(dt.timezone.utc).isoformat()) + dt.timedelta(days=30)
+        with mock.patch.object(self.db.session, "execute", side_effect=AssertionError("no query")), \
+                mock.patch.object(response_cache, "get_many", wraps=response_cache.get_many) as read:
+            for day, bucket in ((dt.datetime(1970, 1, 1), 600), (dt.datetime(2005, 6, 1), 24 * 3600),
+                                (dt.datetime(2015, 1, 1), 3600), (future, 600)):
+                q = f"{tile_query(day, bucket, MAX_TILES)}&group_type=Weather&group_type=Logger&group_type=Quality"
+                r = self.get(q)
+                self.assertEqual(r.status_code, 200, q)
+                self.assertEqual(r.get_json()["series"], [], q)
+        self.assertEqual(stored, {})
+        self.assertEqual([c.args[0] for c in read.call_args_list], [[]] * 4, "not even a Redis read")
+
+    def test_only_tiles_that_can_hold_readings_are_queried_and_stored(self):
+        stored = self.fake_cache()
+        first = tile_start(dt.datetime(2026, 11, 1), 600)  # the tile holding the first reading
+        before = first - dt.timedelta(seconds=2 * TILE_BUCKETS * 600)  # two tiles earlier
+        end = first + dt.timedelta(seconds=TILE_BUCKETS * 600 - 1)
+        body = self.get(f"start={before.isoformat()}&end={end.isoformat()}&bucket=600"
+                        "&series=Weather|22051538|Air Temperature").get_json()
+        self.assertEqual(body["series"][0]["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
+        self.assertEqual(list(stored), [tile_cache_key(600, first, ("Weather", "22051538", "Air Temperature"))])
+
+    def test_an_empty_tile_that_could_hold_readings_is_stored_for_a_minute_only(self):
+        stored = self.fake_cache()
+        # After the first reading, before now, but with no readings: settled, yet kept only a minute
+        r = self.get(f"{tile_query(dt.datetime(2026, 11, 8), 600)}&series=Weather|22051538|Air Temperature")
+        self.assertEqual(r.get_json()["series"], [])
+        self.assertEqual([ttl for _, ttl in stored.values()], [60])
+        stored.clear()
+        r = self.get(f"{tile_query(dt.datetime(2026, 11, 1), 600)}&series=Weather|22051538|Air Temperature")
+        self.assertEqual([ttl for _, ttl in stored.values()], [3600], "a tile with readings keeps its usual time")
 
     def test_a_range_without_a_bucket_is_never_stored(self):
         stored = self.fake_cache()

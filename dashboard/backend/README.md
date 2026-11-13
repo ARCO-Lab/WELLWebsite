@@ -97,7 +97,9 @@ clock from 1970-01-01T00:00 (for 10-minute buckets, every 2.5 days: 2026-09-26T1
 and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start.
 Tile requests are cached in Redis per series and tile: each series' part of each tile is its own entry, the answer is
 built from the entries (one round trip for all of them), and only missing series and tiles are queried. So any
-combination of series reuses the same entries, and the number of entries is bounded by series x tiles. A request
+combination of series reuses the same entries, and the number of entries is bounded by series x tiles. A tile that
+ends before its group's earliest reading or starts after now is answered empty without a query or an entry, and an
+empty entry is kept for a minute only, so asking for years without data can't fill Redis. A request
 without `bucket=` (the dashboard doesn't send one; the load test does) is never cached, and the dashboard's proxy
 counts it as a slow request. `station_id`, `measurement_type` and `series` values that name no series with readings
 are dropped before the query (a filter left with none matches nothing: an empty `series` list), and values with
