@@ -40,7 +40,9 @@ COPY . .
 # container. The code stays root's, read-only to it. The folders it writes (logs/, exports/ and /app/backups, which
 # compose mounts) are writable by any user (mode 1777, like /tmp), so docker-compose.yml can run it as another uid
 # (BACKEND_UID: the VM user that owns the bind-mounted folders), and a named volume created from one starts out
-# writable too. Everything else it writes goes to /tmp.
+# writable too. Everything else it writes goes to /tmp, HOME included (gunicorn keeps its control socket there), also
+# for a uid that has no entry in the image's /etc/passwd.
+ENV HOME=/tmp
 RUN groupadd --system --gid 10001 well \
     && useradd --system --uid 10001 --gid 10001 --home-dir /tmp --no-create-home --shell /usr/sbin/nologin well \
     && mkdir -p /app/app/logs /app/app/exports /app/backups \

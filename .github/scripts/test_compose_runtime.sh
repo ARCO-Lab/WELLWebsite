@@ -26,9 +26,18 @@ fail() {
 # Waits up to $1 seconds for the command after it to succeed
 wait_for() { local n=$1; shift; for _ in $(seq "$n"); do if "$@" >/dev/null 2>&1; then return 0; fi; sleep 1; done; return 1; }
 
-# Placeholders, as the lint job's `docker compose config` uses. The database can't be reached, on purpose: the API's
-# /health answers without it, and the worker and the export worker start and log the errors.
-touch dashboard/backend/app/.env dashboard/frontend/.env.local
+# Placeholders, as the lint job's `docker compose config` uses, and vendor settings the worker needs to start. The
+# database and the vendor APIs can't be reached, on purpose: the API's /health answers without them, and the worker
+# and the export worker start and log the errors.
+touch dashboard/frontend/.env.local
+cat > dashboard/backend/app/.env <<'EOF'
+HOBOLINK_API_URL=http://127.0.0.1:1
+HOBOLINK_API_TOKEN=ci
+HOBOLINK_LOGGERS=1
+WQ_API_URL=http://127.0.0.1:1
+WQ_API_KEY=ci
+WQ_DEVICE_ID=1
+EOF
 cat > .env <<'EOF'
 MYSQL_ROOT_PASSWORD=ci
 WORDPRESS_DB_PASSWORD=ci
@@ -107,3 +116,9 @@ for f in dashboard/backend/app/logs/ci-write dashboard/backend/app/logs/db_injec
 done
 compose exec -T ops ls /ops/logs >/dev/null || fail "ops: can't read the logs folder"
 echo "ok: the API and export worker write exports, the worker writes logs/ and backups/ as $uid:$gid, ops reads logs/"
+
+# Nothing any of them tried to write was refused (gunicorn's control socket in HOME, say)
+if denied=$(compose logs --no-color "${SERVICES[@]}" 2>&1 | grep -i "permission denied"); then
+  fail "a service was refused a write: $(head -3 <<<"$denied")"
+fi
+echo "ok: no 'permission denied' in their logs"
