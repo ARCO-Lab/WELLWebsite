@@ -155,6 +155,54 @@ test.describe("charts under stress", () => {
     expect(await label(weather)).toBe(before);
   });
 
+  test("the navigator's line stays: with the first series hidden, and through a gesture in the larger view", async ({ page }) => {
+    await open(page);
+    // Every chart's navigator line, as [visible, points with a value], the larger view's when it is open
+    const lines = () => page.evaluate(() => {
+      type HSeries = { visible: boolean; points?: { y: number | null }[] };
+      type HChart = { container: HTMLElement; navigator?: { series?: HSeries[] } };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      const dialog = !!document.querySelector("[role=dialog]");
+      return (H?.charts ?? []).filter((c): c is HChart => !!c && !!c.container.closest("[role=dialog]") === dialog)
+        .map((c) => { const s = c.navigator?.series?.[0]; return [!!s?.visible, (s?.points ?? []).filter((p) => p.y !== null).length] as const; });
+    });
+    const logger = chart(page, "logger");
+    const first = logger.locator(".highcharts-legend-item").first();
+    await first.scrollIntoViewIfNeeded();
+    await first.click();
+    await expect(first).toHaveClass(/highcharts-legend-item-hidden/);
+    await expect.poll(lines).toEqual(expect.arrayContaining([[true, expect.any(Number)]]));
+    for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); }
+    // The larger view (with its min-max bands), during and after a Ctrl+wheel gesture
+    await page.getByRole("button", { name: /Open the .*graphs in a larger view/ }).first().click();
+    const plot = page.getByRole("dialog").getByRole("group", { name: /chart\. Arrow keys/ }).first();
+    await expect(plot).toBeVisible();
+    await page.waitForTimeout(500);
+    const box = (await plot.boundingBox())!;
+    await plot.evaluate(async (el, { x, y }) => {
+      for (let i = 0; i < 20; i++) {
+        el.dispatchEvent(new WheelEvent("wheel", { deltaY: -40, clientX: x, clientY: y, ctrlKey: true, bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 16));
+      }
+    }, { x: box.x + box.width / 2, y: box.y + box.height * 0.4 });
+    for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); } // mid-gesture
+    await page.waitForTimeout(800);
+    for (const [visible, n] of await lines()) { expect(visible).toBe(true); expect(n).toBeGreaterThan(0); }
+  });
+
+  test("80 Ctrl+wheel events at 4x CPU ask for nothing until the gesture ends, then at most once", async ({ page }) => {
+    const { net } = await open(page);
+    const logger = chart(page, "logger");
+    await cpu(page, 4);
+    const n0 = net.requests.length;
+    await ctrlWheelBurst(logger, 0.5, 30, 40); // zoom out first: the window stays on loaded data
+    await ctrlWheelBurst(logger, 0.5, -30, 40);
+    expect(net.requests.length - n0).toBe(0); // none while the wheel was still turning
+    await settled(page, net);
+    console.log(`[perf] 80 Ctrl+wheel at 4x: ${net.requests.length - n0} requests`);
+    expect(net.requests.length - n0).toBeLessThanOrEqual(1);
+  });
+
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
     const { net } = await open(page);
     const tab = (name: string) => page.getByRole("tab", { name, exact: true });

@@ -55,7 +55,7 @@ export interface MetricChartProps {
 
 const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
-const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
+const WHEEL_SETTLE_MS = 300; // a burst of wheel events is one gesture until none has come for this long
 const HINT_EVERY_MS = 30_000; // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
 const NAV_HANDLE_PX = 14; // how near a navigator handle a finger must land to take it
 const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does
@@ -160,7 +160,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       series.push({
         id: `${s.key}#band`, type: 'arearange', linkedTo: s.key, yAxis: s.axis, color: s.color, fillOpacity: 0.14,
         lineWidth: 0, enableMouseTracking: false, marker: { enabled: false }, data: [], zIndex: 0, visible: !s.hidden,
-        accessibility: { enabled: false },
+        accessibility: { enabled: false }, showInNavigator: false, // never the navigator's base (Stock's default is series 0)
       } as Highcharts.SeriesArearangeOptions);
     }
     const type = seriesType(s.agg);
@@ -304,6 +304,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   const plotRef = useRef<HTMLDivElement>(null);
   const hintRef = useRef<HTMLDivElement>(null);
   const selectRef = useRef<HTMLDivElement>(null);
+  const navDragRef = useRef(false); // a navigator drag is on (the canvas preview leaves the chart its pointer events)
 
   const chartHeight = modalOpen ? Math.round(height * 1.5) : height;
   // Rebuilt (a new chart) only when what is drawn changes: other series, height or the larger view
@@ -368,6 +369,13 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const nav = (chart as Highcharts.Chart & { navigator?: { series?: Highcharts.Series[] } }).navigator?.series?.[0];
       const key = keys.find((k) => (chart.get(k) as Highcharts.Series | undefined)?.visible) ?? keys[0];
       if (!nav || !key) return;
+      // Stock hides the navigator's line with its base series (hidden in the legend): the line stays, showing the first
+      // series still shown
+      if (!nav.visible) {
+        nav.setVisible(true, false);
+        navShown = '';
+        dirty = true;
+      }
       const pts = controller.overview(key);
       const e = controller.extent;
       const sig = `${key}|${pts.length}|${e.start}|${e.end}|${pts.at(-1)?.y ?? ''}`;
@@ -384,7 +392,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       id: sp.key, points: controller.lastData.series.get(sp.key) ?? [],
       kind: sp.agg === 'sum' ? 'area' : sp.agg === 'vector_mean' ? 'dots' : 'line',
     }));
-    const preview: GesturePreview = PREVIEW === 'canvas' ? canvasPreview(chart, chart.container, paintSeries)
+    const preview: GesturePreview = PREVIEW === 'canvas' ? canvasPreview(chart, chart.container, paintSeries, () => navDragRef.current)
       : PREVIEW === 'bitmap' ? bitmapPreview(chart, chart.container) : noPreview;
     if (PREVIEW === 'canvas') warmCanvas();
     let idle = 0;
@@ -491,10 +499,20 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     let hintTimer = 0;
     let hintShown = -Infinity;
     let wheelEnd = 0;
+    let lastWheel = 0;
     const wheelGesture = () => { // a burst of wheel events is one gesture: it ends when they pause
       controller.beginGesture();
-      window.clearTimeout(wheelEnd);
-      wheelEnd = window.setTimeout(() => controller.endGesture(), WHEEL_GESTURE_END_MS);
+      lastWheel = performance.now();
+      if (wheelEnd) return;
+      // Ends WHEEL_SETTLE_MS after the last event (checked when the timer fires, so a long burst sets one timer at a
+      // time), at the next frame, after events already queued behind a slow redraw
+      const settle = () => {
+        const left = WHEEL_SETTLE_MS - (performance.now() - lastWheel);
+        if (left > 0) { wheelEnd = window.setTimeout(settle, left); return; }
+        wheelEnd = 0;
+        requestAnimationFrame(() => { if (performance.now() - lastWheel >= WHEEL_SETTLE_MS) controller.endGesture(); else wheelGesture(); });
+      };
+      wheelEnd = window.setTimeout(settle, WHEEL_SETTLE_MS);
     };
     const showHint = () => {
       if (performance.now() - hintShown < HINT_EVERY_MS) return;
@@ -550,7 +568,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const n = c?.navigator;
       if (!c || !n) return false;
       const y = clientY - c.container.getBoundingClientRect().top;
-      return y >= n.top - 4 && y <= n.top + n.height + (n.scrollbarHeight ?? 0) + 8;
+      return y >= n.top - 4 && y <= n.top + n.height + (n.scrollbarHeight ?? 0) + 2; // the legend starts just below
     };
     // The navigator and its scrollbar, below the plot, are driven here rather than by Highcharts (whose mouse and touch
     // handling there is stopped, onNavPress): Highcharts redrew the chart on every move of a navigator drag, at up to
@@ -585,6 +603,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           if (Math.abs(dy) >= Math.abs(dx)) { nav = null; return; } // the page's scroll
         }
         nav.moved = true;
+        navDragRef.current = true;
         el.setPointerCapture(e.pointerId);
         c?.tooltip?.hide(0);
         controller.beginGesture();
@@ -600,6 +619,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const axis = navAxis(), c = chart();
       if (!nav || e.pointerId !== nav.id) return;
       const done = nav;
+      navDragRef.current = false;
       nav = null;
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       if (done.moved) controller.endGesture();
@@ -684,6 +704,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       if (nav?.id === e.pointerId) {
         if (nav.moved) controller.endGesture();
         nav = null;
+        navDragRef.current = false;
       }
       if (!drag || e.pointerId !== drag.id) return;
       if (selectRef.current) selectRef.current.style.display = 'none';

@@ -106,6 +106,7 @@ export interface PaintSeries { id: string; points: { x: number; y: number | null
 const MAX_CANVAS_PX = 4096; // the widest a painted canvas gets (CSS px): room to pan without painting again
 const ZOOM_MARGIN = 0.6; // while zooming, windows painted on each side
 const RESNAP = 1.6; // painted again when stretched or squeezed past this
+const RELEASE_AFTER_MS = 10_000; // a canvas unused this long gives its memory back
 
 type Tick = { pos: number; label?: Highcharts.SVGElement; mark?: Highcharts.SVGElement; gridLine?: Highcharts.SVGElement };
 type TickAxis = Highcharts.Axis & { ticks?: Record<string, Tick> };
@@ -115,7 +116,9 @@ type TickAxis = Highcharts.Axis & { ticks?: Record<string, Tick> };
 // Each frame only moves and stretches the canvas (a CSS transform), shifts the x-axis ticks and moves the navigator's
 // window: no Highcharts redraw until the gesture ends. It is painted again (a few ms) when stretched past RESNAP or
 // when the window nears its edge. `series` gives the data to paint, by series id.
-export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series: () => PaintSeries[]): GesturePreview {
+// `navDragging`: a navigator drag is on (the container then keeps its pointer events: the drag needs them).
+export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series: () => PaintSeries[],
+  navDragging: () => boolean = () => false): GesturePreview {
   const box = document.createElement('div');
   const inner = document.createElement('div');
   const canvas = document.createElement('canvas');
@@ -125,6 +128,7 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
   let drawn: Range | null = null; // the window Highcharts last drew (its ticks and y scales)
   let hidden: SVGGElement[] = [];
   let lastSpan = 0;
+  let release = 0; // frees the canvas's memory (~16 MB on a phone) a while after a gesture, until the next one
 
   const paintSeries = (g: CanvasRenderingContext2D, ps: PaintSeries, X: (t: number) => number, a: number, z: number) => {
     const s = chart.get(ps.id) as Highcharts.Series | undefined;
@@ -143,18 +147,37 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
       for (let i = from; i <= to; i++) { const y = pts[i].y; if (y !== null) g.fillRect(X(pts[i].x) - 1.5, Y(y) - 1.5, 3, 3); }
       return;
     }
-    g.lineWidth = ps.kind === 'area' ? 1 : 1.5;
+    // Rain is drawn as Highcharts does with step 'center': flat across each bucket, changing halfway between two
+    const stepped = ps.kind === 'area';
+    const to_ = (i: number) => { // the path from point i-1 to point i
+      const x = X(pts[i].x), y = Y(pts[i].y as number);
+      if (stepped) {
+        const mid = (X(pts[i - 1].x) + x) / 2;
+        g.lineTo(mid, Y(pts[i - 1].y as number));
+        g.lineTo(mid, y);
+      }
+      g.lineTo(x, y);
+    };
+    g.lineWidth = stepped ? 1 : 1.5;
     g.beginPath();
-    let pen = false;
     for (let i = from; i <= to; i++) {
       const y = pts[i].y;
-      if (y === null) pen = false;
-      else if (pen) g.lineTo(X(pts[i].x), Y(y));
-      else { g.moveTo(X(pts[i].x), Y(y)); pen = true; }
+      if (y === null) continue;
+      const prev = i > from ? pts[i - 1].y : null;
+      if (prev === null) g.moveTo(X(pts[i].x), Y(y));
+      else to_(i);
     }
     g.stroke();
-    if (ps.kind !== 'area') return;
-    // Rain: the same outline, filled down to 0
+    // A reading between two gaps (a line can't show it): a dot, as the chart marks it
+    if (!stepped) {
+      for (let i = from; i <= to; i++) {
+        if (pts[i].y === null) continue;
+        const before = i === 0 || pts[i - 1].y === null, after = i === pts.length - 1 || pts[i + 1].y === null;
+        if (before && after) g.fillRect(X(pts[i].x) - 1.5, Y(pts[i].y as number) - 1.5, 3, 3);
+      }
+      return;
+    }
+    // Rain: the same steps, filled down to 0
     const y0 = Y(0);
     g.globalAlpha = 0.35;
     g.beginPath();
@@ -165,8 +188,8 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
         if (open >= 0) { g.lineTo(X(pts[i - 1].x), y0); g.closePath(); open = -1; }
         continue;
       }
-      if (open < 0) { g.moveTo(X(pts[i].x), y0); open = i; }
-      g.lineTo(X(pts[i].x), Y(y));
+      if (open < 0) { g.moveTo(X(pts[i].x), y0); g.lineTo(X(pts[i].x), Y(y)); open = i; }
+      else to_(i);
     }
     if (open >= 0) { g.lineTo(X(pts[to].x), y0); g.closePath(); }
     g.fill();
@@ -205,6 +228,9 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
     }
     for (const g of hidden) g.style.visibility = 'hidden';
     chart.tooltip?.hide(0);
+    (chart.xAxis[0] as Highcharts.Axis & { hideCrosshair?: () => void }).hideCrosshair?.();
+    // No hovering while the canvas stands in for the series: the tooltip and crosshair would describe stale points
+    if (!navDragging()) chart.container.style.pointerEvents = 'none';
   };
 
   // The x-axis ticks of the last real redraw, shifted to where their times now are (hidden past the plot's edges)
@@ -225,6 +251,7 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
       const span = w.end - w.start;
       const zooming = lastSpan > 0 && Math.abs(span - lastSpan) > span * 0.001;
       lastSpan = span;
+      window.clearTimeout(release);
       if (!drawn) {
         const axis = chart.xAxis[0];
         drawn = { start: axis.min ?? w.start, end: axis.max ?? w.end };
@@ -250,6 +277,9 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
       painted = null;
       drawn = null;
       lastSpan = 0;
+      chart.container.style.pointerEvents = '';
+      window.clearTimeout(release);
+      release = window.setTimeout(() => { canvas.width = 0; canvas.height = 0; }, RELEASE_AFTER_MS);
     },
     get active() { return drawn !== null; },
   };
