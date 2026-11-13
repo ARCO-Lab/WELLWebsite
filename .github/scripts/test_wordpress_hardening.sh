@@ -47,10 +47,14 @@ for f in wordpress/*.conf; do mounts+=(-v "$PWD/$f:/etc/apache2/conf-enabled/$(b
 for f in wordpress/*.ini; do mounts+=(-v "$PWD/$f:/usr/local/etc/php/conf.d/zz-$(basename "$f"):ro"); done
 for _ in $(seq 90); do docker exec "$DB" mysqladmin -uwordpress -pci ping >/dev/null 2>&1 && break; sleep 2; done
 sleep 3
-# 127.0.0.1 stands in for haproxy: requests made from inside the container may name a client in X-Forwarded-For
+# 127.0.0.1 stands in for haproxy: requests made from inside the container may name a client in X-Forwarded-For.
+# The image's mod_remoteip setup (conf remoteip) already believes X-Forwarded-For from private and loopback
+# addresses, which every test request comes from; haproxy's address is public, so in production it never applies.
+# It is turned off here so that the plugin's own handling is what gets tested.
 docker run -d --name "$WP" --network "$NET" "${mounts[@]}" -e WORDPRESS_DB_HOST="$DB:3306" \
     -e WORDPRESS_DB_USER=wordpress -e WORDPRESS_DB_PASSWORD=ci -e WORDPRESS_DB_NAME=wordpress \
-    -e WORDPRESS_CONFIG_EXTRA="$CONFIG_EXTRA" -e WELL_TRUSTED_PROXY_IPS=127.0.0.1 "$IMAGE" >/dev/null || exit 1
+    -e WORDPRESS_CONFIG_EXTRA="$CONFIG_EXTRA" -e WELL_TRUSTED_PROXY_IPS=127.0.0.1 --entrypoint sh "$IMAGE" \
+    -c 'a2disconf -q remoteip && exec docker-entrypoint.sh apache2-foreground' >/dev/null || exit 1
 for _ in $(seq 60); do [ "$(status http://localhost/wp-admin/install.php)" = 200 ] && break; sleep 2; done
 
 echo "== Installing WordPress, with the well theme and /%postname%/ permalinks"

@@ -74,7 +74,8 @@ const WELL_LOGIN_WINDOW_S = 15 * 60;
 // The client's address. Apache sees the campus proxy's address for every visitor, so the proxy's X-Forwarded-For is
 // used, but only when the connection comes from a proxy listed in WELL_TRUSTED_PROXY_IPS (comma-separated; unset
 // means 130.113.68.30, haproxy.cas.mcmaster.ca; set but empty trusts none). Anyone else could write any address in
-// that header. The proxy appends the address it saw, so the last entry is the one to believe.
+// that header. The proxy appends the address it saw, so the last entry is the one to believe. (The image's
+// mod_remoteip believes X-Forwarded-For only from private addresses, so it leaves haproxy's public one alone.)
 function well_client_ip() {
     $peer = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
     $setting = getenv('WELL_TRUSTED_PROXY_IPS');
