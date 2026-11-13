@@ -41,6 +41,7 @@ from utils.email_format import (
 )
 from utils.digest import (DEPTH_NEAR_ZERO, FLATLINE_MIN_READINGS, FLATLINE_TYPES, FLATLINE_ZERO_OK, LOGGER_SENSORS,
                           ODO_NEAR_ZERO, PLAUSIBLE_RANGES)
+from utils.fetching import WRONG_UNITS
 from utils.monitoring import DEFAULT_EXCLUDED_SERIES, as_site_time, env_key, parse_excluded_series, parse_hours
 
 STALE_SENSOR, VENDOR_DOWN, SUSPECT_VALUES = "STALE_SENSOR", "VENDOR_DOWN", "SUSPECT_VALUES"
@@ -276,6 +277,15 @@ def vendor_conditions(vendors, now, settings):
                       f"{site_time(since)}. {last_ok} WQData's hourly quota is shared by the 10-minute ingestion, the "
                       f"daily digest, the API canary and scripts/wqdata_backfill.py: stop any backfill that is "
                       f"running. Ingestion catches up by itself once the quota resets; the sensors may be fine.")
+        elif kind == "unreadable" and WRONG_UNITS in (row.get("last_error") or ""):
+            # It answers, but every record is in a unit we don't expect: a sensor was swapped or the account's unit
+            # system changed. The fix is a setting in utils/parsers.py (and maybe a conversion), not in the field.
+            title = f"{source} sends readings in an unexpected unit (×{failures}) — check the ingestion log"
+            detail = (f"{source} has answered on the last {failures} ingestion runs, since {site_time(since)}, but "
+                      f"its records are in units we don't expect (last error: {row.get('last_error')}). {last_ok} "
+                      f"Check whether a sensor was swapped or the account's unit setting changed, then update "
+                      f"WEATHER_UNITS/LOGGER_UNITS in utils/parsers.py (converting if needed) and refill the period "
+                      f"with scripts/licor_backfill.py. No {source} data is being stored until then.")
         elif kind == "unreadable":
             # It answers, but none of its records could be read: most likely its format changed, so the fix is in
             # our parser, not at the vendor or in the field.
@@ -326,7 +336,9 @@ def stale_conditions(freshness, vendors, now):
         # Records of the vendor's latest answer that couldn't be read (vendor_status.last_skipped) may be the missing
         # readings: then the title points at the ingestion log, not the field.
         unread = row.get("last_skipped") if row else None
-        unreadable = f"{vendor} sent unreadable records, check the ingestion log"
+        unreadable = (f"{vendor} sends readings in an unexpected unit, check the ingestion log"
+                      if unread and WRONG_UNITS in unread
+                      else f"{vendor} sent unreadable records, check the ingestion log")
         check_site, check_sensor = (unreadable, unreadable) if unread else ("vendor OK, check the site",
                                                                          "vendor OK, check the sensor")
         note = (f" {vendor}'s latest answer also had records we couldn't read ({unread}); check the worker's "
@@ -344,10 +356,24 @@ def stale_conditions(freshness, vendors, now):
             found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
             continue
         for (group, station), series in sorted(stations.items()):
+            label = station_label(group, station)
+            for s in series:
+                if s["status"] != "future":
+                    continue
+                # Its newest reading is dated ahead of now (a device clock that jumped ahead), so it can't be judged
+                # stale: say so, under the series' own key, until the row is gone.
+                key = f"stale:{vendor}:{station}:{s['measurement_type']}"
+                newest = as_site_time(s["newest"])
+                title = (f"{label} {s['measurement_type']} newest reading dated {site_time(newest)}, in the future — "
+                         f"check the device clock")
+                detail = (f"The newest stored {label} {s['measurement_type']} reading is dated {site_time(newest)}, "
+                          f"ahead of now, so whether it is still reporting can't be told. Ingestion now skips such "
+                          f"records; this one was stored before. Check the device's clock, then delete the row(s) "
+                          f"dated in the future from sensor_measurements.{note}")
+                found[key] = Condition(key, STALE_SENSOR, title, detail, now)
             stale = [s for s in series if s["status"] == "stale"]
             if not stale:
                 continue
-            label = station_label(group, station)
             if len(stale) == len(series):
                 newest = max(as_site_time(s["newest"]) for s in series)
                 key = f"stale:{vendor}:{station}"
@@ -598,13 +624,16 @@ def status(item, now):
     for silences and vendor errors from the title, which every check refreshes (utils/alerts.py writes both)."""
     title = item.title or ""
     if item.kind == STALE_SENSOR:
+        if "in the future" in title:
+            return "dated in the future"
         found = SILENT_RE.search(title)
         return f"silent {found.group(1) if found else duration(now - aware(item.started_at))}"
     if item.kind == SUSPECT_VALUES:
         return "readings look wrong"
     if item.kind == VENDOR_DOWN:
         for words, text in (("credentials", "rejects our credentials"), ("quota", "request quota exceeded"),
-                            ("can't read", "sends records we can't read")):
+                            ("can't read", "sends records we can't read"),
+                            ("unexpected unit", "sends readings in an unexpected unit")):
             if words in title:
                 return text
         return "not responding"
@@ -618,9 +647,12 @@ def action(item):
 
 
 def short_action(item):
-    # The subject's version: the vendor is fine whenever "vendor OK" is said, so the subject leaves it out.
+    # The subject's version: the vendor is fine whenever "vendor OK" is said, so the subject leaves it out. The first
+    # letter is lowercased only when it starts an ordinary word ("Check ..."), never a name ("LI-COR", "WQData").
     text = action(item)
-    return text[len("Vendor OK, "):] if text.startswith("Vendor OK, ") else text[:1].lower() + text[1:]
+    if text.startswith("Vendor OK, "):
+        return text[len("Vendor OK, "):]
+    return text[:1].lower() + text[1:] if text[1:2].islower() else text
 
 
 def is_quiet(item, settings):

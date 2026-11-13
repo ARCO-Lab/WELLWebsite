@@ -1,6 +1,6 @@
-"""A small GitHub/HTTP client for the daily maintainer's scripts (maintainer_inputs.py, maintainer_summary.py).
-Standard library only, so the workflow needs no pip install. The transport is a function argument, so the unit
-tests run without a network."""
+"""A small GitHub/HTTP client for the daily maintainer's scripts (maintainer_inputs.py, maintainer_summary.py,
+maintainer_publish.py), and the cleaning of text the model wrote before a person reads it. Standard library only, so
+the workflow needs no pip install. The transport is a function argument, so the unit tests run without a network."""
 import json
 import os
 import re
@@ -8,7 +8,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from sentry_issues import scrub
+
 USER_AGENT = "well-daily-maintainer"
+# A "#" before a number links an issue, and "Fixes #12" in a pull request body closes it when the PR is merged
+ISSUE_REF_RE = re.compile(r"#(?=\d)")
 
 
 class HttpError(Exception):
@@ -115,7 +119,51 @@ def is_maintainer_pr(pr, repo, login):
             and (head.get("repo") or {}).get("full_name") == repo)
 
 
+# The publish job comments on each pull request it pushes to, with the commit it pushed in this hidden line, and the
+# summary compares it with the pull request's head: a commit someone else added since then makes it "Needs your
+# review". Only an unedited comment by the maintainer's own account counts (anyone with write access can edit a
+# comment, but that changes its updated_at).
+PUBLISHED_MARKER = "<!-- maintainer-published: {} -->"
+PUBLISHED_RE = re.compile(r"<!-- maintainer-published: ([0-9a-f]{40}(?:[0-9a-f]{24})?) -->")
+
+
+def published_comment(sha):
+    return (f"The daily maintainer pushed commit {sha} to this branch. A commit added after it means this pull "
+            f"request needs a person's review in the maintainer's email.\n\n{PUBLISHED_MARKER.format(sha)}")
+
+
+def published_commit(comments, login):
+    """The commit in the newest unedited publish comment by `login` (comments oldest first), or None."""
+    found = None
+    for comment in comments or []:
+        if not login or (comment.get("user") or {}).get("login") != login:
+            continue
+        if comment.get("updated_at") != comment.get("created_at"):
+            continue
+        match = PUBLISHED_RE.search(comment.get("body") or "")
+        if match:
+            found = match.group(1)
+    return found
+
+
 def clip(text, limit):
     """Text cut to `limit` characters, marked when cut."""
     text = text or ""
     return text if len(text) <= limit else text[:limit] + " [...]"
+
+
+def model_lines(text, line_limit=2000, max_lines=400):
+    """Free text the model wrote (its summary, a pull request body), as lines that are safe to show where a person
+    trusts what they read: a fooled run could otherwise slip in a convincing link, notify everyone with @mentions or
+    close an issue with "Fixes #n". Each line goes through sentry_issues.scrub(), the same cleaning as Sentry text in
+    public issues (no invisible characters, e-mail or IP addresses, query strings or credentials; backticks and angle
+    brackets replaced, so the text can't end a code block or open a tag; @ followed by a zero-width space, so no one
+    is notified), and the same zero-width space goes after a # before a number. Line breaks are kept."""
+    lines = str(text or "").splitlines()[:max_lines]
+    return [ISSUE_REF_RE.sub("#​", scrub(line, line_limit)) for line in lines]
+
+
+def fenced(text, **limits):
+    """model_lines() as a markdown code block, so none of it renders as a link, a mention or markup."""
+    return "```text\n" + "\n".join(model_lines(text, **limits)) + "\n```"
+

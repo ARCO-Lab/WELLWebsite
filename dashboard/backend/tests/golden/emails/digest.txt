@@ -11,7 +11,7 @@ WELL dashboard daily digest for the 24 h before Thu Nov 12, 08:00 (Toronto time)
 - **Logger 1 water level**: readings back to normal. Wed Nov 11, 12:00 → Thu Nov 12, 06:03 (18 h). Not emailed yet (low priority)
 - **Weather station 22051538 rain**: reporting again. Thu Nov 12, 01:40 → Thu Nov 12, 05:50 (4 h)
 
-## Stale series (newest reading older than its limit)
+## Stale series (newest reading older than its limit, or dated in the future)
 
 - Logger 4 Water Temperature: newest Thu Nov 12, 04:00 (4.0 h ago; limit 3 h)
 

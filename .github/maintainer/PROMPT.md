@@ -75,8 +75,8 @@ For each problem:
 2. Make the smallest change that fixes the cause, in the repository's style: comments say what the code does and
    why, briefly. Add or update a test that fails without the fix whenever the code is testable.
 3. Keep it small and within what the publish step accepts: at most 20 files and 1,000 changed lines, no binary
-   files or symlinks, and nothing under `.github/` or `.claude/` (such a branch is refused). A branch that touches
-   the paths listed in section 5 is opened as a draft labelled `needs-review`.
+   files or symlinks, and nothing under `.github/` or `.claude/` (such a branch is refused). A branch that changes
+   anything but the low-risk files of section 5 is opened as a draft labelled `needs-review`.
 4. Verify like CI does (`.github/workflows/ci.yml` lists every check), at least for what you touched, with exactly
    these commands (other commands are denied; use the Grep and Read tools to search and read files):
    - dashboard, from `dashboard/frontend`: `npm ci`, `npx tsc --noEmit`, `npm test`, `npm run build`,
@@ -103,10 +103,11 @@ For each problem:
    CI runs once the branch is pushed, after this run; the next run sees its result (`gh pr checks`) and any
    code-quality comments on it, and fixes them then.
 
-## 4. Independent audit
+## 4. Self-check by a subagent
 
 Before reporting a branch, start a fresh subagent with the Agent tool to audit it. Give it the branch name and this
-brief, and nothing of your own reasoning, so its review is independent:
+brief, and nothing of your own reasoning, so it looks at the change with fresh eyes. It is still part of this run,
+so it is a self-check, not an independent review: a person reviews every pull request.
 
 > Audit the local branch maint/TOPIC of ARCO-Lab/WELLWebsite against origin/main. Read-only: don't edit files,
 > commit, switch branches or run anything but read commands. Read the diff (`git diff origin/main...maint/TOPIC`),
@@ -117,10 +118,17 @@ brief, and nothing of your own reasoning, so its review is independent:
 > wrong and a concrete fix, ordered by severity. End with exactly one line: "Approval recommended" if there is
 > nothing to fix, otherwise "Changes requested".
 
-## 5. Risk and audit result
+## 5. Risk and self-check result
 
 For each branch, report:
-- `risk`: `high` if it touches any of: database schema or migrations (`dashboard/backend/app/db/`, `migrate.py`),
+- `risk`: `low` only when every file it changes is documentation (`*.md`, `docs/`), the dashboard's browser code
+  (`dashboard/frontend/src/components/`, `hooks/`, `utils/`, `styles/`) or a backend test file the branch adds
+  (`dashboard/backend/tests/test_*.py`), and none is in the list below; otherwise `high`. Always `high` for any of:
+  the API (`dashboard/backend/app/api/routes/`, `api/services/`), anything in `dashboard/backend/app/utils/` or
+  `app/scripts/` (backups, alerts, heartbeats, every job the worker runs), a changed or deleted test, the end-to-end
+  and load tests (`dashboard/e2e/`, `dashboard/loadtest/`), build and lint settings (`tsconfig*.json`,
+  `eslint.config.*`, `postcss.config.*`, `dashboard/frontend/scripts/`), the dashboard's `src/lib/`, `src/pages/`,
+  `public/` and top-level files, database schema or migrations (`dashboard/backend/app/db/`, `migrate.py`),
   `docker-compose*.yml`, `Dockerfile*`, `.dockerignore`, `deploy.sh`, `nginx.conf`, dependency manifests
   (`requirements*.txt`, `package.json`, `package-lock.json`), data ingestion, backfills, uploads or the scheduler
   (`dashboard/backend/app/scripts/` `inject_*`, `licor_*`, `wqdata_*`, `clean_*`, `clear_*`, `upload_*`,
@@ -129,12 +137,13 @@ For each branch, report:
   `guards`), the Flask app (`dashboard/backend/app/server.py`), the ops dashboard (`dashboard/backend/app/ops/`:
   login, password hashing, settings, templates), the dashboard's server side (`dashboard/frontend/src/pages/api/`,
   `next.config.*`), `.gitignore`/`.gitattributes`, `home/` or `wordpress/`, or anything else that changes stored
-  data or needs a person on the VM; otherwise `low`. The publish step checks the same paths itself (`RISKY_PATHS`
-  in `.github/scripts/maintainer_summary.py`) and opens such a branch as a draft labelled `needs-review` and
-  `risk:high`, whatever you report.
-- `audit`: `approved` only when the latest audit said "Approval recommended" on the branch's last commit;
+  data or needs a person on the VM. The publish step checks the same paths itself (`RISKY_PATHS`
+  and `LOW_RISK_PATHS` in `.github/scripts/maintainer_summary.py`) and opens such a branch as a draft labelled
+  `needs-review` and `risk:high`, whatever you report.
+- `audit`: `approved` only when the latest self-check said "Approval recommended" on the branch's last commit;
   otherwise `findings`.
-The publish step turns these into the `maintainer`, `risk:*` and `audit:*` labels.
+The publish step turns these into the `maintainer`, `risk:*` and `self-check:*` labels. It shows the pull request
+body you write as a cleaned plain-text block, so keep it plain: links, @mentions and issue references don't render.
 
 ## 6. Hard rules
 

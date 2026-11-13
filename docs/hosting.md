@@ -1,7 +1,7 @@
 # Hosting
 
-How the two sites are hosted: the VM, the Docker services, where data is stored, and the host firewall rule the stack
-depends on. Deploying is in [deploying.md](deploying.md); every setting is in [configuration.md](configuration.md).
+How the two sites are hosted: the VM, the Docker services, where data is stored, the user the containers run as,
+the host firewall rule the stack depends on, and who can reach the published ports. Deploying is in [deploying.md](deploying.md); every setting is in [configuration.md](configuration.md).
 
 ## The VM and the Docker services
 
@@ -61,6 +61,34 @@ still hides the header and footer, from a check that runs before the first paint
 - Nightly backups of the WordPress database and uploads on the VM (`wordpress/backup.sh` from cron), 7 daily + 8
   weekly + 12 monthly kept ([Backups](../wordpress/README.md#backups)).
 
+## Containers run unprivileged
+
+`backend`, `worker`, `export_worker` and `ops` run as an unprivileged user, not root: uid and gid 10001 from the
+image (`dashboard/backend/Dockerfile`), or `BACKEND_UID` and `BACKEND_GID` from `.env`. `dashboard` runs as the
+image's `nextjs` user. All five have every Linux capability dropped and `no-new-privileges` set (`x-unprivileged` in
+`docker-compose.yml`), so code running in them can't become root or use a setuid program. The stock MySQL, WordPress
+and Redis images start as root to switch to their own user, so they keep Docker's defaults.
+
+The worker writes into two folders of the checkout, `dashboard/backend/app/logs/` and `backups/`, and `backend` and
+`export_worker` into the `exports_data` volume, so the containers' user must own them. On the VM, run the containers
+as the user that owns the checkout, and give that user what earlier containers wrote as root. Once, from
+`~/WELLWebsite` (no sudo needed: a throwaway container does the `chown`, with only the capabilities it needs):
+
+```bash
+uid=$(id -u) gid=$(id -g)
+grep -q '^BACKEND_UID=' .env || printf 'BACKEND_UID=%s\nBACKEND_GID=%s\n' "$uid" "$gid" >> .env
+docker compose build backend worker export_worker
+docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown \
+  worker -R "$uid:$gid" /app/app/logs /app/backups
+docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown \
+  export_worker -R "$uid:$gid" /app/app/exports
+```
+
+The backups stay private: `scripts/backup_db.py` makes their folders 0700 and the files 0600, now owned by that user
+instead of root. Scripts run by hand with `docker compose exec worker ...` run as the same user, and write their
+files (`logs/`, `backups/`) as that user too. CI starts these services from `docker-compose.yml` the same way and
+checks that each runs unprivileged and can write where it must (`.github/scripts/test_compose_runtime.sh`).
+
 ## Host firewall (required)
 
 PostgreSQL runs on the VM itself, not in Docker, and the containers connect to it on the host's IP, port 5432. The
@@ -107,3 +135,35 @@ new pools (10.20.128.0/17 or 10.30.0.0/16), outside the narrowed rule, and backe
 lose PostgreSQL with "No route to host", just as when the rule above goes missing. To undo the change, keep the pins and
 revert only `daemon.json`, or first widen the firewall rule again (in `/etc/sysconfig/iptables` and live with
 `iptables -I`) to cover the new pools.
+
+## Who can reach the published ports
+
+WordPress (8080) and the dashboard (8081) are published on every address the VM has, so that the reverse proxy
+(`haproxy.cas.mcmaster.ca`, `130.113.68.30`) can reach them; welldash² (8090) is published on `OPS_BIND` only. Ports
+Docker publishes skip the host's `INPUT` rules (the rule above doesn't apply to them), so anything that can route to
+the VM reaches WordPress's login and the dashboard directly, around the proxy and its TLS. Two ways to narrow that,
+best used together:
+
+- **Publish on one address**: set `WORDPRESS_BIND` and `DASHBOARD_BIND` in `.env` to the address the proxy connects
+  to (unset: every address, as before). Then add `DEPLOY_SITE_HOST=<that address>` to `deploy.sh`'s cron line, since
+  its health checks otherwise call `127.0.0.1`.
+- **Allow only the proxy**, in Docker's `DOCKER-USER` chain, which Docker leaves to the administrator and checks
+  before its own rules. The rules match the port the client connected to (conntrack's original destination, before
+  Docker rewrites it), so traffic between containers and `deploy.sh`'s checks from the VM itself aren't affected:
+  ```bash
+  # -I inserts at the top, so the DROP rules go in first and the proxy's exceptions above them
+  sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8080 -j DROP
+  sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8081 -j DROP
+  sudo iptables -I DOCKER-USER -p tcp -s 130.113.68.30 -m conntrack --ctdir ORIGINAL --ctorigdstport 8080 -j RETURN
+  sudo iptables -I DOCKER-USER -p tcp -s 130.113.68.30 -m conntrack --ctdir ORIGINAL --ctorigdstport 8081 -j RETURN
+  sudo iptables -L DOCKER-USER -n -v --line-numbers
+  ```
+  Then check that https://well.mcmaster.ca and https://welldash.mcmaster.ca still load; the same commands with `-D`
+  in place of `-I` remove them. The same pattern can limit 8090 to the campus and VPN ranges when welldash² is on the
+  campus address. Docker publishes the ports on IPv6 too: if the VM has a routable IPv6 address, add the same rules
+  with `ip6tables`.
+
+  Rules added this way are lost at the next reboot. To keep them, add them to `/etc/sysconfig/iptables` like the
+  rule above: in its `*filter` section, a `:DOCKER-USER - [0:0]` line with the other chain lines, then the rules with
+  `-A` in place of `-I` and in the opposite order (the two `RETURN` lines first, then the two `DROP` lines). Check
+  `sudo iptables -L DOCKER-USER -n` after the next reboot.

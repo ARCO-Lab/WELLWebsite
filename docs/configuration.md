@@ -30,6 +30,8 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`, which is fixed when the image is built, so a change needs a dashboard rebuild. |
 | `NEXT_PUBLIC_FLASK_API_URL` | none | Passed to the dashboard build and container, but no code reads it. |
 | `DASHBOARD_PORT` | none (use `8081`) | Host port of the dashboard. `deploy.sh`'s health checks assume 8081. |
+| `WORDPRESS_BIND`, `DASHBOARD_BIND` | none (every address) | Publish port 8080 (WordPress) or the dashboard's port on this one host address only, e.g. the address haproxy connects to. Then set `DEPLOY_SITE_HOST` for `deploy.sh`. See [who can reach the published ports](hosting.md#who-can-reach-the-published-ports). |
+| `BACKEND_UID`, `BACKEND_GID` | `10001` | The user and group `backend`, `worker`, `export_worker` and `ops` run as. Set them to the VM user that owns the checkout (`id -u`, `id -g`), so the files the worker writes into `dashboard/backend/app/logs/` and `backups/` are that user's. See [containers run unprivileged](hosting.md#containers-run-unprivileged). |
 | `TRUSTED_PROXY_IPS` | `130.113.68.30` | Reverse proxies whose `X-Forwarded-For` the dashboard believes, comma-separated. The default is McMaster's `haproxy.cas.mcmaster.ca`. Set but empty trusts none. See `dashboard/frontend/src/lib/clientIp.ts`. |
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | API queries running longer are cancelled (the API answers 504). Backend container only; `0` turns it off. Don't put it in `app/.env`: there it would also limit ingestion and exports. |
 | `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Redis database for the short `/api/series` and `/api/windrose` response cache. Empty turns the cache off. |
@@ -149,7 +151,9 @@ Details in [wordpress/README.md](../wordpress/README.md#backups).
 | `DEPLOY_HEALTHCHECK_URL` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure or a held commit. |
 | `DEPLOY_BRANCH`, `DEPLOY_REMOTE` | `main`, `origin` | What is deployed. |
 | `DEPLOY_LOG` | `deploy.log` next to the script | Log file. |
-| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported and the last commit rolled back. Earlier versions kept these in `/tmp`; the first run moves them here. |
+| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported, the commit the containers were last built from, a marker while a deploy runs, and the last commit rolled back. Earlier versions kept the lock and state in `/tmp`; the first run moves them here, and once a run has ended well the old `/tmp` files are ignored. |
+| `DEPLOY_SITE_HOST` | `127.0.0.1` | The address the health checks call ports 8080 and 8081 on. Set it when `WORDPRESS_BIND` and `DASHBOARD_BIND` publish those ports on one address that isn't the loopback. |
+| `DEPLOY_CI_WAIT_HOURS` | `3` | How long `--auto` waits for CI to finish on a commit before it reports it (a `/fail` ping and a `FAILED` line). |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
 ## Tests

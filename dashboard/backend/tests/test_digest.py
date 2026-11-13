@@ -13,7 +13,7 @@ sys.path.insert(0, str(APP / "scripts"))
 os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real database
 
 from utils.digest import (  # noqa: E402
-    LOGGER_SENSORS, anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings,
+    LOGGER_SENSORS, anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings, station_gaps,
 )
 from utils.monitoring import assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
@@ -76,6 +76,24 @@ class GapTests(TestCase):
     def test_exactly_30_minutes_is_not_a_gap(self):
         ts = [T0, T0 + dt.timedelta(minutes=30)]
         self.assertEqual(find_gaps(ts, T0, ts[-1]), [])
+
+
+class StationGapTests(TestCase):
+    def test_one_logger_silent_while_the_others_report(self):
+        # The group's time slots are full (logger 2 reports), so only the per-station gaps show logger 3's 2 hours.
+        every = [T0 + dt.timedelta(minutes=10 * i) for i in range(30)]
+        logger3 = [t for t in every if not T0 + dt.timedelta(hours=1) < t < T0 + dt.timedelta(hours=3)]
+        end = every[-1]
+        group = find_gaps(sorted(set(every) | set(logger3)), T0, end)
+        self.assertEqual(group, [])
+        self.assertEqual(station_gaps(group, {"2577532": every, "2577533": logger3}, T0, end),
+                         [("Logger 3", T0 + dt.timedelta(hours=1), T0 + dt.timedelta(hours=3))])
+
+    def test_a_gap_of_the_whole_group_isnt_repeated_per_station(self):
+        ts = [T0, T0 + dt.timedelta(hours=2)]
+        group = find_gaps(ts, T0, ts[-1])
+        self.assertEqual(station_gaps(group, {"2577532": ts, "2577533": ts}, T0, ts[-1]), [])
+        self.assertEqual(station_gaps([], {"22051538": [T0]}, T0, T0 + dt.timedelta(hours=2)), [])   # one station
 
 
 class AnomalyTests(TestCase):

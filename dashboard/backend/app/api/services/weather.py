@@ -4,18 +4,20 @@
 
 import requests, sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
-from utils.fetching import BadVendorResponse
+from utils.fetching import MAX_RECORDS, BadVendorResponse
 from datetime import timedelta, timezone
 
 def page_records(body):
     """(records, capped) from a LI-COR reply. A reply without a "data" list (not a JSON object, "data" missing,
     null or not a list) raises BadVendorResponse instead of reading as an empty page, so an error body that comes
     back with HTTP 200, or a changed format, fails the run (and is reported, and the alerts say "vendor problem"
-    rather than "vendor OK, check the sensor") rather than looking like a quiet period with no readings."""
+    rather than "vendor OK, check the sensor") rather than looking like a quiet period with no readings.
+    A reply of MAX_RECORDS or more counts as capped even without the "max_results" flag, so a renamed or dropped
+    flag can't make a truncated reply look complete."""
     if not isinstance(body, dict) or not isinstance(body.get("data"), list):
         keys = sorted(body)[:10] if isinstance(body, dict) else type(body).__name__   # field names only, never values
         raise BadVendorResponse(f"LI-COR reply has no 'data' list (got {keys})")
-    return body["data"], bool(body.get("max_results"))
+    return body["data"], bool(body.get("max_results")) or len(body["data"]) >= MAX_RECORDS
 
 
 class WeatherService:

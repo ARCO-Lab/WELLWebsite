@@ -5,6 +5,7 @@ import pathlib
 import sys
 import traceback
 import unittest
+import unittest.mock
 
 import requests
 
@@ -288,7 +289,14 @@ class Backfill(unittest.TestCase):
 
     def test_days_are_read_a_window_at_a_time_and_compared_per_day(self):
         self.days = bf.day_windows(dt.datetime(2026, 11, 20, 5, tzinfo=UTC), 9, self.tz)   # Nov 11-19, local
-        code, events = self.run_backfill()
+        from utils import parsers
+
+        class Later(dt.datetime):   # read as if after Nov 19: points dated in the future are skipped
+            @classmethod
+            def now(cls, tz=None):
+                return dt.datetime(2026, 12, 1, tzinfo=tz)
+        with unittest.mock.patch.object(parsers, "datetime", Later):
+            code, events = self.run_backfill()
         self.assertEqual(code, 0)
         self.assertEqual(self.requests, [("2026-11-11 05:00:00", "2026-11-18 04:59:59"),    # 7 days
                                          ("2026-11-18 05:00:00", "2026-11-20 04:59:59")])   # the other 2
