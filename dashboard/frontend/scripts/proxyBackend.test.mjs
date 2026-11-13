@@ -381,3 +381,23 @@ test("a transfer still going after PROXY_BODY_MAX_MS is stopped, and the backend
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /stopped: still sending after 0.2 s/);
 });
+
+test("a route can keep its own answer for an unreachable backend (the health check's 503)", async (t) => {
+  const failure = { status: 503, body: { status: "error", error: "backend unreachable" } };
+  const url = await startProxy(t, "/health/data", { failure });
+  const closed = http.createServer();
+  closed.listen(0);
+  await once(closed, "listening");
+  const port = closed.address().port;
+  closed.close();
+  await once(closed, "close");
+  process.env.FLASK_API_URL = `http://127.0.0.1:${port}`;
+  let result;
+  const errors = await captureErrors(async () => {
+    result = await get(url);
+  });
+  process.env.FLASK_API_URL = backendUrl;
+  assert.equal(result.status, 503);
+  assert.deepEqual(JSON.parse(result.body.toString()), failure.body);
+  assert.equal(errors.length, 1, "still logged");
+});

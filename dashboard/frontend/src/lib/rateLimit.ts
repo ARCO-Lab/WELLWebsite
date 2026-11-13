@@ -8,7 +8,10 @@
 // to its size, so short bursts (a page load, a chart zoomed quickly) pass while a sustained flood gets 429s. On top of
 // that, an address may have only so many slow requests in flight at once, and only so many export downloads (a
 // download holds a backend thread for as long as the browser takes to read it). The backend has 12 threads
-// (dashboard/backend/Dockerfile), so one address can hold at most a third of them with slow requests. The rate limits
+// (dashboard/backend/Dockerfile), so one address can hold at most half of them with slow requests. A slow request
+// counts until the backend has finished it, even if the browser gave up on it first (lib/proxyBackend.ts), so one
+// person who changes the wind rose's range or the sampling filters quickly can have several abandoned requests still
+// counting: 6 leaves them room for that, and still leaves half the threads to everyone else. The rate limits
 // are generous for one person; addresses shared by many people (a campus NAT) are why they are this high. Each can be
 // changed with an environment variable (see limitsFromEnv); 0 turns one off.
 //
@@ -25,7 +28,7 @@ export type Limits = {
 };
 
 export const DEFAULT_LIMITS: Limits = {
-  burst: 600, perMinute: 600, slowBurst: 120, slowPerMinute: 120, slowConcurrent: 4, downloadConcurrent: 2,
+  burst: 600, perMinute: 600, slowBurst: 120, slowPerMinute: 120, slowConcurrent: 6, downloadConcurrent: 2,
 };
 
 // What a request costs the backend: "slow" requests can hold a thread for seconds, and a "download" holds one while

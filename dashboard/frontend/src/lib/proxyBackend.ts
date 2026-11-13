@@ -75,6 +75,9 @@ export type BackendInit = {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  // The answer when the backend can't be reached or doesn't answer in time, instead of the usual 502 and 504 (for
+  // a route whose callers expect another one, such as /api/health/data's uptime monitor)
+  failure?: { status: number; body: unknown };
 };
 
 export async function proxyToBackend(
@@ -114,7 +117,7 @@ export async function proxyToBackend(
     // An invalid FLASK_API_URL throws here, before any connection is made.
     verdict.release();
     console.error(`[ERROR] Failed to reach the Flask backend for ${label}:`, error);
-    return res.status(502).json(UNREACHABLE);
+    return init.failure ? res.status(init.failure.status).json(init.failure.body) : res.status(502).json(UNREACHABLE);
   }
   // Errors are handled where the request and the body are awaited below; this listener only keeps a late
   // second error (after the first was handled) from being thrown as an uncaught exception.
@@ -162,10 +165,10 @@ export async function proxyToBackend(
     if (clientLeft) return; // nothing to answer
     if (timedOut) {
       console.error(`[ERROR] The Flask backend didn't answer within ${BACKEND_TIMEOUT_MS / 1000} s for ${label}`);
-      return res.status(504).json(TIMED_OUT);
+      return init.failure ? res.status(init.failure.status).json(init.failure.body) : res.status(504).json(TIMED_OUT);
     }
     console.error(`[ERROR] Failed to reach the Flask backend for ${label}:`, error);
-    return res.status(502).json(UNREACHABLE);
+    return init.failure ? res.status(init.failure.status).json(init.failure.body) : res.status(502).json(UNREACHABLE);
   } finally {
     clearTimeout(timer); // from here on, only the client leaving stops the transfer
   }

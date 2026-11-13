@@ -114,7 +114,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `TRUSTED_PROXY_IPS` | run time | see above | Set by `docker-compose.yml` from the root `.env`. |
 | `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | run time | `600`, `600` | API requests one visitor's address may make at once, and per minute after that ([Rate limits](../dashboard/frontend/README.md#rate-limits-and-security-headers)). Not set by `docker-compose.yml`: add them to the dashboard's `environment:` to change them. `0` turns a limit off. |
 | `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | run time | `120`, `120` | The same for slow requests (wind rose, `/api/data`, `/api/samples`, `/api/series` without `bucket=`, export estimates, direct exports, new export jobs). |
-| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `4` | Slow requests one address may have in flight at once, each until the backend has finished with it. |
+| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `6` | Slow requests one address may have in flight at once, each until the backend has finished with it. |
 | `RATE_LIMIT_DOWNLOAD_CONCURRENT` | run time | `2` | Export downloads one address may have in flight at once. |
 | `PROXY_BODY_MAX_MS` | run time | `1800000` | The longest a response may take to send before it is cut off. |
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |

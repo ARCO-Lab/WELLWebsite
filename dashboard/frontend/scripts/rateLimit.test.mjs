@@ -105,10 +105,10 @@ test("an address may have only so many downloads in flight, apart from its slow 
   assert.ok(limiter.check("a", "download").ok);
 });
 
-test("by default one address may hold at most a third of the backend's 12 threads with slow requests", () => {
-  assert.equal(DEFAULT_LIMITS.slowConcurrent, 4);
+test("by default one address may hold at most half of the backend's 12 threads with slow requests", () => {
+  assert.equal(DEFAULT_LIMITS.slowConcurrent, 6);
   const limiter = new RateLimiter(DEFAULT_LIMITS, clock().now);
-  for (let i = 0; i < 4; i++) assert.ok(limiter.check("a", true).ok);
+  for (let i = 0; i < 6; i++) assert.ok(limiter.check("a", true).ok);
   assert.equal(limiter.check("a", true).ok, false);
 });
 
