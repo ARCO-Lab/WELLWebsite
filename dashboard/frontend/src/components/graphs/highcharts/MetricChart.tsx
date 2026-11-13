@@ -153,7 +153,6 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     return axis;
   });
   const series: Highcharts.SeriesOptionsType[] = [];
-  const first = specs.find((s) => !s.hidden) ?? specs[0];
   for (const s of specs) {
     const info: SeriesInfo = { label: s.name.replace(/ \([^)]*\)$/, ''), unit: s.unit, agg: s.agg, note: s.note, at: new Map() };
     if (axes && s.agg === 'mean') { // bands in the larger view only: on a card with many series they hide the lines
@@ -169,7 +168,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       showInNavigator: false, // the navigator's base is the extent series (below)
       ...(s.dash ? { dashStyle: s.dash } : {}),
       ...(type === 'line' ? { lineWidth: 1.5 } : {}),
-      ...(type === 'area' ? { step: 'center', threshold: 0, lineWidth: 1, fillOpacity: 0.35 } : {}),
+      ...(type === 'area' ? { step: 'center', threshold: 0, lineWidth: 1, fillOpacity: 0.35, legendSymbol: 'rectangle' } : {}),
       ...(type === 'scatter' ? { marker: { enabled: true, radius: 2, symbol: 'circle' }, findNearestPointBy: 'x' } : {}),
     } as Highcharts.SeriesOptionsType);
     if (type !== 'scatter') {
@@ -189,10 +188,9 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     id: EXTENT_ID, type: 'line', data: extentData(ext), yAxis: 0, enableMouseTracking: false, showInLegend: false,
     includeInDataExport: false, accessibility: { enabled: false }, lineWidth: 0,
     // Exactly one series carries the navigator (Stock otherwise adds a navigator series per series it is given): this
-    // one, which the legend can't hide (Stock hides the navigator's line with its base series). The line itself is the
-    // first shown series' overview over the range, set by navigator() in the chart's effect.
+    // one, which the legend can't hide. It draws nothing there: it only spans the picked range.
     showInNavigator: true,
-    navigatorOptions: { type: 'line', color: first?.color ?? '#7a003c', lineWidth: 1, data: [], dataGrouping: { enabled: false } },
+    navigatorOptions: { type: 'line', lineWidth: 0, enableMouseTracking: false, data: [], dataGrouping: { enabled: false } },
   } as Highcharts.SeriesLineOptions);
   return {
     time: { timezone: TIME_ZONE },
@@ -213,18 +211,26 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     title: { text: undefined },
     credits: { enabled: false },
     rangeSelector: { enabled: false },
+    // The range bar: Stock's navigator, reduced to one control. Its track is the picked range (with its dates), the
+    // shaded part is the window: drag an end to resize it, the middle to slide it. No line of data in it (nobody could
+    // tell what it showed) and no separate scrollbar (it did the same as the bar). Its keyboard control is the
+    // range-bar element in the JSX below (Stock's own handles aren't keyboard controls).
     navigator: {
       enabled: true,
-      accessibility: { enabled: false }, // its handles were tab stops named "Start, percent"; the keys and buttons do this
-      height: coarse ? 30 : 36,
+      accessibility: { enabled: false }, // its handles were tab stops named "Start, percent"
+      height: coarse ? 26 : 22,
       margin: 6,
       adaptToUpdatedData: false, // its extent is the picked range, not wherever data happens to be
-      maskFill: 'rgba(122, 0, 60, 0.12)',
-      outlineColor: '#d1d5db',
-      handles: { backgroundColor: '#ffffff', borderColor: '#7a003c', height: 18, width: 9 },
-      xAxis: { dateTimeLabelFormats: DATE_FORMATS, labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#6b7280' } } },
+      maskFill: 'rgba(122, 0, 60, 0.22)',
+      outlineColor: '#9ca3af',
+      outlineWidth: 1,
+      handles: { backgroundColor: '#ffffff', borderColor: '#7a003c', height: coarse ? 22 : 18, width: coarse ? 12 : 9, lineWidth: 1.5 },
+      xAxis: {
+        dateTimeLabelFormats: DATE_FORMATS, gridLineColor: '#e5e7eb',
+        labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#4b5563' } },
+      },
     },
-    scrollbar: { enabled: true, height: coarse ? 12 : 10, barBorderRadius: 5, buttonBorderRadius: 5, trackBorderRadius: 5 },
+    scrollbar: { enabled: false },
     accessibility: {
       description: `${title}. Use the buttons above the chart, or the arrow, plus and minus keys, to move and zoom.`,
       // The summary read before the chart names its series, not Highcharts' count (which includes the helper series
@@ -260,6 +266,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     legend: {
       enabled: true,
       margin: 2, padding: 2, itemDistance: 12,
+      symbolRadius: 2, // rain's rectangle swatch stays a rectangle (Highcharts rounds it to a dot by default)
       itemStyle: { fontFamily: FONT, fontSize: '11px', fontWeight: 'normal' },
       labelFormatter(this: Highcharts.Series | Highcharts.Point) {
         const info = (this as Highcharts.Series).options?.custom as SeriesInfo | undefined;
@@ -315,6 +322,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   const plotRef = useRef<HTMLDivElement>(null);
   const hintRef = useRef<HTMLDivElement>(null);
   const selectRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null); // the range bar's keyboard control
   const navDragRef = useRef(false); // a navigator drag is on (the canvas preview leaves the chart its pointer events)
 
   const chartHeight = modalOpen ? Math.round(height * 1.5) : height;
@@ -326,6 +334,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
 
   const error = useChartValue(controller, (s) => s.error);
   const firstLoad = useChartValue(controller, (s) => s.shownBucket === null && !s.error);
+  const settled = useChartValue(controller, (s) => s.settled);
   const windowEmpty = useChartValue(controller, (s) => s.windowEmpty && s.shownBucket !== null && !s.loading);
   const noData = useChartValue(controller, (s) => s.hasData === false);
   const extentStart = useChartValue(controller, (s) => s.extent.start);
@@ -373,24 +382,16 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       }
       navigator();
     };
-    // The navigator's line: the first shown series over the picked range, at the overview's bucket, with the range's
-    // two ends so it spans all of it
+    // The range bar (the navigator) spans the picked range: its base series holds just the range's two ends
     let navShown = '';
-    let navKey = '';
     const navigator = () => {
       const nav = (chart as Highcharts.Chart & { navigator?: { series?: Highcharts.Series[] } }).navigator?.series?.[0];
-      const key = keys.find((k) => (chart.get(k) as Highcharts.Series | undefined)?.visible) ?? keys[0];
-      if (!nav || !key) return;
-      const pts = controller.overview(key);
+      if (!nav) return;
       const e = controller.extent;
-      const sig = `${key}|${pts.length}|${e.start}|${e.end}|${pts.at(-1)?.y ?? ''}`;
+      const sig = `${e.start}|${e.end}`;
       if (sig === navShown) return;
       navShown = sig;
-      if (key !== navKey) { // the line takes the colour of the series it now shows
-        navKey = key;
-        nav.update({ color: (chart.get(key) as Highcharts.Series).color } as Highcharts.SeriesOptionsType, false);
-      }
-      nav.setData([[e.start, null], ...pts.map((p) => [p.x, p.y] as [number, number | null]), [e.end, null]], false, false, false);
+      nav.setData(extentData(e), false, false, false); // the range bar spans the picked range; it draws no data
       (chart.get(EXTENT_ID) as Highcharts.Series | undefined)?.setData(extentData(e), false, false, false);
       dirty = true;
     };
@@ -441,8 +442,16 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     };
     apply(controller.lastData);
     place(controller.window);
-    // A series shown or hidden in the legend: the navigator follows the first one shown
+    // After every redraw: the range bar's keyboard element sits over the bar, and the bar still spans the range
+    const placeBar = () => {
+      const n = (chart as Highcharts.Chart & { navigator?: { top: number; height: number; left: number; size: number } }).navigator;
+      const bar = barRef.current;
+      if (!n || !bar) return;
+      Object.assign(bar.style, { top: `${n.top - 2}px`, left: `${n.left - 2}px`, width: `${n.size + 4}px`, height: `${n.height + 4}px` });
+    };
+    placeBar();
     const offLegend = Highcharts.addEvent(chart, 'redraw', () => {
+      placeBar();
       const before = navShown;
       navigator();
       if (navShown !== before) chart.redraw(false);
@@ -834,6 +843,17 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   }, [controller]);
 
   const kind = specs.length > 0 && specs.every((s) => s.agg === 'sum') ? 'totals' : 'means';
+  // The range bar's keys: arrows move the window by a tenth of its length; Shift + arrows move its end, making it longer
+  // (right) or shorter (left) by a tenth
+  const onBarKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = e.key === 'ArrowLeft' ? -1 : 1;
+    if (!e.shiftKey) { controller.pan(dir * 0.1, 'key'); return; }
+    const w = controller.window, step = (w.end - w.start) * 0.1;
+    controller.setWindow({ start: w.start, end: Math.max(w.start + MIN_RANGE_MS, w.end + dir * step) }, 'key', 'start');
+  };
   const plotId = `plot-${id}${modalOpen ? '-modal' : ''}`;
   return (
     <div className="min-w-0" data-testid={`chart-${id}`}>
@@ -856,6 +876,11 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           containerProps={{ style: { height: `${chartHeight}px` } }}
         />
         <div ref={selectRef} className="pointer-events-none absolute hidden bg-primary/10 outline outline-1 outline-primary/50" />
+        {/* The range bar from the keyboard: over the bar (placed after each redraw), letting the pointer through to it */}
+        <div ref={barRef} tabIndex={0} role="group" data-testid="chart-range-bar"
+          aria-label={`Time window within the picked days: ${windowLabel(settled, extentEnd)}. Left and right arrows move it, Shift with them makes it longer or shorter.`}
+          onKeyDown={onBarKey}
+          className="pointer-events-none absolute rounded outline-none focus-visible:ring-2 focus-visible:ring-primary" />
         <div ref={hintRef} aria-hidden="true" data-testid="chart-wheel-hint"
           className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-900/55 px-4 text-center text-sm text-white opacity-0 transition-opacity duration-200">
           Hold Ctrl (⌘ on a Mac) and scroll to zoom
