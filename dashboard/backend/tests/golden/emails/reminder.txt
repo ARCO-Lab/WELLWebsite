@@ -1,0 +1,22 @@
+Subject: [WELL] Still open: Water quality station 4501 dissolved oxygen readings look wrong (26 h)
+
+1 still open. Open right now: 1.
+
+## Still open (reminder)
+
+- **Water quality station 4501 dissolved oxygen**: readings look wrong
+  Since Wed Nov 11, 06:30 (26 h)
+  To do: Check the probe.
+  Details: Readings are arriving, but Water quality station 4501 ODO: dissolved oxygen about 0 mg/L for 6 h (median 0.02); the probe may be fouled or out of the water. Look at the chart on the dashboard, then check and clean the sensor in the field if it isn't a real event.
+  Dashboard: https://welldash.mcmaster.ca/
+
+## Open right now
+
+- **Water quality station 4501 dissolved oxygen**: readings look wrong. Since Wed Nov 11, 06:30 (26 h)
+
+---
+
+Dashboard: https://welldash.mcmaster.ca/
+Health JSON: https://welldash.mcmaster.ca/api/health/data
+Why did I get this? https://github.com/ARCO-Lab/WELLWebsite/blob/main/dashboard/backend/README.md#why-did-i-get-this-email
+Checked Thu Nov 12, 08:03 (Toronto time).

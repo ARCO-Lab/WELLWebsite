@@ -216,28 +216,31 @@ class SuspectTests(unittest.TestCase):
 
 
 class EmailTextTests(unittest.TestCase):
+    # The full text of every email is pinned by tests/test_alert_emails.py; this checks real conditions fit it.
     def test_subjects(self):
-        c = alerts.Condition("stale:4501", STALE_SENSOR, "Water quality station 4501 silent for 3 h — vendor OK, check "
-                             "the sensor", "detail", NOW - dt.timedelta(hours=3))
-        subject, body = alerts.build_email([c], [], [], 1, NOW, Settings())
-        self.assertEqual(subject, "[WELL] Water quality station 4501 silent for 3 h — vendor OK, check the sensor")
-        self.assertIn("https://welldash.mcmaster.ca/api/health/data", body)
-        v = alerts.Condition("vendor:LI-COR", VENDOR_DOWN, "LI-COR API not responding", "d", NOW)
-        subject, body = alerts.build_email([c, v], [], [], 2, NOW, Settings())
-        self.assertEqual(subject, "[WELL] 2 new alerts: LI-COR API not responding (+1 more)")   # vendor first
-        self.assertLess(body.index("LI-COR API"), body.index("Water quality station"))
-        self.assertIsNone(alerts.build_email([], [], [], 0, NOW, Settings()))
+        c = alerts.Condition("stale:WQData:4501", STALE_SENSOR, "Water quality station 4501 silent for 3 h — vendor "
+                             "OK, check the sensor", "detail", NOW - dt.timedelta(hours=3))
+        email = alerts.build_email([c], [], [], [c], NOW, Settings())
+        self.assertEqual(email.subject, "[WELL] New: Water quality station 4501 silent 3 h — check the sensor")
+        self.assertIn("https://welldash.mcmaster.ca/api/health/data", email.text)
+        v = alerts.Condition("vendor:LI-COR", VENDOR_DOWN, "LI-COR API not responding — check vendor status", "d",
+                             NOW)
+        email = alerts.build_email([c, v], [], [], [c, v], NOW, Settings())
+        self.assertEqual(email.subject, "[WELL] 2 new")
+        self.assertLess(email.text.index("LI-COR API"), email.text.index("Water quality station"))   # vendor first
+        self.assertIsNone(alerts.build_email([], [], [], [c], NOW, Settings()))
 
 
 class DigestTests(unittest.TestCase):
     def test_digest_lists_open_alerts(self):
         from utils.digest import build_digest
         freshness = assess_freshness([latest_row("Quality", WQ, "ODO", dt.timedelta(minutes=10))], NOW, {})
-        incident = {"title": "LI-COR API not responding", "started_at": "2026-11-11T13:30:00-05:00"}
+        incident = {"kind": VENDOR_DOWN, "key": "vendor:LI-COR", "title": "LI-COR API not responding",
+                    "started_at": "2026-11-11T13:30:00-05:00"}
         _, body = build_digest("2026-11-11", freshness, {}, [], None, [incident])
-        self.assertIn("Open alerts (each was emailed when it began):\n  - LI-COR API not responding (since "
-                      "2026-11-11 13:30)", body)
-        self.assertIn("Open alerts (each was emailed when it began):\n  none", build_digest(
+        self.assertIn("## Open alerts (each was emailed when it began)\n\n- **LI-COR API**: not responding. Since "
+                      "Wed Nov 11, 13:30 (30 min)", body)
+        self.assertIn("## Open alerts (each was emailed when it began)\n\n- none", build_digest(
             "2026-11-11", freshness, {}, [], None, [])[1])
         self.assertIn("could not be read: ProgrammingError", build_digest(
             "2026-11-11", freshness, {}, [], None, {"error": "ProgrammingError"})[1])
@@ -260,6 +263,7 @@ class CheckAlertsTests(unittest.TestCase):
         self.ctx.push()
         self.db.create_all()
         self.sent = []
+        self.html = []
         self.logs = []
         check_alerts._last_unsent["signature"] = None
 
@@ -276,8 +280,9 @@ class CheckAlertsTests(unittest.TestCase):
                 recorded_at=site(newest - dt.timedelta(minutes=10 * i))))
         self.db.session.commit()
 
-    def send(self, settings, recipients, subject, body):
+    def send(self, settings, recipients, subject, body, html=None):
         self.sent.append((recipients, subject, body))
+        self.html.append(html)
 
     def run_at(self, now, env=SMTP, send=None):
         return self.check.run(now=now, env=dict(env), send=send or self.send, log=self.logs.append)
@@ -299,14 +304,14 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         recipients, subject, body = self.sent[0]
         self.assertEqual(recipients, ["team@test.ca"])
-        self.assertEqual(subject, "[WELL] Water quality station 4501 silent for 3 h — vendor OK, check the sensor")
+        self.assertEqual(subject, "[WELL] New: Water quality station 4501 silent 3 h — check the sensor")
 
         for minutes in (10, 20, 600):   # still going: no new email until the reminder is due
             self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=minutes))["email"])
         self.assertEqual(len(self.sent), 1)
         self.run_at(NOW + dt.timedelta(hours=24))
         self.assertEqual(len(self.sent), 2)
-        self.assertTrue(self.sent[1][1].startswith("[WELL] Still ongoing: Water quality station 4501 silent for 27 h"))
+        self.assertTrue(self.sent[1][1].startswith("[WELL] Still open: Water quality station 4501 silent 27 h"))
         self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=25))["email"])
 
         later = NOW + dt.timedelta(hours=26)
@@ -314,7 +319,8 @@ class CheckAlertsTests(unittest.TestCase):
         self.run_at(later)
         self.assertEqual(len(self.sent), 3)
         self.assertTrue(self.sent[2][1].startswith("[WELL] Recovered: Water quality station 4501"))
-        self.assertIn("after 29 h", self.sent[2][2])   # from the last reading (NOW - 3 h) to the recovery
+        self.assertEqual(self.sent[2][1], "[WELL] Recovered: Water quality station 4501 (29 h)")   # from the last
+        self.assertIn("Wed Nov 11, 11:00 → Thu Nov 12, 16:00 (29 h)", self.sent[2][2])   # reading to the recovery
         self.assertIsNone(self.run_at(later + dt.timedelta(minutes=10))["email"])
         [incident] = self.incidents()
         self.assertEqual((incident.notifications, incident.resolved_at is not None), (2, True))
@@ -329,9 +335,9 @@ class CheckAlertsTests(unittest.TestCase):
         self.run_at(NOW)
         self.assertEqual(len(self.sent), 1)   # one email for everything new in a run
         _, subject, body = self.sent[0]
-        self.assertTrue(subject.startswith("[WELL] 2 new alerts: LI-COR API not responding since 2026-11-11 13:30 "
-                                           "(HTTP 503 ×3)"), subject)
-        self.assertIn("Water quality station 4501 ODO silent", body)
+        self.assertEqual(subject, "[WELL] 2 new")
+        self.assertLess(body.index("**LI-COR API**: not responding"), body.index("**Water quality station 4501 "
+                                                                                 "dissolved oxygen**: silent 3 h"))
         self.assertNotIn("Weather station", body)   # LI-COR failing: no "vendor OK, check the sensor" for it
 
     def test_quiet_without_smtp_then_emails_once_configured(self):
@@ -427,7 +433,7 @@ class CheckAlertsTests(unittest.TestCase):
 
     def kinds(self):
         """The kind of each email sent so far: new, recovered, back again or reminder."""
-        names = {"[WELL] Recovered:": "recovered", "[WELL] Back again:": "back again", "[WELL] Still ongoing:": "reminder"}
+        names = {"[WELL] Recovered:": "recovered", "[WELL] Back again:": "back again", "[WELL] Still open:": "reminder"}
         return [next((v for k, v in names.items() if subject.startswith(k)), "new") for _, subject, _ in self.sent]
 
     def test_timeline_with_flap_damping(self):
@@ -440,7 +446,7 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertEqual(emails_at(at(11, 10), at(11, 20), at(11, 30)), [None, None, "sent"])   # recovered
         self.down(at(11, 40))
         self.assertEqual(emails_at(at(11, 40), at(12, 0), at(12, 10)), [None, None, "sent"])    # back again
-        self.assertIn("BACK AGAIN", self.sent[2][2])
+        self.assertIn("## Back again", self.sent[2][2])
         self.assertEqual(emails_at(at(13, 50)), [None])
         self.record("WQData", now=at(13, 55))
         # Gone since 13:50: with one "back again" it must stay gone 3 h, so it clears at 16:50.
@@ -522,16 +528,16 @@ class CheckAlertsTests(unittest.TestCase):
         self.record("LI-COR")
         self.run_at(NOW, env=env)                                                       # 1: Rain
         self.run_at(NOW + dt.timedelta(hours=1), env=env)                               # 2: the station
-        self.assertTrue(self.sent[1][1].startswith("[WELL] Weather station 22051538 silent"), self.sent[1][1])
+        self.assertTrue(self.sent[1][1].startswith("[WELL] New: Weather station 22051538 silent"), self.sent[1][1])
         for measurement in ("Rain", "Air Temperature"):
             self.add_readings("Weather", WEATHER, measurement, NOW + dt.timedelta(hours=1, minutes=5), count=1)
         self.run_at(NOW + dt.timedelta(hours=1, minutes=10), env=env)
         self.run_at(NOW + dt.timedelta(hours=1, minutes=40), env=env)                   # 3: station recovered
-        self.assertTrue(self.sent[2][1].startswith("[WELL] Recovered: Weather station 22051538 silent"))
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Recovered: Weather station 22051538 ("))
         self.add_readings("Weather", WEATHER, "Air Temperature", NOW + dt.timedelta(hours=2, minutes=55), count=1)
         self.run_at(NOW + dt.timedelta(hours=3), env=env)    # 4: Rain alone again: new, not its superseded row
         self.assertEqual(len(self.sent), 4)
-        self.assertTrue(self.sent[3][1].startswith("[WELL] Weather station 22051538 Rain silent"), self.sent[3][1])
+        self.assertTrue(self.sent[3][1].startswith("[WELL] New: Weather station 22051538 rain silent"), self.sent[3][1])
 
     def test_a_pending_back_again_survives_narrowing_to_a_key_closed_before(self):
         env = {**SMTP, "ALERT_STALE_HOURS_WEATHER": "1"}
@@ -549,7 +555,7 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=2, minutes=20), env=env)["email"])   # narrowed
         self.run_at(NOW + dt.timedelta(hours=2, minutes=40), env=env)                   # 4: back again, for Rain
         self.assertEqual(len(self.sent), 4)
-        self.assertTrue(self.sent[3][1].startswith("[WELL] Back again: Weather station 22051538 Rain silent"),
+        self.assertTrue(self.sent[3][1].startswith("[WELL] Back again: Weather station 22051538 rain silent"),
                         self.sent[3][1])
 
     def test_a_reopened_incident_keeps_its_flap_damping(self):
@@ -609,7 +615,7 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertEqual(self.open_keys(), [f"stale:LI-COR:{WEATHER}:Rain"])
         self.run_at(back + dt.timedelta(minutes=30))                        # 3: back again, for the sensor
         self.assertEqual(len(self.sent), 3)
-        self.assertTrue(self.sent[2][1].startswith("[WELL] Back again: Weather station 22051538 Rain silent"),
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Back again: Weather station 22051538 rain silent"),
                         self.sent[2][1])
 
     def test_a_stuck_probe_doesnt_recover_overnight(self):
@@ -617,25 +623,59 @@ class CheckAlertsTests(unittest.TestCase):
         self.add_readings("Quality", WQ, "ODO", NOW, count=36, value=stuck)
         self.record("WQData")
         self.run_at(NOW)
-        self.assertIn("ODO looks wrong", self.sent[0][1])
+        self.assertIn("dissolved oxygen readings look wrong", self.sent[0][1])
         evening = NOW + dt.timedelta(hours=4, minutes=10)   # 18:10 Toronto, the sonde's last reading of the day
         self.add_readings("Quality", WQ, "ODO", evening, count=25, value=stuck)
         self.record("WQData", now=NOW + dt.timedelta(hours=9))
         self.assertIsNone(self.run_at(NOW + dt.timedelta(hours=9))["email"])   # 23:00: 8 readings in the window
         self.assertEqual(self.open_keys(), [f"suspect:WQData:{WQ}:ODO"])
 
+    def test_a_quiet_recovery_waits_for_the_next_email(self):
+        """ALERT_QUIET_KINDS (default SUSPECT_VALUES): a stuck probe's recovery sends no email of its own; it goes in
+        the next email sent anyway (here a new silent station), once."""
+        varied = lambda i: 7.0 + i / 10   # noqa: E731
+        self.add_readings("Quality", WQ, "ODO", NOW, count=36, value=lambda i: 7.2)
+        self.add_readings("Weather", WEATHER, "Rain", NOW)
+        self.record("WQData")
+        self.record("LI-COR")
+        self.run_at(NOW)
+        self.assertEqual(self.sent[0][1], "[WELL] New: Water quality station 4501 dissolved oxygen readings look "
+                                          "wrong — check the probe")
+        self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(minutes=50), count=5, value=varied)
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=20))["email"])
+        summary = self.run_at(NOW + dt.timedelta(minutes=50))   # cleared: recovered, but not emailed on its own
+        self.assertEqual((summary["recovered"], summary["quiet_waiting"], summary["email"]), (1, 1, None))
+        self.assertIn("1 low-priority, kept for the next email or the digest", self.logs[-1])
+        self.assertEqual((self.open_keys(), len(self.sent)), ([], 1))
+        [odo] = self.incidents()
+        self.assertIsNone(odo.recovery_notified_at)
+
+        later = NOW + dt.timedelta(hours=3, minutes=30)   # the weather station has gone silent meanwhile
+        self.add_readings("Quality", WQ, "ODO", later, count=16, value=varied)
+        self.record("WQData", now=later)
+        self.record("LI-COR", now=later)
+        self.assertEqual(self.run_at(later)["email"], "sent")
+        _, subject, body = self.sent[1]
+        self.assertEqual(subject, "[WELL] 1 new, 1 recovered")
+        self.assertIn("## Recovered\n\n- **Water quality station 4501 dissolved oxygen**: readings back to normal\n",
+                      body)
+        self.assertIn("**Weather station 22051538**: silent", body)
+        self.assertTrue(self.html[1].startswith("<!DOCTYPE html>"))   # sent as text and HTML
+        self.assertIsNotNone(self.incidents()[0].recovery_notified_at)
+        self.assertIsNone(self.run_at(later + dt.timedelta(minutes=10))["email"])   # and only once
+
     def test_widening_and_narrowing_send_no_false_recovery(self):
         self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=5))
         self.add_readings("Weather", WEATHER, "Air Temperature", NOW - dt.timedelta(minutes=40))
         self.record("LI-COR")
         self.run_at(NOW)
-        self.assertIn("Weather station 22051538 Rain silent", self.sent[0][1])
+        self.assertIn("Weather station 22051538 rain silent", self.sent[0][1])
         later = NOW + dt.timedelta(hours=3)                 # now the whole station is silent
         self.record("LI-COR", now=later)
         self.run_at(later)
         self.assertEqual(len(self.sent), 2)
-        self.assertTrue(self.sent[1][1].startswith("[WELL] Weather station 22051538 silent"), self.sent[1][1])
-        self.assertNotIn("RECOVERED", self.sent[1][2])     # the Rain incident was superseded, not recovered
+        self.assertTrue(self.sent[1][1].startswith("[WELL] New: Weather station 22051538 silent"), self.sent[1][1])
+        self.assertNotIn("## Recovered", self.sent[1][2])     # the Rain incident was superseded, not recovered
         self.assertEqual(self.open_keys(), [f"stale:LI-COR:{WEATHER}"])
         self.add_readings("Weather", WEATHER, "Air Temperature", later + dt.timedelta(minutes=5), count=1)
         self.assertIsNone(self.run_at(later + dt.timedelta(minutes=10))["email"])   # back to just Rain: quiet
@@ -793,7 +833,7 @@ class PostgresTests(unittest.TestCase):
         sent = []
         check_alerts.run(env=dict(SMTP), send=lambda *a: sent.append(a), log=lambda *a: None)
         self.assertEqual(len(sent), 1)
-        self.assertIn("WQData API not responding", sent[0][2])
+        self.assertIn("**WQData API**: not responding", sent[0][2])
         check_alerts.run(env=dict(SMTP), send=lambda *a: sent.append(a), log=lambda *a: None)
         self.assertEqual(len(sent), 1)   # the open-incident index and timestamptz columns work as intended
 

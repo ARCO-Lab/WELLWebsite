@@ -20,6 +20,7 @@ people who use the files. If it isn't, fix the code.
 | `sampling_upload_rows.json` | `utils/sampling_csv.validate_csv()` on that file | The rows it stores: site and creek ids, parameter and unit names after aliases, values, local times |
 | `samples_ancaster_coldwater.json` | `/api/samples` for two creeks | The fields of each reading, and their order (time, site, parameter) |
 | `recent.json` | `/api/recent` | The latest reading of each parameter |
+| `emails/*.txt`, `emails/*.html` | The alert emails (`utils/alerts.py`) and the daily digest (`utils/digest.py`), `tests/test_alert_emails.py` | The subject and both parts (Markdown text, HTML) of each kind of email and of a mixed one. Not a file format, but what people read: review the diff as text and, for the HTML, in a browser |
 
 The fixture readings (in `test_golden_csv.py`) cover several groups and stations, missing readings and a missing
 group, a stored NULL, a unit that changes partway (Turbidity FNU, then NTU: the latest unit names the column), a
@@ -57,7 +58,7 @@ One thing is pinned as it is today, intended or not:
 Only when a format change is intended. From `dashboard/backend`, with the backend's requirements installed:
 
 ```sh
-UPDATE_GOLDEN=1 python -m unittest tests.test_golden_csv
+UPDATE_GOLDEN=1 python -m unittest tests.test_golden_csv tests.test_alert_emails
 git diff tests/golden
 ```
 

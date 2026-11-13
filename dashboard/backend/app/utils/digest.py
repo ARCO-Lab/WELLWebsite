@@ -1,11 +1,14 @@
 """The pure parts of the daily digest (scripts/daily_digest.py): settings, gap finding, implausible-value rules
-and the text itself. No database, network or SMTP here, so all of it is unit-tested."""
+and the text itself, written as Markdown like the alert emails (utils/email_format.py). No database, network or SMTP
+here, so all of it is unit-tested."""
 import math
 import os
 import re
 import statistics
-from datetime import timedelta
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
+from utils.email_format import footer, since, span, what, when
 from utils.parsers import LOGGER_CONFIG
 from utils.timezone import EST_TZ
 from utils.traffic import traffic_lines
@@ -140,27 +143,62 @@ def fmt_age(minutes):
     return f"{minutes / 1440:.1f} days"
 
 
-def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None):
-    """(subject, body) of the digest.
+def to_markdown(lines):
+    """The digest's lines as Markdown: a line ending in ":" at the left margin is a `## ` heading, an indented line
+    (with or without its "- ") a bullet, a line indented twice a nested bullet, and any other line a paragraph."""
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out.append("")
+        elif not line.startswith(" ") and stripped.endswith(":") and not stripped.startswith(("- ", "**")):
+            out += [f"## {stripped[:-1]}", ""]
+        elif line.startswith("    "):
+            out.append(f"  - {stripped[2:] if stripped.startswith('- ') else stripped}")
+        elif line.startswith("  "):
+            out.append(f"- {stripped[2:] if stripped.startswith('- ') else stripped}")
+        else:
+            out.append(stripped)
+    return out
+
+
+def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
+                 dashboard_url="https://welldash.mcmaster.ca/"):
+    """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
     last 24 h of the live series. findings: anomaly strings. wqdata: {"error"} or {"power_min", "power_max", "power_readings",
     "last_point", "last_point_age_minutes", optional "note"} or None when skipped. incidents: the open email alerts
     (utils/alert_state.alerts_report()["open"]), {"error": ...} if they couldn't be read, or None to leave them out.
     traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
+    recoveries: alerts cleared in the last 24 h (utils/alert_state.recent_recoveries()), {"error": ...}, or None.
     """
+    from utils.alerts import RECOVERED_AS, status   # here, not at the top: utils.alerts imports this module
+    now = datetime.fromisoformat(freshness["checked_at"])
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
     problems = len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
-    subject = f"WELL daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
-    lines = [f"WELL dashboard daily digest for the 24 h before {freshness['checked_at']} (site time)", ""]
+    subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
+    lines = [f"WELL dashboard daily digest for the 24 h before {when(now)} (Toronto time).", ""]
 
     if incidents is not None:
         lines.append("Open alerts (each was emailed when it began):")
         if isinstance(incidents, dict):
             lines.append(f"  could not be read: {incidents.get('error')}")
         else:
-            lines += [f"  - {i['title']} (since {i['started_at'][:16].replace('T', ' ')})" for i in incidents] or ["  none"]
+            lines += [f"  **{what(i['key'])}**: {status(SimpleNamespace(**i), now)}. {since(i['started_at'], now)}"
+                      for i in incidents] or ["  none"]
+        lines.append("")
+
+    if recoveries is not None:
+        lines.append("Alerts recovered in the last 24 h:")
+        if isinstance(recoveries, dict):
+            lines.append(f"  could not be read: {recoveries.get('error')}")
+        else:
+            lines += [f"  **{what(r['key'])}**: {RECOVERED_AS.get(r['kind'], 'recovered')}. "
+                      f"{span(r['started_at'], r['resolved_at'])}"
+                      + ("" if r["recovery_emailed"] else ". Low priority, so not emailed on its own")
+                      for r in recoveries] or ["  none"]
         lines.append("")
 
     lines.append("Stale series (newest reading older than its limit):")
@@ -216,4 +254,5 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
         for s in info["series"]:
             lines.append(f"    {series_label(s['station_id'], s['measurement_type'])}: {s['newest']} "
                          f"({fmt_age(s['age_minutes'])} ago){'' if s['status'] == 'ok' else ', ' + s['status']}")
+    lines = to_markdown(lines) + [""] + footer(dashboard_url)
     return subject, "\n".join(lines) + "\n"

@@ -1,0 +1,20 @@
+Subject: [WELL] Recovered: Logger 1 water level (20 h)
+
+1 recovered. Open right now: 0.
+
+## Recovered
+
+- **Logger 1 water level**: readings back to normal
+  Wed Nov 11, 12:00 → Thu Nov 12, 08:03 (20 h)
+  Dashboard: https://welldash.mcmaster.ca/
+
+## Open right now
+
+- None
+
+---
+
+Dashboard: https://welldash.mcmaster.ca/
+Health JSON: https://welldash.mcmaster.ca/api/health/data
+Why did I get this? https://github.com/ARCO-Lab/WELLWebsite/blob/main/dashboard/backend/README.md#why-did-i-get-this-email
+Checked Thu Nov 12, 08:03 (Toronto time).

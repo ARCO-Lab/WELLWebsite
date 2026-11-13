@@ -1,0 +1,43 @@
+Subject: [WELL] Daily digest 2026-11-12: 2 to check
+
+WELL dashboard daily digest for the 24 h before Thu Nov 12, 08:00 (Toronto time).
+
+## Open alerts (each was emailed when it began)
+
+- **Logger 4**: silent 4 h. Since Thu Nov 12, 04:00 (4 h)
+
+## Alerts recovered in the last 24 h
+
+- **Logger 1 water level**: readings back to normal. Wed Nov 11, 12:00 → Thu Nov 12, 06:03 (18 h). Low priority, so not emailed on its own
+- **Weather station 22051538 rain**: reporting again. Thu Nov 12, 01:40 → Thu Nov 12, 05:50 (4 h)
+
+## Stale series (newest reading older than its limit)
+
+- Logger 4 Water Temperature: newest 2026-11-12T04:00:00 (4.0 h ago; limit 3 h)
+
+## Implausible values
+
+- Logger 1 Water Surface Elevation: about 0.01 m
+
+## Readings in the last 24 h (10-minute cadence)
+
+- Weather: 140 rows of 144 expected (1 series), 140 of 144 time slots
+  - gap 11-12 02:00 to 11-12 03:00 (60 min)
+
+## WQData device
+
+- primary power: 12.1 to 13.4 V over 59 readings
+- last contact (newest data point): 2026-11-12 07:50:00 (10 min ago)
+
+## Newest reading per series
+
+- Logger (limit 3 h):
+  - Logger 4 Water Temperature: 2026-11-12T04:00:00 (4.0 h ago), stale
+- Weather (limit 3 h):
+  - 22051538 Rain: 2026-11-12T06:40:00 (80 min ago)
+
+---
+
+Dashboard: https://welldash.mcmaster.ca/
+Health JSON: https://welldash.mcmaster.ca/api/health/data
+Why did I get this? https://github.com/ARCO-Lab/WELLWebsite/blob/main/dashboard/backend/README.md#why-did-i-get-this-email
