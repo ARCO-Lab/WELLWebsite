@@ -30,9 +30,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Fails here, before anything runs, when Claude can't authenticate, and picks the token: WELL_MAINTAINER_PAT when
-  # it is set, otherwise the workflow token. Only the job for the chosen token runs, so the workflow token gets
-  # write permissions only when it is the one that writes.
+  # Picks the token: WELL_MAINTAINER_PAT when it is set, otherwise the workflow token. Only the job for the chosen
+  # token runs, so the workflow token gets write permissions only when it is the one that writes. With no Claude
+  # credential nothing can run: a scheduled run then skips both jobs with a notice (the maintainer isn't set up yet,
+  # which is not a daily failure), and a run started by hand fails, since someone asked for it.
   token:
     if: github.repository == 'ARCO-Lab/WELLWebsite'
     runs-on: ubuntu-latest
@@ -55,12 +56,18 @@ jobs:
       - name: Check the secrets
         id: mode
         env:
+          EVENT: ${{ github.event_name }}
           PAT: ${{ secrets.WELL_MAINTAINER_PAT }}
           OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -z "$OAUTH" ] && [ -z "$API_KEY" ]; then
-            echo "::error::Set CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token') or ANTHROPIC_API_KEY"; exit 1
+            if [ "$EVENT" = "workflow_dispatch" ]; then
+              echo "::error::Set CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token') or ANTHROPIC_API_KEY"; exit 1
+            fi
+            echo "::notice::Skipped: neither CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token') nor ANTHROPIC_API_KEY is set, so the maintainer can't run. Set one to turn it on."
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ -n "$PAT" ]; then
             echo "mode=pat" >> "$GITHUB_OUTPUT"
