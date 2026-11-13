@@ -574,6 +574,8 @@ RESTORE_DATABASE_PATTERN = re.compile(r"^welldb_restore_check[a-z0-9_]*$")
 # Held by a running drill, so its database isn't taken for a leftover. In the temporary folder: the scheduled drill,
 # one run by hand with docker compose exec, and the backup all run in the worker container.
 RESTORE_LOCK_NAME = "welldb-restore-check.lock"
+# How long one DROP DATABASE of a drill database may take (it removes files the size of the live database)
+DROP_STATEMENT_TIMEOUT = "5min"
 
 
 def restore_lock_path():
@@ -638,6 +640,8 @@ def drop_restore_database(settings, name, protected=()):
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
+            # Bounded, so a drop that waits (on a busy catalog, say) can't hold up the backup or the worker
+            cur.execute("SET statement_timeout = %s", (DROP_STATEMENT_TIMEOUT,))
             cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
     finally:
         conn.close()

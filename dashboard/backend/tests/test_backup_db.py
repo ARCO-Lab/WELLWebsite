@@ -920,8 +920,9 @@ class RestoreLeftoverTests(unittest.TestCase):
     def test_drop_uses_force(self):
         with mock.patch("psycopg2.connect") as connect:
             backup.drop_restore_database({"database": "postgres"}, "welldb_restore_check")
-        statement = connect.return_value.cursor.return_value.__enter__.return_value.execute.call_args[0][0]
-        self.assertIn("WITH (FORCE)", repr(statement))
+        calls = connect.return_value.cursor.return_value.__enter__.return_value.execute.call_args_list
+        self.assertEqual(calls[0][0], ("SET statement_timeout = %s", (backup.DROP_STATEMENT_TIMEOUT,)))
+        self.assertIn("WITH (FORCE)", repr(calls[-1][0][0]))
 
     def test_counts_have_a_statement_timeout(self):
         import restore_check
@@ -945,9 +946,11 @@ class RestoreLeftoverTests(unittest.TestCase):
         import backup_db
         warnings = []
         with mock.patch.object(backup_db, "drop_leftover_restore_databases",
-                               side_effect=ValueError("DATABASE_URL is not set")):
+                               side_effect=[ValueError("DATABASE_URL is not set"), PermissionError(13, "Permission denied")]):
             backup_db.drop_restore_leftovers(log=lambda *a: None, warn=warnings.append)
-        self.assertEqual(warnings, ["could not drop the leftover restore drill databases: DATABASE_URL is not set"])
+            backup_db.drop_restore_leftovers(log=lambda *a: None, warn=warnings.append)   # e.g. the lock file
+        self.assertEqual(warnings, ["could not drop the leftover restore drill databases: DATABASE_URL is not set",
+                                    "could not drop the leftover restore drill databases: [Errno 13] Permission denied"])
 
 
 class RestoreSchedulerTests(unittest.TestCase):

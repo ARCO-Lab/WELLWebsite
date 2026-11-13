@@ -227,7 +227,7 @@ def main(argv=None):
     if args.drop_leftovers:
         try:
             dropped = drop_leftover_restore_databases()
-        except (ValueError, psycopg2.Error) as e:
+        except (ValueError, OSError, psycopg2.Error) as e:
             print(f"ERROR: could not drop the leftover restore drill databases: {str(e).strip()}", file=sys.stderr)
             return 1
         print(f"Leftover restore drill databases dropped: {', '.join(dropped) or 'none'}.")
@@ -312,7 +312,7 @@ def drill(args):
                 # FORCE: a pg_restore stopped by SIGTERM may still have its session open
                 drop_restore_database(admin, args.database, (live["database"], admin["database"]))
                 print(f"Dropped the throwaway database {args.database}.")
-            except (psycopg2.Error, ValueError) as e:
+            except (psycopg2.Error, ValueError, OSError) as e:
                 print(f"ERROR: could not drop {args.database}; drop it by hand: {str(e).strip()}", file=sys.stderr)
 
 

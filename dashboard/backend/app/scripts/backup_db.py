@@ -373,10 +373,11 @@ def main(argv=None):
 
 def drop_restore_leftovers(log=print, warn=warn_stderr):
     """Drop the restore drill databases a drill left behind (utils/backup.drop_leftover_restore_databases). A failure
-    is a warning: the backup doesn't depend on it."""
+    is a warning, whatever it is (a bad URL, the database, or the lock file in the temporary folder): the backup
+    doesn't depend on it."""
     try:
         drop_leftover_restore_databases(log)
-    except (ValueError, psycopg2.Error) as e:
+    except (ValueError, OSError, psycopg2.Error) as e:
         warn(f"could not drop the leftover restore drill databases: {str(e).strip()}")
 
 
