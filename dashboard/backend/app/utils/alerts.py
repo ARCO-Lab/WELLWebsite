@@ -529,9 +529,9 @@ def silence_keys(key):
     series, its station and the vendor's whole site; empty for any other key."""
     parts = key.split(":", 3)
     if parts[0] != "suspect" or len(parts) < 4:
-        return ()
+        return []
     vendor, station, measurement = parts[1:]
-    return f"stale:{vendor}", f"stale:{vendor}:{station}", f"stale:{vendor}:{station}:{measurement}"
+    return [f"stale:{vendor}", f"stale:{vendor}:{station}", f"stale:{vendor}:{station}:{measurement}"]
 
 
 def silence_covers(key, present):
