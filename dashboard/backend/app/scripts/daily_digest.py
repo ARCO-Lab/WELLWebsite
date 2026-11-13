@@ -6,8 +6,8 @@
 #
 # The digest is Markdown text, sent with the same content as HTML (utils/email_format.py), like the alert emails.
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
-# SMTP_FROM are optional), and otherwise prints it. It only reads the database, except to mark the older recoveries
-# it emailed as reported (so the next digest doesn't list them again), and makes at most one WQData
+# SMTP_FROM are optional), and otherwise prints it. It only reads the database, except to mark the recoveries it
+# emailed and the alert emails hadn't (older ones, low-priority ones) as reported, and makes at most one WQData
 # request, since WQData's hourly request quota is shared with the 10-minute ingestion.
 #
 #   python scripts/daily_digest.py               build it, then email or print it
@@ -156,9 +156,14 @@ def main(argv=None):
     from server import create_app
     from api.routes.latest import query_latest_per_series
 
-    from utils.alerts import RECOVERY_WINDOW
+    from utils.alerts import RECOVERY_WINDOW, Settings, settings_from_env
     from utils.alert_state import alerts_report, mark_recoveries_reported, missed_recoveries, recent_recoveries
 
+    try:
+        alert_settings = settings_from_env()
+    except ValueError as e:   # a bad ALERT_* setting fails the alert check; the digest still goes out
+        print(f"[WARN] {e}; the digest uses the default alert settings")
+        alert_settings = Settings()
     now = datetime.now(timezone.utc)
     app = create_app()
     with app.app_context():
@@ -168,7 +173,7 @@ def main(argv=None):
             incidents = alerts_report()["open"]
             recoveries = recent_recoveries(now - WINDOW)
             # Recoveries the alert check stopped retrying (an SMTP outage of a day or more): listed here instead.
-            missed = missed_recoveries(now - MISSED_LOOKBACK, now - RECOVERY_WINDOW)
+            missed = missed_recoveries(now - MISSED_LOOKBACK, now - RECOVERY_WINDOW, alert_settings.quiet_kinds)
         except Exception as e:   # e.g. the alert tables' migration hasn't run yet
             db.session.rollback()
             incidents = recoveries = {"error": type(e).__name__}
@@ -176,21 +181,25 @@ def main(argv=None):
         traffic = read_traffic(db, now)
     attention = read_attention(now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
-    from utils.alerts import Settings, settings_from_env
-    try:
-        alert_settings = settings_from_env()
-    except ValueError as e:   # a bad ALERT_* setting fails the alert check; the digest still goes out
-        print(f"[WARN] {e}; the digest uses the default alert settings")
-        alert_settings = Settings()
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
                                  incidents, traffic, recoveries, alert_settings.dashboard_url,
                                  alert_settings.quiet_kinds, missed, attention)
 
-    def reported():   # the missed recoveries have now been told: the next digest doesn't list them again
+    def reported():   # what it listed has now been told: neither the alert emails nor the next digest repeat it
         with app.app_context():
-            mark_recoveries_reported([r["id"] for r in missed], now)
+            mark_recoveries_reported(reported_ids(recoveries, missed, alert_settings.quiet_kinds), now)
 
     return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject), on_sent=reported)
+
+
+def reported_ids(recoveries, missed, quiet_kinds):
+    """The incidents whose recovery an emailed digest reports: the older recoveries it listed (`missed`), and the
+    low-priority (quiet kind) recoveries of its last 24 h not emailed yet. Not the other unsent recoveries of the
+    last 24 h: the alert check is still retrying their email."""
+    ids = [r["id"] for r in missed]
+    if isinstance(recoveries, list):
+        ids += [r["id"] for r in recoveries if not r["recovery_emailed"] and r["kind"] in quiet_kinds]
+    return ids
 
 
 def read_attention(now):

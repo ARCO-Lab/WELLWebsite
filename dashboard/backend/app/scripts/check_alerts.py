@@ -25,6 +25,7 @@ import pathlib
 import sys
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
+from urllib.parse import urlparse
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
@@ -93,19 +94,22 @@ def retry_delay(failures):
     return min(RETRY_FIRST * 2 ** min(failures - 1, 10), RETRY_MAX)
 
 
-def message_id(events, sender):
-    """A Message-ID made from what the email reports (`events`: (section, incident id, notification number or
-    recovery time) tuples), so a retry of the same email has the same one, at the sender's domain."""
+def message_id(events, sender, fallback_domain=None):
+    """A Message-ID made from what the email reports (`events`: (section, incident id, when the incident was opened,
+    notification number or recovery time) tuples), so a retry of the same email has the same one and another email
+    doesn't, even if incident ids are reused (a restored or rebuilt database). At the sender's domain, or
+    `fallback_domain` (the dashboard's host) when SMTP_FROM has none."""
     digest = hashlib.sha256(repr(sorted(events)).encode()).hexdigest()[:32]
-    domain = parseaddr(sender or "")[1].rpartition("@")[2] or "localhost"
-    return f"<well-alert.{digest}@{domain}>"
+    address = parseaddr(sender or "")[1]
+    domain = address.rpartition("@")[2] if "@" in address else ""
+    return f"<well-alert.{digest}@{domain or fallback_domain or 'localhost'}>"
 
 
-def deliver(subject, body, env, send, log, signature=None, html=None, events=None, now=None):
+def deliver(subject, body, env, send, log, signature=None, html=None, events=None, now=None, fallback_domain=None):
     """Email it (`body` the text part, `html` the HTML part; the log gets the text). "sent", "off" (SMTP not set
     up: logged instead, in full only when `signature` changed), "failed", or "waiting" (an earlier send failed and
     this email has nothing new: it is retried once its delay is up, retry_delay). `events`, if given, make the
-    Message-ID (message_id)."""
+    Message-ID (message_id, with `fallback_domain`)."""
     now = now or datetime.now(timezone.utc)
     recipients, invalid = parse_alert_emails(env.get("ALERT_EMAILS"))
     if invalid:
@@ -132,7 +136,7 @@ def deliver(subject, body, env, send, log, signature=None, html=None, events=Non
         log(f"[INFO] Not retrying the alert email yet: sending failed {failures['count']} times in a row, next try "
             f"after {failures['next_try'].astimezone(EST_TZ):%H:%M} (sooner if something new comes up): {subject}")
         return "waiting"
-    mid = message_id(events, smtp["from"]) if events is not None else None
+    mid = message_id(events, smtp["from"], fallback_domain) if events is not None else None
     try:
         send(smtp, recipients, subject, body, html, mid)
     except Exception as e:   # the type and message only; smtplib errors don't include the password
@@ -163,7 +167,8 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
     current = open_incidents()
     actions: Plan = plan(conditions, held, current, recently_closed(now - settings.reopen_within),
                          pending_recoveries(now - RECOVERY_WINDOW), now, settings,
-                         muted=lambda key: is_muted(key, settings.muted), superseded=superseded_incidents())
+                         muted=lambda key: is_muted(key, settings.muted),
+                         superseded=superseded_incidents(now - settings.reopen_within))
 
     new_rows, new = [], list(actions.notify_new)
     for condition, parent in actions.open_new:
@@ -185,6 +190,8 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         incident.present_since = now   # a fresh stretch of presence; its flap count stays
         if incident.recovery_notified_at is not None:   # the team was told it recovered: say so once it stays back
             incident.reopened_at = now
+    for incident, latest in actions.renotified:   # emailed about meanwhile through its finer incidents
+        incident.last_notified_at = latest
     for incident, condition in actions.update:   # keep the wording current (durations, failure counts)
         incident.title, incident.detail, incident.last_seen_at = condition.title, condition.detail, now
         if incident.present_since is None:   # present again after a gap (or reopened)
@@ -220,9 +227,11 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
                     ("recovered", actions.recovered))
         signature = tuple(sorted((section, i.incident_key) for section, items in sections for i in items))
         # Which notification of which incident: the same until this email is sent (the counters move only then).
-        events = [(section, i.id, str(aware(i.resolved_at)) if section == "recovered" else i.notifications or 0)
+        events = [(section, i.id, str(aware(i.opened_at)),
+                   str(aware(i.resolved_at)) if section == "recovered" else i.notifications or 0)
                   for section, items in sections for i in items]
-        summary["email"] = deliver(email.subject, email.text, env, send, log, signature, email.html, events, now)
+        summary["email"] = deliver(email.subject, email.text, env, send, log, signature, email.html, events, now,
+                                   urlparse(settings.dashboard_url).hostname)
         if summary["email"] == "sent":
             for incident in new + actions.remind:
                 incident.last_notified_at = now

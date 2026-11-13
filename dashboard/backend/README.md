@@ -426,7 +426,9 @@ goes red both when the site is down and when data stops arriving.
 `scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a summary of the last
 24 h, in the same Markdown-plus-HTML format as the [email alerts](#email-alerts): the open alerts, the alerts that
 recovered (including the low-priority recoveries that weren't emailed on their own, `ALERT_QUIET_KINDS`, and, once,
-any older recovery the alert emails couldn't send within 24 h); the sampling download's rows that need a person's
+any older recovery the alert emails couldn't send within 24 h; low-priority recoveries are never listed as such).
+Once it has been emailed, the low-priority recoveries and older ones it listed count as reported, so the next alert
+email doesn't repeat them. It also lists the sampling download's rows that need a person's
 decision (the `ATTENTION:` lines of `scripts/download_data.py`: stored rows a newer file no longer has, and
 corrections held back because a newer file covers them; recorded in `logs/sampling_attention.json`); stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
 its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly
@@ -470,7 +472,7 @@ the footer links the dashboard, `/api/health/data` and this section ("Why did I 
 | New problem | `[WELL] New:` | A check finds a problem that has no open incident (and didn't clear within the last `ALERT_REOPEN_HOURS`). Every kind, at once. |
 | Reminder | `[WELL] Still open:` | An emailed problem is still there `ALERT_REMINDER_HOURS` after its last email. |
 | Back again | `[WELL] Back again:` | A problem whose recovery was emailed came back within `ALERT_REOPEN_HOURS` and has stayed back `ALERT_CLEAR_MINUTES`. |
-| Recovered | `[WELL] Recovered:` | An emailed problem has been gone for `ALERT_CLEAR_MINUTES` (longer after a "back again", see below). Not on its own for the kinds in `ALERT_QUIET_KINDS` (default `SUSPECT_VALUES`): their recovery is added to the next email that goes out anyway, within 24 h, and is listed in the daily digest either way. |
+| Recovered | `[WELL] Recovered:` | An emailed problem has been gone for `ALERT_CLEAR_MINUTES` (longer after a "back again", see below). Not on its own for the kinds in `ALERT_QUIET_KINDS` (default `SUSPECT_VALUES`): their recovery is added to the next email that goes out anyway, or listed in the daily digest, whichever comes first. |
 | Several at once | `[WELL] 2 new, 1 recovered` | One check has more than one thing to say: it is one email, never several. |
 | Daily digest | `[WELL] Daily digest` | Once a day at `DIGEST_HOUR` ([Daily digest](#daily-digest)). |
 
@@ -495,9 +497,11 @@ sensor's incident carries on without a "new" one: the partial recovery isn't ema
 was already reported and the next email (reminder or recovery) names it. If the wider alert then comes back while
 those narrower incidents are still open, its incident reopens, however long ago it narrowed, rather than being
 emailed as new: say a logger is silent all winter and the weather station misses its uploads now and then, "All
-LI-COR stations silent" is emailed once and then gets its daily reminder while it lasts, not a "new" email per miss.
+LI-COR stations silent" is emailed once and then gets its daily reminder while it lasts, counted from the last
+email about the problem (the narrower incidents' reminders included), not a "new" email per miss.
 A suspect-values alert whose series then goes silent closes without a "recovered" email, and the silence alert takes
-over.
+over. If its readings then come back still wrong, the suspect-values incident reopens without a second "new" email,
+as long as it closed within `ALERT_REOPEN_HOURS` or the silence alert that took over is open or cleared within it.
 
 #### The alerts and their settings
 
@@ -516,7 +520,8 @@ line per check), and once SMTP is set up the next check emails the incidents sti
 send (relay down, a timeout) is tried again with a growing delay, on the next check, then after 20 min, 40 min and
 then every hour, unless a check has something new to say, which is tried at once. Each email's `Message-ID` is made
 from the incidents and notifications it carries, so if the relay did deliver an email whose send timed out, its
-retry has the same `Message-ID` and mail systems that de-duplicate show it once. A recovery that still couldn't be
+retry has the same `Message-ID` and mail systems that de-duplicate show it once (at `SMTP_FROM`'s domain, or the
+dashboard's host when it has none). A recovery that still couldn't be
 emailed 24 h after it happened is no longer retried; the next daily digest lists it instead. To see what would be sent now
 without recording or sending anything: `docker compose exec worker python scripts/check_alerts.py --dry-run`. The
 state lives in two tables, `vendor_status` (written by every ingestion run) and `alert_incidents`, created by migration
@@ -535,7 +540,7 @@ fails (logged, reported to Sentry and to `HEALTHCHECK_URL_ALERTS`) and ingestion
 | `ALERT_REOPEN_HOURS` | `6` | A condition that comes back within this long of clearing reopens its incident instead of being emailed as new. |
 | `ALERT_EXCLUDED_SERIES` | none | Series to mute, e.g. during field work or while a sensor is out for the winter: `station:measurement` or `station:*`, comma-separated, like `HEALTH_EXCLUDED_SERIES` (e.g. `4501:*` or `2577533:Water Surface Elevation`). Only the alerts change; `/health/data` still reports the series. Open alerts for a muted series close without a "recovered" email. Remove the entry to unmute. |
 | `ALERT_DASHBOARD_URL` | `https://welldash.mcmaster.ca/` | The dashboard link in the emails and the digest. |
-| `ALERT_QUIET_KINDS` | `SUSPECT_VALUES` | Alert kinds whose recovery sends no email of its own, comma-separated (`VENDOR_DOWN`, `STALE_SENSOR`, `SUSPECT_VALUES`), or `none` to email every recovery. Such a recovery goes in the next email sent anyway (a new problem, reminder, back again or other recovery) within 24 h, and the daily digest lists it. New alerts of these kinds are still emailed at once. While a quiet recovery hasn't been emailed, a return of the same problem within `ALERT_REOPEN_HOURS` simply reopens it, without a "back again". |
+| `ALERT_QUIET_KINDS` | `SUSPECT_VALUES` | Alert kinds whose recovery sends no email of its own, comma-separated (`VENDOR_DOWN`, `STALE_SENSOR`, `SUSPECT_VALUES`), or `none` to email every recovery. Such a recovery goes in the next email sent anyway (a new problem, reminder, back again or other recovery), or in the daily digest if that goes out first. New alerts of these kinds are still emailed at once. While a quiet recovery hasn't been emailed, a return of the same problem within `ALERT_REOPEN_HOURS` simply reopens it, without a "back again". |
 
 An invalid value makes the alert check fail with a message naming the variable (in `logs/alerts.log`, Sentry and the
 alerts heartbeat); recreate the worker after changing any of them.
