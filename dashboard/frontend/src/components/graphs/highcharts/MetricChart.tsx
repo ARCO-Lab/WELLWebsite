@@ -35,7 +35,7 @@ import 'highcharts/highcharts-more'; // arearange, for the min-max bands
 // Screen-reader descriptions for every chart (Highcharts warns without it)
 import 'highcharts/modules/accessibility';
 import HighchartsReact from 'highcharts-react-official';
-import { bitmapPreview, noPreview, type GesturePreview } from './gesturePreview';
+import { bitmapPreview, canvasPreview, noPreview, warmCanvas, type GesturePreview, type PaintSeries } from './gesturePreview';
 import ChartToolbar, { windowLabel } from '@/components/graphs/ChartToolbar';
 import { retryAllCharts, useChartWindow } from '@/hooks/useChartWindow';
 import type { ChartController, ChartSnapshot, ComposedData } from '@/lib/chartController';
@@ -56,14 +56,15 @@ export interface MetricChartProps {
 const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
 const WHEEL_GESTURE_END_MS = 150; // a burst of wheel events is one gesture until it pauses this long
-const HINT_EVERY_MS = 30_000;
+const HINT_EVERY_MS = 30_000; // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
 const NAV_HANDLE_PX = 14; // how near a navigator handle a finger must land to take it
-const TOUCH_SLOP_PX = 6;
-// The bitmap preview is off: measured on this chart it was slower than the paced redraws where it mattered (a drag
-// at 4x CPU slowdown: frame p95 over 900 ms against 28 ms; a fast navigator drag 83 ms against 21 ms), since setting
-// it up costs a redraw of three windows and a pause of PREVIEW_IDLE_MS costs another
-const BITMAP_PREVIEW = false;
-const PREVIEW_IDLE_MS = 180; // a gesture still for this long gets a real redraw (its preview is only stretched) // a finger must move this far before its direction decides what it does // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
+const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does
+const LEGEND_ROWS = 3, LEGEND_ROW_PX = 24; // a phone's legend page: whole rows, each a comfortable tap target
+// What a gesture shows (gesturePreview.ts). canvas (the default): painted from the loaded data, one Highcharts redraw
+// when the gesture ends; bitmap: a copy of the drawn series, redrawn when a gesture pauses; redraw: a real redraw at
+// every paced frame. NEXT_PUBLIC_CHART_PREVIEW picks another at build time, to compare them.
+const PREVIEW = process.env.NEXT_PUBLIC_CHART_PREVIEW ?? 'canvas';
+const PREVIEW_IDLE_MS = 180; // with the bitmap preview, a gesture still for this long gets a real redraw
 // Axis dates on the 24-hour clock, like the rest of the dashboard (Highcharts would follow the browser locale: 1 PM)
 const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
   millisecond: '%H:%M:%S', second: '%H:%M:%S', minute: '%H:%M', hour: '%H:%M', day: '%b %e', week: '%b %e',
@@ -230,8 +231,22 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       series: { pointDescriptionEnabledThreshold: 0 },
       point: { describeNull: false },
     },
-    // On a phone the legend is a column of names: past a few rows it pages, so the plot keeps its height
-    responsive: { rules: [{ condition: { maxWidth: 480 }, chartOptions: { legend: { maxHeight: 64 } } }] },
+    responsive: {
+      rules: [
+        // Narrow (a phone's larger view): one y-axis, the first; nine side by side left the plot 30 px wide
+        { condition: { maxWidth: 640 }, chartOptions: { yAxis: axisSpecs.map((_, n) => ({ visible: axes && n === 0 })) } },
+        // On a phone the legend is a column of names: past LEGEND_ROWS whole rows it pages, with arrows big enough to tap
+        {
+          condition: { maxWidth: 480 },
+          chartOptions: {
+            legend: {
+              maxHeight: LEGEND_ROWS * LEGEND_ROW_PX + 8, itemMarginTop: 0, itemMarginBottom: LEGEND_ROW_PX - 16, // + its padding
+              navigation: { arrowSize: 16, style: { fontSize: '13px' } },
+            },
+          },
+        },
+      ],
+    },
     legend: {
       enabled: true,
       margin: 2, padding: 2, itemDistance: 12,
@@ -362,19 +377,22 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       (chart.get(EXTENT_ID) as Highcharts.Series | undefined)?.setData(extentData(e), false, false, false);
       dirty = true;
     };
-    // During a gesture the window moves in a preview (gesturePreview.ts) rather than by redrawing the chart, unless
-    // its data changed; the chart is redrawn for real PREVIEW_IDLE_MS after the last move, and when the gesture ends.
-    // A gesture that sweeps past what the preview drew (a fast navigator drag, a long zoom out) goes on with real
-    // redraws at the controller's pace: drawing the preview again and again would cost more.
-    const preview: GesturePreview = BITMAP_PREVIEW ? bitmapPreview(chart, chart.container, () => controller.extent) : noPreview;
+    // With a preview (gesturePreview.ts), a gesture moves the copy rather than redrawing the chart, unless its data
+    // changed; the chart is redrawn for real PREVIEW_IDLE_MS after the last move (the next move copies it again, with
+    // no redraw) and when the gesture ends. Without one, every paced frame is a real redraw.
+    const paintSeries = (): PaintSeries[] => specs.map((sp) => ({
+      id: sp.key, points: controller.lastData.series.get(sp.key) ?? [],
+      kind: sp.agg === 'sum' ? 'area' : sp.agg === 'vector_mean' ? 'dots' : 'line',
+    }));
+    const preview: GesturePreview = PREVIEW === 'canvas' ? canvasPreview(chart, chart.container, paintSeries)
+      : PREVIEW === 'bitmap' ? bitmapPreview(chart, chart.container) : noPreview;
+    if (PREVIEW === 'canvas') warmCanvas();
     let idle = 0;
-    let sweeping = false;
     const place = (w: { start: number; end: number }, gesture = false) => {
       window.clearTimeout(idle);
-      if (gesture && !sweeping && !preview.covers(w)) sweeping = true;
-      if (gesture && !dirty && !sweeping) {
+      if (PREVIEW !== 'redraw' && gesture && !dirty) {
         preview.move(w);
-        idle = window.setTimeout(() => place(controller.window), PREVIEW_IDLE_MS);
+        if (PREVIEW === 'bitmap') idle = window.setTimeout(() => place(controller.window), PREVIEW_IDLE_MS);
         return;
       }
       if (preview.active) {
@@ -414,13 +432,17 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     });
     const offData = controller.onData(apply);
     const offRedraw = controller.onRedraw(place);
+    // Between the paced redraws of a gesture, the navigator's window and handles follow every frame (cheap: no series
+    // are drawn), so they track the finger even when the chart can only redraw a few times a second
+    const offFrame = controller.onFrame((w) => {
+      if (controller.inGesture && !preview.active) (chart as Highcharts.Chart & { navigator?: { render(a: number, b: number): void } }).navigator?.render(w.start, w.end);
+    });
     // Accessibility repositions its hidden buttons (forcing a page layout) on every redraw: off while the window
     // moves, back 300 ms after (the toolbar's live region still announces where the gesture ended)
     let a11yTimer = 0;
     const a11y = (on: boolean) => chart.update({ accessibility: { enabled: on } }, false);
     const offGesture = controller.onGesture((active) => {
       bands(!active);
-      sweeping = false;
       window.clearTimeout(a11yTimer);
       if (active) a11y(false);
       else {
@@ -429,7 +451,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       }
     });
     return () => {
-      offData(); offRedraw(); offGesture(); offLegend();
+      offData(); offRedraw(); offFrame(); offGesture(); offLegend();
       window.clearTimeout(a11yTimer);
       window.clearTimeout(idle);
       preview.end();
@@ -522,9 +544,13 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     // A drag in the plot. With a finger (or pen) it waits until it has moved TOUCH_SLOP_PX: sideways it pans, up or down
     // it is the browser's page scroll (which cancels it)
     let drag: { x0: number; y0: number; w0: { start: number; end: number }; mode: 'pan' | 'select'; moved: boolean; id: number; touch: boolean } | null = null;
+    // On the navigator or its scrollbar (Stock puts the legend below them, which is not part of them)
     const belowPlot = (clientY: number) => {
-      const c = chart();
-      return !!c && clientY - c.container.getBoundingClientRect().top > c.plotTop + c.plotHeight + 8;
+      const c = chart() as (Highcharts.Chart & { navigator?: { top: number; height: number; scrollbarHeight?: number } }) | undefined;
+      const n = c?.navigator;
+      if (!c || !n) return false;
+      const y = clientY - c.container.getBoundingClientRect().top;
+      return y >= n.top - 4 && y <= n.top + n.height + (n.scrollbarHeight ?? 0) + 8;
     };
     // The navigator and its scrollbar, below the plot, are driven here rather than by Highcharts (whose mouse and touch
     // handling there is stopped, onNavPress): Highcharts redrew the chart on every move of a navigator drag, at up to
@@ -621,7 +647,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           const dy = e.clientY - drag.y0;
           if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
           if (Math.abs(dy) >= Math.abs(dx)) { drag = null; return; } // the page's scroll
-        } else if (Math.abs(dx) < 4) return;
+        } else if (Math.abs(dx) < TOUCH_SLOP_PX) return; // a click, not a pan
         drag.moved = true;
         el.setPointerCapture(e.pointerId);
         c.tooltip?.hide(0);
@@ -774,7 +800,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         tabIndex={0}
         role="group"
         aria-label={`${title} chart. Arrow keys move it, plus and minus zoom, 0 resets.`}
-        className="well-chart relative cursor-grab touch-pan-y rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary active:cursor-grabbing"
+        className="well-chart relative [contain:layout_paint] cursor-grab touch-pan-y rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary active:cursor-grabbing"
         style={{ height: chartHeight }}
       >
         <HighchartsReact
