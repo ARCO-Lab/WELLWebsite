@@ -1,7 +1,9 @@
 """Data freshness rules shared by GET /health/data and scripts/daily_digest.py. Pure: no database or network.
 
 A series is one (station_id, measurement_type) pair. It is stale when its newest reading is older than its
-group's limit. All limits come from the environment, so they can be tuned without a code change:
+group's limit, and "future" when it is dated more than an hour ahead of now (a device clock that jumped ahead):
+such a reading would otherwise keep the series "ok" however long it stays silent. Both count as problems. All
+limits come from the environment, so they can be tuned without a code change:
 
   HEALTH_MAX_AGE_HOURS            limit for every group without its own (default 3)
   HEALTH_MAX_AGE_HOURS_<GROUP>    limit for one group, e.g. HEALTH_MAX_AGE_HOURS_QUALITY=3
@@ -21,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from utils.fetching import FUTURE_LIMIT
 from utils.timezone import EST_TZ
 
 DEFAULT_MAX_AGE_HOURS = 3.0
@@ -144,7 +147,8 @@ def assess_freshness(latest, now, env=None):
     """The /health/data report for `latest` (the rows of /api/latest: station_id, group_type, measurement_type,
     recorded_at) at `now` (an aware datetime).
 
-    {"status": "ok" | "stale", "checked_at", "stale": [...], "groups": {group: {...}}}. A group with no series
+    {"status": "ok" | "stale", "checked_at", "stale": [...], "groups": {group: {...}}}; "stale" lists the stale
+    and the future-dated series (their "status" tells which). A group with no series
     that is checked (all excluded) is reported but can't make the result stale. Raises ValueError for a bad
     setting, naming it.
     """
@@ -169,6 +173,8 @@ def assess_freshness(latest, now, env=None):
         newest = as_site_time(row["recorded_at"])
         if is_excluded(row["station_id"], row["measurement_type"], excluded):
             status = "excluded"
+        elif newest.astimezone(timezone.utc) > now.astimezone(timezone.utc) + FUTURE_LIMIT:
+            status = "future"
         elif newest.astimezone(timezone.utc) < info["oldest_fresh"]:
             status = "stale"
         else:
@@ -181,7 +187,7 @@ def assess_freshness(latest, now, env=None):
             "status": status,
         }
         info["series"].append(series)
-        if status == "stale":
+        if status in ("stale", "future"):
             stale.append({"group": group, **series, "max_age_hours": info["max_age_hours"]})
         if info["newest"] is None or series["newest"] > info["newest"]:
             info["newest"], info["age_minutes"] = series["newest"], series["age_minutes"]

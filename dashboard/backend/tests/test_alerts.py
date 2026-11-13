@@ -9,6 +9,7 @@ import sys
 import unittest.mock
 
 import requests
+from types import SimpleNamespace
 
 mock = unittest.mock
 
@@ -142,9 +143,47 @@ class VendorDownTests(unittest.TestCase):
         self.assertNotIn("not responding", c.title)
 
 
+    def test_records_in_a_wrong_unit_point_at_the_unit_setting(self):
+        error = ("none of LI-COR's records could be read: 600 record(s) in an unexpected unit, e.g. sensor "
+                 "'21948438-1' reports '°F', not '°C'")
+        found, _ = vendor_conditions({"LI-COR": vendor(3, "unreadable", None, error, self.since)}, NOW, Settings())
+        c = found["vendor:LI-COR"]
+        self.assertEqual(c.title, "LI-COR sends readings in an unexpected unit (×3) — check the ingestion log")
+        self.assertIn("WEATHER_UNITS", c.detail)
+        self.assertEqual(alerts.status(SimpleNamespace(kind=VENDOR_DOWN, title=c.title), NOW),
+                         "sends readings in an unexpected unit")
+
+
 class StaleTests(unittest.TestCase):
     def report(self, rows):
         return assess_freshness(rows, NOW, freshness_env({}))
+
+    def test_wrong_units_change_the_advice(self):
+        rows = [latest_row("Weather", WEATHER, "Air Temperature", dt.timedelta(hours=5)),
+                latest_row("Weather", WEATHER, "Rain", dt.timedelta(minutes=40))]
+        skipped = {**vendor(), "last_skipped": "12 record(s) in an unexpected unit, e.g. sensor '21948438-1' "
+                                               "reports '°F', not '°C'"}
+        found, _ = stale_conditions(self.report(rows), {"LI-COR": skipped}, NOW)
+        title = found[f"stale:LI-COR:{WEATHER}:Air Temperature"].title
+        self.assertTrue(title.endswith("— LI-COR sends readings in an unexpected unit, check the ingestion log"),
+                        title)
+
+    def test_a_future_dated_reading_is_flagged_not_ok(self):
+        # A device clock that jumped ahead: the series must not look fresh for as long as that row exists.
+        rows = [latest_row("Quality", WQ, "ODO", -dt.timedelta(days=30)),
+                latest_row("Quality", WQ, "Turbidity", dt.timedelta(minutes=10)),
+                latest_row("Weather", WEATHER, "Rain", -dt.timedelta(minutes=50))]   # a fast clock is fine
+        report = self.report(rows)
+        self.assertEqual([(s["measurement_type"], s["status"]) for s in report["stale"]], [("ODO", "future")])
+        self.assertEqual(report["status"], "stale")
+        found, _ = stale_conditions(report, {"WQData": vendor(), "LI-COR": vendor()}, NOW)
+        self.assertEqual(list(found), [f"stale:WQData:{WQ}:ODO"])
+        c = found[f"stale:WQData:{WQ}:ODO"]
+        self.assertEqual(c.title, "Water quality station 4501 ODO newest reading dated Fri Dec 11, 14:00, in the "
+                                  "future — check the device clock")
+        self.assertIn("delete the row(s)", c.detail)
+        self.assertEqual(alerts.status(SimpleNamespace(kind=STALE_SENSOR, title=c.title, started_at=NOW), NOW),
+                         "dated in the future")
 
     def test_station_silent_while_vendor_answers(self):
         rows = [latest_row("Quality", WQ, m, dt.timedelta(hours=3)) for m in ("ODO", "Turbidity")]
@@ -254,6 +293,19 @@ class EmailTextTests(unittest.TestCase):
         self.assertEqual(email.subject, "[WELL] 2 new")
         self.assertLess(email.text.index("LI-COR API"), email.text.index("Water quality station"))   # vendor first
         self.assertIsNone(alerts.build_email([], [], [], [c], NOW, Settings()))
+
+
+    def test_subject_keeps_a_vendor_name_as_written(self):
+        c = alerts.Condition("stale:WQData:4501", STALE_SENSOR, "Water quality station 4501 silent for 3 h — WQData "
+                             "sent unreadable records, check the ingestion log", "detail", NOW - dt.timedelta(hours=3))
+        email = alerts.build_email([c], [], [], [c], NOW, Settings())
+        self.assertEqual(email.subject, "[WELL] New: Water quality station 4501 silent 3 h — WQData sent unreadable "
+                                        "records, check the ingestion log")
+        lic = alerts.Condition("stale:LI-COR:2577533", STALE_SENSOR, "Water level logger 3 silent for 3 h — LI-COR "
+                               "sent unreadable records, check the ingestion log", "d", NOW - dt.timedelta(hours=3))
+        self.assertTrue(alerts.short_action(lic).startswith("LI-COR sent"))
+        check = alerts.Condition("x", STALE_SENSOR, "x silent for 3 h — Check the probe", "d", NOW)
+        self.assertEqual(alerts.short_action(check), "check the probe")
 
 
 class DigestTests(unittest.TestCase):
@@ -827,11 +879,17 @@ class PostgresTests(unittest.TestCase):
                     "quality_service": quality.QualityService("https://wq.test", "SECRET", WQ)}
         services["quality_service"].sleep = lambda seconds: None
         wq_replies = iter(wqdata if isinstance(wqdata, list) else [wqdata] * 100)
+        self.requests = []
+
+        def get(url, **kw):
+            self.requests.append((url, kw.get("params") or {}))
+            if "licor" not in url:
+                return next(wq_replies)
+            return licor(kw["params"]) if callable(licor) else licor
         with mock.patch.object(ingest, "app", self.app), \
                 mock.patch.multiple(ingest, **services), \
                 mock.patch.object(ingest.Config, "WQ_DEVICE_ID", WQ), \
-                mock.patch.object(requests, "get",
-                                  side_effect=lambda url, **kw: licor if "licor" in url else next(wq_replies)), \
+                mock.patch.object(requests, "get", side_effect=get), \
                 mock.patch.object(weather.time, "sleep"), \
                 mock.patch("builtins.print"):
             ingest.inject_all_new_data()
@@ -904,6 +962,56 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual((row["consecutive_failures"], row["last_error_kind"]), (1, "bad_response"))
         self.assertEqual(self.db.session.execute(self.db.text(
             "SELECT count(*) FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).scalar(), 1)
+
+    def store_reading(self, station, group, measurement, when):
+        self.db.session.execute(self.db.text(
+            "INSERT INTO sensor_measurements (station_id, group_type, measurement_type, value, unit, recorded_at) "
+            "VALUES (:s, :g, :m, 1.0, 'u', :t)"), {"s": station, "g": group, "m": measurement, "t": site(when)})
+        self.db.session.commit()
+
+    def test_one_late_logger_has_its_gap_fetched_and_stored(self):
+        # Logger 3 out of contact for 12 h while the rest reported. LI-COR answers by the requested range, as the
+        # real API does; the backlog it resends must be requested and stored, through the real insert.
+        from utils.alert_state import record_fetched_until, record_vendor_result
+        now = dt.datetime.now(UTC).replace(microsecond=0)
+        self.store_reading(WEATHER, "Weather", "Air Temperature", now - dt.timedelta(minutes=20))
+        self.store_reading("2577532", "Logger", "Water Temperature", now - dt.timedelta(minutes=20))   # logger 2
+        self.store_reading("2577533", "Logger", "Water Temperature", now - dt.timedelta(hours=12))
+        record_vendor_result("LI-COR", now=now - dt.timedelta(minutes=10))
+        record_fetched_until("LI-COR", now - dt.timedelta(minutes=10))
+        readings = [("21948438-1", now - dt.timedelta(minutes=10), 5.0),
+                    ("22168654-3", now - dt.timedelta(minutes=10), 4.4)]
+        readings += [("22168655-3", now - dt.timedelta(hours=h), 4.0 + h / 100) for h in range(1, 12)]
+
+        def answer(params):
+            lo = dt.datetime.strptime(params["start_date_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            hi = dt.datetime.strptime(params["end_date_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            return reply(200, {"data": [
+                {"logger_sn": WEATHER, "sensor_sn": sn, "sensor_measurement_type": "Temperature", "unit": "°C",
+                 "value": v, "timestamp": t.strftime("%Y-%m-%d %H:%M:%SZ")} for sn, t, v in readings if lo <= t <= hi]})
+        self.ingest_with(answer, reply(200, {"data": [], "info": {}}))
+        self.assertEqual(len([u for u, _ in self.requests if "licor" in u]), 2)   # the window, then logger 3's gap
+        self.db.session.remove()
+        count = self.db.session.execute(self.db.text(
+            "SELECT count(*) FROM sensor_measurements WHERE station_id = '2577533'")).scalar()
+        self.assertEqual(count, 1 + 11)
+
+    def test_future_records_are_skipped_and_a_stored_one_cant_stop_wqdata(self):
+        from utils.alert_state import vendor_statuses
+        now = dt.datetime.now(UTC).replace(microsecond=0)
+        # One stored before such records were skipped: requests still start before now.
+        self.store_reading(WQ, "Quality", "Water Temperature", now + dt.timedelta(days=60))
+        good = (now - dt.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        ahead = (now + dt.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        self.ingest_with(reply(200, {"data": []}), reply(200, {"data": [
+            {"timestamp": t, "values": [{"parameterId": 125001, "value": "8.5"}]} for t in (good, ahead)], "info": {}}))
+        wq = [p for u, p in self.requests if "licor" not in u]
+        self.assertLess(dt.datetime.strptime(wq[0]["from"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC), now)
+        self.db.session.remove()
+        self.assertIn("is in the future", vendor_statuses()["WQData"]["last_skipped"])
+        stored = self.db.session.execute(self.db.text(
+            "SELECT count(*) FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).scalar()
+        self.assertEqual(stored, 2)   # the earlier future row and the good one; not the new future one
 
     def test_wqdata_failing_on_page_two_keeps_page_one_and_fails_the_run(self):
         from utils.alert_state import vendor_statuses

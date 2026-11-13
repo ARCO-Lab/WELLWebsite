@@ -8,12 +8,20 @@ import datetime as dt
 from typing import Callable, Iterator
 
 MAX_DAYS = 364                       # LI-COR rejects start dates more than a year back
+MAX_RECORDS = 100_000                # LI-COR's per-response cap
 WINDOW = dt.timedelta(days=7)
 MIN_WINDOW = dt.timedelta(hours=1)   # a capped 1-hour window means something else is wrong
 OVERLAP = dt.timedelta(hours=1)      # re-read the last hour each run to catch readings that arrive late
 RUN_LOOKBACK = dt.timedelta(days=14) # the 10-minute ingestion never looks further back than this;
                                      # older gaps are found and filled by scripts/licor_backfill.py
                                      # and scripts/wqdata_backfill.py
+# A vendor timestamp later than this past the time it is read is rejected (utils/parsers.py) and a stored one flagged
+# (utils/monitoring.py): one record from a device whose clock jumped ahead used to stop WQData ingestion, since each
+# run starts from the newest stored reading, and to hide the series from the stale alerts.
+FUTURE_LIMIT = dt.timedelta(hours=1)
+# How SkippedRecords.summary (utils/parsers.py) names records skipped for an unexpected unit; utils/alerts.py looks for
+# it in vendor_status, to say the vendor sends wrong units rather than "check the sensor".
+WRONG_UNITS = "in an unexpected unit"
 FMT = "%Y-%m-%d %H:%M:%S"
 UTC = dt.timezone.utc
 
