@@ -26,10 +26,14 @@ to the dashboard container on port 8081 and to WordPress on port 8080. The brows
 (`/api/...`), which pass the request to the Flask backend on the internal Docker network. The API routes are listed in
 [the backend README](../dashboard/backend/README.md#api); none are versioned.
 
-**Embedding and framing.** The dashboard is embedded with an iframe on a dedicated WordPress page. This repository sets
-no Content-Security-Policy, `frame-ancestors` or `X-Frame-Options` header, so any site can frame the dashboard. The
-Flask API accepts requests from any origin (`CORS(app)` in `server.py`), but it has no public port: browsers only reach
-the dashboard's API routes. The data is public and read-only; nothing on the dashboard needs a login.
+**Embedding and framing.** The dashboard is embedded with an iframe on a dedicated WordPress page. Every dashboard
+response carries a `Content-Security-Policy` whose `frame-ancestors` allows only the dashboard itself,
+`well.mcmaster.ca` (with and without `www`) and `NEXT_PUBLIC_WP_HOME`'s origin, so other sites can't frame it; it also
+sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin` (all set in
+`dashboard/frontend/next.config.ts`, see [the dashboard README](../dashboard/frontend/README.md#rate-limits-and-security-headers)).
+Whether haproxy adds HSTS is outside this repository. The Flask API sends no CORS headers, so no other site's pages may
+read it; it has no public port, and browsers only reach the dashboard's API routes. The data is public and read-only;
+nothing on the dashboard needs a login.
 
 **The embedded page.** The WordPress Dashboard page (`page-dashboard.php`) frames `/?embed=1`, which the dashboard
 serves from a static page without its header and footer, so they never flash in the frame. The two pages exchange

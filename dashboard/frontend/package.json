@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test scripts/chartWindow.test.mjs scripts/siteTime.test.mjs scripts/seriesLoader.test.mjs scripts/proxyBackend.test.mjs scripts/sampleFetcher.test.mjs scripts/exportJob.test.mjs scripts/selectionLink.test.mjs scripts/earlyErrors.test.mjs"
+    "test": "node --experimental-strip-types --test scripts/chartWindow.test.mjs scripts/siteTime.test.mjs scripts/seriesLoader.test.mjs scripts/rateLimit.test.mjs scripts/proxyBackend.test.mjs scripts/sampleFetcher.test.mjs scripts/exportJob.test.mjs scripts/selectionLink.test.mjs scripts/earlyErrors.test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.2",

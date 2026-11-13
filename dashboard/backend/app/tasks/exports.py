@@ -15,6 +15,7 @@ from api.services.exports import (
     EXPORT_FAILED_MESSAGE,
     EXPORT_TOO_SLOW_MESSAGE,
     default_export_filename,
+    disk_space_error,
     settle_if_stuck,
     write_export_csv,
 )
@@ -103,6 +104,17 @@ def generate_export_job(self, job_id: str):
                 _remove_job_folder(job_id)
             else:
                 logger.info("Export job %s is already %s; not running it", job_id, job.status)
+            return
+
+        # The disk may have filled since the job was queued (the route checked then): fail the job rather than
+        # fill the disk the database shares. Not an error to report: the route already logs low space.
+        no_room = disk_space_error(job.estimated_rows or 0)
+        if no_room:
+            logger.warning("Export job %s not run: the exports disk is below EXPORT_MIN_FREE_MB", job_id)
+            job.status = "failed"
+            job.error_message = no_room
+            job.completed_at = est_now()
+            db.session.commit()
             return
 
         artifact_path = None  # set once known, so a failed export can delete what it wrote

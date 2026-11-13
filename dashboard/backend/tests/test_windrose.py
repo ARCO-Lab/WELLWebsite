@@ -160,6 +160,37 @@ class WindroseSqlTests(unittest.TestCase):
                       "start=2026-11-01&end=2026-11-02&speed=x';DROP TABLE sensor_measurements;--"):
             self.assertEqual(self.client.get(f"/api/windrose?{query}").status_code, 400, query)
 
+    def test_answers_are_cached_by_the_range_narrowed_to_10_minute_marks(self):
+        from unittest import mock
+        from api.routes.windrose import cache_key
+        from utils import response_cache
+        bodies, ttls = {}, {}
+
+        def put(key, body, ttl):
+            bodies[key], ttls[key] = body, ttl
+
+        def get(key):
+            return (bodies[key], ttls[key]) if key in bodies else None
+
+        with mock.patch.object(response_cache, "get", side_effect=get), \
+                mock.patch.object(response_cache, "put", side_effect=put):
+            r = self.client.get("/api/windrose?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")  # ended over a day ago
+            (key,) = bodies
+            self.assertEqual(key, cache_key(dt.datetime(2026, 11, 1, 0, 10), dt.datetime(2026, 11, 1, 0, 50),
+                                            ["Wind Speed", "Gust Speed"]))
+            self.assertEqual((bodies[key], ttls[key]), (r.get_data(), 3600))
+            self.assertEqual(r.get_json()["roses"]["Wind Speed"]["total"], 5)  # 00:10-00:50
+
+            # A few minutes apart is the same narrowed range: answered from the cache
+            bodies[key] = b'{"cached": true}'
+            r = self.client.get("/api/windrose?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00")
+            self.assertEqual(r.get_json(), {"cached": True})
+
+            # The speed types asked for are part of the key
+            self.client.get("/api/windrose?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00&speed=Gust%20Speed")
+            self.assertEqual(len(bodies), 2)
 
     def test_a_query_that_runs_too_long_is_a_504(self):
         from api.routes import windrose

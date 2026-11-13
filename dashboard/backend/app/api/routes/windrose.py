@@ -12,14 +12,24 @@
 # Sector i covers i * 22.5° ± 11.25° (so N is 348.75°-11.25°). Percentages are of all the readings of that speed
 # type, rounded to 0.1. start/end follow /api/series: an ISO time with an offset is a real instant, one without
 # is Toronto wall-clock time.
+#
+# Caching, as /api/series does it: the range is narrowed to 10-minute marks (where readings fall, so the counts don't
+# change), and the answer is kept in Redis (utils/response_cache.py) for as long as /api/series keeps one for a range
+# ending at the same time, under a hash of the narrowed range and the speed types. An answer is a few kilobytes.
 
-from flask import jsonify, request
+import hashlib
+import json
+from datetime import datetime
+
+from flask import current_app, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from db.database import db
+from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from .series import local_naive, parse_iso
+from utils.timezone import EST_TZ
+from .series import browser_cache_control, local_naive, max_age, parse_iso, snap_range
 
 SECTORS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 # Upper edges of the speed classes (m/s); a speed of exactly an edge belongs to the class above it.
@@ -78,6 +88,12 @@ def tabulate(rows, speeds):
     return roses
 
 
+def cache_key(start, end, speeds):
+    """The Redis key for a narrowed range and its speed types: a hash of their JSON, as in series.cache_key."""
+    parts = [start.isoformat(), end.isoformat(), sorted(speeds)]
+    return "windrose:v1:" + hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+
 def register_windrose_route(app):
     @app.route("/api/windrose", methods=["GET"])
     def get_windrose():
@@ -102,12 +118,27 @@ def register_windrose_route(app):
         elif end_dt <= start_dt:
             return jsonify({"error": "end must be after start"}), 400
 
-        db.session.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'"))
-        try:
-            rows = db.session.execute(SQL, {"s": start_dt, "e": end_dt, "m": speeds, "edges": SPEED_EDGES}).fetchall()
-        except OperationalError as error:
-            db.session.rollback()
-            if getattr(error.orig, "pgcode", None) == QUERY_CANCELED:
-                return jsonify({"error": "That range took too long to count. Please pick a shorter one."}), 504
-            raise
-        return jsonify({"sectors": SECTORS, "speed_classes": speed_classes(), "roses": tabulate(rows, speeds)})
+        now = datetime.now(EST_TZ).replace(tzinfo=None)
+        age = max_age(end_dt, now)
+        start_dt, end_dt = snap_range(start_dt, end_dt)
+        key = cache_key(start_dt, end_dt, speeds)
+        hit = response_cache.get(key)
+        seconds_left = None
+        if hit is not None:
+            body, seconds_left = hit
+            response = current_app.response_class(body, mimetype="application/json")
+        else:
+            db.session.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'"))
+            try:
+                rows = db.session.execute(SQL, {"s": start_dt, "e": end_dt, "m": speeds,
+                                                "edges": SPEED_EDGES}).fetchall()
+            except OperationalError as error:
+                db.session.rollback()
+                if getattr(error.orig, "pgcode", None) == QUERY_CANCELED:
+                    return jsonify({"error": "That range took too long to count. Please pick a shorter one."}), 504
+                raise
+            response = jsonify({"sectors": SECTORS, "speed_classes": speed_classes(),
+                                "roses": tabulate(rows, speeds)})
+            response_cache.put(key, response.get_data(), age)
+        response.headers["Cache-Control"] = browser_cache_control(end_dt, now, seconds_left)
+        return response
