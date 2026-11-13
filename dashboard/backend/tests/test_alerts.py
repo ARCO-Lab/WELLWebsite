@@ -833,7 +833,8 @@ class PostgresTests(unittest.TestCase):
         sent = []
         check_alerts.run(env=dict(SMTP), send=lambda *a: sent.append(a), log=lambda *a: None)
         self.assertEqual(len(sent), 1)
-        self.assertIn("**WQData API**: not responding", sent[0][2])
+        self.assertEqual(sent[0][2], "[WELL] New: WQData API not responding — check vendor status")
+        self.assertIn("**WQData API**: not responding", sent[0][3])   # the text part; sent[0][4] is the HTML
         check_alerts.run(env=dict(SMTP), send=lambda *a: sent.append(a), log=lambda *a: None)
         self.assertEqual(len(sent), 1)   # the open-incident index and timestamptz columns work as intended
 
