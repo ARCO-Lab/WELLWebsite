@@ -56,6 +56,9 @@ services:
       - ./wordpress/apache-hardening.conf:/etc/apache2/conf-enabled/zz-hardening.conf:ro
       # Browser caching and compression for the site (wordpress/zz-performance.conf explains each rule).
       - ./wordpress/zz-performance.conf:/etc/apache2/conf-enabled/zz-performance.conf:ro
+      # Replaces the image's remoteip.conf, so Apache doesn't believe X-Forwarded-For from private addresses
+      # (wordpress/remoteip.conf explains).
+      - ./wordpress/remoteip.conf:/etc/apache2/conf-enabled/remoteip.conf:ro
     ports:
       - "8080:80"
     restart: always

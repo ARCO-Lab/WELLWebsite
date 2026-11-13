@@ -18,7 +18,8 @@ in it can be fetched from the site.
   - a dedicated Dashboard page (`page-dashboard.php`) that embeds the dashboard in an iframe, from `DASHBOARD_URL`.
   How to add, edit and delete news posts is in [the theme's README](../home/wp-content/themes/well/README.md).
 - **This folder** holds the Apache and PHP settings mounted into the container one file at a time
-  (`apache-hardening.conf`, `zz-performance.conf`, `php-hardening.ini`; each file's comments explain its rules);
+  (`apache-hardening.conf`, `zz-performance.conf`, `remoteip.conf`, `php-hardening.ini`; each file's comments explain
+  its rules);
   `theme-images.mjs` (run from the repository root after changing a photo:
   `npm install --no-save sharp && node wordpress/theme-images.mjs`, then commit the files it writes); and `backup.sh`,
   the nightly backup of the database and uploads ([Backups](#backups)).
@@ -32,6 +33,9 @@ in it can be fetched from the site.
   `readme.html`, `license.txt`, `wp-config-sample.php`, and plugins' and themes' readmes, changelogs and package
   files (they name versions). It never runs PHP from `wp-content/uploads`, and ignores `.htaccess` files there, so an
   uploaded one can't allow PHP again.
+- **Client addresses.** `remoteip.conf` replaces the image's own, which made Apache believe `X-Forwarded-For` from any
+  private or loopback address. Apache's logs therefore show the campus proxy (130.113.68.30) as the client of every
+  visitor. Only the failed-login limit reads the forwarded address, and only from `WELL_TRUSTED_PROXY_IPS`.
 - **Security headers**, from the same file: `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN`, and:
   - `Strict-Transport-Security: max-age=86400` (one day), kept short at first so a mistake can't strand visitors for
@@ -45,10 +49,13 @@ in it can be fetched from the site.
     author archives redirect to the home page; no author fields in oEmbed answers; no users in the core sitemap; and
     bylines and feeds say "WELL team" while an account's display name is its login name (set a different display
     name in Users > Profile to show it instead);
-  - limits failed logins: after 5 from one client address with less than 15 minutes between them, that address can't
-    log in until 15 minutes after its last failure. The client address comes from the proxy's `X-Forwarded-For`
-    only when the connection comes from a proxy in `WELL_TRUSTED_PROXY_IPS` (`docker-compose.yml`; haproxy by
-    default);
+  - limits failed logins: every attempt is counted before its password is checked, in one database statement, so
+    parallel requests can't slip past. After 5 from one client address with less than 15 minutes between them, that
+    address is refused until 15 minutes after its last counted attempt. Refused attempts and opening the login page
+    don't count, and a successful login clears the count. IPv6 clients are counted per /64. The client address
+    comes from the proxy's `X-Forwarded-For` only when the connection comes from a proxy in
+    `WELL_TRUSTED_PROXY_IPS` (`docker-compose.yml`; haproxy by default). The counts are `well_login_fail_*` rows in
+    the options table; old ones are deleted now and then;
   - closes comments and pingbacks everywhere, turns off XML-RPC logins and pingbacks, and removes the links
     advertising them and the WordPress version (`<meta name="generator">`).
 - **The login page.** The campus proxy blocks `/wp-admin/` from outside McMaster's network, but not

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Checks WordPress's hardening against a throwaway install: the compose image with a copy of home/ and the
-# wordpress/*.conf and *.ini files mounted as docker-compose.yml mounts them, and the compose WORDPRESS_CONFIG_EXTRA,
+# Checks WordPress's hardening against a throwaway install: the compose image with the wordpress service's bind
+# mounts as docker-compose.yml lists them (a copy of home/ in place of ./home) and the compose WORDPRESS_CONFIG_EXTRA,
 # on a fresh MySQL 5.7. What it checks: wordpress/apache-hardening.conf (refused files, PHP under uploads even with a
-# hostile .htaccess, security headers) and mu-plugins/well-hardening.php (account names, failed-login limit,
-# comments, XML-RPC, version). Everything runs on a Docker network of its own and is removed at the end.
+# hostile .htaccess, security headers), wordpress/remoteip.conf (Apache ignores X-Forwarded-For) and
+# mu-plugins/well-hardening.php (account names, failed-login limit including parallel attempts and IPv6, comments,
+# XML-RPC, version). Everything runs on a Docker network of its own and is removed at the end.
 #   bash .github/scripts/test_wordpress_hardening.sh     (from the repository root; needs docker and python3)
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -42,19 +43,26 @@ cp -a home "$T/home"
 docker network create "$NET" >/dev/null
 docker run -d --name "$DB" --network "$NET" -e MYSQL_ROOT_PASSWORD=ci -e MYSQL_DATABASE=wordpress \
     -e MYSQL_USER=wordpress -e MYSQL_PASSWORD=ci mysql:5.7 >/dev/null || exit 1
-mounts=(-v "$T/home:/var/www/html")
-for f in wordpress/*.conf; do mounts+=(-v "$PWD/$f:/etc/apache2/conf-enabled/$(basename "$f"):ro"); done
-for f in wordpress/*.ini; do mounts+=(-v "$PWD/$f:/usr/local/etc/php/conf.d/zz-$(basename "$f"):ro"); done
+# The wordpress service's bind mounts exactly as docker-compose.yml lists them, with the copy of home/ in place of
+# ./home (the containers write wp-config.php and test uploads into it)
+mounts=()
+while IFS=$'\t' read -r src dst mode; do
+    [ "$src" = "$ROOT/home" ] && src=$T/home
+    mounts+=(-v "$src:$dst$mode")
+done < <(python3 -c '
+import json, sys
+for v in json.load(sys.stdin)["services"]["wordpress"]["volumes"]:
+    if v["type"] == "bind":
+        print(v["source"], v["target"], ":ro" if v.get("read_only") else "", sep="\t")' <<<"$compose_json")
+echo "mounts: ${mounts[*]}"
+[[ " ${mounts[*]} " == *" $T/home:/var/www/html "* ]] || { echo "docker-compose.yml no longer mounts ./home"; exit 1; }
 for _ in $(seq 90); do docker exec "$DB" mysqladmin -uwordpress -pci ping >/dev/null 2>&1 && break; sleep 2; done
 sleep 3
 # 127.0.0.1 stands in for haproxy: requests made from inside the container may name a client in X-Forwarded-For.
-# The image's mod_remoteip setup (conf remoteip) already believes X-Forwarded-For from private and loopback
-# addresses, which every test request comes from; haproxy's address is public, so in production it never applies.
-# It is turned off here so that the plugin's own handling is what gets tested.
+# Apache's own X-Forwarded-For handling is off, as in production (wordpress/remoteip.conf).
 docker run -d --name "$WP" --network "$NET" "${mounts[@]}" -e WORDPRESS_DB_HOST="$DB:3306" \
     -e WORDPRESS_DB_USER=wordpress -e WORDPRESS_DB_PASSWORD=ci -e WORDPRESS_DB_NAME=wordpress \
-    -e WORDPRESS_CONFIG_EXTRA="$CONFIG_EXTRA" -e WELL_TRUSTED_PROXY_IPS=127.0.0.1 --entrypoint sh "$IMAGE" \
-    -c 'a2disconf -q remoteip && exec docker-entrypoint.sh apache2-foreground' >/dev/null || exit 1
+    -e WORDPRESS_CONFIG_EXTRA="$CONFIG_EXTRA" -e WELL_TRUSTED_PROXY_IPS=127.0.0.1 "$IMAGE" >/dev/null || exit 1
 for _ in $(seq 60); do [ "$(status http://localhost/wp-admin/install.php)" = 200 ] && break; sleep 2; done
 
 echo "== Installing WordPress, with the well theme and /%postname%/ permalinks"
@@ -179,6 +187,22 @@ check "and the page says why" has "$(wpcurl -b 'wordpress_test_cookie=WP%20Cooki
     http://localhost/wp-login.php -H 'X-Forwarded-For: 203.0.113.7' --data-urlencode log=ciadmin \
     --data-urlencode "pwd=$PW" --data-urlencode testcookie=1)" 'Too many failed login attempts'
 check "another client still logs in" is "$(login "$PW" -H 'X-Forwarded-For: 203.0.113.8')" "302 in"
+# The count's row ("count:time of the last counted attempt"). Refused attempts and opening the login page (an empty
+# form) must leave it as it is, so they don't push the end of the lock further out.
+row() {
+    docker exec "$DB" mysql -uwordpress -pci -N -s wordpress -e \
+        "SELECT option_value FROM wp_options WHERE option_name = 'well_login_fail_$(printf %s "$1" | md5sum | cut -c1-32)'" \
+        2>/dev/null
+}
+locked_row=$(row 203.0.113.7)
+check "the locked client's row counts 5" is "${locked_row%%:*}" 5
+sleep 1
+login "$PW" -H 'X-Forwarded-For: 203.0.113.7' >/dev/null
+wpcurl -o /dev/null -b 'wordpress_test_cookie=WP%20Cookie%20check' -X POST http://localhost/wp-login.php \
+    -H 'X-Forwarded-For: 203.0.113.7' --data 'log=&pwd=&testcookie=1'
+wpcurl -o /dev/null -H 'X-Forwarded-For: 203.0.113.7' http://localhost/wp-login.php
+check "refused attempts and the empty form don't extend the lock" is "$(row 203.0.113.7)" "$locked_row"
+check "a successful login clears its row" is "$(row 203.0.113.8)" ""
 # Posted to the container's network address, the peer is that address, not a trusted proxy, so X-Forwarded-For is
 # ignored: five failures under five made-up addresses still lock out the one real peer. (curl always sends localhost
 # to loopback, whatever --resolve says, hence the address in the URL.)
@@ -186,6 +210,32 @@ check "the container's address is known" is "$([ -n "$WP_IP" ] && [ "$WP_IP" != 
 for i in 1 2 3 4 5; do LOGIN_HOST=$WP_IP login wrong -H "X-Forwarded-For: 198.51.100.$i" >/dev/null; done
 check "an untrusted peer can't dodge the limit with X-Forwarded-For" \
     is "$(LOGIN_HOST=$WP_IP login "$PW" -H 'X-Forwarded-For: 198.51.100.99')" 200
+
+# 20 wrong passwords at once from one client: each attempt is counted before its password is checked, in one
+# statement, so exactly 5 are checked ("incorrect") and 15 refused, and then the right password is refused too.
+# shellcheck disable=SC2016  # the loop runs in the container's shell, so its $ expressions stay unexpanded here
+parallel=$(docker exec "$WP" sh -c '
+    for i in $(seq 20); do
+        curl -s -o /tmp/par$i -H "Host: localhost" -H "X-Forwarded-For: 203.0.113.50" \
+            -b "wordpress_test_cookie=WP%20Cookie%20check" --data "log=ciadmin&pwd=wrong&testcookie=1" \
+            http://localhost/wp-login.php &
+    done
+    wait
+    echo "$(grep -l "Too many failed login attempts" /tmp/par* | wc -l) refused, $(grep -li "is incorrect" /tmp/par* | wc -l) checked"
+    rm -f /tmp/par*')
+check "20 parallel wrong passwords: 5 checked, 15 refused" is "$parallel" "15 refused, 5 checked"
+check "then that client's right password is refused" is "$(login "$PW" -H 'X-Forwarded-For: 203.0.113.50')" 200
+
+# IPv6 clients are counted per /64: failures spread over addresses of one /64 add up, and the next /64 is separate.
+for host in 1 2 3 4 5; do login wrong -H "X-Forwarded-For: 2001:db8:1:2::$host" >/dev/null; done
+check "an IPv6 /64 is locked as one client" is "$(login "$PW" -H 'X-Forwarded-For: 2001:db8:1:2::abcd')" 200
+check "the next /64 still logs in" is "$(login "$PW" -H 'X-Forwarded-For: 2001:db8:1:3::1')" "302 in"
+
+# Apache itself ignores X-Forwarded-For (wordpress/remoteip.conf replaces the image's remoteip.conf): its access log
+# shows the connection's own address, not the one the request claims.
+wpcurl -o /dev/null -H 'X-Forwarded-For: 192.0.2.77' http://localhost/?remoteip-check
+check "Apache logs the peer, not X-Forwarded-For" \
+    has "$(docker logs "$WP" 2>/dev/null | grep 'remoteip-check' | tail -1)" '^127\.0\.0\.1 '
 
 echo
 if [ "$fails" -eq 0 ]; then echo "All WordPress hardening checks passed"; else echo "$fails check(s) failed"; exit 1; fi
