@@ -904,3 +904,49 @@ test("a series name with the cache key's old separator in it is evicted cleanly"
   await srv.settle();
   assert.deepEqual([...loader.loadedTiles(odd, 600)].sort(), [2, 3]); // the oldest tile went, and its index with it
 });
+
+test("zoomed in on now over a long range, the 10-minute refresh fetches the window's live 10-minute tile again", async () => {
+  let clock = Date.parse("2026-11-12T17:00:00Z");
+  const range = { start: Date.parse("2026-08-01T04:00:00Z"), end: clock }; // over two weeks: the base is coarser than 10 min
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+  const c = new ChartController("card", [A], range, range, loader, syncFrame, 30);
+  c.setPlotWidth(600);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  c.setWindow({ start: clock - 6 * H, end: clock }, "button");
+  await sleep(60);
+  await srv.settle();
+  const live = tileAt(clock - 1, 600);
+  assert.ok(srv.calls.some((r) => r.bucketS === 600 && r.first <= live && r.last >= live));
+  clock += 10 * 60_000;
+  const n0 = srv.calls.length;
+  c.refreshLive();
+  await sleep(60);
+  const again = srv.calls.slice(n0);
+  assert.ok(again.some((r) => r.bucketS === 600 && r.first <= live && r.last >= live), "the window's live tile");
+  await srv.settle();
+  c.dispose();
+});
+
+test("a long zoom gesture asks for nothing until it ends, then once", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const c = new ChartController("logger-1", [A], extent, extent, loader, syncFrame, 30);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const n0 = srv.calls.length;
+  c.beginGesture();
+  for (let i = 0; i < 20; i++) { // 2 s of steady zooming in, past the max wait
+    c.zoom(0.85, undefined, "wheel");
+    await sleep(100);
+  }
+  assert.equal(srv.calls.length, n0);
+  c.endGesture();
+  await sleep(80);
+  assert.ok(srv.calls.length - n0 <= 1);
+  await srv.settle();
+  c.dispose();
+});

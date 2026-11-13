@@ -168,8 +168,8 @@ export class SeriesLoader {
   }
 
   /** Cached and not due to be fetched again (see LIVE_TTL_MS). */
-  fresh(key: string, bucketS: number, index: number): boolean {
-    return this.usable(tileKey(key, bucketS, index), false);
+  fresh(key: string, bucketS: number, index: number, refresh = false): boolean {
+    return this.usable(tileKey(key, bucketS, index), refresh);
   }
 
   /** The tile indexes of a series cached at a bucket. */

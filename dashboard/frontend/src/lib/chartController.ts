@@ -273,10 +273,11 @@ export class ChartController {
         this.endGesture();
         return;
       }
-      // Lingering (moved under a window's width since the last check): fetch where it is. Sweeping: tiles fetched now
-      // would be out of view before they arrived.
+      // Lingering (panned under a window's width since the last check): fetch where it is. Sweeping: tiles fetched now
+      // would be out of view before they arrived. A zoom still going (the span changed) waits for its end too.
       const was = this.lastTick ?? this.win, span = this.win.end - this.win.start;
-      if (Math.abs((this.win.start + this.win.end) / 2 - (was.start + was.end) / 2) < span) this.request(true);
+      const zooming = Math.abs((was.end - was.start) - span) > span * 0.01;
+      if (!zooming && Math.abs((this.win.start + this.win.end) / 2 - (was.start + was.end) / 2) < span) this.request(true);
       this.lastTick = this.win;
       this.armMaxWait();
     }, MAX_WAIT_MS);
@@ -468,9 +469,9 @@ export class ChartController {
       const zoomed = Math.abs((prev.end - prev.start) - span) > span * 0.01;
       const dir = zoomed ? 0 : Math.sign((w.start + w.end) - (prev.start + prev.end));
       const all = tilesFor(this.ext, b);
-      tiles = fillTiles(tilesFor(w, b), all[0], all[all.length - 1], (i) => keys.every((k) => this.loader.fresh(k, b, i)), dir);
+      tiles = fillTiles(tilesFor(w, b), all[0], all[all.length - 1], (i) => keys.every((k) => this.loader.fresh(k, b, i, refresh)), dir);
     }
-    this.loader.want(this.owner("window"), keys, this.wantB, tiles, near, () => this.dataChanged(true));
+    this.loader.want(this.owner("window"), keys, this.wantB, tiles, near, () => this.dataChanged(true), false, refresh);
     if (windowOnly) {
       this.updateSnapshot();
       return;
