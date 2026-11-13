@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ClientCounter, DEFAULT_LIMITS, InFlight, RateLimiter, TokenBuckets, isSlow, limitsFromEnv,
+  ClientCounter, DEFAULT_LIMITS, InFlight, RateLimiter, TokenBuckets, isSlow, limitsFromEnv, requestKind,
 } from "../src/lib/rateLimit.ts";
 
 function clock(start = 1_000_000) {
@@ -78,15 +78,47 @@ test("which backend paths are slow", () => {
   assert.ok(isSlow("/api/exports/estimate", "POST"));
   assert.ok(isSlow("/api/exports/jobs", "post"));
   assert.ok(!isSlow("/api/exports/jobs/abc"), "polling a job is cheap");
-  assert.ok(!isSlow("/api/series?start=x"));
+  assert.ok(isSlow("/api/samples?start=x&end=y"));
+  assert.ok(!isSlow("/api/series?start=x&end=y&bucket=600&series=a"), "chart tiles are mostly cached");
+  assert.ok(isSlow("/api/series?start=x&end=y&group_type=Weather"), "any other range is an aggregate over all of it");
+  assert.ok(isSlow("/api/series?start=x&bucket=&group_type=Weather"), "an empty bucket is no bucket");
   assert.ok(!isSlow("/api/latest"));
+  assert.ok(!isSlow("/health/data"));
+});
+
+test("an export download is its own kind of request", () => {
+  assert.equal(requestKind("/api/exports/jobs/0b7e2c1e-0000-4000-8000-000000000001/download"), "download");
+  assert.equal(requestKind("/api/exports/jobs/x/download", "POST"), "fast");
+  assert.equal(requestKind("/api/exports/jobs/x"), "fast");
+  assert.equal(requestKind("/api/windrose?start=x"), "slow");
+});
+
+test("an address may have only so many downloads in flight, apart from its slow requests", () => {
+  const limiter = new RateLimiter({ ...DEFAULT_LIMITS, slowConcurrent: 1, downloadConcurrent: 2 }, clock().now);
+  const first = limiter.check("a", "download");
+  const second = limiter.check("a", "download");
+  assert.ok(first.ok && second.ok);
+  assert.deepEqual(limiter.check("a", "download"), { ok: false, retryAfterS: 10 });
+  assert.ok(limiter.check("b", "download").ok, "another address still passes");
+  assert.ok(limiter.check("a", "slow").ok, "downloads don't use up the slow requests' places");
+  first.release();
+  assert.ok(limiter.check("a", "download").ok);
+});
+
+test("by default one address may hold at most a third of the backend's 12 threads with slow requests", () => {
+  assert.equal(DEFAULT_LIMITS.slowConcurrent, 4);
+  const limiter = new RateLimiter(DEFAULT_LIMITS, clock().now);
+  for (let i = 0; i < 4; i++) assert.ok(limiter.check("a", true).ok);
+  assert.equal(limiter.check("a", true).ok, false);
 });
 
 test("limits can be set from the environment; bad values keep the default", () => {
   assert.deepEqual(limitsFromEnv({}), DEFAULT_LIMITS);
-  const limits = limitsFromEnv({ RATE_LIMIT_BURST: "50", RATE_LIMIT_SLOW_CONCURRENT: "0", RATE_LIMIT_PER_MINUTE: "lots" });
+  const limits = limitsFromEnv({ RATE_LIMIT_BURST: "50", RATE_LIMIT_SLOW_CONCURRENT: "0", RATE_LIMIT_PER_MINUTE: "lots",
+    RATE_LIMIT_DOWNLOAD_CONCURRENT: "3" });
   assert.equal(limits.burst, 50);
   assert.equal(limits.slowConcurrent, 0);
+  assert.equal(limits.downloadConcurrent, 3);
   assert.equal(limits.perMinute, DEFAULT_LIMITS.perMinute);
 });
 
