@@ -30,7 +30,7 @@ export function bitmapPreview(chart: Highcharts.Chart, host: HTMLElement): Gestu
   let drawn: Range | null = null; // the window the copy shows
   let hidden: SVGGElement[] = [];
   let cost = 0, lastEnd = -Infinity;
-  const labels = () => (chart.xAxis[0] as unknown as LabelAxis).labelGroup?.element;
+  const labels = () => (chart.xAxis?.[0] as unknown as LabelAxis | undefined)?.labelGroup?.element; // none once destroyed
 
   const take = () => {
     layer?.remove();
@@ -270,14 +270,15 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
       (chart as NavigatorChart).navigator?.render(w.start, w.end);
     },
     end() {
-      if (drawn) ticks(drawn);
+      // Also called when the chart is being destroyed (unmount): whatever of it is already gone is skipped
+      if (drawn && chart.xAxis?.[0]) ticks(drawn);
       box.remove();
       for (const g of hidden) g.style.visibility = '';
       hidden = [];
       painted = null;
       drawn = null;
       lastSpan = 0;
-      chart.container.style.pointerEvents = '';
+      if (chart.container) chart.container.style.pointerEvents = '';
       window.clearTimeout(release);
       release = window.setTimeout(() => { canvas.width = 0; canvas.height = 0; }, RELEASE_AFTER_MS);
     },
