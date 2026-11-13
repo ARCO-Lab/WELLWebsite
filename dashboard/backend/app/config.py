@@ -39,6 +39,9 @@ class Config:
     
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # The largest request body Flask reads (bytes); a bigger one is refused with a 413. The only bodies are export
+    # requests, a few hundred bytes of JSON.
+    MAX_CONTENT_LENGTH = 64 * 1024
     # Longest a single SQL statement may run before PostgreSQL cancels it; 0 = no limit. docker-compose.yml sets
     # it for the backend (API) container only, so a query nobody is waiting for any more can't keep running long
     # after the request has failed. The worker and export worker leave it unset: ingestion, backfills and big
@@ -84,6 +87,12 @@ class Config:
     # Free space (MB) to leave on the exports disk after an export's estimated size; exports that would go below it
     # are refused (507). The database shares this disk on the VM.
     EXPORT_MIN_FREE_MB = int(os.getenv("EXPORT_MIN_FREE_MB", "2048"))
+    # The largest file one export may write (MB; 0 = no limit besides the free space above), and how long a direct
+    # (sync) download may take to build (seconds; under gunicorn's 60 s timeout). An export that passes either is
+    # stopped part way and its file deleted, so a request the row estimate got wrong can't fill the disk or hold a
+    # web thread for minutes. The largest export the dashboard allows (EXPORT_MAX_ROWS) is far smaller.
+    EXPORT_MAX_FILE_MB = int(os.getenv("EXPORT_MAX_FILE_MB", "1024"))
+    EXPORT_SYNC_MAX_SECONDS = int(os.getenv("EXPORT_SYNC_MAX_SECONDS", "45"))
     # How long one export may run, in seconds: past the soft limit it is stopped and marked failed; the hard
     # limit kills its worker process if it didn't stop.
     EXPORT_SOFT_TIME_LIMIT_SECONDS = int(os.getenv("EXPORT_SOFT_TIME_LIMIT_SECONDS", str(15 * 60)))
