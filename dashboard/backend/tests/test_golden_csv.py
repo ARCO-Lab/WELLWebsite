@@ -24,6 +24,7 @@ sys.path.insert(0, str(APP))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
 from config import Config  # noqa: E402
+from api.services import catalog  # noqa: E402
 from api.services.exports import write_export_csv  # noqa: E402
 from utils.sampling_csv import validate_csv  # noqa: E402
 
@@ -213,6 +214,7 @@ class DatabaseCase(unittest.TestCase):
         from db.models import SensorMeasurement
         cls.db.session.add_all(SensorMeasurement(**r) for r in readings)
         cls.db.session.commit()
+        catalog.forget()  # another test class may have loaded other readings into this database within REFRESH_S
 
     def export(self, payload) -> bytes:
         path = os.path.join(self.tmp, "export.csv")

@@ -444,16 +444,16 @@ class PostgresTests(SensorData, unittest.TestCase):
         start = tile_start(T0, 600)
         end = start + dt.timedelta(seconds=TILE_BUCKETS * 600)
         tile = f"start={start.isoformat()}&end={end.isoformat()}&bucket=600&group_type=Logger"
-        with unittest.mock.patch.object(response_cache, "get", side_effect=lambda key: None), \
-                unittest.mock.patch.object(response_cache, "put",
-                                           side_effect=lambda key, body, ttl: stored.setdefault(key, body)):
+        with unittest.mock.patch.object(response_cache, "get_many", side_effect=lambda keys: {}), \
+                unittest.mock.patch.object(response_cache, "put_many",
+                                           side_effect=lambda items: [stored.setdefault(k, b) for k, b, _ in items]):
             real = self.series(f"{tile}&station_id={LOGGER}")
             self.assertEqual(real.status_code, 200)
             for i in range(5):
                 r = self.series(f"{tile}&station_id={LOGGER}&station_id=junk-{i}&measurement_type=Water%20Level"
                                 f"&measurement_type=junk-{i}")
                 self.assertEqual(r.status_code, 200)
-            self.assertEqual(len(stored), 2, "the real station alone, and with its real measurement")
+            self.assertEqual(len(stored), 2, "one entry per real series of the tile: Water Level, Water Temperature")
             # Filters that name nothing at all: an empty answer, no query and nothing stored
             with unittest.mock.patch.object(self.db.session, "execute", wraps=self.db.session.execute) as run:
                 r = self.series(f"{tile}&station_id=junk-x")
@@ -466,9 +466,16 @@ class PostgresTests(SensorData, unittest.TestCase):
         body = self.series(f"{tile}&station_id={LOGGER}&station_id=junk").get_json()
         self.assertEqual({s["measurement_type"] for s in body["series"]}, {"Water Level", "Water Temperature"})
 
-    def test_a_new_series_is_known_as_soon_as_its_first_reading_is_stored(self):
+    def later(self, seconds):
+        """Moves the series catalog's clock `seconds` on (catalog.REFRESH_S)."""
+        from api.services import catalog
+        now = time.monotonic() + seconds
+        return unittest.mock.patch.object(catalog.time, "monotonic", return_value=now)
+
+    def test_a_new_series_is_known_once_the_catalog_refreshes(self):
         from db.models import SensorMeasurement
         from api.routes.series import TILE_BUCKETS, tile_start
+        from api.services.catalog import REFRESH_S
         start = tile_start(T0, 600)
         q = (f"start={start.isoformat()}&end={(start + dt.timedelta(seconds=TILE_BUCKETS * 600)).isoformat()}"
              f"&bucket=600&series=Logger|2577536|Water%20Level")
@@ -476,7 +483,31 @@ class PostgresTests(SensorData, unittest.TestCase):
         self.db.session.add(SensorMeasurement(station_id="2577536", group_type="Logger", measurement_type="Water Level",
                                               unit="m", value=2.0, recorded_at=T0))
         self.db.session.commit()
-        self.assertEqual([s["station_id"] for s in self.series(q).get_json()["series"]], ["2577536"])
+        self.assertEqual(self.series(q).get_json()["series"], [], "the catalog is read at most every REFRESH_S")
+        with self.later(REFRESH_S + 1):
+            self.assertEqual([s["station_id"] for s in self.series(q).get_json()["series"]], ["2577536"])
+
+    def test_cached_tiles_are_still_answered_while_the_database_is_down(self):
+        from sqlalchemy.exc import OperationalError
+        from api.routes.series import TILE_BUCKETS, tile_start
+        from api.services.catalog import REFRESH_S
+        from utils import response_cache
+        stored = {}
+        start = tile_start(T0, 600)
+        tile = (f"start={start.isoformat()}&end={(start + dt.timedelta(seconds=TILE_BUCKETS * 600)).isoformat()}"
+                f"&bucket=600&station_id={LOGGER}&group_type=Logger")
+        with unittest.mock.patch.object(response_cache, "get_many",
+                                        side_effect=lambda keys: {k: (stored[k], 60) for k in keys if k in stored}), \
+                unittest.mock.patch.object(response_cache, "put_many",
+                                           side_effect=lambda items: stored.update({k: b for k, b, _ in items})):
+            up = self.series(tile).get_json()
+            down = OperationalError("SELECT", {}, Exception("connection refused"))
+            # Past the refresh interval, so the catalog tries the database, fails, and keeps the last set
+            with self.later(REFRESH_S + 1),                     unittest.mock.patch.object(self.db.session(), "execute", side_effect=down), \
+                    self.assertLogs("api.services.catalog", "WARNING"):
+                r = self.series(tile)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json(), up)
 
 
 if __name__ == "__main__":

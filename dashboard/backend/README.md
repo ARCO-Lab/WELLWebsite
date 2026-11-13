@@ -94,13 +94,17 @@ The contract for a request with `bucket=` (what `dashboard/frontend/src/lib/seri
 tiles. A tile is 360 buckets (`TILE_BUCKETS`), and tiles start at multiples of their length counted on Toronto's wall
 clock from 1970-01-01T00:00 (for 10-minute buckets, every 2.5 days: 2026-09-26T12:00, 2026-09-29T00:00, ...).
 `start` must be a tile's start and `end` a later tile's start or one second before it, as times without an offset,
-and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start. A
-request without `bucket=` (the dashboard doesn't send one; the load test does) is widened to whole buckets of the size
-picked for its span, so ranges shifted a few minutes at a time share one answer; the dashboard's proxy counts it as a
-slow request. Both kinds are kept in the Redis cache. `station_id`, `measurement_type` and `series` values that name no
-series with readings are dropped before the query and the cache key, so made-up values can't add cache entries (a
-filter left with none matches nothing: an empty `series` list), and values with control characters get a 400. Dates
-must fall in the years 1970 to 2100 on every read route. A change to
+and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start.
+Tile requests are cached in Redis per series and tile: each series' part of each tile is its own entry, the answer is
+built from the entries (one round trip for all of them), and only missing series and tiles are queried. So any
+combination of series reuses the same entries, and the number of entries is bounded by series x tiles. A request
+without `bucket=` (the dashboard doesn't send one; the load test does) is never cached, and the dashboard's proxy
+counts it as a slow request. `station_id`, `measurement_type` and `series` values that name no series with readings
+are dropped before the query (a filter left with none matches nothing: an empty `series` list), and values with
+control characters get a 400. Which series exist is read at most every 30 s per process
+(`app/api/services/catalog.py`), so a brand-new series appears in tile answers within 30 s of its first reading; if the
+database is down, the last list is used and cached tiles are still answered. Dates must fall in the years 1970 to 2100
+on every read route. A change to
 the dashboard's tile size or batch size must change `TILE_BUCKETS` or `MAX_TILES` in `app/api/routes/series.py`
 with it.
 Times with an offset (`...Z`) are real instants, times without one are Toronto local time. Each series has an `agg`
@@ -129,7 +133,7 @@ not in `app/.env`, which they take precedence over):
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (see above) and `/api/windrose` (ranges over 2 days widened to whole hours, over 60 days to whole days) keep answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Answers over 3 MB aren't stored (the largest tile request the dashboard makes is about 2.2 MB). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (per series and tile, see above) and `/api/windrose` (ranges over 2 days widened to whole hours, over 60 days to whole days) keep answers (1 minute for a range or tile that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. A wind rose key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Entries over 3 MB aren't stored (one series' tile is a few kilobytes). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
 `/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public,
 max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that

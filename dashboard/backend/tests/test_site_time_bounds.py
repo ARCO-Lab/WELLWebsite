@@ -15,6 +15,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
+from api.services import catalog  # noqa: E402
 from utils.timezone import site_range  # noqa: E402
 
 T = dt.datetime
@@ -100,6 +101,7 @@ class AppCase:
             db.session.add(SensorMeasurement(station_id="22051538", group_type="Weather", unit="°C", value=value,
                                              measurement_type="Air Temperature", recorded_at=when))
         db.session.commit()
+        catalog.forget()  # another test class may have loaded other readings into this database within REFRESH_S
         cls.client = cls.app.test_client()
 
     @classmethod
