@@ -30,7 +30,12 @@ from (recorded only once the site was healthy after that build), not with the ch
 deploy or a rollback is under way. So if a deploy is stopped after the pull (Ctrl-C, a reboot, a lost SSH session, or
 a plain `git pull` on the VM), the next run, by hand or from cron, rebuilds what changed instead of saying "up to
 date". Ctrl-C and shutdowns are logged as `INTERRUPTED` and ping `/fail`. A rollback that was stopped halfway is
-finished by the next `--auto` run (and reported once); the rolled-back commit is still not retried.
+finished by the next `--auto` run (and reported once); the rolled-back commit is still not retried. If the redone
+deploy is unhealthy, it rolls back to the commit the stopped run started from.
+
+Two cases `--auto` leaves for a person, who runs `./deploy.sh`: a stopped deploy that left the site unhealthy
+(`--auto` never deploys onto an unhealthy site, so it reports "already unhealthy" once and waits), and a stopped
+deploy whose changes `--auto` holds (it logs `HELD`, as for any held commit).
 
 The script sets `umask 022` for itself, so the files a pull or a rollback writes stay readable by Apache in the
 `wordpress` container (with a private umask such as 077 they would be 0600, and WordPress would answer 500).

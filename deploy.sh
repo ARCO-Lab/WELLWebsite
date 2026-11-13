@@ -192,6 +192,10 @@ if [ -f "$IN_PROGRESS" ]; then
   done < "$IN_PROGRESS" || true
   if [ ${#WAS[@]} -eq 0 ] && [ "$DRY" = 0 ]; then end_in_progress; fi
 fi
+# A run stopped halfway with no record before it (the first deploy by this version), or stopped between recording
+# the deployed commit and clearing its line, makes OLD look like NEW. What the containers ran for sure before it is
+# the stopped run's starting commit, so that is what a rollback goes back to.
+if [ "$OLD" = "$NEW" ] && [ ${#WAS[@]} -gt 0 ]; then read -r OLD _ <<<"${WAS[0]}"; fi
 if [ "$OLD" = "$NEW" ] && [ "$HEAD_AT" = "$NEW" ] && [ ${#WAS[@]} -eq 0 ]; then
   [ "$AUTO" = 1 ] || echo "Already up to date at $(git rev-parse --short HEAD)."
   # The first run of this version: the checkout is taken as what the containers run

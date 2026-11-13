@@ -27,8 +27,8 @@ git clone -q -b main "$T/remote.git" "$T/vm"
 # restart count reads 2 on the second look (a crash loop that Docker still shows as running). With $KILL_ON_UP=n,
 # the n-th `compose up` sends SIGTERM to deploy.sh, as a shutdown or a lost session would. curl: answers
 # check-runs from $CHECKS_FILE (or fails if $API_DOWN), records health pings, and pages answer $HEALTH_CODE, 500
-# while $BAD_SHA is checked out, or $HEALTH_AFTER_REBUILD once the stack has been rebuilt; with $EXPECT_HOST, a
-# page on any other host answers 000.
+# while $BAD_SHA is checked out (or $BAD_REBUILT_SHA once the stack has been rebuilt at it), or $HEALTH_AFTER_REBUILD
+# once the stack has been rebuilt; with $EXPECT_HOST, a page on any other host answers 000.
 mkdir "$T/bin"
 cat > "$T/bin/docker" <<'EOF'
 #!/bin/sh
@@ -75,6 +75,7 @@ fi
 case "$*" in
   *http_code*)
     if [ -n "${BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_SHA" ]; then printf 500
+    elif [ -n "${BAD_REBUILT_SHA:-}" ] && [ -f "$T/rebuilt" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_REBUILT_SHA" ]; then printf 500
     elif [ -n "${HEALTH_AFTER_REBUILD:-}" ] && [ -f "$T/rebuilt" ]; then printf "$HEALTH_AFTER_REBUILD"
     else printf "${HEALTH_CODE:-200}"; fi ;;
 esac
@@ -382,6 +383,26 @@ check "--auto once that rebuild was healthy: up to date, nothing runs" 'rc 0 && 
 sync_vm; git -C "$T/vm" rev-parse HEAD > "$DEPLOY_STATE.deployed"; change dashboard/backend/app/x.py; ci success success
 git -C "$T/vm" fetch -q && git -C "$T/vm" merge -q --ff-only origin/main; deploy --auto
 check "checkout ahead of the deployed commit: --auto rebuilds what changed since the deployed commit" 'rc 0 && head_is_remote && ran "--no-deps backend worker export_worker" && said "healthy" && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/work" rev-parse HEAD)" ]'
+
+# The first run of this version (no deployed commit recorded yet) on an up-to-date checkout: records it, does nothing else
+sync_vm; deploy --auto
+check "first run with no recorded deployed commit: records the checkout's commit, rebuilds and rolls back nothing" 'rc 0 && [ ! -s "$T/out" ] && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/vm" rev-parse HEAD)" ] && ! ran "compose" && [ ! -e "$DEPLOY_STATE.in-progress" ]'
+
+# A deploy stopped halfway before any deployed commit was recorded: the next run sees the checkout at main (OLD looks
+# like NEW), redoes the rebuild, and if that is unhealthy, rolls back to where the stopped run started
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx; new=$(git -C "$T/work" rev-parse HEAD)
+ci success success; KILL_ON_UP=1 deploy --auto
+: > "$STUB_LOG"; BAD_REBUILT_SHA=$new deploy --auto
+check "stopped first deploy, redone and unhealthy: rolls back to the commit the stopped run started from" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "rolling back to $(git -C "$T/vm" rev-parse --short "$old")" && said "healthy again" && [ "$(grep -c "compose up -d --build --no-deps dashboard" "$STUB_LOG")" = 2 ] && [ ! -e "$DEPLOY_STATE.in-progress" ]'
+
+# A deploy by hand stopped halfway, whose changes --auto must hold: --auto holds it (and rebuilds nothing); a person
+# running ./deploy.sh then finishes it
+sync_vm; git -C "$T/vm" rev-parse HEAD > "$DEPLOY_STATE.deployed"; change dashboard/frontend/page.tsx home/held.php
+KILL_ON_UP=1 deploy
+: > "$STUB_LOG"; ci success success; deploy --auto
+check "stopped deploy with held changes: --auto holds it, rebuilds nothing, keeps the in-progress line" 'rc 0 && said "HELD" && said "home/held.php" && ! ran "compose" && [ -s "$DEPLOY_STATE.in-progress" ]'
+deploy
+check "stopped deploy with held changes: ./deploy.sh by hand finishes it" 'rc 0 && head_is_remote && ran "compose up -d --build --no-deps dashboard" && said "healthy" && [ ! -e "$DEPLOY_STATE.in-progress" ] && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/work" rev-parse HEAD)" ]'
 
 # A rollback stopped halfway: cron finishes it, once, and still doesn't retry the bad commit
 sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); git -C "$T/vm" rev-parse HEAD > "$DEPLOY_STATE.deployed"
