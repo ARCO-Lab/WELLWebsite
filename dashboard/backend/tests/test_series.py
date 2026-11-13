@@ -483,6 +483,7 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertEqual([ttl for _, ttl in stored.values()], [60])
         stored.clear()
         r = self.get(f"{tile_query(dt.datetime(2026, 11, 1), 600)}&series=Weather|22051538|Air Temperature")
+        self.assertEqual(r.get_json()["series"][0]["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
         self.assertEqual([ttl for _, ttl in stored.values()], [3600], "a tile with readings keeps its usual time")
 
     def test_a_range_without_a_bucket_is_never_stored(self):
