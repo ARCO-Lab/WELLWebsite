@@ -1,5 +1,6 @@
 # This file initializes and configures the Flask application for the WELL backend.
-# It sets up CORS, registers all API routes, and integrates the database.
+# It registers all API routes and integrates the database. There is no CORS: browsers never call this app directly
+# (it has no public port; the dashboard's Next.js API routes call it server-side), so no other site may read it.
 
 from config import Config  # loads .env, so SENTRY_DSN is set before init_sentry reads it
 from utils.sentry import capture_job_error, init_sentry
@@ -10,7 +11,6 @@ from utils.sentry import capture_job_error, init_sentry
 init_sentry("backend")
 
 from flask import Flask, jsonify, request  # noqa: E402
-from flask_cors import CORS  # noqa: E402
 from sqlalchemy.exc import OperationalError  # noqa: E402
 from api.routes import register_routes  # noqa: E402
 from api.routes.health import register_health_routes  # noqa: E402
@@ -37,7 +37,6 @@ def create_app():
         app.config["SQLALCHEMY_DATABASE_URI"], app.config["DB_STATEMENT_TIMEOUT_MS"],
         app.config["DB_APPLICATION_NAME"])
     db.init_app(app)
-    CORS(app)
     register_routes(app)
     # Per-minute request counts for welldash² and the daily digest (utils/traffic.py); route patterns only, no
     # addresses or query strings. On by default with PostgreSQL; REQUEST_METRICS=0 turns it off.

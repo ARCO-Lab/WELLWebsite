@@ -1,5 +1,7 @@
 import csv
+import math
 import os
+import shutil
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
@@ -9,6 +11,7 @@ from sqlalchemy import and_, func, or_, select
 from config import Config
 from db.database import db
 from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
+from db.ordering import bytewise, sampling_order
 from utils.timezone import EST_TZ, est_now
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
@@ -22,20 +25,40 @@ STREAM_BATCH_ROWS = 5000
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
+# Times in the CSV files are written as stored: America/Toronto wall-clock time (EST or EDT, whichever was in effect),
+# ISO 8601 without an offset. The time column's header names the zone, so a file read on its own says how to read
+# its times. (No offset is written because the stored time doesn't say which of the two 01:xx it was in the hour
+# repeated when clocks fall back.) The monthly Borealis file (scripts/upload_data.py) uses the same header.
+TIMESTAMP_HEADER = f"Timestamp ({EST_TZ.key})"
+RECORDED_AT_HEADER = f"recorded_at ({EST_TZ.key})"
+
+
 def safe_csv_cell(value):
     if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
         return "'" + value
     return value
 
 
-class _SafeCsvWriter:
-    """csv.writer whose text cells are passed through safe_csv_cell."""
+def csv_cell(value):
+    """A cell as the CSV files write it: a missing value (None, or NaN as some older rows store) is an empty
+    field, never "nan"; text goes through safe_csv_cell."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return safe_csv_cell(value)
+
+
+class SafeCsvWriter:
+    """csv.writer whose cells are passed through csv_cell."""
 
     def __init__(self, file_obj):
         self._writer = csv.writer(file_obj)
 
     def writerow(self, row):
-        self._writer.writerow([safe_csv_cell(cell) for cell in row])
+        self._writer.writerow([csv_cell(cell) for cell in row])
+
+    def writerows(self, rows):
+        for row in rows:
+            self.writerow(row)
 
 
 @contextmanager
@@ -92,6 +115,51 @@ def live_jobs(now_utc: Optional[datetime] = None) -> List:
     return [job for job in candidates if not job_is_stuck(job, now_utc)]
 
 
+def jobs_started_since(fingerprint: str, since_utc: datetime) -> int:
+    """How many jobs this visitor started since since_utc, whatever became of them (for the hourly quota). Rows
+    are kept for weeks (tasks/exports.py JOB_ROW_RETENTION), and created_at is naive wall time, so rows from a little
+    before are fetched and their real ages checked here (wall times are an hour off across a DST change)."""
+    wall_cutoff = since_utc.astimezone(EST_TZ).replace(tzinfo=None) - timedelta(hours=1)
+    rows = (db.session.query(ExportJob.created_at, ExportJob.error_message)
+            .filter(ExportJob.requester_fingerprint == fingerprint, ExportJob.created_at >= wall_cutoff).all())
+    # A job that couldn't be queued (Redis down) never ran, so it doesn't use up the quota
+    return sum(1 for created_at, error in rows
+               if _wall_to_utc(created_at) >= since_utc and error != EXPORT_QUEUE_DOWN_MESSAGE)
+
+
+# Shown on the Download panel when a background export can't be queued (the job is marked failed with it too, by
+# api/routes/exports.py). Such a job never ran, so it doesn't count against the visitor's hourly quota.
+EXPORT_QUEUE_DOWN_MESSAGE = ("Large exports are unavailable right now. Please try again in a few minutes, "
+                             "or pick a shorter range to download directly.")
+
+
+# A ready job is handed to another request for the same export only if its file has at least this long left, so
+# the second download can't find it expired, and only if its data can't have changed: its range ended a day before
+# the job was made (readings that old are settled), or it was built in the last REUSE_FRESH.
+REUSE_MIN_LEFT = timedelta(minutes=10)
+REUSE_FRESH = timedelta(minutes=10)
+REUSE_SETTLED = timedelta(days=1)
+
+
+def reusable_job(filters: Dict, now_utc: Optional[datetime] = None):
+    """A ready job whose payload is exactly these normalised filters and whose file can be sent instead of building
+    the same export again, or None."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    end = datetime.fromisoformat(filters["end"])
+    candidates = (db.session.query(ExportJob)
+                  .filter(ExportJob.status == "ready", ExportJob.domain == filters["domain"],
+                          ExportJob.expires_at.isnot(None), ExportJob.artifact_path.isnot(None))
+                  .order_by(ExportJob.completed_at.desc()).all())
+    for job in candidates:
+        if job.payload != filters or _wall_to_utc(job.expires_at) - now_utc < REUSE_MIN_LEFT:
+            continue
+        settled = end < job.created_at - REUSE_SETTLED
+        fresh = job.completed_at is not None and now_utc - _wall_to_utc(job.completed_at) < REUSE_FRESH
+        if (settled or fresh) and os.path.isfile(job.artifact_path):
+            return job
+    return None
+
+
 # What a failed job reports to the page when the cause isn't a validation error.
 EXPORT_FAILED_MESSAGE = "The server couldn't build this export. Please try again later."
 # For an export stopped at the time limit, or found stuck while running.
@@ -137,25 +205,27 @@ def normalize_export_payload(payload: Dict) -> Dict:
         raise ValueError("Payload must be a JSON object")
 
     domain = payload.get("domain")
-    if domain not in ALLOWED_DOMAINS:
+    if not isinstance(domain, str) or domain not in ALLOWED_DOMAINS:
         raise ValueError("Invalid domain. Expected 'sensor' or 'sampling'.")
 
     start = payload.get("start")
     end = payload.get("end")
     if not start or not end:
         raise ValueError("Missing required fields: start, end")
+    if not isinstance(start, str) or not isinstance(end, str):
+        raise ValueError("start and end must be ISO datetime strings")
 
     try:
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
-    except ValueError as exc:
+        # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in
+        # the session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone
+        # the export would be hours off. So aware times become site wall-clock time here, before they are compared
+        # (comparing an aware with a naive time raises TypeError). OverflowError: a time such as
+        # 0001-01-01T00:00+05:00 has no local time.
+        start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+    except (ValueError, OverflowError) as exc:
         raise ValueError("Invalid ISO datetime in start/end") from exc
-
-    # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in the
-    # session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone the export
-    # would be hours off. So aware times become site wall-clock time here, before they are compared (comparing an
-    # aware with a naive time raises TypeError).
-    start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
 
     if start_dt > end_dt:
         raise ValueError("start must be before end")
@@ -192,6 +262,29 @@ def normalize_export_payload(payload: Dict) -> Dict:
         normalized["site_ids"] = _as_string_list(payload.get("site_ids", []))
 
     return normalized
+
+
+# About how many bytes of CSV one reading takes (a sensor export's wide rows hold several readings each; a
+# sampling row is one reading of ~80 bytes, but sampling exports are small): enough to tell whether a file fits.
+EXPORT_BYTES_PER_ROW = 80
+
+
+def disk_space_error(estimated_rows: int) -> Optional[str]:
+    """None when EXPORTS_DIR's disk can take an export of this many readings and still keep EXPORT_MIN_FREE_MB free;
+    otherwise the message for the user. The database shares this disk on the VM, so a full disk would stop
+    ingestion: running short of space refuses exports rather than filling it."""
+    directory = Config.EXPORTS_DIR
+    while directory and not os.path.isdir(directory):  # not created yet: check the disk it will be on
+        parent = os.path.dirname(directory)
+        directory = parent if parent != directory else ""
+    try:
+        free = shutil.disk_usage(directory or ".").free
+    except OSError:
+        return None  # can't tell: don't refuse every export over it
+    needed = max(0, estimated_rows) * EXPORT_BYTES_PER_ROW + Config.EXPORT_MIN_FREE_MB * 1024 * 1024
+    if free >= needed:
+        return None
+    return "The server is short of disk space, so it can't prepare this export right now. Please try again later."
 
 
 def estimate_rows(payload: Dict) -> int:
@@ -257,11 +350,11 @@ def write_export_csv(
 
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
-        writer = _SafeCsvWriter(csv_file)
+        writer = SafeCsvWriter(csv_file)
         writer.writerow(
             [
                 "domain",
-                "recorded_at",
+                RECORDED_AT_HEADER,
                 "group_type",
                 "station_id",
                 "creek_id",
@@ -312,8 +405,15 @@ def iter_export_rows(filters: Dict) -> Iterable[Dict]:
         columns = (model.recorded_at, model.creek_id, model.site_id, model.measurement_type, model.value, model.unit)
         conditions = _sampling_conditions(filters)
 
-    statement = select(*columns).where(*conditions).order_by(model.recorded_at)
     with _streaming_connection() as conn:
+        # Rows that share a time come in a fixed order: sampling by site, then parameter (db/ordering.py); sensor
+        # readings by station, then measurement.
+        if sensor:
+            order = (model.recorded_at, bytewise(model.station_id, conn.dialect.name),
+                     bytewise(model.measurement_type, conn.dialect.name))
+        else:
+            order = sampling_order(conn.dialect.name)
+        statement = select(*columns).where(*conditions).order_by(*order)
         for r in conn.execute(statement):
             yield {
                 "domain": filters["domain"],
@@ -529,7 +629,7 @@ def _write_sensor_csv(
         return f"{metric}: {unit}" if unit else metric
 
     # Build header row - ALWAYS include requested groups in the output order: Weather, Quality, Logger
-    headers = ["ID", "Timestamp"]
+    headers = ["ID", TIMESTAMP_HEADER]
 
     # Weather section: Include if requested (even if no data)
     if include_weather:
@@ -575,6 +675,8 @@ def _write_sensor_csv(
                 row.extend(logger_data.get((station_id, metric), "") for metric in logger_metrics)
         return row
 
+    # Readings of one time in a fixed order (station, then metric): where two stations of a group report the same
+    # metric, the cell is always the same one's.
     readings = (
         select(
             SensorMeasurement.recorded_at,
@@ -584,13 +686,14 @@ def _write_sensor_csv(
             SensorMeasurement.value,
         )
         .where(*conditions)
-        .order_by(SensorMeasurement.recorded_at)
+        .order_by(SensorMeasurement.recorded_at, bytewise(SensorMeasurement.station_id, conn.dialect.name),
+                  bytewise(SensorMeasurement.measurement_type, conn.dialect.name))
     )
 
     records = 0
     row_num = 0
     with open(output_path, "w", newline="", encoding="utf-8") as file_obj:
-        writer = _SafeCsvWriter(file_obj)
+        writer = SafeCsvWriter(file_obj)
         writer.writerow(headers)
 
         # The readings of one timestamp: metric -> value for Weather and Quality, (station, metric) -> value for

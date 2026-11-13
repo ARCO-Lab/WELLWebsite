@@ -11,11 +11,19 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.routes.series import (  # noqa: E402
-    LADDER, MAX_POINTS, browser_cache_control, cache_key, columnar, parse_bucket, parse_filters, pick_bucket,
-    to_local_naive)
+    LADDER, MAX_POINTS, MAX_TILES, TILE_BUCKETS, browser_cache_control, cache_key, check_tiles, columnar, parse_bucket,
+    parse_filters, pick_bucket, tile_start, to_local_naive)
 from werkzeug.datastructures import MultiDict  # noqa: E402
 
 DAY = 86400
+
+
+def tile_query(day, bucket, tiles=1):
+    """start= and end= for `tiles` tiles of `bucket`, from the tile holding `day`, as the dashboard asks for them
+    (src/lib/seriesTiles.ts tileQuery): the end is one second before the next tile."""
+    start = tile_start(day, bucket)
+    end = start + dt.timedelta(seconds=TILE_BUCKETS * bucket * tiles - 1)
+    return f"start={start.isoformat()}&end={end.isoformat()}&bucket={bucket}"
 
 
 class PickBucketTests(unittest.TestCase):
@@ -126,6 +134,38 @@ class ColumnarTests(unittest.TestCase):
         self.assertEqual({m: s["agg"] for m, s in by.items()},
                          {"Rain": "sum", "Wind Direction": "vector_mean", "Air Temperature": "mean"})
         self.assertEqual((by["Wind Direction"]["min"], by["Wind Direction"]["max"]), ([None], [None]))
+
+
+class TileTests(unittest.TestCase):
+    def test_tiles_start_where_the_dashboard_counts_them(self):
+        # The dashboard's tiles of 10-minute buckets are 2.5 days long, counted from 1970-01-01 on the wall clock:
+        # 2026-09-26T12:00 starts one (src/lib/seriesTiles.ts gives the same).
+        self.assertEqual(tile_start(dt.datetime(2026, 9, 28, 23, 59), 600), dt.datetime(2026, 9, 26, 12, 0))
+        self.assertEqual(tile_start(dt.datetime(2026, 9, 26, 12, 0), 600), dt.datetime(2026, 9, 26, 12, 0))
+        self.assertEqual(tile_start(dt.datetime(2026, 5, 23), 3600), dt.datetime(2026, 5, 22))
+
+    def test_whole_tiles_are_accepted_and_both_ends_share_a_key(self):
+        start = dt.datetime(2026, 9, 26, 12, 0)
+        tile = dt.timedelta(seconds=TILE_BUCKETS * 600)
+        second = dt.timedelta(seconds=1)
+        self.assertEqual(check_tiles(start, start + tile - second, 600), (start, start + tile - second))
+        self.assertEqual(check_tiles(start, start + tile, 600), (start, start + tile - second))
+        last = start + MAX_TILES * tile - second
+        self.assertEqual(check_tiles(start, last, 600), (start, last))
+
+    def test_anything_else_is_refused(self):
+        start = dt.datetime(2026, 9, 26, 12, 0)
+        tile = dt.timedelta(seconds=TILE_BUCKETS * 600)
+        second = dt.timedelta(seconds=1)
+        for s, e in ((start + dt.timedelta(minutes=10), start + tile - second),  # shifted by a bucket
+                     (start, start + tile - dt.timedelta(minutes=10)),  # ends inside a tile
+                     (start, start + tile - dt.timedelta(milliseconds=1)),
+                     (start, start + (MAX_TILES + 1) * tile - second),  # too many tiles
+                     (start, start - second)):  # no tile at all
+            with self.assertRaises(ValueError, msg=(s, e)):
+                check_tiles(s, e, 600)
+        with self.assertRaises(ValueError):  # a tile of 10-minute buckets isn't one of 30-minute buckets
+            check_tiles(start, start + tile - second, 1800)
 
 
 @unittest.skipUnless(os.getenv("TEST_POSTGRES_URL"), "set TEST_POSTGRES_URL to run the SQL against PostgreSQL")
@@ -310,7 +350,7 @@ class SeriesSqlTests(unittest.TestCase):
         self.assertEqual(by["Water Temperature"]["avg"], [4.0])
         self.assertEqual(by["Water Temperature"]["agg"], "mean")
 
-    def test_answers_are_cached_by_rounded_range_and_marked_cacheable(self):
+    def test_tile_answers_are_cached_and_marked_cacheable(self):
         from unittest import mock
         from utils import response_cache
         bodies, ttls = {}, {}
@@ -321,44 +361,56 @@ class SeriesSqlTests(unittest.TestCase):
         def get(key):
             return (bodies[key], ttls[key]) if key in bodies else None
 
+        day = dt.datetime(2026, 11, 1)
+        today = to_local_naive(dt.datetime.now(dt.timezone.utc).isoformat())
         with mock.patch.object(response_cache, "get", side_effect=get), \
                 mock.patch.object(response_cache, "put", side_effect=put):
-            # A range that ended over a day ago: stored for an hour, and browsers may keep it for a day.
-            r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
+            # A tile that ended over a day ago: stored for an hour, and browsers may keep it for 3 hours.
+            r = self.get(f"{tile_query(day, 600)}&group_type=Weather")
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")
             (key, body), = bodies.items()
             self.assertEqual(ttls[key], 3600)
-            # rounded inward to 10-min marks
-            self.assertEqual(key, cache_key(600, dt.datetime(2026, 11, 1, 0, 10), dt.datetime(2026, 11, 1, 0, 50),
+            start = tile_start(day, 600)
+            # the end rounded down to a 10-minute mark: the tile's last reading
+            self.assertEqual(key, cache_key(600, start, start + dt.timedelta(seconds=TILE_BUCKETS * 600 - 600),
                                             ["Weather"], {"st": None, "m": None, "k": None}))
             self.assertEqual(body, r.get_data())
-            self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])  # as unrounded
+            air = next(s for s in r.get_json()["series"] if s["measurement_type"] == "Air Temperature")
+            self.assertEqual(air["avg"], [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
 
-            # A request a few minutes apart is the same rounded range, answered from the cache, not the database.
+            # The same tile with its end on the next tile's start is the same key, answered from the cache.
             bodies[key], ttls[key] = b'{"cached": true}', 42
-            r = self.client.get("/api/series?start=2026-11-01T00:08:00&end=2026-11-01T00:51:00&group_type=Weather")
+            end = start + dt.timedelta(seconds=TILE_BUCKETS * 600)
+            r = self.get(f"start={start.isoformat()}&end={end.isoformat()}&bucket=600&group_type=Weather")
             self.assertEqual(r.get_json(), {"cached": True})
-            self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")
 
-            # A range that ended two hours ago: stored for 5 minutes; browsers get a minute at most, and no longer
-            # than the cached copy has left.
-            now = dt.datetime.now(dt.timezone.utc)
-            started, ended = ((now - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:00Z") for h in (5, 2))
+            # The tile holding now is still filling in: a minute, and no longer than the cached copy has left.
             bodies.clear()
-            r = self.client.get(f"/api/series?start={started}&end={ended}&group_type=Weather")
+            r = self.get(f"{tile_query(today, 600)}&group_type=Weather")
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=60")
             (key,) = bodies
-            self.assertEqual(ttls[key], 300)
+            self.assertEqual(ttls[key], 60)
             ttls[key] = 42
-            r = self.client.get(f"/api/series?start={started}&end={ended}&group_type=Weather")
+            r = self.get(f"{tile_query(today, 600)}&group_type=Weather")
             self.assertEqual(r.headers["Cache-Control"], "public, max-age=42")
 
             # The bucket and every filter are part of the key
             bodies.clear()
-            for q in ("", "&bucket=1800", "&series=Weather|22051538|Rain", "&station_id=22051538",
-                      "&measurement_type=Rain"):
-                self.client.get(f"/api/series?start=2026-11-01T00:00:00&end=2026-11-01T01:00:00&group_type=Weather{q}")
+            tile = tile_query(day, 600)
+            for q in (tile, tile_query(day, 1800), f"{tile}&series=Weather|22051538|Rain", f"{tile}&station_id=22051538",
+                      f"{tile}&measurement_type=Rain"):
+                self.assertEqual(self.get(f"{q}&group_type=Weather").status_code, 200, q)
             self.assertEqual(len(bodies), 5)
+
+            # A range without a bucket is answered but never stored: it can be any range, shifted a few minutes
+            # each time, so storing those would let anyone fill the cache.
+            bodies.clear()
+            r = self.client.get("/api/series?start=2026-11-01T00:03:00&end=2026-11-01T00:58:00&group_type=Weather")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.get_json()["series"][0]["avg"], [11.0, 12.0, 13.0, 14.0, 15.0])
+            self.assertEqual(r.headers["Cache-Control"], "public, max-age=10800")
+            self.assertEqual(bodies, {})
 
         # A range that runs to now: a minute only.
         now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -377,11 +429,12 @@ class SeriesSqlTests(unittest.TestCase):
         return self.client.get(f"/api/series?{query.replace('+', '%2B')}")
 
     def test_an_asked_bucket_is_used(self):
-        body = self.get("start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&group_type=Weather&bucket=1800").get_json()
+        day = dt.datetime(2026, 11, 1)
+        body = self.get(f"{tile_query(day, 1800)}&group_type=Weather").get_json()
         self.assertEqual((body["bucket_seconds"], body["aggregated"]), (1800, True))
         air = next(s for s in body["series"] if s["measurement_type"] == "Air Temperature")
         self.assertEqual((air["avg"], air["n"]), ([11.0, 14.0], [3, 3]))
-        body = self.get("start=2026-11-01T00:00:00&end=2026-11-02T00:00:00&group_type=Weather&bucket=600").get_json()
+        body = self.get(f"{tile_query(day, 600)}&group_type=Weather").get_json()
         self.assertEqual(body["bucket_seconds"], 600)
 
     def test_bucket_must_be_on_the_ladder_and_points_are_capped(self):
@@ -390,12 +443,15 @@ class SeriesSqlTests(unittest.TestCase):
             r = self.get(f"{base}&bucket={bad}")
             self.assertEqual(r.status_code, 400, bad)
             self.assertIn("bucket", r.get_json()["error"])
-        # 28 days of 10-minute buckets is 4,032 points per series: too many. 27 days (3,888) is allowed.
-        r = self.get("start=2026-10-01T00:00:00&end=2026-10-29T00:00:00&group_type=Weather&bucket=600")
+        # With a bucket, only whole tiles, at most MAX_TILES of them
+        day = dt.datetime(2026, 11, 1)
+        self.assertEqual(self.get(f"{tile_query(day, 600, MAX_TILES)}&group_type=Weather").status_code, 200)
+        r = self.get(f"{tile_query(day, 600, MAX_TILES + 1)}&group_type=Weather")
         self.assertEqual(r.status_code, 400)
-        self.assertIn("4000", r.get_json()["error"])
-        self.assertEqual(self.get("start=2026-10-01T00:00:00&end=2026-10-28T00:00:00&group_type=Weather"
-                                  "&bucket=600").status_code, 200)
+        self.assertIn("whole tiles", r.get_json()["error"])
+        r = self.get(f"{base}&bucket=600")  # a day: not a tile
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("whole tiles", r.get_json()["error"])
         # Without a bucket: a span so long that even daily buckets are too many (over ~11 years)
         r = self.get("start=2000-01-01T00:00:00&end=2026-01-01T00:00:00&group_type=Weather")
         self.assertEqual(r.status_code, 400)

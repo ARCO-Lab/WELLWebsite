@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  pickBucket, zoneOffsetMs, wallToUtc, pickedDaysRange, snapDown, snapUp, normalizeWindow, shiftWindow,
-  zoomOutWindow, zoomInWindow, detailRange, composePoints, bucketLabel, bucketSpanLabel, shortBucket, valueDecimals,
+  zoneOffsetMs, wallToUtc, pickedDaysRange, snapUp, bucketSpanLabel, shortBucket, valueDecimals, typicalCounts,
   isPartial, Lru, MIN_RANGE_MS, clampToNow, daysCovering, dataStart, torontoIso, parseIsoParam, windowFromSearch,
   searchWithWindow, hourStart,
 } from "../src/utils/chartWindow.ts";
+import { composeSeries, cutIntoTiles, fromWall, segmentsFor, tileAt, toWall } from "../src/lib/seriesTiles.ts";
 import {
   measurementColor, seriesType, compassLabel, panelsFor, WEATHER_PANELS, QUALITY_PANELS, seriesNote,
 } from "../src/utils/chartStyle.ts";
@@ -16,13 +16,22 @@ import {
 const H = 3600 * 1000;
 const D = 24 * H;
 
-test("pickBucket mirrors the backend ladder", () => {
-  assert.equal(pickBucket(D), 600); // 144 points
-  assert.equal(pickBucket(13 * D), 600); // 1,872 points
-  assert.equal(pickBucket(14 * D), 1800); // 2,016 at 10 min: too many
-  assert.equal(pickBucket(365 * D), 21600);
-  assert.equal(pickBucket(4000 * D), 86400); // capped at daily
-});
+// A bucket start on the local (wall-clock) grid
+const snapDown = (ms, bucketS) => fromWall(Math.floor(toWall(ms) / (bucketS * 1000)) * bucketS * 1000);
+
+// One series, as the charts compose it (lib/seriesTiles): cut into tiles, drawn at its bucket, partial buckets judged
+// by the series' own usual counts (typicalCounts)
+function composePoints(s, bucketS) {
+  const arr = (a) => (a ? Array.from(a, (v) => (v === null || v === undefined ? NaN : v)) : Array.from(s.t, () => NaN));
+  const full = { t: Array.from(s.t), avg: arr(s.avg), min: arr(s.min), max: arr(s.max), n: arr(s.n) };
+  const first = tileAt(full.t[0], bucketS), last = tileAt(full.t[full.t.length - 1], bucketS);
+  const tiles = cutIntoTiles(full, first, last, bucketS);
+  const typical = typicalCounts(s);
+  // A tile more on each side: these test series aren't on the wall-clock grid, so a bucket can straddle a tile edge
+  const span = [first - 1, ...tiles.keys(), last + 1];
+  return composeSeries(segmentsFor([{ bucketS, tiles: span }]), (b, i) => tiles.get(i), () => typical);
+}
+const xy = (pts) => pts.map((p) => [p.x, p.y]);
 
 test("Toronto offsets, including both sides of DST", () => {
   assert.equal(zoneOffsetMs(Date.UTC(2026, 0, 15, 12)), -5 * H); // EST
@@ -37,52 +46,11 @@ test("picked days are Toronto midnight to the next midnight, whatever the browse
   assert.equal(r.end, Date.UTC(2026, 3, 11, 4));
 });
 
-test("snapping follows the local grid, so daily buckets are local days", () => {
+test("snapping up follows the local grid, so daily buckets are local days", () => {
   const t = Date.UTC(2026, 3, 5, 15, 7); // 11:07 Toronto
-  assert.equal(snapDown(t, 86400), Date.UTC(2026, 3, 5, 4));
   assert.equal(snapUp(t, 86400), Date.UTC(2026, 3, 6, 4));
-  assert.equal(snapDown(t, 600), Date.UTC(2026, 3, 5, 15, 0));
   assert.equal(snapUp(t, 600), Date.UTC(2026, 3, 5, 15, 10));
-  assert.equal(snapDown(Date.UTC(2026, 3, 5, 15), 600), Date.UTC(2026, 3, 5, 15)); // already on the grid
-});
-
-test("windows: at least an hour, inside the range, null when they cover it", () => {
-  const picked = { start: 0, end: 10 * D };
-  const tiny = normalizeWindow({ start: 5 * D, end: 5 * D + 60_000 }, picked); // a one-minute drag
-  assert.equal(tiny.end - tiny.start, MIN_RANGE_MS);
-  assert.equal(normalizeWindow({ start: -D, end: 11 * D }, picked), null);
-  assert.deepEqual(normalizeWindow({ start: -D, end: D }, picked), { start: 0, end: 2 * D }); // pushed inside
-  assert.deepEqual(shiftWindow({ start: 2 * D, end: 4 * D }, picked, 1), { start: 3 * D, end: 5 * D });
-  assert.deepEqual(shiftWindow({ start: 0, end: 2 * D }, picked, -1), { start: 0, end: 2 * D }); // at the edge
-  assert.deepEqual(zoomOutWindow({ start: 4 * D, end: 6 * D }, picked), { start: 3 * D, end: 7 * D });
-  assert.equal(zoomOutWindow({ start: 2 * D, end: 8 * D }, picked), null); // back to the whole range
-  assert.deepEqual(zoomInWindow(picked, picked), { start: 2.5 * D, end: 7.5 * D }); // half, around the centre
-  assert.equal(zoomInWindow({ start: 0, end: H }, picked).end - zoomInWindow({ start: 0, end: H }, picked).start, MIN_RANGE_MS);
-});
-
-test("detail range: padded by half the width each side, clamped, snapped to the overview grid", () => {
-  const picked = pickedDaysRange(new Date(2026, 3, 1), new Date(2026, 3, 30));
-  const w = { start: Date.UTC(2026, 3, 10, 15, 7), end: Date.UTC(2026, 3, 10, 17, 7) }; // 2 h
-  const r = detailRange(w, picked, 3600);
-  assert.deepEqual(r, { start: Date.UTC(2026, 3, 10, 14), end: Date.UTC(2026, 3, 10, 19) });
-  const edge = detailRange({ start: picked.start, end: picked.start + 2 * D }, picked, 21600);
-  assert.equal(edge.start, picked.start);
-});
-
-const xy = (pts) => pts.map((p) => [p.x, p.y]);
-
-test("composing: overview outside the detail range, detail inside, no gap at the joins", () => {
-  const ob = 3600, db = 600;
-  const overview = { t: [0, 1, 2, 3, 4, 5].map((h) => h * H), avg: [0, 1, 2, 3, 4, 5] };
-  const detailT = [];
-  for (let t = 2 * H; t < 4 * H; t += 600_000) detailT.push(t);
-  const detail = { values: { t: detailT, avg: detailT.map(() => 9) }, bucketS: db, range: { start: 2 * H, end: 4 * H } };
-  const pts = xy(composePoints(overview, ob, detail));
-  // hourly buckets are drawn at their middle (half past), raw 10-minute readings at their own time
-  assert.deepEqual(pts.slice(0, 2), [[H / 2, 0], [1.5 * H, 1]]);
-  assert.deepEqual(pts.filter(([, v]) => v === 9).map(([x]) => x), detailT);
-  assert.deepEqual(pts.slice(-2), [[4.5 * H, 4], [5.5 * H, 5]]);
-  assert.ok(pts.every(([, v]) => v !== null), "no break where detail meets overview");
+  assert.equal(snapUp(Date.UTC(2026, 3, 5, 15), 600), Date.UTC(2026, 3, 5, 15)); // already on the grid
 });
 
 test("gaps longer than 2.5 buckets become a null, shorter ones don't", () => {
@@ -90,12 +58,6 @@ test("gaps longer than 2.5 buckets become a null, shorter ones don't", () => {
   const pts = xy(composePoints(s, 600));
   assert.equal(pts.filter(([, v]) => v === null).length, 1); // only the 6-bucket gap (a night without power)
   assert.deepEqual(pts[4], [1_200_000 + 2 * 600_000 + 600_000, null]);
-});
-
-test("a series missing from the detail range shows a break, not a line across it", () => {
-  const overview = { t: [0, H, 2 * H, 3 * H], avg: [1, 1, 1, 1] };
-  const pts = composePoints(overview, 3600, { values: undefined, bucketS: 600, range: { start: H, end: 3 * H } });
-  assert.deepEqual(pts.map((p) => p.y), [1, null, 1]);
 });
 
 test("typed arrays as cached: NaN is a missing value, drawn as a break", () => {
@@ -200,12 +162,6 @@ test("bucket spans in Toronto wall-clock time", () => {
   assert.equal(valueDecimals("something new"), 2);
 });
 
-test("labels", () => {
-  assert.equal(bucketLabel(600, false), "10-minute readings");
-  assert.equal(bucketLabel(43200, true), "12-hour averages");
-  assert.equal(bucketLabel(86400, true), "daily averages");
-});
-
 test("LRU keeps the most recently used", () => {
   const c = new Lru(2);
   c.set("a", 1);
@@ -264,6 +220,9 @@ test("links: Toronto ISO times out, and only sensible ones back in", () => {
   assert.equal(searchWithWindow("?tab=x", { start: Date.UTC(2026, 10, 10, 19, 20), end: Date.UTC(2026, 10, 10, 23) }),
     "?tab=x&from=2026-11-10T14%3A20-05%3A00&to=2026-11-10T18%3A00-05%3A00");
   assert.equal(searchWithWindow("?from=a&to=b", null), "");
+  // Other parameters keep their commas, written the way utils/selectionLink writes them
+  assert.equal(searchWithWindow("?groups=gauges,weather&from=a&to=b", null), "?groups=gauges,weather");
+  assert.equal(searchWithWindow("?groups=gauges%2Cweather", null), "?groups=gauges,weather");
   const back = searchWithWindow("", { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
   assert.deepEqual(windowFromSearch(back, now), { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
 });
@@ -272,7 +231,7 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Dew Point"));
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Soil Temperature"));
   assert.equal(measurementColor("Something new"), measurementColor("Something new")); // unknown: stable too
-  assert.equal(seriesType("sum"), "column");
+  assert.equal(seriesType("sum"), "area"); // stepped
   assert.equal(seriesType("vector_mean"), "scatter");
   assert.equal(seriesType("mean"), "line");
   assert.equal(compassLabel(225), "225° (SW)");
@@ -288,4 +247,39 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
   assert.equal(seriesNote("Quality", "TSS").hidden, true);
   assert.match(seriesNote("Quality", "ODO").note, /Jun 2026/);
   assert.equal(seriesNote("Weather", "Rain"), undefined);
+});
+
+// ---- one chart per card: its series and axes ----
+import { cardSeries } from "../src/utils/cardSeries.ts";
+
+test("cardSeries: every selected measurement in one chart, one y-axis per unit, in a fixed order", () => {
+  const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }],
+    ["Wind Speed", "Rainfall", "Rain", "Air Temperature", "Gust Speed", "Soil Temperature", "All Weather"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Air Temperature", "Soil Temperature", "Rain", "Wind Speed", "Gust Speed"]);
+  assert.deepEqual(axes.map((a) => a.unit), ["°C", "mm", "m/s"]);
+  assert.deepEqual(series.map((s) => s.axis), [0, 0, 1, 2, 2]);
+  assert.equal(series[0].key, "Weather|22051538|Air Temperature");
+  assert.equal(series[0].name, "Air Temperature (°C)"); // what the e2e tooltip check looks for
+  assert.equal(series.find((s) => s.measurement === "Rain").agg, "sum");
+});
+
+test("cardSeries: loggers share one chart, a colour per logger, temperature dashed, two axes", () => {
+  const { series, axes } = cardSeries("Logger", [{ id: "2577531", name: "Logger 1" }, { id: "2577534", name: "Logger 4" }],
+    ["Water Temperature", "Water Surface Elevation", "All Loggers"]);
+  assert.deepEqual(series.map((s) => s.name), [
+    "Logger 1 · Water Surface Elevation (m asl)", "Logger 1 · Water Temperature (°C)",
+    "Logger 4 · Water Surface Elevation (m asl)", "Logger 4 · Water Temperature (°C)",
+  ]);
+  assert.equal(series[0].color, series[1].color);
+  assert.notEqual(series[0].color, series[2].color);
+  assert.deepEqual(series.map((s) => s.dash ?? ""), ["", "ShortDash", "", "ShortDash"]);
+  assert.deepEqual(axes, [{ unit: "m asl", measurements: ["Water Surface Elevation"] }, { unit: "°C", measurements: ["Water Temperature"] }]);
+});
+
+test("cardSeries: faulty sensors are noted, TSS starts hidden; nothing selected is nothing drawn", () => {
+  const { series } = cardSeries("Quality", [{ id: "4501", name: "Water quality" }], ["TSS", "ODO", "Conductivity"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Conductivity", "ODO", "TSS"]);
+  assert.equal(series[2].hidden, true);
+  assert.match(series[1].note, /Jun 2026/);
+  assert.deepEqual(cardSeries("Logger", [{ id: "1", name: "Logger 1" }], []).series, []);
 });

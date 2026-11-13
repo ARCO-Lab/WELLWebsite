@@ -87,6 +87,25 @@ class JobLimitTests(AppTestCase):
         self.assertEqual(self.delay.call_count, 2)
         self.assertEqual(self.queue("198.51.100.8").status_code, 202)  # someone else is still served
 
+    def test_a_job_that_cant_be_queued_fails_at_once_and_frees_its_place(self):
+        from kombu.exceptions import OperationalError
+        self.delay.side_effect = OperationalError("Error 111 connecting to redis:6379. Connection refused.")
+        r = self.queue()
+        self.assertEqual(r.status_code, 503)
+        body = r.get_json()
+        self.assertIn("unavailable right now", body["error"])
+        self.assertNotIn("redis", body["error"].lower())   # no internals in what the visitor sees
+        job = self.get(body["job_id"])
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error_message, body["error"])
+        self.assertIsNotNone(job.completed_at)
+        # Failed jobs don't count against the limits: once the queue is back, the same visitor gets two jobs again
+        self.queue()
+        self.delay.side_effect = None
+        self.assertEqual(self.queue().status_code, 202)
+        self.assertEqual(self.queue().status_code, 202)
+        self.assertEqual(self.queue().status_code, 429)
+
     def test_the_last_forwarded_hop_identifies_the_visitor(self):
         # The browser can put anything before the address the proxy added: changing it doesn't make a new visitor.
         self.assertEqual(self.queue("10.0.0.1, 198.51.100.7").status_code, 202)
@@ -284,7 +303,7 @@ class StreamCleanupTests(AppTestCase):
             if len(calls) == 2:  # the header is call 1
                 raise OSError("disk full")
 
-        with unittest.mock.patch.object(export_service._SafeCsvWriter, "writerow",
+        with unittest.mock.patch.object(export_service.SafeCsvWriter, "writerow",
                                         side_effect=lambda row: fail_on_a_data_row(row)):
             error = None
             try:

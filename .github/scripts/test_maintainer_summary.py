@@ -217,6 +217,21 @@ class GatherTests(unittest.TestCase):
         self.assertEqual(["collecting inputs: sentry_issues: HTTP 500"], errors)
         self.assertEqual(["no Sentry token"], notes)
 
+    def test_refused_branches_are_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "publish.json")
+            with open(path, "w") as f:
+                json.dump({"published": [{"branch": "maint/a", "action": "opened as a draft"}],
+                           "refused": [{"branch": "maint/b", "reason": "changes 30 files (at most 20)"}],
+                           "errors": ["maint/c: HTTP 500"]}, f)
+            _, _, errors, notes = ms.gather(env(PUBLISH_FILE=path), FakeTransport(routes([])))
+            _, _, missing, _ = ms.gather(env(PUBLISH_FILE=os.path.join(tmp, "none.json")),
+                                         FakeTransport(routes([])))
+        self.assertEqual(["publishing: maint/c: HTTP 500",
+                          "not published: maint/b: changes 30 files (at most 20)"], errors)
+        self.assertEqual(["maint/a: opened as a draft"], notes)
+        self.assertEqual(["the publish step left no result (did it run?)"], missing)
+
     def test_github_error_is_reported_not_raised(self):
         transport = FakeTransport({("GET", f"/repos/{REPO}/pulls"): (502, {"message": "Bad gateway"})})
         reviewed, _, errors, _ = ms.gather(env(), transport)

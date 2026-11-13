@@ -4,9 +4,11 @@
 #
 # Each problem is an incident in the alert_incidents table, so it is emailed once when it starts, again at most every
 # ALERT_REMINDER_HOURS (default 24) while it lasts, and once when it clears, with how long it lasted. Everything one
-# run has to say goes in a single email. Emails go to ALERT_EMAILS through the digest's SMTP settings (SMTP_HOST,
-# SMTP_PORT, ...); without them the incidents are still recorded (and shown by /health/data and the daily digest),
-# and the email is only printed. It reads the database only: no vendor API requests.
+# run has to say goes in a single email (Markdown text plus the same content as HTML), which ends with every incident
+# still open. A recovery of a kind in ALERT_QUIET_KINDS (default SUSPECT_VALUES) sends no email of its own: it goes
+# in the next email that is sent anyway, and the daily digest lists it. Emails go to ALERT_EMAILS through the
+# digest's SMTP settings (SMTP_HOST, SMTP_PORT, ...); without them the incidents are still recorded (and shown by
+# /health/data and the daily digest), and the email is only printed. It reads the database only: no vendor API requests.
 #
 #   python scripts/check_alerts.py            check, record, email
 #   python scripts/check_alerts.py --dry-run  check and print what would be emailed; changes nothing
@@ -21,8 +23,8 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
 from utils.alerts import (  # noqa: E402
-    RECOVERY_WINDOW, Plan, build_email, freshness_env, is_muted, plan, settings_from_env, stale_conditions,
-    suspect_conditions, vendor_conditions,
+    RECOVERY_WINDOW, Plan, build_email, freshness_env, is_muted, is_quiet, plan, settings_from_env,
+    stale_conditions, suspect_conditions, vendor_conditions,
 )
 from utils.digest import parse_alert_emails, smtp_settings  # noqa: E402
 from utils.monitoring import assess_freshness  # noqa: E402
@@ -63,9 +65,9 @@ def find_conditions(now, env, settings):
     return conditions, held
 
 
-def send_email(settings, recipients, subject, body):
+def send_email(settings, recipients, subject, body, html=None):
     from daily_digest import send_email as send   # the digest's SMTP code: TLS rules and all
-    send(settings, recipients, subject, body)
+    send(settings, recipients, subject, body, html)
 
 
 # What was last written to the log in place of an email while SMTP is off, so an unchanged email isn't written out
@@ -73,8 +75,9 @@ def send_email(settings, recipients, subject, body):
 _last_unsent = {"signature": None}
 
 
-def deliver(subject, body, env, send, log, signature=None):
-    """Email it. "sent", "off" (SMTP not set up: logged instead, in full only when `signature` changed) or "failed"."""
+def deliver(subject, body, env, send, log, signature=None, html=None):
+    """Email it (`body` the text part, `html` the HTML part; the log gets the text). "sent", "off" (SMTP not set
+    up: logged instead, in full only when `signature` changed) or "failed"."""
     recipients, invalid = parse_alert_emails(env.get("ALERT_EMAILS"))
     if invalid:
         log(f"[WARN] ALERT_EMAILS: ignoring {len(invalid)} entries that aren't email addresses")
@@ -96,7 +99,7 @@ def deliver(subject, body, env, send, log, signature=None):
             f"Subject: {subject}\n\n{body}")
         return "failed"
     try:
-        send(smtp, recipients, subject, body)
+        send(smtp, recipients, subject, body, html)
     except Exception as e:   # the type and message only; smtplib errors don't include the password
         log(f"[ERROR] Emailing the alerts failed: {type(e).__name__}: {e}; trying again next run. The email was:\n"
             f"Subject: {subject}\n\n{body}")
@@ -153,15 +156,19 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
         incident.resolved_at, incident.close_reason, incident.present_since = now, "cleared", None
     for incident in actions.supersede:
         incident.resolved_at, incident.close_reason, incident.present_since = now, "superseded", None
-    open_count = len(current) + len(actions.reopen) + len(new_rows) - len(actions.resolve) - len(actions.supersede)
-    email = build_email(new, actions.remind, actions.recovered, open_count, now, settings, actions.back_again)
+    closed = {id(i) for i in actions.resolve + actions.supersede}
+    still_open = [i for i in current if id(i) not in closed] + list(actions.reopen) + new_rows
+    open_count = len(still_open)
+    email = build_email(new, actions.remind, actions.recovered, still_open, now, settings, actions.back_again)
+    # Quiet recoveries that wait for the next email, since nothing else this run is worth one.
+    waiting = 0 if email else sum(is_quiet(i, settings) for i in actions.recovered)
     summary = {"open": open_count, "new": len(new), "back_again": len(actions.back_again),
                "reminders": len(actions.remind),
-               "recovered": len(actions.recovered), "email": None}
+               "recovered": len(actions.recovered), "quiet_waiting": waiting, "email": None}
     if dry_run:
         db.session.rollback()
         if email:
-            log(f"[INFO] --dry-run; the alert email would be:\nSubject: {email[0]}\n\n{email[1]}")
+            log(f"[INFO] --dry-run; the alert email would be:\nSubject: {email.subject}\n\n{email.text}")
         summary["email"] = "dry-run" if email else None
         return summary
 
@@ -172,7 +179,7 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
                                  (("new", new), ("back", actions.back_again), ("remind", actions.remind),
                                   ("recovered", actions.recovered))
                                  for i in items))
-        summary["email"] = deliver(email[0], email[1], env, send, log, signature)
+        summary["email"] = deliver(email.subject, email.text, env, send, log, signature, email.html)
         if summary["email"] == "sent":
             for incident in new + actions.remind:
                 incident.last_notified_at = now
@@ -188,7 +195,9 @@ def run(now=None, env=None, send=send_email, log=print, dry_run=False):
             db.session.commit()
     log(f"[INFO] Alert check: {open_count} open, {summary['new']} new, {summary['back_again']} back again, "
         f"{summary['reminders']} reminders, "
-        f"{summary['recovered']} recovered; email: {summary['email'] or 'nothing to send'}")
+        f"{summary['recovered']} recovered"
+        + (f" ({waiting} low-priority, kept for the next email or the digest)" if waiting else "")
+        + f"; email: {summary['email'] or 'nothing to send'}")
     return summary
 
 

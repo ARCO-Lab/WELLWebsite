@@ -44,6 +44,13 @@ export function fromWall(wall: number): number {
   return toWall(utc - 3_600_000) === wall ? utc - 3_600_000 : utc;
 }
 
+/** The instant /api/series labels a wall-clock bucket with. In the hour the clocks repeat (fall back), a bucket holds
+ *  the readings of both occurrences and PostgreSQL labels it with the second, standard-time one. */
+export function bucketInstant(wall: number): number {
+  const first = fromWall(wall);
+  return toWall(first + 3_600_000) === wall ? first + 3_600_000 : first;
+}
+
 /** The bucket for a chart showing `spanMs` on a plot `plotWidthPx` wide: the smallest on the ladder that gives
  *  about `pointsPerPx` points per pixel or fewer (at least 150 points, at most 3,000). */
 export function bucketFor(spanMs: number, plotWidthPx: number, pointsPerPx = POINTS_PER_PX): number {
@@ -134,6 +141,62 @@ export function cutIntoTiles(s: Pick<ApiSeries, "t" | "avg" | "min" | "max" | "n
     });
   }
   return out;
+}
+
+// ---- Coarser tiles from finer ones ----
+
+/** The tiles a request may cover (the API's limit: 1 to MAX_TILES whole tiles per request). */
+export const MAX_TILES = 8;
+
+/** The finest bucket whose whole tiles over `r` fit in one request: what a chart asks for first, the whole range at
+ *  once. Every coarser bucket is then worked out from it (coarsen) rather than asked for. Two weeks or so of
+ *  10-minute readings fit; all of the history (since 2025) is at 6 hours. */
+export function baseBucket(r: Range, maxTiles = MAX_TILES): number {
+  for (const b of LADDER) if (tilesFor(r, b).length <= maxTiles) return b;
+  return LADDER[LADDER.length - 1];
+}
+
+/** One tile at `toBucketS` from the consecutive finer tiles that make it up (every size on the ladder divides the
+ *  larger ones, on the same wall clock, so buckets nest), aggregated as /api/series does: means weighted by the
+ *  readings in each bucket, totals (rain) summed, the lowest of the minimums and the highest of the maximums, counts
+ *  added. Wind direction is the mean of the finer buckets' directions as unit vectors, weighted by their readings:
+ *  close to, but not exactly, the mean over every reading (the finer buckets don't say how much their readings
+ *  agreed). */
+export function coarsen(parts: TileSeries[], toBucketS: number, agg: "mean" | "sum" | "vector_mean"): TileSeries {
+  const size = toBucketS * 1000;
+  const t: number[] = [], avg: number[] = [], min: number[] = [], max: number[] = [], n: number[] = [];
+  let group = NaN, sw = 0, sv = 0, sx = 0, sy = 0, seen = 0, lo = Infinity, hi = -Infinity, cnt = 0, counted = false;
+  const flush = () => {
+    if (Number.isNaN(group)) return;
+    t.push(bucketInstant(group * size));
+    avg.push(!seen ? NaN : agg === "sum" ? sv : agg === "vector_mean"
+      ? ((Math.atan2(sy, sx) * 180) / Math.PI + 360) % 360 : sv / sw);
+    min.push(lo === Infinity ? NaN : lo);
+    max.push(hi === -Infinity ? NaN : hi);
+    n.push(counted ? cnt : NaN);
+  };
+  for (const part of parts) {
+    for (let j = 0; j < part.t.length; j++) {
+      const g = Math.floor(toWall(part.t[j]) / size);
+      if (g !== group) {
+        flush();
+        group = g; sw = 0; sv = 0; sx = 0; sy = 0; seen = 0; lo = Infinity; hi = -Infinity; cnt = 0; counted = false;
+      }
+      const v = part.avg[j], k = part.n[j], w = Number.isNaN(k) ? 1 : k;
+      if (!Number.isNaN(k)) { cnt += k; counted = true; }
+      if (!Number.isNaN(part.min[j])) lo = Math.min(lo, part.min[j]);
+      if (!Number.isNaN(part.max[j])) hi = Math.max(hi, part.max[j]);
+      if (Number.isNaN(v)) continue;
+      seen++;
+      if (agg === "sum") sv += v;
+      else if (agg === "vector_mean") {
+        sx += w * Math.cos((v * Math.PI) / 180);
+        sy += w * Math.sin((v * Math.PI) / 180);
+      } else { sv += w * v; sw += w; }
+    }
+  }
+  flush();
+  return { t: Float64Array.from(t), avg: Float64Array.from(avg), min: Float64Array.from(min), max: Float64Array.from(max), n: Float64Array.from(n) };
 }
 
 // ---- Composing a chart's points from the tiles that are loaded ----
@@ -247,4 +310,24 @@ export function coarsestIn(segments: Segment[], window: Range): number | null {
   let b: number | null = null;
   for (const g of segments) if (g.wallEnd > ws && g.wallStart < we) b = Math.max(b ?? 0, g.bucketS);
   return b;
+}
+
+/** The window a chart opens on: where its series have readings within the picked range. `first` and `last` are the
+ *  starts of the first and last buckets (of `bucketS`) holding a reading, or null when there are none (then the whole
+ *  range). The window runs from the first bucket's start to the last bucket's end (on the wall clock, so a daily
+ *  bucket on a day the clocks change ends at the next midnight), inside the range, and at least `minSpanMs` wide
+ *  (widened around the readings, still inside the range). */
+export function fitWindow(range: Range, first: number | null, last: number | null, bucketS: number, minSpanMs: number): Range {
+  if (first === null || last === null) return { ...range };
+  const end = fromWall(toWall(last) + bucketS * 1000);
+  let start = Math.max(range.start, Math.min(first, last));
+  let stop = Math.min(range.end, Math.max(end, start));
+  const total = range.end - range.start;
+  const want = Math.min(minSpanMs, total);
+  if (stop - start < want) {
+    const mid = (start + stop) / 2;
+    start = Math.min(Math.max(mid - want / 2, range.start), range.end - want);
+    stop = start + want;
+  }
+  return { start, end: stop };
 }

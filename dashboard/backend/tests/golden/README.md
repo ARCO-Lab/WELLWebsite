@@ -12,14 +12,15 @@ people who use the files. If it isn't, fix the code.
 
 | File | Produced by | What it pins |
 |---|---|---|
-| `sensor_export_all_groups.csv` | Download Data on the dashboard (sensor tab, every group) via `/api/exports/sync` or an export job; `api/services/exports.py` | The layout `ID, Timestamp`, then Weather, Quality and Logger blocks (`Group` plus one column per metric, a blank column between blocks, one `Sensor` block per logger: the five configured ones, then any other seen). Download name `WELLWestCampus_WaterLogger_WaterQuality_WeatherStation_20261031_20261101.csv` |
+| `sensor_export_all_groups.csv` | Download Data on the dashboard (sensor tab, every group) via `/api/exports/sync` or an export job; `api/services/exports.py` | The layout `ID, Timestamp (America/Toronto)`, then Weather, Quality and Logger blocks (`Group` plus one column per metric, a blank column between blocks, one `Sensor` block per logger: the five configured ones, then any other seen). Download name `WELLWestCampus_WaterLogger_WaterQuality_WeatherStation_20261031_20261101.csv` |
 | `sensor_export_two_loggers.csv` | The same, with two loggers and the metrics picked per group | The picked order of loggers and metrics. Name `WELLWestCampus_WaterLogger_20261101_20261101.csv` |
-| `sampling_export.csv` | Download Data on the Ancaster Watershed tab (sampling) | One reading per row: `domain, recorded_at, group_type, station_id, creek_id, site_id, measurement_type, value, unit`. Name `well_export_sampling_20261031_20261102.csv` |
-| `monthly/WELLWestCampus_Oct2026.csv`, `monthly/WELLWestCampus_Nov2026.csv` | The monthly file sent to Borealis and SharePoint (`scripts/upload_data.py`, `exported_month()`) | The dashboard layout with `Latitude, Longitude` after each `Group` and `Sensor`, only the metrics and loggers seen that month, and the month as a half-open range |
+| `sampling_export.csv` | Download Data on the Ancaster Watershed tab (sampling) | One reading per row: `domain, recorded_at (America/Toronto), group_type, station_id, creek_id, site_id, measurement_type, value, unit`. Name `well_export_sampling_20261031_20261102.csv` |
+| `monthly/WELLWestCampus_Oct2026.csv`, `monthly/WELLWestCampus_Nov2026.csv` | The monthly file sent to Borealis and SharePoint (`scripts/upload_data.py`, `exported_month()`) | The dashboard layout with `Latitude, Longitude` after each `Group` and `Sensor`, only the metrics and loggers seen that month, and the month as a half-open range. The same cell rules as the dashboard download (empty for a missing value, `'` before formula-like text) |
 | `sampling_upload.csv` | Input, not output: a sampling file as a researcher would upload it (`docs/sampling-csv-format.md`) | |
 | `sampling_upload_rows.json` | `utils/sampling_csv.validate_csv()` on that file | The rows it stores: site and creek ids, parameter and unit names after aliases, values, local times |
-| `samples_ancaster_coldwater.json` | `/api/samples` for two creeks | The fields of each reading |
+| `samples_ancaster_coldwater.json` | `/api/samples` for two creeks | The fields of each reading, and their order (time, site, parameter) |
 | `recent.json` | `/api/recent` | The latest reading of each parameter |
+| `emails/*.txt`, `emails/*.html` | The alert emails (`utils/alerts.py`) and the daily digest (`utils/digest.py`), `tests/test_alert_emails.py` | The subject and both parts (Markdown text, HTML) of each kind of email and of a mixed one. Not a file format, but what people read: review the diff as text and, for the HTML, in a browser |
 
 The fixture readings (in `test_golden_csv.py`) cover several groups and stations, missing readings and a missing
 group, a stored NULL, a unit that changes partway (Turbidity FNU, then NTU: the latest unit names the column), a
@@ -28,7 +29,8 @@ writes floats, unrounded), the hour repeated when clocks fall back on 2026-11-01
 at midnight on November 1 is in November's file only), and both ends of a download's date range: the dashboard
 sends the picked days' bounds in UTC, so readings at 01:00 on the first day are in the file, and readings at 03:00
 the day after the last (sensor) or 04:30 (sampling), before the end bound read as wall-clock time, are not. Times
-are America/Toronto wall clock time with no offset, as stored.
+are America/Toronto wall clock time with no offset, as stored; the time column's header names the zone
+(`Timestamp (America/Toronto)`, `recorded_at (America/Toronto)`).
 
 For the fall-back hour the fixture holds a single naive `01:30` row per sensor and metric, which is all ingestion's
 unique key (station, metric, naive time) can store of that hour, so the files show it once. How ingestion collapses
@@ -38,17 +40,16 @@ No value is a vendor "no reading" sentinel such as `-100000`: these files pin th
 filtered.
 
 Text cells starting with `=`, `+`, `-`, `@`, a tab or a carriage return get a leading `'` in the dashboard
-downloads, so a spreadsheet shows them as text instead of running them; the fixtures include such a measurement
-name and sampling site.
+downloads and the monthly file, so a spreadsheet shows them as text instead of running them; the fixtures include
+such a measurement name and sampling site. A missing value (a stored NULL or NaN) is an empty field in every file.
 
-Three things are pinned as they are today, intended or not:
+Rows that share a time come in a fixed order: sampling rows by site number, then parameter (text compared byte for
+byte, so the same on SQLite and PostgreSQL whatever its locale; `db/ordering.py`), in the sampling download,
+`/api/samples` and `/api/recent`. Sensor readings of one time are read by station, then metric, so a cell two
+stations could fill is always filled the same way.
 
-- The monthly file writes a stored NULL value as `nan` (the dashboard download leaves the cell empty), and it
-  doesn't add the `'` to formula-like text. The monthly fixture has no formula-like text, so only the `nan` shows.
-- Readings with the same time (one site's parameters, or sites sampled together) come out of the sampling download
-  and `/api/samples` in no defined order, which differs between SQLite and PostgreSQL. The tests sort the rows of
-  each timestamp before comparing, and the golden files are stored that way. The sensor files have one row per time,
-  so their order is exact.
+One thing is pinned as it is today, intended or not:
+
 - The monthly file's headers keep the unit as stored, `Water Surface Elevation: m asl`, while the dashboard
   download drops ` asl` (`Water Surface Elevation: m`).
 
@@ -57,7 +58,7 @@ Three things are pinned as they are today, intended or not:
 Only when a format change is intended. From `dashboard/backend`, with the backend's requirements installed:
 
 ```sh
-UPDATE_GOLDEN=1 python -m unittest tests.test_golden_csv
+UPDATE_GOLDEN=1 python -m unittest tests.test_golden_csv tests.test_alert_emails
 git diff tests/golden
 ```
 

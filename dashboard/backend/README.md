@@ -73,8 +73,8 @@ Routes are in `app/api/routes/`:
 - `/api/series`: the sensor charts (below)
 - `/api/windrose`: the wind rose, counted in PostgreSQL: how often the wind blew from each of 16 directions at each
   speed class, for a range (details in `app/api/routes/windrose.py`)
-- `/api/data`: raw readings for a range; capped by `DATA_MAX_ROWS` (413 beyond it). The dashboard page no longer
-  calls it, but its API route still passes it through
+- `/api/data`: raw readings for a range of at most 31 days (400 beyond it), capped by `DATA_MAX_ROWS` (413 beyond
+  it). The dashboard page no longer calls it, but its API route still passes it through
 - `/api/latest`: the newest reading of every series (the Latest Data panel)
 - `/api/samples` and `/api/recent`: creek sampling results, and the newest of each measurement;
   `/api/samples/template.csv` (the dashboard's `/api/sampling-template`) is the sampling CSV template
@@ -88,21 +88,33 @@ Routes are in `app/api/routes/`:
 (nothing is precomputed): about 2,000 points per series (raw 10-minute readings up to ~2 weeks, coarser buckets beyond;
 ranges longer than ~5.5 years are capped at daily buckets, so they get more), using an index on (sensor group, time).
 A chart can also ask for one series at a fixed bucket size (`bucket=`, `series=`): the dashboard loads each chart in
-fixed tiles of a few hundred buckets, and a request for more than `MAX_BUCKETS` buckets per series gets a 400.
+fixed tiles, and a request for more than `MAX_BUCKETS` buckets per series gets a 400.
+
+The contract for a request with `bucket=` (what `dashboard/frontend/src/lib/seriesTiles.ts` sends): it asks for whole
+tiles. A tile is 360 buckets (`TILE_BUCKETS`), and tiles start at multiples of their length counted on Toronto's wall
+clock from 1970-01-01T00:00 (for 10-minute buckets, every 2.5 days: 2026-09-26T12:00, 2026-09-29T00:00, ...).
+`start` must be a tile's start and `end` a later tile's start or one second before it, as times without an offset,
+and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start. Only
+these tile requests are kept in the Redis cache: there are only so many tiles, so asking for ranges shifted a few
+minutes at a time can't fill Redis. Requests without `bucket=` take any range and are computed every time. A change to
+the dashboard's tile size or batch size must change `TILE_BUCKETS` or `MAX_TILES` in `app/api/routes/series.py`
+with it.
 Times with an offset (`...Z`) are real instants, times without one are Toronto local time. Each series has an `agg`
 field saying what its `avg` array holds: `mean` for most measurements, `sum` for Rain (the bucket total; `min`/`max`
 stay the smallest and largest single reading), and `vector_mean` for Wind Direction (350° and 10° average to 0°;
 `min`/`max` are null, since a linear min/max of angles means nothing). Details in `app/api/routes/series.py`.
 
-**Raw readings.** `DATA_MAX_ROWS` (default `300000`, about 90 days of every sensor group, ~50 MB of JSON) is the most
-readings one `/api/data` request may return (the charts use `/api/series` and the wind rose `/api/windrose`); a
-larger range gets a 413 asking the user to narrow it or use Download. It is read once by each
+**Raw readings.** `/api/data` refuses a range longer than 31 days with a 400 before counting anything, so it can't
+be made to count the whole history. `DATA_MAX_ROWS` (default `100000`, about a month of every sensor group, ~17 MB
+of JSON) is the most readings one request may return (the charts use `/api/series` and the wind rose
+`/api/windrose`); a larger range gets a 413 asking the user to narrow it or use Download. It is read once by each
 gunicorn worker when it starts. An empty value means the default; any other value that isn't a positive whole number
 logs a warning and uses the default. The cap matters because the backend can't tell when a browser gives up: the
 Next.js proxy stops waiting, but the backend thread stays busy until the query and JSON encoding finish.
 
-**Origins.** Flask accepts requests from any origin (`CORS(app)` in `server.py`); what keeps it private is that it has
-no public port, so only the dashboard container reaches it.
+**Origins.** Flask sends no CORS headers, so no page on another site may read its answers: browsers never call it
+directly (it has no public port; the dashboard's API routes call it from the server). The dashboard's API routes also
+limit how many requests each address may make (see the [dashboard README](../frontend/README.md#rate-limits-and-security-headers)).
 
 ### How the API stays responsive under load
 
@@ -113,7 +125,7 @@ not in `app/.env`, which they take precedence over):
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` keeps answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request while visitors a few minutes apart share an answer. If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (tile requests only, see above) and `/api/windrose` keep answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Answers over 3 MB aren't stored (the largest tile request the dashboard makes is about 2.2 MB). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
 `/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public,
 max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that
@@ -156,8 +168,9 @@ still going:
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of
 missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their
-headers explain how). The only cron job is the optional `deploy.sh --auto` line
-([docs/deploying.md](../../docs/deploying.md)).
+headers explain how). The only cron jobs are the optional `deploy.sh --auto` line
+([docs/deploying.md](../../docs/deploying.md)) and the WordPress backup
+([wordpress/README.md](../../wordpress/README.md#backups)).
 
 ## Exports
 
@@ -166,6 +179,18 @@ larger one is queued in Redis as an export job and built by the `export_worker` 
 the job and then downloads the file, which stays in the `exports_data` volume for `EXPORT_FILE_TTL_MINUTES`. The
 queue's limits (`EXPORT_MAX_ROWS`, `EXPORT_MAX_ACTIVE_JOBS`, `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` and the time and
 memory limits) are in [docs/configuration.md](../../docs/configuration.md#dashboardbackendappenv-backend-worker-export-worker).
+
+The exports share the VM's disk with the database, so three more limits keep them from filling it:
+
+- **Free space.** An export that would leave less than `EXPORT_MIN_FREE_MB` (default 2048) free on the exports disk,
+  counting its estimated size, is refused with a 507, both when it is asked for and again when the worker starts it.
+- **Jobs per hour.** Each visitor (by IP address) may start `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` (default 6) jobs
+  an hour, finished and failed ones included (429 with `Retry-After` beyond that).
+- **Reuse.** A request for exactly the same export as a ready job (same normalised filters) gets that job back (200,
+  `"reused": true`) instead of a new one, when its file has at least 10 minutes left and its data can't have changed:
+  the range ended a day before the job was made, or the job finished in the last 10 minutes.
+
+A body that isn't a JSON object, or start/end that aren't ISO date strings, gets a 400.
 The file layouts are a public format, pinned by the [golden files](tests/golden/README.md).
 
 ## Off-VM copies: Borealis and SharePoint
@@ -186,6 +211,31 @@ Borealis also carries data the other way. Creek **sampling** results are uploade
 ([how to upload](app/scripts/README.md)), and the weekly download (`scripts/download_data.py`, Sundays 00:00 by the
 container clock, UTC) checks each new file against [the sampling CSV format](../../docs/sampling-csv-format.md) and
 imports it into the Ancaster Watershed tab.
+
+### The monthly file's format
+
+`WELLWestCampus_<Mon><YYYY>.csv` is UTF-8 CSV with one row per time a reading was taken, in time order. The
+[golden files](tests/golden/README.md) pin it byte for byte.
+
+- **Columns**, left to right: `ID` (the row number), `Timestamp (America/Toronto)`, then a Weather block (`Group`,
+  `Latitude`, `Longitude`, then one column per measurement), a blank column, a Quality block laid out the same way,
+  a blank column, and a Logger block: `Group`, then for each logger `Sensor`, `Latitude`, `Longitude` and one column
+  per measurement. A measurement's header is `<name>: <unit>`, with the unit of its last reading that month. A file
+  has only the blocks, measurements and loggers that have readings that month; measurements are sorted by name and
+  loggers by id.
+- **Times** are local wall-clock time at the site, America/Toronto (EST or EDT, whichever was in effect), written as
+  ISO 8601 without an offset, e.g. `2026-10-01T00:10:00`; the header names the zone. In the hour repeated when the
+  clocks fall back (01:00-02:00 on the first Sunday of November) one reading per time is stored, so those rows
+  can't say whether they were EDT or EST. A month is the readings from 00:00 on the 1st up to, not including,
+  00:00 on the 1st of the next month, Toronto time.
+- **Values** are numbers as stored, unrounded (`0.30000000000000004`). A missing reading is an empty field (never
+  `nan`). Text that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, a tab or a carriage
+  return) gets a leading `'`, as in the dashboard's Download Data. Numbers are never changed.
+- If two readings share a cell (the same time and measurement from two stations of one group), the cell holds the
+  first by station id, so the same month always gives the same file.
+
+The dashboard's Download Data uses a similar layout without the `Latitude`/`Longitude` columns, and names its
+time column the same way; its sampling download names it `recorded_at (America/Toronto)`.
 
 ### How the Borealis jobs behave
 
@@ -373,8 +423,9 @@ goes red both when the site is down and when data stops arriving.
 
 ### Daily digest
 
-`scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of
-the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
+`scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a summary of the last
+24 h, in the same Markdown-plus-HTML format as the [email alerts](#email-alerts): the open alerts, the alerts that
+recovered (including the low-priority recoveries that weren't emailed on their own, `ALERT_QUIET_KINDS`); stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
 its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly
 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30
 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with
@@ -397,8 +448,31 @@ After every 10-minute ingestion run the worker checks the data and the vendor AP
 in `utils/alerts.py`) and emails `ALERT_EMAILS` through the SMTP settings above when someone has to go and look. Each
 problem is an incident: it is emailed once when it starts, again at most every `ALERT_REMINDER_HOURS` while it lasts,
 and once when it clears, with how long it lasted. Everything one check finds goes in a single email, so there is never
-more than one email per 10 minutes. The subject says what to do, e.g. `[WELL] Water quality station 4501 silent for
-3 h — vendor OK, check the sensor`.
+more than one email per 10 minutes. The subject starts with the status and says what to do, e.g. `[WELL] New: Logger 4
+silent 4 h — check the sensor` or `[WELL] Recovered: Logger 1 water level (20 h)`; an email about several things says
+how many of each, e.g. `[WELL] 2 new, 1 recovered`.
+
+Each email is plain Markdown text with the same content as simple HTML (`utils/email_format.py`: headings, lists and
+bold names, inline styles, no images or colours, so it reads the same in Outlook and on a phone). It starts with a
+one-line summary, then has a section per kind, in this order: New problems, Still open (reminder), Back again,
+Recovered. Each item gives the station and sensor in plain words, its status, since when or from when to when in
+Toronto time (`Wed Nov 11, 12:00 → Thu Nov 12, 08:03 (20 h)`), what to do and the details (problems only), and the
+dashboard link. Then "Open right now" lists every open incident, so any one email shows the whole current state, and
+the footer links the dashboard, `/api/health/data` and this section ("Why did I get this?").
+
+#### Why did I get this email?
+
+| Email | Subject starts with | Sent when |
+|---|---|---|
+| New problem | `[WELL] New:` | A check finds a problem that has no open incident (and didn't clear within the last `ALERT_REOPEN_HOURS`). Every kind, at once. |
+| Reminder | `[WELL] Still open:` | An emailed problem is still there `ALERT_REMINDER_HOURS` after its last email. |
+| Back again | `[WELL] Back again:` | A problem whose recovery was emailed came back within `ALERT_REOPEN_HOURS` and has stayed back `ALERT_CLEAR_MINUTES`. |
+| Recovered | `[WELL] Recovered:` | An emailed problem has been gone for `ALERT_CLEAR_MINUTES` (longer after a "back again", see below). Not on its own for the kinds in `ALERT_QUIET_KINDS` (default `SUSPECT_VALUES`): their recovery is added to the next email that goes out anyway, within 24 h, and is listed in the daily digest either way. |
+| Several at once | `[WELL] 2 new, 1 recovered` | One check has more than one thing to say: it is one email, never several. |
+| Daily digest | `[WELL] Daily digest` | Once a day at `DIGEST_HOUR` ([Daily digest](#daily-digest)). |
+
+The alert check and the digest send nothing else (Sentry and the job heartbeats have their own notifications). A
+problem that hasn't changed sends nothing between reminders, and a check with nothing new sends nothing at all.
 
 To keep flickering conditions (a vendor failing on and off, a value hovering at a limit) from emailing "new" and
 "recovered" over and over: an incident clears, and "recovered" is emailed, once its condition has been gone for
@@ -417,12 +491,14 @@ alert down to the one sensor still silent), the station incident closes without 
 sensor's incident carries on without a "new" one: the partial recovery isn't emailed, because the remaining problem
 was already reported and the next email (reminder or recovery) names it.
 
+#### The alerts and their settings
+
 | Alert | When | What to do |
 |---|---|---|
 | Vendor down (`VENDOR_DOWN`) | The LI-COR or WQData API call failed on the last `ALERT_VENDOR_FAILURES` runs in a row: an HTTP error, a timeout, or a reply without data. | Check the vendor's status; our sensors may be fine. Ingestion catches up by itself (up to 14 days back) once the API answers. HTTP 401/403 says "rejects our credentials — rotate the API key" (set `HOBOLINK_API_TOKEN` or `WQ_API_KEY` in `.env` and in the repository secret), and WQData's 429 says "request quota exceeded" (stop any `wqdata_backfill.py` run). |
 | Sensor silent (`STALE_SENSOR`) | The vendor answered on the latest run, but a station, or one of its sensors, has sent nothing for longer than its group's limit. If every LI-COR station is silent it is one alert for the site (the loggers report through the weather station). | Go to the sensor: its power, cable, telemetry (cellular modem, data plan). Not raised while the vendor's latest call failed, since then the vendor is the likelier cause. |
 | Suspect values (`SUSPECT_VALUES`) | Data arrives but looks wrong over the whole last `ALERT_SUSPECT_HOURS`: a water quality probe stuck on one value (not TSS/turbidity at 0), at least half the readings outside the physical range, dissolved oxygen about 0, or a logger with about 0 m of water over it. A single odd reading is never an alert. | Look at the chart, then check and clean the probe if it isn't a real event. |
-| Recovered | The condition cleared, for an incident that was emailed. | Nothing; the email says how long it lasted. |
+| Recovered | The condition cleared, for an incident that was emailed. A suspect-values recovery waits for the next email or the digest (`ALERT_QUIET_KINDS`). | Nothing; the email says how long it lasted. |
 
 The open incidents are also listed in the daily digest and under `alerts` in `GET /health/data` (with each vendor's
 latest call outcome), so the dashboard can show them; they don't change its status code. They are listed by kind, key,
@@ -445,7 +521,8 @@ fails (logged, reported to Sentry and to `HEALTHCHECK_URL_ALERTS`) and ingestion
 | `ALERT_FLAP_CLEAR_MINUTES` | `180` | How long a condition must be gone before an incident that has had a "back again" clears; doubled with each further "back again", up to 12 h. |
 | `ALERT_REOPEN_HOURS` | `6` | A condition that comes back within this long of clearing reopens its incident instead of being emailed as new. |
 | `ALERT_EXCLUDED_SERIES` | none | Series to mute, e.g. during field work or while a sensor is out for the winter: `station:measurement` or `station:*`, comma-separated, like `HEALTH_EXCLUDED_SERIES` (e.g. `4501:*` or `2577533:Water Surface Elevation`). Only the alerts change; `/health/data` still reports the series. Open alerts for a muted series close without a "recovered" email. Remove the entry to unmute. |
-| `ALERT_DASHBOARD_URL` | `https://welldash.mcmaster.ca/` | The dashboard link in the emails. |
+| `ALERT_DASHBOARD_URL` | `https://welldash.mcmaster.ca/` | The dashboard link in the emails and the digest. |
+| `ALERT_QUIET_KINDS` | `SUSPECT_VALUES` | Alert kinds whose recovery sends no email of its own, comma-separated (`VENDOR_DOWN`, `STALE_SENSOR`, `SUSPECT_VALUES`), or `none` to email every recovery. Such a recovery goes in the next email sent anyway (a new problem, reminder, back again or other recovery) within 24 h, and the daily digest lists it. New alerts of these kinds are still emailed at once. While a quiet recovery hasn't been emailed, a return of the same problem within `ALERT_REOPEN_HOURS` simply reopens it, without a "back again". |
 
 An invalid value makes the alert check fail with a message naming the variable (in `logs/alerts.log`, Sentry and the
 alerts heartbeat); recreate the worker after changing any of them.
@@ -540,6 +617,18 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
   2 h for the whole run. Only one backup runs at a time (a lock file, `.backup.lock`). If deleting old dumps fails
   after a good backup, the run still counts as a success and logs a `WARNING:` line, which also goes to Sentry as a
   warning.
+- **Row counts**: a dump of an emptied table still lists data for it, so before dumping, the job also counts the
+  rows of those tables (exactly for tables under a million rows; for larger ones, PostgreSQL's estimate right after
+  an `ANALYZE`, or the older estimate with a `WARNING:` line if `ANALYZE` waits more than 30 s for its lock) and compares them with the counts at the last good backup, kept in `backups/.row-counts.json`. If a
+  table is empty or has more than 5% fewer rows (`BACKUP_MAX_SHRINK_PCT`; these tables only grow, and 5% is well
+  above the estimate's error), the dump is still written and checked, but the run fails (`/fail` ping, Sentry) and
+  the counts aren't recorded, so the following nights fail too until someone looks. Retention doesn't run then, so
+  no good dump is deleted. Each failing dump is listed as such in `.row-counts.json`, and only those listed are
+  deleted by the next failing night, so just the newest failing dump is kept next to all the good ones and they
+  don't pile up. Every other successful dump is recorded as good, also while the comparison is off. If the rows
+  were removed on
+  purpose, run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it records the new
+  counts, with a `WARNING:` line naming what was accepted. `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off.
 - **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks
   (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only
   after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`)

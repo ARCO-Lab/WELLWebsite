@@ -1,6 +1,17 @@
 volumes:
   db_data:
   exports_data:
+  # Redis keeps nothing on disk (see the redis service), but its image declares /data a volume: named, it is reused
+  # when the container is recreated, instead of each recreation leaving another anonymous volume behind.
+  redis_data:
+
+# Docker's own log of each container (docker compose logs): at most 5 files of 10 MB, the oldest deleted. Without
+# this the json-file logs grow without limit, the backend's access log fastest.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 networks:
   front:
@@ -12,6 +23,10 @@ networks:
       config:
         - subnet: 10.20.2.0/24
 
+# Every service logs with default-logging. Memory limits (mem_limit) leave room for each service's busiest normal
+# load (normal use is 50 to 250 MB each, about 1 GB together; the backend and WordPress get more for bursts), so only
+# a runaway process reaches them; then the kernel stops a process inside that container, not PostgreSQL or another
+# service on the VM. Health checks show in `docker compose ps`.
 services:
   # --- WordPress + MySQL as you had ---
   db:
@@ -19,6 +34,8 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     restart: always
+    mem_limit: 1g
+    logging: *default-logging
     networks:
       - front
     environment:
@@ -42,6 +59,12 @@ services:
     ports:
       - "8080:80"
     restart: always
+    # Apache (prefork) runs one process per request, each with mod_php and its own PHP memory (WordPress allows up
+    # to 256 MB in the admin), so a burst of visitors adds up quickly (about 155 MB in normal use). 2 GB lets dozens
+    # of requests run at once. The trade-off: a flood beyond that gets an Apache child killed (that request fails)
+    # rather than taking memory from PostgreSQL and the rest of the VM.
+    mem_limit: 2g
+    logging: *default-logging
     networks:
       - front
       - wp_probe   # so welldash² can check it
@@ -89,14 +112,49 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"   # lets container reach host/VM if needed
     restart: unless-stopped
+    # About 200 MB idle. One /api/data answer near its 300,000-row cap briefly takes about 330 MB (rows, dicts and
+    # a 52 MB JSON body), and 3 workers x 4 threads can run 12 at once. Measured peaks: 1.0 GB with 3 such requests
+    # in parallel, 1.9 GB with 6, and up to 3 GB with all 12 (all answered; memory went back to ~300 MB after).
+    mem_limit: 3g
+    logging: *default-logging
+    # gunicorn finishes the requests in progress within --graceful-timeout (30 s, Dockerfile) after SIGTERM
+    stop_grace_period: 35s
+    # /health answers without the database. The probe header keeps these checks out of the traffic counts
+    # (utils/traffic.py).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "-H", "X-Welldash2-Probe: 1",
+             "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
     networks:
       - internal_api
     volumes:
       - exports_data:/app/app/exports
 
+  # Holds the export queue (databases 0 and 1, Celery) and the /api/series cache (database 2). Neither needs to
+  # survive a restart, so nothing is saved to disk (--save ""; append-only is off by default): an export queued
+  # when Redis restarts is failed by the hourly cleanup. Memory is capped at 256 MB; when it is full, Redis evicts
+  # the least recently used keys that have an expiry (volatile-lru). Every cache entry has one
+  # (utils/response_cache.py), Celery's queue keys never do, so the queue is never evicted to make room for the
+  # cache. mem_limit leaves room above maxmemory for Redis's own overhead.
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru", "--save", ""]
     restart: unless-stopped
+    mem_limit: 512m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
+    volumes:
+      - redis_data:/data
     networks:
       - internal_api
 
@@ -119,6 +177,21 @@ services:
       backend:
         condition: service_started
     restart: unless-stopped
+    # Scripts run here by hand (backfills, uploads) share this limit with the scheduled jobs
+    mem_limit: 1536m
+    logging: *default-logging
+    # On SIGTERM the scheduler starts nothing new, gives running jobs 40 s to finish, then stops their subprocesses
+    # (10 s) and exits (scripts/scheduler_temp.py shut_down); this is how long Docker waits before killing it.
+    stop_grace_period: 60s
+    # The scheduler loop touches this file every 30 s; older than 3 minutes means the loop has stopped.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/well-scheduler.alive') > 180)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     networks:
       - internal_api
     volumes:
@@ -143,10 +216,16 @@ services:
       SENTRY_COMPONENT: export_worker   # Sentry tag for errors from this container (utils/sentry.py)
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       backend:
         condition: service_started
     restart: unless-stopped
+    # Two exports at once, each process replaced once it holds over EXPORT_WORKER_MAX_MEMORY_KB (500 MB)
+    mem_limit: 1536m
+    logging: *default-logging
+    # On SIGTERM Celery stops taking jobs and finishes the running ones; one still running after this is killed and
+    # failed by the hourly cleanup (or when its page next asks for its status).
+    stop_grace_period: 60s
     networks:
       - internal_api
     volumes:
@@ -177,6 +256,19 @@ services:
     ports:
       - "${DASHBOARD_PORT}:8081"
     restart: always
+    mem_limit: 512m
+    logging: *default-logging
+    # The page itself (static, no backend call). Next listens on the container's hostname (HOSTNAME is set by
+    # Docker), so the check connects there rather than to localhost.
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             'fetch("http://" + require("os").hostname() + ":8081/")
+              .then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
     networks:
       - internal_api
 
@@ -220,6 +312,16 @@ services:
     depends_on:
       - dashboard
     restart: unless-stopped
+    mem_limit: 384m
+    logging: *default-logging
+    # The login page, the one page that needs no session
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:8090/login"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
     networks:
       # internal_api carries the default route (gw_priority, Docker Engine 28+), so ops reaches PostgreSQL on the VM
       # (host.docker.internal) from internal_api's subnet whatever order Docker lists the networks in.

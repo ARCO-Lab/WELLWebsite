@@ -13,6 +13,10 @@ commented-out `proxy` service in `docker-compose.yml` are for local development 
 - Seven Docker Compose services: `db` (MySQL), `wordpress` (the stock image with `home/` mounted), `backend`, `redis`,
   `worker`, `export_worker` and `dashboard` (`backend`, `worker` and `export_worker` are built from one image). An
   eighth, `ops` ([welldash²](../dashboard/backend/app/ops/README.md)), starts only with the `ops` compose profile.
+- Each service has a memory limit (`mem_limit`, several times its normal use) and a size cap on Docker's own log
+  (10 MB x 5 files). `backend`, `dashboard`, `worker`, `redis` and `ops` have health checks, shown by
+  `docker compose ps`. Redis is capped at 256 MB and keeps nothing on disk; when full it evicts cache entries only,
+  never the export queue.
 - TLS and the public hostnames are handled by McMaster's reverse proxy, outside this repository.
 - Secrets are injected through env files that aren't committed (see [configuration.md](configuration.md)).
 - The VM runs `main`, deployed by `deploy.sh` (see [deploying.md](deploying.md)).
@@ -22,10 +26,23 @@ to the dashboard container on port 8081 and to WordPress on port 8080. The brows
 (`/api/...`), which pass the request to the Flask backend on the internal Docker network. The API routes are listed in
 [the backend README](../dashboard/backend/README.md#api); none are versioned.
 
-**Embedding and framing.** The dashboard is embedded with an iframe on a dedicated WordPress page. This repository sets
-no Content-Security-Policy, `frame-ancestors` or `X-Frame-Options` header, so any site can frame the dashboard. The
-Flask API accepts requests from any origin (`CORS(app)` in `server.py`), but it has no public port: browsers only reach
-the dashboard's API routes. The data is public and read-only; nothing on the dashboard needs a login.
+**Embedding and framing.** The dashboard is embedded with an iframe on a dedicated WordPress page. Every dashboard
+response carries a `Content-Security-Policy` whose `frame-ancestors` allows only the dashboard itself,
+`well.mcmaster.ca` (with and without `www`) and `NEXT_PUBLIC_WP_HOME`'s origin, so other sites can't frame it; it also
+sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin` (all set in
+`dashboard/frontend/next.config.ts`, see [the dashboard README](../dashboard/frontend/README.md#rate-limits-and-security-headers)).
+Whether haproxy adds HSTS is outside this repository. The Flask API sends no CORS headers, so no other site's pages may
+read it; it has no public port, and browsers only reach the dashboard's API routes. The data is public and read-only;
+nothing on the dashboard needs a login.
+
+**The embedded page.** The WordPress Dashboard page (`page-dashboard.php`) frames `/?embed=1`, which the dashboard
+serves from a static page without its header and footer, so they never flash in the frame. The two pages exchange
+`postMessage` messages, each checking the other's origin: the dashboard sends its height and the theme's
+`js/dashboard-embed.js` sizes the iframe to it, so there is no scrollbar inside the frame. The dashboard only talks to
+`https://well.mcmaster.ca`, `https://www.well.mcmaster.ca` and the origin of `NEXT_PUBLIC_WP_HOME` (a build argument),
+and the theme only listens to the origin of `DASHBOARD_URL`. Any other framing (an old link without `?embed=1`)
+still hides the header and footer, from a check that runs before the first paint. Details are in
+`dashboard/frontend/src/lib/embed.ts`.
 
 ## Storage
 
@@ -35,10 +52,14 @@ the dashboard's API routes. The data is public and read-only; nothing on the das
 - Schema changes are numbered SQL migrations, applied by hand (see
   [Database migrations](../dashboard/backend/README.md#database-migrations)).
 - Worker logs and the records of uploaded months are files in `dashboard/backend/app/logs/`, mounted from the host.
+  Each `*.log` the worker writes is rotated at 5 MB (`name.log.1` to `.3` are the older copies; the oldest is deleted),
+  and a log it can't write never stops a job (`utils/worklog.py`).
 - Export CSVs stay in the `exports_data` Docker volume for `EXPORT_FILE_TTL_MINUTES`.
 - WordPress keeps its own data in MySQL 5.7 (the `db` container, `db_data` volume).
 - Nightly `pg_dump` backups of the database on the VM, 7 daily + 8 weekly kept
   ([Database backups](../dashboard/backend/README.md#database-backups)).
+- Nightly backups of the WordPress database and uploads on the VM (`wordpress/backup.sh` from cron), 7 daily + 8
+  weekly + 12 monthly kept ([Backups](../wordpress/README.md#backups)).
 
 ## Host firewall (required)
 

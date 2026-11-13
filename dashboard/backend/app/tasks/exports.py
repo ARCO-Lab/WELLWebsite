@@ -15,6 +15,7 @@ from api.services.exports import (
     EXPORT_FAILED_MESSAGE,
     EXPORT_TOO_SLOW_MESSAGE,
     default_export_filename,
+    disk_space_error,
     settle_if_stuck,
     write_export_csv,
 )
@@ -77,7 +78,10 @@ def user_facing_error(exc: Exception) -> str:
     return EXPORT_FAILED_MESSAGE
 
 
-@celery_app.task(bind=True, name="exports.generate_export_job")
+# ignore_result: the job's state is in export_jobs, and nothing reads Celery's copy. It also keeps the API's
+# delay() from subscribing to the result in Redis: with Redis down that retried for over two minutes before failing,
+# while the publish alone fails within seconds, so the API can mark the job failed and answer 503 at once.
+@celery_app.task(bind=True, name="exports.generate_export_job", ignore_result=True)
 def generate_export_job(self, job_id: str):
     """Writes a queued job's CSV to EXPORTS_DIR/<job id>/, updating its progress as it goes, and marks it ready
     (downloadable for EXPORT_FILE_TTL_MINUTES) or failed. Errors are re-raised so Celery and Sentry see them."""
@@ -100,6 +104,17 @@ def generate_export_job(self, job_id: str):
                 _remove_job_folder(job_id)
             else:
                 logger.info("Export job %s is already %s; not running it", job_id, job.status)
+            return
+
+        # The disk may have filled since the job was queued (the route checked then): fail the job rather than
+        # fill the disk the database shares. Not an error to report: the route already logs low space.
+        no_room = disk_space_error(job.estimated_rows or 0)
+        if no_room:
+            logger.warning("Export job %s not run: the exports disk is below EXPORT_MIN_FREE_MB", job_id)
+            job.status = "failed"
+            job.error_message = no_room
+            job.completed_at = est_now()
+            db.session.commit()
             return
 
         artifact_path = None  # set once known, so a failed export can delete what it wrote

@@ -85,3 +85,15 @@ def alerts_report():
                         if r["consecutive_failures"] else None}
                for source, r in vendor_statuses().items()}
     return {"open": incidents, "vendors": vendors}
+
+
+def recent_recoveries(since):
+    """Incidents that cleared since `since` after being emailed, oldest first, as dicts for the daily digest:
+    kind, key, title, started_at, resolved_at, and whether the recovery was emailed (a quiet kind's may not be,
+    ALERT_QUIET_KINDS). Superseded incidents aren't listed: their problem carried on in another incident."""
+    i = AlertIncident
+    rows = (i.query.filter(i.resolved_at >= since, i.close_reason == "cleared", i.last_notified_at.isnot(None))
+            .order_by(i.resolved_at, i.id).all())
+    return [{"kind": r.kind, "key": r.incident_key, "title": r.title, "started_at": iso(r.started_at),
+             "resolved_at": iso(r.resolved_at), "recovery_emailed": r.recovery_notified_at is not None}
+            for r in rows]

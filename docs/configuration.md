@@ -32,7 +32,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `DASHBOARD_PORT` | none (use `8081`) | Host port of the dashboard. `deploy.sh`'s health checks assume 8081. |
 | `TRUSTED_PROXY_IPS` | `130.113.68.30` | Reverse proxies whose `X-Forwarded-For` the dashboard believes, comma-separated. The default is McMaster's `haproxy.cas.mcmaster.ca`. Set but empty trusts none. See `dashboard/frontend/src/lib/clientIp.ts`. |
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | API queries running longer are cancelled (the API answers 504). Backend container only; `0` turns it off. Don't put it in `app/.env`: there it would also limit ingestion and exports. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Redis database for the short `/api/series` response cache. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Redis database for the short `/api/series` and `/api/windrose` response cache. Empty turns the cache off. |
 | `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | `redis://redis:6379/0`, `redis://redis:6379/1` | The export queue (Celery on Redis). |
 | `EXPORTS_DIR` | `/app/app/exports` | Where export CSVs are written, inside the shared `exports_data` volume. |
 | `WORKER_LOG_TO_STDOUT` | off | `1` also prints the worker's logs to `docker compose logs worker`; they always go to `dashboard/backend/app/logs/`. |
@@ -55,11 +55,13 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATA_MAX_ROWS` | `300000` | Most readings one `/api/data` request may return; more gets a 413 (see [the backend README](../dashboard/backend/README.md#api)). |
+| `DATA_MAX_ROWS` | `100000` | Most readings one `/api/data` request may return; more gets a 413 (see [the backend README](../dashboard/backend/README.md#api)). |
 | `EXPORT_SYNC_ROW_THRESHOLD` | `100000` | Downloads up to this many readings are built while the visitor waits; larger ones are queued for `export_worker`. |
 | `EXPORT_MAX_ROWS` | `5000000` | Largest queued export, in readings. |
 | `EXPORT_MAX_ACTIVE_JOBS` | `6` | Queued or running exports at once, in total. |
 | `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` | `2` | The same, per visitor (by IP address). |
+| `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` | `6` | Jobs one visitor may start in an hour, finished ones included. |
+| `EXPORT_MIN_FREE_MB` | `2048` | Free space to keep on the exports disk after an export's estimated size; exports that would go below it get a 507. |
 | `EXPORT_SOFT_TIME_LIMIT_SECONDS`, `EXPORT_HARD_TIME_LIMIT_SECONDS` | `900`, `1200` | An export past the soft limit is stopped and marked failed; past the hard limit its process is killed. |
 | `EXPORT_WORKER_MAX_MEMORY_KB` | `512000` | An export worker process is replaced once a task leaves it using more memory than this. |
 | `EXPORT_FILE_TTL_MINUTES` | `60` | How long a finished export can be downloaded before the hourly cleanup deletes it. |
@@ -108,6 +110,9 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 |---|---|---|---|
 | `FLASK_API_URL` | build time only | from `BACKEND_INTERNAL_URL` | Where the API routes in `src/pages/api/` send requests. The `env` block in `next.config.ts` inlines it into the build, server code included, so the run-time value compose also sets is never read: after changing `BACKEND_INTERNAL_URL`, rebuild with `docker compose up -d --build --no-deps dashboard`. For `next dev` outside Docker, set it to your backend, e.g. `http://localhost:5000`. |
 | `TRUSTED_PROXY_IPS` | run time | see above | Set by `docker-compose.yml` from the root `.env`. |
+| `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | run time | `600`, `600` | API requests one visitor's address may make at once, and per minute after that ([Rate limits](../dashboard/frontend/README.md#rate-limits-and-security-headers)). Not set by `docker-compose.yml`: add them to the dashboard's `environment:` to change them. `0` turns a limit off. |
+| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | run time | `120`, `120` | The same for slow requests (wind rose, `/api/data`, export estimates, direct exports, new export jobs). |
+| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `12` | Slow requests one address may have in flight at once. |
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |
@@ -119,6 +124,17 @@ one, edit that default, build by hand with `docker build --build-arg NAME=value 
 the dashboard's `build: args:` in `docker-compose.yml`. Env files are kept out of the image build (`.dockerignore`),
 so `.env.local` can't set any of them.
 
+## WordPress backup (`wordpress/backup.sh`, set in the crontab line)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HEALTHCHECK_URL_WP_BACKUP` | none | Healthchecks.io ping URL: `<url>/start` when a backup begins, `<url>` on success, `<url>/fail` on a failure. |
+| `WP_BACKUP_DIR` | `wp-backups/` in the repository root | Where backups go. |
+| `WP_BACKUP_KEEP_DAILY`, `WP_BACKUP_KEEP_WEEKLY`, `WP_BACKUP_KEEP_MONTHLY` | `7`, `8`, `12` | Retention: the newest backup of each of that many days, ISO weeks and months is kept. |
+| `WP_BACKUP_MIN_FREE_MB` | `2048` | Free space to leave after a backup the size of the last one; the run refuses to start otherwise. |
+
+Details in [wordpress/README.md](../wordpress/README.md#backups).
+
 ## Deploy script (`deploy.sh`, set in the crontab line)
 
 | Variable | Default | Meaning |
@@ -126,6 +142,7 @@ so `.env.local` can't set any of them.
 | `DEPLOY_HEALTHCHECK_URL` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure or a held commit. |
 | `DEPLOY_BRANCH`, `DEPLOY_REMOTE` | `main`, `origin` | What is deployed. |
 | `DEPLOY_LOG` | `deploy.log` next to the script | Log file. |
+| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported and the last commit rolled back. Earlier versions kept these in `/tmp`; the first run moves them here. |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
 ## Tests

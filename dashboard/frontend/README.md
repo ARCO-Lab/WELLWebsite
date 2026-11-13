@@ -15,6 +15,41 @@ page. Its data comes from the [backend](../backend/README.md); its settings are 
   browser never talks to Flask directly. The routes and what the backend answers are listed in
   [the backend README](../backend/README.md#api).
 
+## Rate limits and security headers
+
+Every API route that calls the backend goes through `src/lib/proxyBackend.ts`, which limits each visitor's address
+(`src/lib/clientIp.ts` decides which address that is) with in-memory token buckets (`src/lib/rateLimit.ts`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | `600`, `600` | Requests one address may make at once, and per minute after that. |
+| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | `120`, `120` | The same for slow requests: the wind rose, `/api/data`, export estimates, direct exports and new export jobs. |
+| `RATE_LIMIT_SLOW_CONCURRENT` | `12` | Slow requests one address may have in flight at once. |
+
+Beyond a limit the answer is a 429 with `Retry-After`, and the backend isn't called. `0` turns a limit off. They are
+read when the server starts; to change one, add it to the `dashboard` service's `environment:` in
+`docker-compose.yml`. The limits are generous for one person because many visitors can share one address (a campus
+network). welldash²'s uptime checks call the dashboard page and the backend directly on the Docker network, not these
+API routes, so they never use a budget.
+
+**Are visitors told apart?** If every visitor shows up as one address, they all share one budget. At most every 10
+minutes the dashboard logs how many different addresses made API requests, as a count only:
+`[client-ip] 37 different client addresses in 912 API requests over the last 10 min`. After a deploy, while people use
+the site, run `docker compose logs --since 1h dashboard | grep "different client addresses"`. A count well above 1
+means addresses are told apart. A count that stays at 1 means every request arrives with the same address: check the
+sampled `[client-ip] connection=... x-forwarded-for=...` lines (`src/lib/clientIp.ts`). If the connection is the
+reverse proxy and `x-forwarded-for` holds one fixed address, ask McMaster IT whether haproxy (haproxy.cas.mcmaster.ca)
+for welldash.mcmaster.ca uses `option forwardfor` with the visitor's own address, and doesn't put the address of a
+NAT or another proxy in front of it. Until that is fixed, don't lower the limits.
+
+`next.config.ts` adds `Content-Security-Policy`, `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: strict-origin-when-cross-origin` to every page and API route, and drops `X-Powered-By`. The policy
+allows scripts from this site and GoatCounter only, the map's tile hosts and the Sentry host of the build's DSN;
+fonts come only from this site (Poppins is in `public/fonts`). `frame-ancestors` lets only this site,
+`well.mcmaster.ca` (whose dashboard page embeds it) and `NEXT_PUBLIC_WP_HOME`'s origin frame the dashboard, the
+origins `src/lib/embed.ts` talks to. A new third-party host (a map style, a font) must be added there, or the browser
+will refuse it.
+
 ## Charts
 
 Each chart zooms and pans on its own (`src/hooks/useChartWindow.ts`, `src/lib/chartController.ts`, with a slider and
@@ -35,7 +70,8 @@ cd dashboard/frontend
 npm ci
 FLASK_API_URL=http://localhost:5000 npm run dev    # FLASK_API_URL: your backend
 npx tsc --noEmit                                    # type check
-npm test                                            # unit tests: chart helpers, site time, the tile loader, the backend proxy
+npm test                                            # unit tests: chart helpers, site time, the tile loader, the backend proxy,
+                                                    # sampling fetches, export polling, shared-link ticks
 npm run lint
 npm run build
 ```
@@ -90,7 +126,9 @@ data and tooltip, in the Latest Data tiles and in the downloaded CSV. The CI job
    page in Toronto, Tokyo and London browsers, which must all see the same Toronto times. `charts-stress.spec.ts`
    (one browser zone) checks that fast zooming and panning, with `/api/series` slowed down, sends few requests, never
    more than two at a time, and keeps charts independent; `STRESS_MINUTES=5 npx playwright test charts-stress
-   --project=toronto` runs a longer soak.
+   --project=toronto` runs a longer soak. `sampling.spec.ts` answers every API call itself (no data needed, so it also
+   runs against `next dev` alone with `E2E_BASE_URL`): the sampling tab's charts and legend, replies arriving out of
+   order, a shared link's ticks, the Download button leaving its tab, and an axe accessibility scan of both tabs.
 
 `fixtures/expected.json` lists every expected row and tile, with notes on the cases they cover (the clocks going back,
 duplicates, re-reads, N/A values, readings near midnight). To run it yourself, start the same pieces as the CI job and

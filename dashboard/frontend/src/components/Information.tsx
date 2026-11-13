@@ -13,7 +13,7 @@ const infoMap: Record<number, string> = {
   2: "The map shows where each sensor is; the legend explains the icons. Click or tap a marker to show or hide that sensor's data and open a card with its details and a Google Maps link; the card's Show/Hide button switches it back. Hover over a marker to just see the card. With a keyboard, Enter opens the card and Escape closes it. Filled markers are the ones shown.",
   3: "This section shows the most recent readings for your selected sensor metrics. Click any metric to view it in a fullscreen modal for detailed analysis.",
   // AI ANALYSIS DISABLED: was "...Click a graph to open it fullscreen, revealing an AI-generated analysis of trends, correlations, and anomalies."
-  4: "Graph visualizations for sensor data update based on your filters. Click a graph to open it fullscreen for a larger, zoomable view.",
+  4: "One graph per group, with the readings your filters select over the days you picked. Hold Ctrl (⌘ on a Mac) and scroll, or pinch, to zoom; drag to move; use the bar under each graph to slide through the days. The ↗ button opens a larger view with the axes.",
   5: "The AI generates insights from your selected sensor data. It summarizes trends, anomalies, and correlations, helping you understand the relationships between different sensor readings.",
 
   // --- Sampling Tab ---

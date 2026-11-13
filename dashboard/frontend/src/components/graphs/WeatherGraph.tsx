@@ -1,16 +1,16 @@
-// This file defines the WeatherGraph component: the weather station's readings as small charts, one per kind of
-// reading (temperatures, humidity, pressure, rain, wind speed, wind direction, solar radiation, soil water), each
-// zooming and panning by itself; or, in the larger view, the wind rose for the picked days, counted by the database
+// This file defines the WeatherGraph component: the weather station's selected readings, all in one chart (a y-axis
+// per unit: temperatures, humidity, pressure, rain as bars, wind speeds, wind direction as points, solar radiation,
+// soil water; see MetricChart); or, in the larger view, the wind rose for the picked days, counted by the database
 // (/api/windrose, see hooks/useWindRose) only while it is shown.
 
 import dynamic from 'next/dynamic';
 import { useContext, useMemo } from 'react';
 import { Tabs, TabsList, TabsTrigger } from "@/components/animations/tabs";
 import { SENSOR_STATIONS } from '@/components/config/filters';
-import ChartGroup from '@/components/graphs/ChartGroup';
 import { ChartPageContext } from '@/hooks/useChartWindow';
 import useWindRose from '@/hooks/useWindRose';
-import { WEATHER_PANELS, panelsFor } from '@/utils/chartStyle';
+import { cardSeries } from '@/utils/cardSeries';
+import { windowLabel } from '@/components/graphs/ChartToolbar';
 
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 const WindRose = dynamic(() => import("@/components/graphs/highcharts/WindRose"), { ssr: false });
@@ -51,16 +51,21 @@ const WeatherGraph = ({
 }: Props) => {
   // Memoized: a new array on every render would rebuild the charts whenever anything on the page re-rendered
   const mappedWeather = useMemo(() => mapWeatherMetrics(subFilters.weather), [subFilters.weather]);
-  const panels = useMemo(() => panelsFor(WEATHER_PANELS, mappedWeather), [mappedWeather]);
+  const { series, axes } = useMemo(
+    () => cardSeries('Weather', [{ id: SENSOR_STATIONS.weather, name: 'Weather station' }], mappedWeather),
+    [mappedWeather]
+  );
   const page = useContext(ChartPageContext);
 
   const hasWindSpeed = mappedWeather.includes("Wind Speed");
   const hasGustSpeed = mappedWeather.includes("Gust Speed");
   const canShowWindrose = canShowWindRose(subFilters.weather);
   const showTabSwitcher = inModal && canShowWindrose; // only in the larger view
-  const showWindrose = weatherTab === "windrose" && canShowWindrose;
+  // The wind rose only in the larger view, where its tab is: the card on the page always shows the chart, whatever tab
+  // the larger view was left on
+  const showWindrose = inModal && weatherTab === "windrose" && canShowWindrose;
   const wind = useWindRose(page?.defaultWindow ?? null, showWindrose);
-  const roseLegend = Object.values(activeGroups).filter(Boolean).length < 2;
+  const period = page ? windowLabel(page.defaultWindow, page.defaultWindow.end) : undefined;
 
   const tabs = showTabSwitcher ? (
     <Tabs value={weatherTab} onValueChange={(value) => setWeatherTab(value as "graph" | "windrose")} className="mb-6">
@@ -92,12 +97,12 @@ const WeatherGraph = ({
           )}
           {hasWindSpeed && (
             <div className={hasWindSpeed && hasGustSpeed ? "w-full lg:w-1/2" : "w-full"}>
-              <WindRose data={wind.data} speed="Wind Speed" title="Wind Speed" showLegend={roseLegend} />
+              <WindRose data={wind.data} speed="Wind Speed" title="Wind Speed" period={period} />
             </div>
           )}
           {hasGustSpeed && (
             <div className={hasWindSpeed && hasGustSpeed ? "w-full lg:w-1/2" : "w-full"}>
-              <WindRose data={wind.data} speed="Gust Speed" title="Gust Speed" showLegend={roseLegend} />
+              <WindRose data={wind.data} speed="Gust Speed" title="Gust Speed" period={period} />
             </div>
           )}
         </div>
@@ -106,24 +111,10 @@ const WeatherGraph = ({
   }
 
   return (
-    <ChartGroup title="Weather Station" chartCount={panels.length} above={tabs}>
-      {/* One column on a phone or in a narrow card, two or three where the card is wide */}
-      <div className="grid grid-cols-1 gap-x-6 gap-y-5 @xl:grid-cols-2 @5xl:grid-cols-3">
-        {panels.map((p) => (
-          <div key={p.id}>
-            <MetricChart
-              id={`weather-${p.id}`}
-              title={p.title}
-              groupType="Weather"
-              stationId={SENSOR_STATIONS.weather}
-              panes={[p.measurements]}
-              height={200}
-              modalOpen={modalOpen}
-            />
-          </div>
-        ))}
-      </div>
-    </ChartGroup>
+    <div className="rounded bg-white p-4 shadow max-sm:p-0 max-sm:shadow-none">
+      {tabs}
+      <MetricChart id="weather" title="Weather Station" series={series} axes={axes} modalOpen={modalOpen} />
+    </div>
   );
 };
 
