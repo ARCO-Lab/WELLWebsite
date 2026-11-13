@@ -882,7 +882,12 @@ su_psql() { sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' psql "$@"
 #    latest minor release first, and restart PostgreSQL.
 su_psql -tAc 'SHOW server_version'
 
-# 1. A backup first.
+# 1. Drop any restore drill database a killed drill left behind, then a backup. This must happen now, while the
+#    containers still connect as postgres and pg_hba.conf still lets them (step 4 ends that): a leftover is owned by
+#    postgres, so well_restore could never drop it later. The monthly drill, which drops welldb_restore_check before
+#    creating it, would then fail every time, and every nightly backup would log a WARNING for it while the
+#    leftover, a full copy of the database, takes the disk space the backup's free-space check needs.
+docker compose exec worker python scripts/restore_check.py --drop-leftovers
 docker compose exec worker python scripts/backup_db.py --no-prune
 
 # 2. Create the roles, hand the tables to well_app, and check. Safe to run again. It takes a short exclusive lock on

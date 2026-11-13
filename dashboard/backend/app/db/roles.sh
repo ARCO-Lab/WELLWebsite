@@ -21,7 +21,10 @@ cat <<EOF
 #    life (November 2025), so plan the upgrade too.
 $su_psql -tAc 'SHOW server_version'
 
-# 1. A backup first, as the app connects today.
+# 1. Drop any restore drill database a killed drill left behind, then a backup, both as the app connects today
+#    (postgres). Do it before step 4: a leftover is owned by postgres, and well_restore could never drop it, so the
+#    monthly drill would fail every time and each nightly backup would warn while the leftover takes its disk space.
+docker compose exec worker python scripts/restore_check.py --drop-leftovers
 docker compose exec worker python scripts/backup_db.py --no-prune
 
 # 2. Create the roles and hand the tables to well_app (safe to run again). Then check.
