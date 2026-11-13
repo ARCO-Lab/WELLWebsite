@@ -156,7 +156,7 @@ class PublishTests(unittest.TestCase):
         ((key, value),) = mp.push_config("tok")
         self.assertEqual("http.https://github.com/.extraheader", key)
         self.assertEqual("AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dG9r", value)   # x-access-token:tok
-        self.assertEqual((), mp.push_config(""))
+        self.assertEqual([], mp.push_config(""))
         self.assertEqual(value, mp.run_git(["config", "--get", key], cwd=self.publisher, config=[(key, value)]).strip())
         # Not stored in the checkout
         with self.assertRaises(mp.GitError):

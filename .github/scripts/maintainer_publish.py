@@ -91,14 +91,15 @@ def run_gh(args):
 
 
 def push_config(token):
-    """The git setting that sends `token` with one command, as actions/checkout would have stored it in .git/config
-    (the publish job's checkout keeps no credentials). In Actions, the encoded form is masked in the log too."""
+    """[(key, value)]: the git setting that sends `token` with one command, as actions/checkout would have stored it
+    in .git/config (the publish job's checkout keeps no credentials); [] without a token. In Actions, the encoded
+    form is masked in the log too."""
     if not token:
-        return ()
+        return []
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::add-mask::{basic}")
-    return (("http.https://github.com/.extraheader", f"AUTHORIZATION: basic {basic}"),)
+    return [("http.https://github.com/.extraheader", f"AUTHORIZATION: basic {basic}")]
 
 
 def pr_body(body):
