@@ -89,7 +89,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
               selected={startDate || undefined}
               defaultMonth={startDate || undefined}
               // The day already picked: nothing changes (a new date would reset the charts' windows)
-              onSelect={(date) => { if (!sameDay(date, startDate)) onStartChange(date ?? null); }}
+              onSelect={(date) => onStartChange(date ?? null)}
               disabled={(date) => date > today || (endDate ? date > endDate : false)}
               {...pickerProps}
               modifiersStyles={disabledStyles}
