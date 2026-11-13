@@ -427,13 +427,13 @@ test.describe("chart performance budgets", () => {
       await expect.poll(() => label(logger)).not.toBe(before);
       await settled(page, net);
       const panned = (await label(logger))!;
-      // A tap near the track's left end centres the window there: earlier than now
-      const track = logger.locator(".highcharts-navigator-outline");
-      const box = (await track.boundingBox())!;
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + 4, y: box.y + box.height / 2, id: 1 }] });
+      // A tap on the track left of the window (the left shade) centres the window there: on Oct 31
+      const shade = logger.locator(".highcharts-navigator-mask-outside").first();
+      const box = (await shade.boundingBox())!;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width * 0.2, y: box.y + box.height / 2, id: 1 }] });
       await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      await expect.poll(() => label(logger)).not.toBe(panned);
-      expect(await label(logger)).toMatch(/^Oct 31 /); // near the range's start, a day before the readings it showed
+      await expect.poll(() => label(logger)).toMatch(/^Oct 31 /);
+      expect(panned).toMatch(/^Nov 1 /);
     });
 
     test("in the larger view the plot keeps most of the width (one y-axis on a phone)", async ({ page }) => {
