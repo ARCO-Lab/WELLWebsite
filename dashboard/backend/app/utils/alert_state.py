@@ -97,6 +97,45 @@ def recently_closed(since):
     return {i.incident_key: i for i in rows}   # later rows win
 
 
+def superseded_incidents(since):
+    """{incident_key: the newest incident closed as superseded}, so one whose problem carried on can reopen when its
+    condition is back (utils/alerts.carried_on and handed_to_silence). Only those closed since `since` (now minus
+    ALERT_REOPEN_HOURS) or since the oldest incident still open or cleared since then was opened: an older one
+    can't have been carried on by any of those."""
+    i = AlertIncident
+    oldest = (db.session.query(db.func.min(i.opened_at))
+              .filter(db.or_(i.resolved_at.is_(None), db.and_(i.resolved_at >= since, i.close_reason == "cleared")))
+              .scalar())
+    start = since if oldest is None else min(aware(oldest), since)
+    rows = (i.query.filter(i.resolved_at >= start, i.close_reason == "superseded")
+            .order_by(i.resolved_at, i.id).all())
+    return {r.incident_key: r for r in rows}   # later rows win
+
+
+def missed_recoveries(since, before, quiet_kinds=()):
+    """Incidents that cleared between `since` and `before` after being emailed, whose recovery email never went out:
+    the alert check stops retrying RECOVERY_WINDOW after a recovery (utils/alerts.py). The daily digest lists them
+    and, once it has been emailed, marks them as reported (mark_recoveries_reported), so an SMTP outage longer than
+    that doesn't lose them. Not the kinds in `quiet_kinds` (ALERT_QUIET_KINDS): their recovery was never meant to
+    have an email of its own, and the digest of the day it happened listed it."""
+    i = AlertIncident
+    rows = (i.query.filter(i.resolved_at >= since, i.resolved_at < before, i.close_reason == "cleared",
+                           i.last_notified_at.isnot(None), i.recovery_notified_at.is_(None),
+                           i.kind.notin_(list(quiet_kinds)))
+            .order_by(i.resolved_at, i.id).all())
+    return [{"id": r.id, "kind": r.kind, "key": r.incident_key, "title": r.title, "started_at": iso(r.started_at),
+             "resolved_at": iso(r.resolved_at)} for r in rows]
+
+
+def mark_recoveries_reported(ids, now):
+    """Mark these incidents' recoveries as reported (ids from missed_recoveries or recent_recoveries), once the digest
+    listing them has been emailed, like an emailed recovery."""
+    if ids:
+        AlertIncident.query.filter(AlertIncident.id.in_(ids)).update({"recovery_notified_at": now},
+                                                                     synchronize_session=False)
+        db.session.commit()
+
+
 def iso(ts):
     """Site (Toronto) time with its offset, like /health/data's checked_at."""
     return aware(ts).astimezone(EST_TZ).isoformat(timespec="seconds") if ts else None
@@ -118,11 +157,11 @@ def alerts_report():
 
 def recent_recoveries(since):
     """Incidents that cleared since `since` after being emailed, oldest first, as dicts for the daily digest:
-    kind, key, title, started_at, resolved_at, and whether the recovery was emailed (a quiet kind's may not be,
+    id, kind, key, title, started_at, resolved_at, and whether the recovery was emailed (a quiet kind's may not be,
     ALERT_QUIET_KINDS). Superseded incidents aren't listed: their problem carried on in another incident."""
     i = AlertIncident
     rows = (i.query.filter(i.resolved_at >= since, i.close_reason == "cleared", i.last_notified_at.isnot(None))
             .order_by(i.resolved_at, i.id).all())
-    return [{"kind": r.kind, "key": r.incident_key, "title": r.title, "started_at": iso(r.started_at),
+    return [{"id": r.id, "kind": r.kind, "key": r.incident_key, "title": r.title, "started_at": iso(r.started_at),
              "resolved_at": iso(r.resolved_at), "recovery_emailed": r.recovery_notified_at is not None}
             for r in rows]

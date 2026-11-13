@@ -42,6 +42,7 @@ from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
+    record_attention,
 )
 from utils.heartbeat import ping_heartbeat, unset_heartbeats  # noqa: E402
 from utils.worklog import file_logger  # noqa: E402
@@ -177,10 +178,16 @@ def shut_down(jobs, log, wait_s=STOP_WAIT_S, grace_s=STOP_SUBPROCESS_GRACE_S, fi
 
 def report_attention(stdout):
     """Send download_data.py's ATTENTION: lines (stored rows a newer file no longer has, kept for a person to
-    decide) to Sentry as warnings; the run itself still succeeded."""
-    for line in (stdout or "").splitlines():
+    decide) to Sentry as warnings, and record them for the daily digest (utils/jobs.record_attention), which lists
+    them; the run itself still succeeded."""
+    lines = (stdout or "").splitlines()
+    for line in lines:
         if line.startswith("ATTENTION:"):
             capture_job_warning(line)
+    try:
+        record_attention(lines, datetime.now(SITE_TZ))
+    except OSError as e:   # they are in this log and in Sentry still
+        timestamped_print_download(f"[WARN] Couldn't record the ATTENTION: lines for the daily digest: {e}")
 
 def run_download_data():
     """Run download_data.py. It downloads every new Borealis file and imports each one itself
@@ -569,7 +576,7 @@ def alert_check_job():
         from inject_from_api import app as ingestion_app   # its app (and connection pool) is reused, not rebuilt
         with ingestion_app.app_context():
             summary = check_alerts.run(log=timestamped_print_alerts)
-        ok = summary["email"] != "failed"
+        ok = summary["email"] not in ("failed", "waiting")   # waiting: an earlier send failed, retried later
     except Exception as e:
         timestamped_print_alerts(f"[ERROR] The alert check failed: {type(e).__name__}: {e}")
         capture_job_error(e)

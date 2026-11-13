@@ -199,6 +199,78 @@ class BuildDigestTests(TestCase):
         self.assertIn("welldb_restore_check", body)
         self.assertNotIn("left behind", build_digest("2026-11-10", freshness, {}, [], None, leftover_databases=[])[1])
 
+    def test_sampling_rows_needing_a_decision(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        entry = {"at": "2026-11-09T21:00:00-05:00",
+                 "text": "aw_2026.csv (ID: 57195): 3 rows present in the DB but not in the latest file were kept"}
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[entry])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: aw_2026.csv (ID: 57195): "
+                      "3 rows present in the DB but not in the latest file were kept\n\nThe [WARN] lines", body)
+        _, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[])
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- none", body)
+        self.assertIn("could not be read: ValueError", build_digest(
+            "2026-11-10", freshness, {}, [], None, attention={"error": "ValueError"})[1])
+        self.assertNotIn("Sampling data", build_digest("2026-11-10", freshness, {}, [], None)[1])
+
+    def test_the_new_sections_together_by_keyword(self):
+        """recoveries, quiet_kinds, missed, attention, unset_heartbeats and leftover_databases passed together, as
+        scripts/daily_digest.py does: each lands in its own section (keywords, so one added later can't shift them)."""
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        recovery = {"id": 1, "kind": "SUSPECT_VALUES", "key": "suspect:WQData:4501:ODO", "title": "t",
+                    "started_at": "2026-11-09T10:00:00-05:00", "resolved_at": "2026-11-09T12:00:00-05:00",
+                    "recovery_emailed": False}
+        missed = [{"id": 2, "kind": "STALE_SENSOR", "key": "stale:WQData:4501", "title": "t",
+                   "started_at": "2026-11-07T10:00:00-05:00", "resolved_at": "2026-11-08T09:00:00-05:00"}]
+        attention = [{"at": "2026-11-09T21:00:00-05:00", "text": "a.csv: 2 corrections not applied"}]
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None, recoveries=[recovery],
+                                     quiet_kinds=frozenset({"VENDOR_DOWN"}), missed=missed, attention=attention,
+                                     unset_heartbeats=["HEALTHCHECK_URL_RESTORE"],
+                                     leftover_databases=["welldb_restore_check"])
+        # The attention line, the unset heartbeats and the leftover databases.
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 3 to check")
+        self.assertIn("## Heartbeats not set (these jobs, or the whole worker, could stop with nobody told)\n\n"
+                      "- `HEALTHCHECK_URL_RESTORE`", body)
+        self.assertIn("- `welldb_restore_check`", body)
+        self.assertLess(body.index("Restore drill databases left behind"), body.index("Alerts recovered"))
+        self.assertIn("## Alerts recovered in the last 24 h\n\n- **Water quality station 4501 dissolved oxygen**: "
+                      "readings back to normal. Mon Nov 9, 10:00 → Mon Nov 9, 12:00 (2 h). Email pending", body)
+        self.assertIn("## Older recoveries that could not be emailed\n\n- **Water quality station 4501**: reporting "
+                      "again. Sat Nov 7, 10:00 → Sun Nov 8, 09:00 (23 h)", body)
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: a.csv: 2 corrections "
+                      "not applied", body)
+
+
+class AttentionRecordTests(TestCase):
+    """utils/jobs.record_attention: download_data.py's ATTENTION: lines, kept for the daily digest."""
+
+    def test_records_only_attention_lines_and_keeps_two_weeks(self):
+        import tempfile
+        from utils.jobs import recent_attention, record_attention
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "sampling_attention.json")
+            now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=dt.timezone.utc)
+            self.assertEqual(recent_attention(now, path), [])   # nothing recorded yet
+            self.assertEqual(record_attention(["DEBUG: x", "ATTENTION: old one"], now - dt.timedelta(days=20), path), 1)
+            self.assertEqual(record_attention(["SUMMARY: 1 new", "ATTENTION: a.csv: 2 corrections not applied"],
+                                              now, path), 1)
+            self.assertEqual(record_attention(["OUTPUT: NO_NEW_FILES"], now, path), 0)
+            self.assertEqual([e["text"] for e in recent_attention(now - dt.timedelta(days=30), path)],
+                             ["a.csv: 2 corrections not applied"])   # the 20-day-old one was dropped
+            self.assertEqual(recent_attention(now + dt.timedelta(seconds=1), path), [])
+            with open(path, "w") as f:
+                f.write("{not json")
+            with self.assertRaises(ValueError):
+                recent_attention(now, path)
+            self.assertEqual(record_attention(["ATTENTION: new"], now, path), 1)   # a damaged record is replaced
+            self.assertEqual([e["text"] for e in recent_attention(now, path)], ["new"])
+
 
 class ReadGroupsTests(TestCase):
     def test_counts_gaps_and_findings_from_the_database(self):
@@ -336,6 +408,17 @@ class SendEmailTests(TestCase):
     def test_a_relay_without_login_may_be_plain(self):
         self.assertEqual(self.send(False, user="", password=""), ["ehlo", "send"])
 
+    def test_message_id_when_given(self):
+        import daily_digest
+        sent = []
+        FakeSMTP.offer_starttls, FakeSMTP.instances = True, []
+        settings = {"host": "relay", "port": 587, "user": "", "password": "", "from": "well@x.ca"}
+        with mock.patch.object(daily_digest.smtplib, "SMTP", FakeSMTP), \
+                mock.patch.object(FakeSMTP, "send_message", lambda self, message: sent.append(message)):
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body", None, "<well-alert.ab12@x.ca>")
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body")
+        self.assertEqual([m["Message-ID"] for m in sent], ["<well-alert.ab12@x.ca>", None])
+
 
 class DeliverTests(TestCase):
     SMTP = {"SMTP_HOST": "relay", "SMTP_PORT": "587", "SMTP_FROM": "well@x.ca"}
@@ -368,6 +451,22 @@ class DeliverTests(TestCase):
             raise RuntimeError("relay doesn't offer STARTTLS")
         self.assertEqual(self.deliver({**self.SMTP, "ALERT_EMAILS": "a@x.ca"}, send=refuse)[0], 1)
         self.assertEqual(self.deliver({"SMTP_HOST": "relay", "SMTP_PORT": "x", "ALERT_EMAILS": "a@x.ca"})[0], 1)
+
+    def test_what_it_reported_is_recorded_only_once_emailed(self):
+        import daily_digest
+        smtp = {**self.SMTP, "ALERT_EMAILS": "a@x.ca"}
+
+        def refuse(*a):
+            raise OSError("connection refused")
+        def accept(*a):
+            pass
+        # (env, --dry-run, sender, whether on_sent runs): emailed; dry run; SMTP not set up; sending failed
+        for env, dry_run, send, reported in ((smtp, False, accept, True), (smtp, True, accept, False),
+                                             ({}, False, accept, False), (smtp, False, refuse, False)):
+            calls = []
+            with mock.patch("builtins.print"):
+                daily_digest.deliver("subject", "body", dry_run, env=env, send=send, on_sent=lambda: calls.append(1))
+            self.assertEqual(calls, [1] if reported else [], (env, dry_run, send))
 
 
 if __name__ == "__main__":

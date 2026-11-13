@@ -343,6 +343,8 @@ class CheckAlertsTests(unittest.TestCase):
         self.html = []
         self.logs = []
         check_alerts._last_unsent["signature"] = None
+        check_alerts._send_failures.update(count=0, signature=frozenset(), next_try=None)
+        self.message_ids = []
 
     def tearDown(self):
         self.db.session.remove()
@@ -357,9 +359,10 @@ class CheckAlertsTests(unittest.TestCase):
                 recorded_at=site(newest - dt.timedelta(minutes=10 * i))))
         self.db.session.commit()
 
-    def send(self, settings, recipients, subject, body, html=None):
+    def send(self, settings, recipients, subject, body, html=None, message_id=None):
         self.sent.append((recipients, subject, body))
         self.html.append(html)
+        self.message_ids.append(message_id)
 
     def run_at(self, now, env=SMTP, send=None):
         return self.check.run(now=now, env=dict(env), send=send or self.send, log=self.logs.append)
@@ -775,6 +778,224 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertEqual((self.open_keys(), self.incidents()[0].close_reason), ([], "superseded"))
         with self.assertRaisesRegex(ValueError, "ALERT_EXCLUDED_SERIES"):
             self.run_at(NOW, env={**SMTP, "ALERT_EXCLUDED_SERIES": "4501"})
+
+    def test_winter_weather_hiccups_reopen_the_site_alert(self):
+        """Winter: a logger silent for days, not muted, and the weather station missing its uploads now and then.
+        The first miss is "every LI-COR station silent", once. Later misses reopen that incident, hours apart and long
+        after ALERT_REOPEN_HOURS, instead of emailing it as new; it gets its daily reminder like any open incident."""
+        from utils.digest import LOGGER_SENSORS
+        logger = next(iter(LOGGER_SENSORS))
+
+        def h(hours, minutes=0):
+            return NOW + dt.timedelta(hours=hours, minutes=minutes)
+        self.add_readings("Logger", logger, "Water Surface Elevation", NOW - dt.timedelta(days=2))
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(minutes=10))
+        self.record("LI-COR")
+        self.assertEqual(self.emails_at(NOW), ["sent"])                                 # 1: the logger
+        self.assertEqual(self.emails_at(h(4)), ["sent"])                                # 2: the whole site
+        self.assertTrue(self.sent[1][1].startswith("[WELL] New: All LI-COR stations silent"), self.sent[1][1])
+        # Back from 4:50, added as they arrive (readings dated after the check count as wrong, so as silent).
+        self.add_readings("Weather", WEATHER, "Rain", h(5), count=2)
+        self.assertEqual(self.emails_at(h(5)), [None])                                  # narrowed: quiet
+        self.add_readings("Weather", WEATHER, "Rain", h(8), count=18)                   # 5:10 to 8:00
+        self.assertEqual(self.emails_at(h(8)), [None])
+        self.assertEqual(self.open_keys(), [f"stale:LI-COR:{logger}"])
+        self.assertEqual(self.emails_at(h(11, 10)), [None])                             # missed again: reopened
+        self.assertEqual(self.open_keys(), ["stale:LI-COR"])
+        self.add_readings("Weather", WEATHER, "Rain", h(11, 15), count=1)
+        self.assertEqual(self.emails_at(h(11, 20), h(20)), [None, None])                # and again, 8 h later
+        self.assertEqual(self.open_keys(), ["stale:LI-COR"])
+        self.assertEqual(self.emails_at(h(28, 10)), ["sent"])                           # 3: its daily reminder
+        self.assertEqual(self.kinds(), ["new", "new", "reminder"])
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Still open: All LI-COR stations silent"), self.sent[2][1])
+        self.assertEqual(sum(i.incident_key == "stale:LI-COR" for i in self.incidents()), 1)
+
+    def test_a_suspect_series_that_goes_silent_hands_over_to_the_silence_alert(self):
+        self.add_readings("Quality", WQ, "ODO", NOW, count=36, value=lambda i: 7.2)
+        self.record("WQData")
+        self.run_at(NOW)
+        self.assertIn("dissolved oxygen readings look wrong", self.sent[0][1])
+        later = NOW + dt.timedelta(hours=2, minutes=30)   # 16:30 Toronto: the sonde should be reporting
+        self.record("WQData", now=later)
+        self.assertEqual(self.run_at(later)["email"], "sent")
+        _, subject, body = self.sent[1]
+        self.assertTrue(subject.startswith("[WELL] New: Water quality station 4501 silent"), subject)
+        self.assertNotIn("## Recovered", body)
+        self.assertEqual(self.open_keys(), [f"stale:WQData:{WQ}"])
+        suspect = next(i for i in self.incidents() if i.kind == SUSPECT_VALUES)
+        self.assertEqual(suspect.close_reason, "superseded")
+        self.assertIsNone(self.run_at(later + dt.timedelta(hours=3))["email"])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_failed_sends_back_off_up_to_an_hour(self):
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+
+        def broken(*args):
+            raise OSError("timed out")
+        outcomes = {m: self.run_at(NOW + dt.timedelta(minutes=m), send=broken)["email"] for m in range(0, 140, 10)}
+        self.assertEqual([m for m, outcome in outcomes.items() if outcome == "failed"], [0, 10, 30, 70, 130])
+        self.assertEqual(set(outcomes.values()), {"failed", "waiting"})
+        self.assertTrue(any("trying again in 60 min" in line for line in self.logs))
+        # Something new is tried at once, even while waiting.
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=5))
+        self.record("LI-COR", now=NOW + dt.timedelta(minutes=140))
+        self.assertEqual(self.run_at(NOW + dt.timedelta(minutes=140), send=broken)["email"], "failed")
+        self.assertEqual(self.run_at(NOW + dt.timedelta(minutes=150))["email"], "waiting")
+        self.assertEqual(self.run_at(NOW + dt.timedelta(minutes=200))["email"], "sent")   # 1 h after 140
+        self.assertEqual(self.sent[0][1], "[WELL] 2 new")
+        self.assertIsNone(self.run_at(NOW + dt.timedelta(minutes=210))["email"])
+
+    def test_a_retried_email_keeps_its_message_id(self):
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        tried = []
+
+        def accepted_then_timed_out(settings, recipients, subject, body, html=None, message_id=None):
+            tried.append(message_id)
+            raise TimeoutError("timed out waiting for the relay to answer")
+        self.run_at(NOW, send=accepted_then_timed_out)
+        self.run_at(NOW + dt.timedelta(minutes=10))
+        self.assertRegex(tried[0], r"^<well-alert\.[0-9a-f]{32}@test\.ca>$")
+        self.assertEqual(self.message_ids, tried)                  # the retry: the same Message-ID
+        self.run_at(NOW + dt.timedelta(hours=25))                  # the reminder is another email
+        self.assertNotEqual(self.message_ids[1], tried[0])
+
+    def test_a_recovery_never_emailed_goes_to_the_digest(self):
+        from utils.alert_state import mark_recoveries_reported, missed_recoveries
+        from utils.digest import build_digest
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        self.run_at(NOW)
+
+        def broken(*args):
+            raise OSError("connection refused")
+        self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(minutes=5), count=1)
+        for hours in range(1, 28):   # the relay is down for a day and more, while the station reports
+            self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(hours=hours, minutes=-5), count=1)
+            self.run_at(NOW + dt.timedelta(hours=hours), send=broken if hours < 27 else None)
+        later = NOW + dt.timedelta(hours=27)
+        self.assertEqual(len(self.sent), 1)                        # the alert check has stopped retrying it
+        missed = missed_recoveries(later - dt.timedelta(days=14), later - alerts.RECOVERY_WINDOW)
+        self.assertEqual([r["key"] for r in missed], [f"stale:WQData:{WQ}"])
+        freshness = assess_freshness([latest_row("Quality", WQ, "ODO", dt.timedelta(minutes=10))], later, {})
+        _, body = build_digest("2026-11-12", freshness, {}, [], None, missed=missed)
+        self.assertIn("## Older recoveries that could not be emailed\n\n- **Water quality station 4501**: reporting "
+                      "again. Wed Nov 11, 11:00 → Wed Nov 11, 15:00 (4 h)", body)
+        mark_recoveries_reported([r["id"] for r in missed], later)
+        self.assertEqual(missed_recoveries(later - dt.timedelta(days=14), later - alerts.RECOVERY_WINDOW), [])
+
+    def test_a_reopened_site_alert_counts_its_reminder_from_the_last_email(self):
+        """The site alert narrowed to the logger, whose daily reminder then went out; when the site alert reopens two
+        hours later it doesn't send another "Still open" on its own, older schedule."""
+        from utils.digest import LOGGER_SENSORS
+        logger = next(iter(LOGGER_SENSORS))
+
+        def h(hours, minutes=0):
+            return NOW + dt.timedelta(hours=hours, minutes=minutes)
+        self.add_readings("Logger", logger, "Water Surface Elevation", NOW - dt.timedelta(days=2))
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(minutes=10))
+        self.record("LI-COR")
+        self.assertEqual(self.emails_at(NOW, h(4)), ["sent", "sent"])                    # the logger, then the site
+        self.add_readings("Weather", WEATHER, "Rain", h(5), count=1)                    # back at 5:00
+        self.assertEqual(self.emails_at(h(5)), [None])
+        self.add_readings("Weather", WEATHER, "Rain", h(28), count=138)                 # 5:10 to 28:00
+        self.assertEqual(self.emails_at(h(28, 10)), ["sent"])                           # the logger's reminder
+        self.assertTrue(self.sent[2][1].startswith("[WELL] Still open: Logger"), self.sent[2][1])
+        self.assertEqual(self.emails_at(h(31, 10)), [None])                              # site silent again
+        self.assertEqual(self.open_keys(), ["stale:LI-COR"])
+        self.assertEqual(self.emails_at(h(52, 0)), [None])
+        self.assertEqual(self.emails_at(h(52, 20)), ["sent"])                            # 24 h after 28:10
+        self.assertEqual(self.kinds(), ["new", "new", "reminder", "reminder"])
+
+    def test_suspect_then_silent_then_suspect_is_not_new_again(self):
+        """A stuck probe, then the sonde silent (the silence alert takes over), then readings back and still stuck,
+        6.5 h after the suspect incident closed: it reopens rather than emailing "New" a second time."""
+        stuck = lambda i: 7.2   # noqa: E731
+        self.add_readings("Quality", WQ, "ODO", NOW, count=36, value=stuck)
+        self.record("WQData")
+        self.run_at(NOW)                                                                 # 1: suspect, new
+        silent = NOW + dt.timedelta(hours=2, minutes=30)
+        self.record("WQData", now=silent)
+        self.run_at(silent)                                                              # 2: silent, new
+        back = NOW + dt.timedelta(hours=9)
+        self.add_readings("Quality", WQ, "ODO", back, count=36, value=stuck)
+        self.record("WQData", now=back)
+        self.assertEqual(self.run_at(back)["email"], "sent")   # 3: the silence recovered; the suspect reopened
+        self.assertEqual(self.kinds(), ["new", "new", "recovered"])
+        _, subject, body = self.sent[2]
+        self.assertTrue(subject.startswith("[WELL] Recovered: Water quality station 4501 ("), subject)
+        self.assertNotIn("## New", body)
+        self.assertIn("## Open right now\n\n- **Water quality station 4501 dissolved oxygen**: readings look wrong",
+                      body)
+        self.assertEqual(self.open_keys(), [f"suspect:WQData:{WQ}:ODO"])
+        self.assertIsNone(self.run_at(back + dt.timedelta(minutes=10))["email"])
+        self.assertEqual(sum(i.kind == SUSPECT_VALUES for i in self.incidents()), 1)
+
+    def test_message_ids_differ_across_databases_and_fall_back_to_the_dashboard_host(self):
+        events = [("new", 1, "2026-11-11 19:00:00+00:00", 0)]
+        same_id_other_db = [("new", 1, "2026-03-02 08:10:00+00:00", 0)]
+        self.assertNotEqual(self.check.message_id(events, "well@test.ca"),
+                            self.check.message_id(same_id_other_db, "well@test.ca"))
+        self.assertTrue(self.check.message_id(events, "well", "welldash.mcmaster.ca").endswith("@welldash.mcmaster.ca>"))
+        self.assertTrue(self.check.message_id(events, "WELL <well@test.ca>", "x.ca").endswith("@test.ca>"))
+        self.add_readings("Quality", WQ, "ODO", NOW - dt.timedelta(hours=3))
+        self.record("WQData")
+        self.run_at(NOW, env={**SMTP, "SMTP_FROM": "well"})
+        self.assertTrue(self.message_ids[0].endswith("@welldash.mcmaster.ca>"), self.message_ids[0])
+
+    def test_quiet_recoveries_are_never_reported_as_missed_and_the_digest_marks_them(self):
+        from daily_digest import reported_ids
+        from utils.alert_state import mark_recoveries_reported, missed_recoveries, pending_recoveries
+        from utils.alert_state import recent_recoveries
+        quiet = Settings().quiet_kinds
+        self.add_readings("Quality", WQ, "ODO", NOW, count=36, value=lambda i: 7.2)          # suspect: quiet kind
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=5))          # silent: not quiet
+        self.record("WQData")
+        self.record("LI-COR")
+        self.run_at(NOW)
+        self.add_readings("Quality", WQ, "ODO", NOW + dt.timedelta(minutes=50), count=5, value=lambda i: 7.0 + i / 10)
+        self.add_readings("Weather", WEATHER, "Rain", NOW + dt.timedelta(minutes=5), count=1)
+
+        def broken(*args):
+            raise OSError("connection refused")
+        for minutes in (20, 50):
+            self.run_at(NOW + dt.timedelta(minutes=minutes), send=broken)
+        self.assertEqual(self.open_keys(), [])
+        recent = recent_recoveries(NOW - dt.timedelta(hours=1))
+        self.assertEqual({r["kind"]: r["recovery_emailed"] for r in recent}, {SUSPECT_VALUES: False, STALE_SENSOR: False})
+        suspect_id = next(r["id"] for r in recent if r["kind"] == SUSPECT_VALUES)
+        # The digest the next morning: only the quiet one is reported by it; the other is still being retried.
+        self.assertEqual(reported_ids(recent, [], quiet), [suspect_id])
+        mark_recoveries_reported(reported_ids(recent, [], quiet), NOW + dt.timedelta(hours=12))
+        self.assertEqual([i.kind for i in pending_recoveries(NOW - dt.timedelta(hours=1))], [STALE_SENSOR])
+        # A day and more later: the quiet kind is never listed as "could not be emailed", the other one is.
+        self.db.session.query(type(self.incidents()[0])).update({"recovery_notified_at": None})
+        self.db.session.commit()
+        later = NOW + dt.timedelta(hours=30)
+        missed = missed_recoveries(later - dt.timedelta(days=14), later - alerts.RECOVERY_WINDOW, quiet)
+        self.assertEqual([r["kind"] for r in missed], [STALE_SENSOR])
+        self.assertEqual(len(missed_recoveries(later - dt.timedelta(days=14), later - alerts.RECOVERY_WINDOW)), 2)
+
+    def test_a_reopened_site_alert_never_emailed_is_still_new(self):
+        """The site alert was recorded while SMTP was off, then narrowed to the logger, which was emailed once SMTP
+        was set up. When the site alert reopens it hasn't been emailed itself, so it is emailed as new."""
+        from utils.digest import LOGGER_SENSORS
+        logger = next(iter(LOGGER_SENSORS))
+
+        def h(hours, minutes=0):
+            return NOW + dt.timedelta(hours=hours, minutes=minutes)
+        self.add_readings("Logger", logger, "Water Surface Elevation", NOW - dt.timedelta(days=2))
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=4))
+        self.record("LI-COR")
+        self.assertEqual(self.run_at(NOW, env={})["email"], "off")                     # the site, not emailed
+        self.add_readings("Weather", WEATHER, "Rain", h(1), count=6)
+        self.assertEqual(self.run_at(h(1, 10), env={})["email"], "off")                # narrowed to the logger
+        self.assertEqual(self.emails_at(h(1, 20)), ["sent"])                            # SMTP on: the logger
+        self.assertTrue(self.sent[0][1].startswith("[WELL] New: Logger"), self.sent[0][1])
+        self.assertEqual(self.emails_at(h(5)), ["sent"])                                # the site again: new
+        self.assertTrue(self.sent[1][1].startswith("[WELL] New: All LI-COR stations silent"), self.sent[1][1])
+        self.assertEqual(sum(i.incident_key == "stale:LI-COR" for i in self.incidents()), 1)   # reopened, not a copy
 
     def test_record_never_raises(self):
         from utils.alert_state import record_vendor_result
