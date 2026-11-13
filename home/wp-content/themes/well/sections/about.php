@@ -1,6 +1,7 @@
 <?php
 // This section renders the "About Us" content for the WELL theme in WordPress.
 // It displays the WELL logo and a brief description with a call-to-action button.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 ?>
 <section class="content-area cool-grey my-4">
   <div class="container">

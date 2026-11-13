@@ -1,10 +1,12 @@
 <?php
 // This is the "Dashboard" page template for the WELL WordPress theme.
 // It displays an embedded dashboard, links to archived datasets, and related resources.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 get_header();
 ?>
 
+<main id="site-content">
 <banner>
   <div class="banner-carousel" data-flickity='{ "cellAlign": "left", "contain": true, "adaptiveHeight": true, "pageDots": false, "autoPlay": 15000, "wrapAround": true }'>
     <div class="carousel-cell d-flex cool-grey text-black banner-carousel-left flex-column">
@@ -20,7 +22,7 @@ get_header();
               </div>
               <div class="col-lg-3 text-lg-right py-2">
                 <?php $dashboard_url = getenv('DASHBOARD_URL') ?: 'https://welldash.mcmaster.ca'; ?>
-                <a class="btn my-0 focusable btn-secondary" href="<?php echo esc_url($dashboard_url); ?>" target="_blank">Dashboard</a>
+                <a class="btn my-0 focusable btn-secondary" href="<?php echo esc_url($dashboard_url); ?>" target="_blank" rel="noopener noreferrer">Dashboard</a>
               </div>
             </div>
           </div>
@@ -123,6 +125,7 @@ wp_enqueue_script(
     </div>
   </div>
 </section>
+</main>
 
 <?php
 get_footer();

@@ -1,6 +1,7 @@
 <?php
 // This file renders the HTML <head> and site header for the WELL WordPress theme.
 // It includes meta tags, favicon links, accessibility skip links, McMaster and site navigation menus.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 ?>
 <!DOCTYPE html>
 <html <?php language_attributes(); ?>>
@@ -26,7 +27,7 @@
         </div>
         <div class="header__inner">
             <a href="https://www.mcmaster.ca" id="mcmaster-brand" class="nav-item" style="float:left; display:block; z-index:1000; position:relative; padding-top: 8px;">
-                <img src="<?php echo get_template_directory_uri(); ?>/img/logo.svg" style="height: auto; margin: 0 12px 0 -12px;" alt="McMaster logo" />
+                <img src="<?php echo esc_url( get_template_directory_uri() . '/img/logo.svg' ); ?>" style="height: auto; margin: 0 12px 0 -12px;" alt="McMaster logo" />
                 <span class="sr-only">McMaster logo</span>
             </a>
             <div id="mcmaster-header__title">
@@ -36,7 +37,7 @@
         </div>
         <div id="navLinks" style="display: flex; align-items: center; width: auto; z-index:1200; transition: width 0s; margin-top: 16px; justify-content: flex-end;">
             <a href="<?php echo esc_url( home_url( '/' ) ); ?>" id="well-home-logo" class="nav-item" aria-label="WELL Home">
-                <img src="<?php echo get_template_directory_uri(); ?>/img/welllogo.svg" alt="WELL logo" />
+                <img src="<?php echo esc_url( get_template_directory_uri() . '/img/welllogo.svg' ); ?>" alt="WELL logo" />
             </a>
         </div>
     </header>
@@ -47,7 +48,7 @@
             <button class="search-close" aria-label="Close search">&times;</button>
             <h2>Search McMaster</h2>
             <form role="search" method="get" action="<?php echo esc_url( home_url( '/' ) ); ?>">
-                <input type="search" name="s" class="search-input" placeholder="Search for pages, people, or resources..." value="<?php echo get_search_query(); ?>" />
+                <input type="search" name="s" class="search-input" placeholder="Search for pages, people, or resources..." value="<?php echo esc_attr( get_search_query( false ) ); ?>" />
                 <button type="submit" class="search-submit">Search</button>
             </form>
             <div class="search-results"></div>
@@ -113,7 +114,7 @@
                     'container_id'    => 'siteMenu',
                     'menu_class'      => 'navbar-nav',
                     'fallback_cb'     => '',
-                    'menu_id'         => 'navbar-nav,mr-auto',
+                    'menu_id'         => 'site-menu-list',
                     'depth'           => 3,
                     'walker'          => new WP_Bootstrap_Navwalker(),
                 )

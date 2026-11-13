@@ -11,8 +11,16 @@ in it can be fetched from the site.
   for PHP/Apache fixes, and WordPress core and plugins are updated in `home/` (through WordPress itself; Dependabot
   doesn't cover them).
 - **The theme** is `home/wp-content/themes/well`, a custom PHP template:
-  - **Bootstrap** grid and utility classes for responsive layout;
-  - a **Flickity** banner carousel with adaptive height;
+  - **Bootstrap** grid and utility classes for responsive layout, and Bootstrap 4.6.2's JavaScript
+    (`js/bootstrap.min.js`, the unmodified file from the npm package) for the menu, modals and dropdowns;
+  - a **Flickity** banner carousel with adaptive height, from cdnjs with an integrity hash
+    (`well_sri_hashes()` in `functions.php`; a new version needs its new hash there);
+  - templates: `front-page.php` (home), `page-about.php`, `page-dashboard.php`, `page-news.php`, `single.php`
+    (a post), `page.php` (any other page written in wp-admin), `search.php`, `404.php`, and `index.php` for any
+    other list of posts (a category or month). Each template has a `<main id="site-content">` for the
+    "Skip to main content" link, and every PHP file stops if requested directly (`defined('ABSPATH') || exit;`);
+  - the page's `<title>`, meta description and link-preview (Open Graph) tags, from `functions.php`
+    (`well_meta_tags()`); the About, Dashboard and News descriptions are written there;
   - responsive images via `srcset`/`sizes` (pre-sized WebP copies in `img/media/`, made by
     `wordpress/theme-images.mjs`), and alt text throughout;
   - a dedicated Dashboard page (`page-dashboard.php`) that embeds the dashboard in an iframe, from `DASHBOARD_URL`.
