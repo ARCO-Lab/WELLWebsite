@@ -122,13 +122,22 @@ stamps() {
   done | sort -ru
 }
 
-# The stamps retention deletes: all but the newest backup of each of the KEEP_DAILY most recent days that have one,
-# of each of the KEEP_WEEKLY most recent ISO weeks, and of each of the KEEP_MONTHLY most recent months.
+# The stamps retention deletes: all but the newest complete backup (database dump and uploads archive) of each of the
+# KEEP_DAILY most recent days that have one, of each of the KEEP_WEEKLY most recent ISO weeks, and of each of the
+# KEEP_MONTHLY most recent months. A backup with only one of its two files (the uploads archive failed that night)
+# takes no slot, so nights of failing archives can't push complete backups out: up to KEEP_DAILY of them are kept
+# while they are newer than every complete backup (they are then the newest database dumps), the others are deleted.
 stamps_to_prune() {
-  local s day week month keep
+  local s day week month keep partial_kept=0 complete_seen=0
   local -A days=() weeks=() months=()
   while read -r s; do
     [ -n "$s" ] || continue
+    if [ ! -e "$DIR/$DB_PREFIX$s$DB_SUFFIX" ] || [ ! -e "$DIR/$UP_PREFIX$s$UP_SUFFIX" ]; then
+      if [ "$complete_seen" = 0 ] && [ "$partial_kept" -lt "$KEEP_DAILY" ]; then partial_kept=$((partial_kept + 1))
+      else echo "$s"; fi
+      continue
+    fi
+    complete_seen=1
     day=${s:0:8} month=${s:0:6} keep=0
     week=$(date -d "$day" +%G-%V)
     if [ -z "${days[$day]-}" ] && [ "${#days[@]}" -lt "$KEEP_DAILY" ]; then days[$day]=1; keep=1; fi
@@ -161,18 +170,29 @@ find_db() {
   [ -n "$DB" ] || die "the db container isn't running (docker compose ps -q db found nothing in $ROOT)"
 }
 
-# Checks a gzipped dump: it decompresses in full, mysqldump's closing line is there (a dump cut short has none), and
-# it creates the options table every WordPress database has. Prints the number of tables, or the reason and returns 1.
-# (grep reads to the end rather than -q, which would stop early and make gzip fail under pipefail.)
+# Checks a gzipped dump: it decompresses in full, mysqldump's closing line is there (a dump cut short has none), it
+# creates the options table every WordPress database has, and the posts and users tables with the same prefix hold
+# rows (mysqldump writes INSERT lines only for a table that has some), so a dump of an emptied site fails too. Prints
+# the number of tables, or the reason and returns 1. (grep reads to the end rather than -q, which would stop early
+# and make gzip fail under pipefail.)
 # shellcheck disable=SC2016  # the backticks are MySQL's quoting, matched literally
 check_dump() {
-  local tables
+  local tables options prefix t
   gzip -t "$1" 2>/dev/null || { echo "the dump doesn't decompress"; return 1; }
   gzip -dc "$1" | tail -n 1 | grep '^-- Dump completed' >/dev/null \
     || { echo "the dump has no '-- Dump completed' line at the end, so it is cut short"; return 1; }
   tables=$(gzip -dc "$1" | grep -c '^CREATE TABLE `' || true)
-  gzip -dc "$1" | grep -E '^CREATE TABLE `[A-Za-z0-9_]*options`' >/dev/null \
-    || { echo "the dump has no options table ($tables tables)"; return 1; }
+  # The shortest table name ending in options is WordPress's own (plugins may add others, e.g. wp_yoast_options)
+  options=$(gzip -dc "$1" | sed -n 's/^CREATE TABLE `\([A-Za-z0-9_]*options\)`.*/\1/p' \
+    | awk '{ print length($0), $0 }' | sort -n | awk 'NR == 1 { print $2 }')
+  [ -n "$options" ] || { echo "the dump has no options table ($tables tables)"; return 1; }
+  prefix=${options%options}
+  for t in posts users; do
+    gzip -dc "$1" | grep -F "CREATE TABLE \`$prefix$t\`" >/dev/null \
+      || { echo "the dump has no $prefix$t table ($tables tables)"; return 1; }
+    gzip -dc "$1" | grep -F "INSERT INTO \`$prefix$t\`" >/dev/null \
+      || { echo "the dump's $prefix$t table is empty, which a WordPress site's never is"; return 1; }
+  done
   echo "$tables"
 }
 
@@ -246,7 +266,7 @@ back_up() {
 }
 
 restore_check() {
-  local stamp=$STAMP_ARG db_file up_file image name tables options prefix siteurl posts files restored
+  local stamp=$STAMP_ARG db_file up_file image name tables options prefix siteurl posts users files restored
   [ -n "$stamp" ] || stamp=$(stamps | sed -n 1p)
   [ -n "$stamp" ] || die "no backups in $DIR"
   db_file=$DIR/$DB_PREFIX$stamp$DB_SUFFIX up_file=$DIR/$UP_PREFIX$stamp$UP_SUFFIX
@@ -290,9 +310,12 @@ restore_check() {
   prefix=${options%options}
   siteurl=$(restored_sql "SELECT option_value FROM \`$options\` WHERE option_name = 'siteurl'")
   [ -n "$siteurl" ] || die "the restored $options table has no siteurl"
-  posts=$(restored_sql "SELECT COUNT(*) FROM \`${prefix}posts\`" 2>/dev/null || echo "?")
-  log "Restore check passed for $stamp: $restored tables restored, siteurl $siteurl, $posts rows in ${prefix}posts;" \
-    "uploads archive: $files. The throwaway container is deleted now."
+  posts=$(restored_sql "SELECT COUNT(*) FROM \`${prefix}posts\`") || die "the restored database has no ${prefix}posts"
+  users=$(restored_sql "SELECT COUNT(*) FROM \`${prefix}users\`") || die "the restored database has no ${prefix}users"
+  [ "$posts" -gt 0 ] && [ "$users" -gt 0 ] \
+    || die "the restored ${prefix}posts ($posts rows) and ${prefix}users ($users rows) must both have rows"
+  log "Restore check passed for $stamp: $restored tables restored, siteurl $siteurl, $posts rows in ${prefix}posts," \
+    "$users in ${prefix}users; uploads archive: $files. The throwaway container is deleted now."
 }
 # Runs a query ($1) on the restored database and prints the result without headers
 restored_sql() { "$DOCKER" exec "$RESTORE_CONTAINER" mysql -uroot -N -B -e "$1" restore_check; }

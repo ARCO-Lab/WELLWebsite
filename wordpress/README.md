@@ -56,8 +56,9 @@ container.
   ever given its own uploads folder (owned by `www-data`), keep its files world-readable (WordPress's default, 644);
   one the cron user can't read fails the run with tar's "Permission denied".
 - **Checked**: each file is written as a hidden `.partial` file and renamed only once it passes its check. The dump
-  must decompress, end with mysqldump's `-- Dump completed` line (a dump cut short has none) and create the options
-  table; the archive must list back. The dump is checked and kept first, so if the uploads archive then fails, the
+  must decompress, end with mysqldump's `-- Dump completed` line (a dump cut short has none), create the options
+  table, and hold rows for the posts and users tables (`wp_posts`, `wp_users`), so a dump of an emptied site fails;
+  the archive must list back. The dump is checked and kept first, so if the uploads archive then fails, the
   run fails (exit 1, a `/fail` ping naming the uploads) but the night's database dump is still there, without its
   archive; `--restore-check` on that backup checks the dump and says the archive is missing. A failed step leaves
   nothing that looks like a good file, and the next run deletes whatever a killed run left behind. Only one run goes at a time (`.backup.lock`; a second run waits up to 15 minutes). A run
@@ -65,8 +66,11 @@ container.
   2048) free.
 - **Retention**, applied only after a good backup: it keeps the newest backup of each of the last 7 days
   (`WP_BACKUP_KEEP_DAILY`), 8 ISO weeks (`WP_BACKUP_KEEP_WEEKLY`) and 12 months (`WP_BACKUP_KEEP_MONTHLY`), so at
-  most 27 backups. Both files of a backup are deleted together. Only files with exactly those names are ever deleted,
-  so a copy saved under another name, such as `wordpress-db-before-update.sql.gz`, is kept.
+  most 27 backups. Only complete backups (both files) count: a database-only backup, from a night the uploads
+  archive failed, takes no slot, so failing nights can't push complete backups out. Up to 7 of those are kept while
+  they are newer than every complete backup, and the rest are deleted. Both files of a backup are deleted together.
+  Only files with exactly those names are ever deleted, so a copy saved under another name, such as
+  `wordpress-db-before-update.sql.gz`, is kept.
 - **Monitoring**: when `HEALTHCHECK_URL_WP_BACKUP` is set (a Healthchecks.io ping URL), the script pings `<url>/start`
   when it begins, `<url>` with a one-line summary when it succeeds, and `<url>/fail` with the reason when it fails.
   Set the check's period to 1 day.
@@ -84,7 +88,8 @@ retention.
 
 **Restore check** (optional; once a month is enough): `./wordpress/backup.sh --restore-check` loads the newest dump
 (or the one named with `--restore-check YYYYmmdd-HHMM`) into a throwaway container running the same MySQL image, with
-no network. It checks that every table came back and that the options table has a `siteurl`, lists the uploads
+no network. It checks that every table came back, that the options table has a `siteurl` and that the posts and
+users tables have rows, lists the uploads
 archive, and then deletes the container. It changes nothing else and pings nothing.
 
 **Restoring for real.** First take a backup of the current state, even if it is broken

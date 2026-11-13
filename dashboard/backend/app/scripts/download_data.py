@@ -6,6 +6,8 @@
 # A file that fails validation is recorded as refused (logs/processed.json, by Dataverse file id), its problems are
 # logged once, and it isn't retried: a corrected upload gets a new id. A run that refused or failed to import a file
 # reports OUTPUT: REJECTED_<n>_FILES or FAILED_<n>_FILES and exits 1, so the scheduler reports it as a failure.
+# A logs/processed.json that exists but can't be read stops the run before anything is downloaded (exit 1, so the
+# download heartbeat gets /fail), and a copy is kept in logs/processed.json.bad; it is never read as empty.
 # Files are imported oldest first (by upload date, then Dataverse file id, which only grows, so same-day uploads keep
 # their upload order), so when a newer file has a different value for a stored reading, the newer value is the one
 # kept (inject_sampling.py applies it and logs a [CORRECTED] line). A file imported after a newer one (an older file
@@ -31,6 +33,7 @@ from dotenv import load_dotenv
 from dateutil import parser as date_parser
 import io
 import re
+import shutil
 import tempfile
 import subprocess
 
@@ -51,24 +54,50 @@ BOREALIS_AW_PERSISTENT_ID = Config.BOREALIS_SAMPLING_PERSISTENT_ID
 STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "logs", "processed.json")
 STATE_FILE = os.path.abspath(STATE_FILE)
 
+class StateFileError(Exception):
+    """logs/processed.json exists but can't be read as the state file."""
+
+
+def keep_bad_copy(path):
+    """Copy an unreadable state file to <path>.bad (replacing an older copy), so a person can see what was in it
+    and repair it. The path of the copy, or None if the copy failed too."""
+    try:
+        shutil.copy2(path, path + ".bad")
+        return path + ".bad"
+    except OSError:
+        return None
+
+
 def load_state():
     """The state file: {"processed_files": [...], "refused_files": [...]}, each entry a dataset file (id, filename,
     create_date). A refused file failed validation; its entry also has "errors" (the problem count) and
-    "refused_at". Both lists are keyed by the Dataverse file id, which a corrected re-upload doesn't share."""
+    "refused_at". Both lists are keyed by the Dataverse file id, which a corrected re-upload doesn't share.
+
+    No file means an empty state (the first run). A file that exists but can't be read raises StateFileError, after
+    a copy is kept in processed.json.bad: read as empty, every dataset file would be imported again, oldest first,
+    bringing back rows a person deleted and undoing corrections that were held back."""
     print("DEBUG: Loading processed files state from", STATE_FILE)
     state = {"processed_files": [], "refused_files": []}
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                data = json.load(f)
-            state["processed_files"] = data.get("processed_files", [])
-            state["refused_files"] = data.get("refused_files", [])
-        except Exception as e:
-            print(f"ERROR: Failed to load {STATE_FILE}: {e}")
-            print("DEBUG: Using an empty state")
-            return {"processed_files": [], "refused_files": []}
-    else:
+    if not os.path.exists(STATE_FILE):
         print("DEBUG: No state file found, starting from an empty state")
+        return state
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("it doesn't hold a JSON object")
+        for key in state:
+            value = data.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(entry, dict) for entry in value):
+                raise ValueError(f"{key} isn't a list of files")
+            state[key] = value
+    except (OSError, ValueError) as e:   # json.JSONDecodeError and UnicodeDecodeError are ValueErrors
+        copy = keep_bad_copy(STATE_FILE)
+        raise StateFileError(
+            f"{STATE_FILE} can't be read ({e}), so nothing was downloaded or imported. "
+            + (f"A copy is in {copy}. " if copy else "")
+            + "Repair the file (or restore it from a backup) and run again; deleting it would import every dataset "
+              "file again.") from None
     print(f"DEBUG: Loaded {len(state['processed_files'])} processed and {len(state['refused_files'])} refused files")
     for pf in state["processed_files"]:
         print(f"DEBUG: Processed file: {pf.get('filename')} (ID: {pf.get('id')}, Created: {pf.get('create_date')})")
