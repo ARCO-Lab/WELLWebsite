@@ -116,6 +116,14 @@ class ConnectionTests(unittest.TestCase):
             self.assertNotIn("p@ss", " ".join(v for k, v in env.items() if k != "PGPASSFILE"))
         self.assertFalse(os.path.exists(passfile))
 
+    def test_psycopg2_connections_fail_fast_and_are_kept_alive(self):
+        kwargs = backup.psycopg2_kwargs(backup.parse_database_url("postgresql://u:p@db:5432/welldb"))
+        self.assertEqual((kwargs["connect_timeout"], kwargs["keepalives"], kwargs["dbname"]), (5, 1, "welldb"))
+        self.assertIn("keepalives_idle", kwargs)
+        # A connect_timeout given in the URL still wins.
+        kwargs = backup.psycopg2_kwargs(backup.parse_database_url("postgresql://u:p@db/welldb?connect_timeout=20"))
+        self.assertEqual(kwargs["connect_timeout"], "20")
+
     def test_pgpass_escapes_backslash_and_colon(self):
         self.assertEqual(backup.pgpass_line("a\\b:c"), "*:*:*:*:a\\\\b\\:c\n")
 

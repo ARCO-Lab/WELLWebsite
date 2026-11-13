@@ -61,8 +61,9 @@ class QualityService:
         request starts at that point, not after it, so a point whose values were split between two pages is read
         whole: repeats of a timestamp are merged. info.more isn't reliable on its own (a 14-day request said
         more=false on its 4th page with count 6,963 of total 12,591), so paging stops only once a response holds
-        every value it says its range has (info.count >= info.total). A failed request ends the paging with what
-        was read so far (and is kept in self.last_error), as does hitting MAX_PAGES; both are logged.
+        every value it says its range has (info.count >= info.total). A failed request, or a page that doesn't move
+        the start on, ends the paging with what was read so far and is kept in self.last_error; hitting MAX_PAGES
+        also ends it, without an error (the next run carries on). All three are logged.
         """
         if not start_time or not end_time:
             start_time, end_time = self.get_default_time_range()
@@ -96,8 +97,11 @@ class QualityService:
                 break
             last = info.get("lastDataPointTimestamp")
             if not last or last <= current_start:   # same fixed format, so string order is time order
-                print(f"[ERROR] WQData paging didn't advance past {current_start} UTC "
-                      f"(count {count}, total {total}); stopping with what was read")
+                # Kept as the call's error, so the run fails and the alerts see it: recorded as a success, the
+                # next run would stall at the same place with nothing but a later "sensor silent" alert.
+                self.last_error = BadVendorResponse(
+                    f"WQData paging didn't advance past {current_start} UTC (count {count}, total {total})")
+                print(f"[ERROR] {self.last_error}; stopping with what was read")
                 break
             current_start = last
         else:

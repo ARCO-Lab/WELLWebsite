@@ -10,6 +10,7 @@ import requests
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 from api.services import quality  # noqa: E402
+from utils.fetching import BadVendorResponse  # noqa: E402
 
 KEY = "secret-wqdata-key-123"
 URL = "https://wqdata.example/api"
@@ -89,6 +90,14 @@ class QualityPagingTests(TestCase):
         self.assertEqual(len(froms), 2)
         self.assertEqual(len(points), 1)
         self.assertIn("didn't advance", log)
+        # Kept as the call's error (not a success), so the run fails and the alerts see the stall.
+        service = quality.QualityService(URL, KEY, "1")
+        service.sleep = lambda s: None
+        with mock.patch.object(quality.requests, "get", side_effect=[stuck, stuck]), contextlib.redirect_stdout(io.StringIO()):
+            service.get_quality_data(START, END)
+        self.assertIsInstance(service.last_error, BadVendorResponse)
+        self.assertIn("paging didn't advance past 2026-11-02 00:00:00 UTC (count 1, total 9)", str(service.last_error))
+        self.assertNotIn(KEY, str(service.last_error))
 
     def test_the_page_cap_is_logged(self):
         pages = [page([(f"2026-11-0{d} 00:00:00", [1])], more=True, count=1, total=9) for d in range(2, 5)]
