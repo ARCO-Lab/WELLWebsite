@@ -203,6 +203,25 @@ test.describe("charts under stress", () => {
     expect(net.requests.length - n0).toBeLessThanOrEqual(1);
   });
 
+  test("unticking every measurement of a card leaves a message there and the page whole", async ({ page }) => {
+    const { errors } = await open(page);
+    for (const group of ["weather", "quality", "gauges"]) {
+      const ticked = page.locator(`[role=checkbox][id^="${group}-"][aria-checked=true]`);
+      for (let n = await ticked.count(); n > 0; n = await ticked.count()) {
+        await ticked.first().click();
+        await page.waitForTimeout(100);
+      }
+    }
+    await expect(page.getByText("Tick a measurement under Weather Station in Filters to see its readings.")).toBeVisible();
+    await expect(page.getByText("Tick a measurement under Water Quality in Filters to see its readings.")).toBeVisible();
+    await expect(page.getByText(/Tick Water Surface Elevation or Water Temperature under Filters/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Filters" })).toBeVisible(); // the page is still there
+    expect(errors).toEqual([]);
+    // And ticking one again draws its chart
+    await page.locator('[role=checkbox][id="weather-Air Temperature"]').click();
+    await expect(chart(page, "weather").getByTestId("chart-resolution")).toBeVisible();
+  });
+
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
     const { net } = await open(page);
     const tab = (name: string) => page.getByRole("tab", { name, exact: true });
