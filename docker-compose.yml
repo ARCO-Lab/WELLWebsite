@@ -14,8 +14,18 @@ x-logging: &default-logging
     max-file: "5"
 
 networks:
+  # front and internal_api are pinned so the host firewall rule for PostgreSQL (docs/hosting.md, "Host firewall") can
+  # name a fixed subnet. Every service that needs the database (backend, worker, export_worker and ops) is on
+  # internal_api. Unpinned, Docker hands out /24s from its pool in creation order, so recreating the networks could
+  # swap these two.
   front:
+    ipam:
+      config:
+        - subnet: 10.20.1.0/24
   internal_api:
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
   # Only wordpress and ops (welldash²) join it, so welldash² can check WordPress without joining front, where MySQL is.
   # Its subnet is fixed so firewall rules can name it; it needs no access to the VM's PostgreSQL.
   wp_probe:
