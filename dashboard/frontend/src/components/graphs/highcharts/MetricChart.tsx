@@ -367,6 +367,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     // The navigator's line: the first shown series over the picked range, at the overview's bucket, with the range's
     // two ends so it spans all of it
     let navShown = '';
+    let navKey = '';
     const navigator = () => {
       const nav = (chart as Highcharts.Chart & { navigator?: { series?: Highcharts.Series[] } }).navigator?.series?.[0];
       const key = keys.find((k) => (chart.get(k) as Highcharts.Series | undefined)?.visible) ?? keys[0];
@@ -376,6 +377,10 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const sig = `${key}|${pts.length}|${e.start}|${e.end}|${pts.at(-1)?.y ?? ''}`;
       if (sig === navShown) return;
       navShown = sig;
+      if (key !== navKey) { // the line takes the colour of the series it now shows
+        navKey = key;
+        nav.update({ color: (chart.get(key) as Highcharts.Series).color } as Highcharts.SeriesOptionsType, false);
+      }
       nav.setData([[e.start, null], ...pts.map((p) => [p.x, p.y] as [number, number | null]), [e.end, null]], false, false, false);
       (chart.get(EXTENT_ID) as Highcharts.Series | undefined)?.setData(extentData(e), false, false, false);
       dirty = true;
@@ -495,6 +500,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     let hintShown = -Infinity;
     let wheelEnd = 0;
     let lastWheel = 0;
+    let settleFrame = 0;
     const wheelGesture = () => { // a burst of wheel events is one gesture: it ends when they pause
       controller.beginGesture();
       lastWheel = performance.now();
@@ -505,7 +511,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         const left = WHEEL_SETTLE_MS - (performance.now() - lastWheel);
         if (left > 0) { wheelEnd = window.setTimeout(settle, left); return; }
         wheelEnd = 0;
-        requestAnimationFrame(() => { if (performance.now() - lastWheel >= WHEEL_SETTLE_MS) controller.endGesture(); else wheelGesture(); });
+        settleFrame = requestAnimationFrame(() => { if (performance.now() - lastWheel >= WHEEL_SETTLE_MS) controller.endGesture(); else wheelGesture(); });
       };
       wheelEnd = window.setTimeout(settle, WHEEL_SETTLE_MS);
     };
@@ -790,6 +796,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       el.removeEventListener('mousedown', onNavPress, { capture: true });
       window.clearTimeout(hintTimer);
       window.clearTimeout(wheelEnd);
+      cancelAnimationFrame(settleFrame);
       controller.endGesture();
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('pointerdown', onDown);
