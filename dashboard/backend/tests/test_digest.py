@@ -136,12 +136,12 @@ class BuildDigestTests(TestCase):
         subject, body = build_digest("2026-11-10", freshness, groups, ["4501 ODO: dissolved oxygen is about 0"],
                                      {"power_min": 12.1, "power_max": 13.4, "power_readings": 59,
                                       "last_point": "2026-11-10 06:50:00", "last_point_age_minutes": 10})
-        self.assertEqual(subject, "WELL daily digest 2026-11-10: 2 to check")
-        self.assertIn("Logger 2 Water Temperature: newest 2026-11-10T01:00:00 (6.0 h ago; limit 3 h)", body)
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 2 to check")
+        self.assertIn("Logger 2 Water Temperature: newest Tue Nov 10, 01:00 (6.0 h ago; limit 3 h)", body)
         self.assertIn("Weather: 140 rows of 144 expected (1 series), 140 of 144 time slots", body)
-        self.assertIn("gap 11-10 05:00 to 11-10 06:00 (60 min)", body)
+        self.assertIn("gap Tue Nov 10, 05:00 → Tue Nov 10, 06:00 (60 min)", body)
         self.assertIn("primary power: 12.1 to 13.4 V over 59 readings", body)
-        self.assertIn("last contact (newest data point): 2026-11-10 06:50:00 (10 min ago)", body)
+        self.assertIn("last contact (newest data point): Tue Nov 10, 06:50 (10 min ago)", body)
         self.assertIn("dissolved oxygen", body)
 
     def test_all_ok_and_wqdata_error(self):
@@ -149,9 +149,10 @@ class BuildDigestTests(TestCase):
         latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
                    "recorded_at": "2026-11-10T06:50:00"}]
         freshness = assess_freshness(latest, now, env={})
-        self.assertEqual(build_digest("2026-11-10", freshness, {}, [], None)[0], "WELL daily digest 2026-11-10: all OK")
+        self.assertEqual(build_digest("2026-11-10", freshness, {}, [], None)[0],
+                         "[WELL] Daily digest 2026-11-10: all OK")
         subject, body = build_digest("2026-11-10", freshness, {}, [], {"error": "HTTPError (HTTP 429)"})
-        self.assertEqual(subject, "WELL daily digest 2026-11-10: 1 to check")
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("request failed: HTTPError (HTTP 429)", body)
 
 

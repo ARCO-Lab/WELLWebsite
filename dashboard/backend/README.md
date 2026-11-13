@@ -423,8 +423,9 @@ goes red both when the site is down and when data stops arriving.
 
 ### Daily digest
 
-`scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a plain-text summary of
-the last 24 h: stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
+`scripts/daily_digest.py` (run by the worker every day at `DIGEST_HOUR`, Toronto time) writes a summary of the last
+24 h, in the same Markdown-plus-HTML format as the [email alerts](#email-alerts): the open alerts, the alerts that
+recovered (including the low-priority recoveries that weren't emailed on their own, `ALERT_QUIET_KINDS`); stale series; implausible values (dissolved oxygen about 0 mg/L, a logger with about 0 m of water over
 its sensor, readings outside physical ranges, a quality probe stuck on one value, except TSS and turbidity at exactly
 0, which is normal in clear water); rows and time slots per group against the 10-minute cadence, with gaps over 30
 minutes; WQData primary power min/max and last contact (one WQData request, since WQData's hourly quota is shared with
@@ -447,8 +448,31 @@ After every 10-minute ingestion run the worker checks the data and the vendor AP
 in `utils/alerts.py`) and emails `ALERT_EMAILS` through the SMTP settings above when someone has to go and look. Each
 problem is an incident: it is emailed once when it starts, again at most every `ALERT_REMINDER_HOURS` while it lasts,
 and once when it clears, with how long it lasted. Everything one check finds goes in a single email, so there is never
-more than one email per 10 minutes. The subject says what to do, e.g. `[WELL] Water quality station 4501 silent for
-3 h — vendor OK, check the sensor`.
+more than one email per 10 minutes. The subject starts with the status and says what to do, e.g. `[WELL] New: Logger 4
+silent 4 h — check the sensor` or `[WELL] Recovered: Logger 1 water level (20 h)`; an email about several things says
+how many of each, e.g. `[WELL] 2 new, 1 recovered`.
+
+Each email is plain Markdown text with the same content as simple HTML (`utils/email_format.py`: headings, lists and
+bold names, inline styles, no images or colours, so it reads the same in Outlook and on a phone). It starts with a
+one-line summary, then has a section per kind, in this order: New problems, Still open (reminder), Back again,
+Recovered. Each item gives the station and sensor in plain words, its status, since when or from when to when in
+Toronto time (`Wed Nov 11, 12:00 → Thu Nov 12, 08:03 (20 h)`), what to do and the details (problems only), and the
+dashboard link. Then "Open right now" lists every open incident, so any one email shows the whole current state, and
+the footer links the dashboard, `/api/health/data` and this section ("Why did I get this?").
+
+#### Why did I get this email?
+
+| Email | Subject starts with | Sent when |
+|---|---|---|
+| New problem | `[WELL] New:` | A check finds a problem that has no open incident (and didn't clear within the last `ALERT_REOPEN_HOURS`). Every kind, at once. |
+| Reminder | `[WELL] Still open:` | An emailed problem is still there `ALERT_REMINDER_HOURS` after its last email. |
+| Back again | `[WELL] Back again:` | A problem whose recovery was emailed came back within `ALERT_REOPEN_HOURS` and has stayed back `ALERT_CLEAR_MINUTES`. |
+| Recovered | `[WELL] Recovered:` | An emailed problem has been gone for `ALERT_CLEAR_MINUTES` (longer after a "back again", see below). Not on its own for the kinds in `ALERT_QUIET_KINDS` (default `SUSPECT_VALUES`): their recovery is added to the next email that goes out anyway, within 24 h, and is listed in the daily digest either way. |
+| Several at once | `[WELL] 2 new, 1 recovered` | One check has more than one thing to say: it is one email, never several. |
+| Daily digest | `[WELL] Daily digest` | Once a day at `DIGEST_HOUR` ([Daily digest](#daily-digest)). |
+
+The alert check and the digest send nothing else (Sentry and the job heartbeats have their own notifications). A
+problem that hasn't changed sends nothing between reminders, and a check with nothing new sends nothing at all.
 
 To keep flickering conditions (a vendor failing on and off, a value hovering at a limit) from emailing "new" and
 "recovered" over and over: an incident clears, and "recovered" is emailed, once its condition has been gone for
@@ -467,12 +491,14 @@ alert down to the one sensor still silent), the station incident closes without 
 sensor's incident carries on without a "new" one: the partial recovery isn't emailed, because the remaining problem
 was already reported and the next email (reminder or recovery) names it.
 
+#### The alerts and their settings
+
 | Alert | When | What to do |
 |---|---|---|
 | Vendor down (`VENDOR_DOWN`) | The LI-COR or WQData API call failed on the last `ALERT_VENDOR_FAILURES` runs in a row: an HTTP error, a timeout, or a reply without data. | Check the vendor's status; our sensors may be fine. Ingestion catches up by itself (up to 14 days back) once the API answers. HTTP 401/403 says "rejects our credentials — rotate the API key" (set `HOBOLINK_API_TOKEN` or `WQ_API_KEY` in `.env` and in the repository secret), and WQData's 429 says "request quota exceeded" (stop any `wqdata_backfill.py` run). |
 | Sensor silent (`STALE_SENSOR`) | The vendor answered on the latest run, but a station, or one of its sensors, has sent nothing for longer than its group's limit. If every LI-COR station is silent it is one alert for the site (the loggers report through the weather station). | Go to the sensor: its power, cable, telemetry (cellular modem, data plan). Not raised while the vendor's latest call failed, since then the vendor is the likelier cause. |
 | Suspect values (`SUSPECT_VALUES`) | Data arrives but looks wrong over the whole last `ALERT_SUSPECT_HOURS`: a water quality probe stuck on one value (not TSS/turbidity at 0), at least half the readings outside the physical range, dissolved oxygen about 0, or a logger with about 0 m of water over it. A single odd reading is never an alert. | Look at the chart, then check and clean the probe if it isn't a real event. |
-| Recovered | The condition cleared, for an incident that was emailed. | Nothing; the email says how long it lasted. |
+| Recovered | The condition cleared, for an incident that was emailed. A suspect-values recovery waits for the next email or the digest (`ALERT_QUIET_KINDS`). | Nothing; the email says how long it lasted. |
 
 The open incidents are also listed in the daily digest and under `alerts` in `GET /health/data` (with each vendor's
 latest call outcome), so the dashboard can show them; they don't change its status code. They are listed by kind, key,
@@ -495,7 +521,8 @@ fails (logged, reported to Sentry and to `HEALTHCHECK_URL_ALERTS`) and ingestion
 | `ALERT_FLAP_CLEAR_MINUTES` | `180` | How long a condition must be gone before an incident that has had a "back again" clears; doubled with each further "back again", up to 12 h. |
 | `ALERT_REOPEN_HOURS` | `6` | A condition that comes back within this long of clearing reopens its incident instead of being emailed as new. |
 | `ALERT_EXCLUDED_SERIES` | none | Series to mute, e.g. during field work or while a sensor is out for the winter: `station:measurement` or `station:*`, comma-separated, like `HEALTH_EXCLUDED_SERIES` (e.g. `4501:*` or `2577533:Water Surface Elevation`). Only the alerts change; `/health/data` still reports the series. Open alerts for a muted series close without a "recovered" email. Remove the entry to unmute. |
-| `ALERT_DASHBOARD_URL` | `https://welldash.mcmaster.ca/` | The dashboard link in the emails. |
+| `ALERT_DASHBOARD_URL` | `https://welldash.mcmaster.ca/` | The dashboard link in the emails and the digest. |
+| `ALERT_QUIET_KINDS` | `SUSPECT_VALUES` | Alert kinds whose recovery sends no email of its own, comma-separated (`VENDOR_DOWN`, `STALE_SENSOR`, `SUSPECT_VALUES`), or `none` to email every recovery. Such a recovery goes in the next email sent anyway (a new problem, reminder, back again or other recovery) within 24 h, and the daily digest lists it. New alerts of these kinds are still emailed at once. While a quiet recovery hasn't been emailed, a return of the same problem within `ALERT_REOPEN_HOURS` simply reopens it, without a "back again". |
 
 An invalid value makes the alert check fail with a message naming the variable (in `logs/alerts.log`, Sentry and the
 alerts heartbeat); recreate the worker after changing any of them.

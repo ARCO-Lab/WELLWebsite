@@ -1,7 +1,9 @@
-# Builds the daily plain-text digest of the sensor data: the open email alerts (scripts/check_alerts.py), stale
+# Builds the daily digest of the sensor data: the open email alerts (scripts/check_alerts.py) and those that cleared
+# in the last 24 h (including low-priority recoveries that weren't emailed on their own), stale
 # series, implausible values, readings and gaps per group over the last 24 h, the newest reading of every series,
 # the WQData device's primary power and last contact, and yesterday's API traffic (request_metrics, utils/traffic.py). scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
 #
+# The digest is Markdown text, sent with the same content as HTML (utils/email_format.py), like the alert emails.
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
 # SMTP_FROM are optional), and otherwise prints it. It reads the database only, and makes at most one WQData
 # request, since WQData's hourly request quota is shared with the 10-minute ingestion.
@@ -24,6 +26,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 import requests  # noqa: E402
 
 from utils.digest import anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings  # noqa: E402
+from utils.email_format import markdown_to_html  # noqa: E402
 from utils.monitoring import age_minutes, as_site_time, assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
 
@@ -109,10 +112,13 @@ def read_wqdata(config, now):
     return result
 
 
-def send_email(settings, recipients, subject, body):
+def send_email(settings, recipients, subject, body, html=None):
+    """Send one email: `body` as the text part and, if given, `html` as its HTML alternative (multipart)."""
     message = EmailMessage()
     message["From"], message["To"], message["Subject"] = settings["from"], ", ".join(recipients), subject
     message.set_content(body)
+    if html:
+        message.add_alternative(html, subtype="html")
     context = ssl.create_default_context()
     if settings["port"] == 465:
         server = smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=30, context=context)
@@ -149,19 +155,27 @@ def main(argv=None):
         freshness = assess_freshness(query_latest_per_series(), now)
         groups, findings = read_groups(db, freshness, now)
         try:
-            from utils.alert_state import alerts_report
+            from utils.alert_state import alerts_report, recent_recoveries
             incidents = alerts_report()["open"]
+            recoveries = recent_recoveries(now - WINDOW)
         except Exception as e:   # e.g. the alert tables' migration hasn't run yet
             db.session.rollback()
-            incidents = {"error": type(e).__name__}
+            incidents = recoveries = {"error": type(e).__name__}
         traffic = read_traffic(db, now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
+    from utils.alerts import Settings, settings_from_env
+    try:
+        alert_settings = settings_from_env()
+    except ValueError as e:   # a bad ALERT_* setting fails the alert check; the digest still goes out
+        print(f"[WARN] {e}; the digest uses the default alert settings")
+        alert_settings = Settings()
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
-                                 incidents, traffic)
-    return deliver(subject, body, args.dry_run)
+                                 incidents, traffic, recoveries, alert_settings.dashboard_url,
+                                 alert_settings.quiet_kinds)
+    return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject))
 
 
-def deliver(subject, body, dry_run, env=None, send=send_email):
+def deliver(subject, body, dry_run, env=None, send=send_email, html=None):
     """Email the digest, or print it when --dry-run or SMTP isn't set up. The exit code: 1 when it should have
     been emailed and wasn't (bad settings, no recipients, sending failed), so the digest heartbeat reports /fail."""
     env = os.environ if env is None else env
@@ -185,7 +199,7 @@ def deliver(subject, body, dry_run, env=None, send=send_email):
         print(f"Subject: {subject}\n\n{body}")
         return 1
     try:
-        send(settings, recipients, subject, body)
+        send(settings, recipients, subject, body, html)
     except Exception as e:   # the type and message only; smtplib errors don't include the password
         print(f"[ERROR] Emailing the digest failed: {type(e).__name__}: {e}; the digest was:\n")
         print(f"Subject: {subject}\n\n{body}")
