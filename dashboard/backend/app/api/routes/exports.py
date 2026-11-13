@@ -286,7 +286,7 @@ def register_export_routes(app):
 
 
 def _job_limits(requester_fingerprint):
-    """The 429 answer when this visitor may not start a job now, else None.
+    """The 429 answer (body, status, headers) when this visitor may not start a job now, else None.
 
     A visitor may have EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER jobs queued or running, and start
     EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER an hour. The server runs EXPORT_MAX_ACTIVE_JOBS at once in all, and a
@@ -299,6 +299,7 @@ def _job_limits(requester_fingerprint):
             jsonify({"error": "You already have exports being prepared. Please wait for them to finish, then try "
                               "again."}),
             429,
+            {},
         )
     hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
     if jobs_started_since(requester_fingerprint, hour_ago) >= Config.EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER:
@@ -314,6 +315,7 @@ def _job_limits(requester_fingerprint):
         return (
             jsonify({"error": "The server is busy preparing other exports. Please try again in a few minutes."}),
             429,
+            {},
         )
     return None
 

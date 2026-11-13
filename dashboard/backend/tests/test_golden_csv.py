@@ -73,8 +73,8 @@ def json_bytes(value) -> bytes:
 #                     read as wall time (2026-11-02T04:59:59.999Z is Nov 1 23:59:59.999 Toronto)
 #   2026-11-30 23:45  last reading of November
 #   2026-12-01 00:00  in neither file
-# No value is a vendor "no reading" sentinel (e.g. -100000): the export passes values through unfiltered, and these
-# files pin the format, not sentinel handling.
+# No value is a vendor "no reading" sentinel (e.g. -100000): the files write one as an empty cell (csv_cell in
+# api/services/exports.py, tested in test_export_csv.py and test_api_dos.py), and these files pin the format.
 WEATHER, QUALITY = "22051538", "4501"
 WSE, WT = "Water Surface Elevation", "Water Temperature"
 
