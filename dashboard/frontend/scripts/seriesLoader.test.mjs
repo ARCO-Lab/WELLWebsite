@@ -984,3 +984,18 @@ test("sweep: a narrow range, then the last 90 days, draws no gap where there is 
   }
   assert.deepEqual(failures, []);
 });
+
+test("composeSeries: no line break across the fall-back hour, where the API labels 01:00 by its second occurrence", () => {
+  // 00:30-00:50 EDT, then 01:00-01:50 EST (the repeated hour's buckets, as /api/series labels them), then 02:00 EST
+  const t = [
+    ...[30, 40, 50].map((m) => Date.parse("2026-11-01T04:00:00Z") + m * 60_000),
+    ...[0, 10, 20, 30, 40, 50, 60].map((m) => Date.parse("2026-11-01T06:00:00Z") + m * 60_000),
+  ];
+  const s = { t, avg: t.map((_, i) => i), min: t.map(() => null), max: t.map(() => null), n: t.map(() => 1) };
+  const i = tileAt(t[0], 600);
+  const tiles = cutIntoTiles(s, i - 1, i + 1, 600);
+  const segs = segmentsFor([{ bucketS: 600, tiles: [i - 1, i, i + 1] }]);
+  const pts = composeSeries(segs, (b, j) => tiles.get(j), () => () => null);
+  assert.equal(pts.filter((p) => p.y !== null).length, t.length);
+  assert.equal(pts.some((p) => p.y === null), false);
+});

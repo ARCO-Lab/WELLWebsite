@@ -284,7 +284,10 @@ export function composeSeries(
     const bm = p.b * 1000;
     if (i > 0) {
       const prev = pts[i - 1];
-      if (p.t - prev.t > GAP_FACTOR * Math.max(prev.b * 1000, bm)) out.push({ x: prev.t + prev.b * 1000, y: null });
+      // The smaller of the real and the wall-clock gap: across the fall-back hour, 00:50 EDT and the 01:00 bucket
+      // (labelled 01:00 EST) are 70 minutes apart in real time but neighbours on the wall clock
+      const apart = Math.min(p.t - prev.t, toWall(p.t) - toWall(prev.t));
+      if (apart > GAP_FACTOR * Math.max(prev.b * 1000, bm)) out.push({ x: prev.t + prev.b * 1000, y: null });
     }
     if (!typicalBy.has(p.b)) typicalBy.set(p.b, typical(p.b));
     const usual = typicalBy.get(p.b)!(p.t);
