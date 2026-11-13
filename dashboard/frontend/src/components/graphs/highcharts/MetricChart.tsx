@@ -66,7 +66,9 @@ const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
 const EXTENT_ID = 'picked-range'; // the invisible series that spans the picked range
 
 // What a series is, for the tooltip and legend.
-interface SeriesInfo { label: string; unit: string; agg: Agg; note?: string }
+// `at`: each drawn bucket's details (span, range of readings, count), by its x. The chart gets plain [x, y] pairs,
+// the fastest form Highcharts takes; the tooltip looks the rest up here.
+interface SeriesInfo { label: string; unit: string; agg: Agg; note?: string; at: Map<number, PointInfo> }
 
 const fmt = (v: number, unit: string) => {
   const d = valueDecimals(unit);
@@ -80,14 +82,14 @@ const isCoarse = () => typeof window !== 'undefined' && (window.matchMedia?.('(p
 // bucket (averages only), and for a partial bucket how many readings it holds.
 function tooltipText(this: Highcharts.Point): string {
   const points = (this.points ?? [this]).filter((p) => (p.series.options.custom as SeriesInfo | undefined)?.label);
-  const first = points[0]?.options.custom as PointInfo | undefined;
-  if (!first) return '';
   const infos = points.map((p) => p.series.options.custom as SeriesInfo);
+  const first = points.length ? infos[0].at.get(points[0].x) : undefined;
+  if (!first) return '';
   const aggregated = first.bucketS > RAW_S;
   const kind = !aggregated ? 'reading' : infos.every((i) => i.agg === 'sum') ? 'total' : 'mean';
   const lines = points.map((p, i) => {
     const info = infos[i];
-    const c = p.options.custom as PointInfo | undefined;
+    const c = info.at.get(p.x);
     if (p.y === null || p.y === undefined || !c) return '';
     const dot = `<span style="color:${p.color}">●</span>`;
     const value = info.agg === 'vector_mean' ? compassLabel(p.y) : `${fmt(p.y, info.unit)} ${info.unit}`;
@@ -146,7 +148,7 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
   const series: Highcharts.SeriesOptionsType[] = [];
   const first = specs.find((s) => !s.hidden) ?? specs[0];
   for (const s of specs) {
-    const info: SeriesInfo = { label: s.name.replace(/ \([^)]*\)$/, ''), unit: s.unit, agg: s.agg, note: s.note };
+    const info: SeriesInfo = { label: s.name.replace(/ \([^)]*\)$/, ''), unit: s.unit, agg: s.agg, note: s.note, at: new Map() };
     if (axes && s.agg === 'mean') { // bands in the larger view only: on a card with many series they hide the lines
       series.push({
         id: `${s.key}#band`, type: 'arearange', linkedTo: s.key, yAxis: s.axis, color: s.color, fillOpacity: 0.14,
@@ -164,6 +166,17 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       ...(type === 'area' ? { step: 'center', threshold: 0, lineWidth: 1, fillOpacity: 0.35 } : {}),
       ...(type === 'scatter' ? { marker: { enabled: true, radius: 2, symbol: 'circle' }, findNearestPointBy: 'x' } : {}),
     } as Highcharts.SeriesOptionsType);
+    if (type !== 'scatter') {
+      // Markers, as series of their own so every series keeps plain [x, y] data: hollow for a bucket with fewer
+      // readings than usual, filled for a reading between two gaps (a line can't show a single point)
+      const marks = (id: string, fill: string) => series.push({
+        id: `${s.key}#${id}`, type: 'scatter', linkedTo: s.key, yAxis: s.axis, color: s.color, data: [], zIndex: 2,
+        visible: !s.hidden, enableMouseTracking: false, showInNavigator: false, accessibility: { enabled: false },
+        marker: { enabled: true, radius: 3, symbol: 'circle', fillColor: fill, lineColor: s.color, lineWidth: 1.5 },
+      } as Highcharts.SeriesScatterOptions);
+      marks('partial', '#ffffff');
+      marks('isolated', s.color);
+    }
   }
   const ext = controller.extent, w = controller.window;
   series.push({
@@ -180,7 +193,9 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       alignTicks: false, // each axis fits its own data
       spacing: [6, 4, 4, 2],
       style: { fontFamily: FONT },
-      zooming: { mouseWheel: { enabled: false } }, // the plain wheel scrolls the page; Ctrl + wheel zooms (below)
+      // The plain wheel scrolls the page; Ctrl + wheel zooms (below). pinchType '': Stock's default ('x') runs its own
+      // touch pan and pinch, a redraw per touchmove; this chart's own (below) paces them
+      zooming: { mouseWheel: { enabled: false }, pinchType: '' as unknown as Highcharts.OptionsPinchTypeValue },
       panning: { enabled: false }, // drag-panning is ours (mouse only), so one finger still scrolls the page
       events: {
         render(this: Highcharts.Chart) { controller.setPlotWidth(this.plotWidth); },
@@ -304,12 +319,19 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           info.unit = unit;
           s.update({ name: unit === '°' ? info.label : `${info.label} (${unit})` } as Highcharts.SeriesOptionsType, false);
         }
-        const color = s.color as string;
+        info.at = new Map();
+        const partial: [number, number][] = [], isolated: [number, number][] = [];
         s.setData(pts.map((p) => {
           const c = p.custom;
-          if (!c || p.y === null || !(c.partial || c.isolated)) return p;
-          return { ...p, marker: c.partial ? { enabled: true, fillColor: '#ffffff', lineColor: color, lineWidth: 1.5 } : { enabled: true } };
-        }) as Highcharts.PointOptionsType[], false, false, false);
+          if (c && p.y !== null) {
+            info.at.set(p.x, c);
+            if (c.partial) partial.push([p.x, p.y]);
+            else if (c.isolated) isolated.push([p.x, p.y]);
+          }
+          return [p.x, p.y];
+        }), false, false, false);
+        (chart.get(`${key}#partial`) as Highcharts.Series | undefined)?.setData(partial, false, false, false);
+        (chart.get(`${key}#isolated`) as Highcharts.Series | undefined)?.setData(isolated, false, false, false);
         const band = chart.get(`${key}#band`) as Highcharts.Series | undefined;
         band?.setData(pts.map((p) => {
           const c = p.custom;
