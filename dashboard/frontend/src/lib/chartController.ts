@@ -302,6 +302,14 @@ export class ChartController {
   }
 
   /** Move by a share of the window's width (negative: earlier). */
+  /** The window before (-1) or after (1) this one, of the same length: it ends where this one starts, or starts where
+   *  it ends. At the edge of the picked range it stops there, still as long. */
+  page(dir: -1 | 1, reason: WindowReason = "button"): void {
+    const { start, end } = this.win, span = end - start;
+    if (dir < 0) this.setWindow({ start: start - span, end: start }, reason, "end");
+    else this.setWindow({ start: end, end: end + span }, reason, "start");
+  }
+
   pan(share: number, reason: WindowReason = "button"): void {
     const d = (this.win.end - this.win.start) * share;
     this.setWindow({ start: this.win.start + d, end: this.win.end + d }, reason);

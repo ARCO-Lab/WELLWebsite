@@ -999,3 +999,24 @@ test("composeSeries: no line break across the fall-back hour, where the API labe
   assert.equal(pts.filter((p) => p.y !== null).length, t.length);
   assert.equal(pts.some((p) => p.y === null), false);
 });
+
+test("the arrows page by exactly one window: adjacent, as long, and stopped (still as long) at the range's edges", () => {
+  const loader = new SeriesLoader(async () => []);
+  const range = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-20T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-06T23:30:00Z"), end: Date.parse("2026-09-12T13:29:00Z") }; // Sep 6 19:30 - Sep 12 09:29
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  const span = w0.end - w0.start;
+  c.page(-1);
+  assert.deepEqual(c.window, { start: w0.start - span, end: w0.start });
+  c.page(1);
+  assert.deepEqual(c.window, w0);
+  c.page(1);
+  assert.deepEqual(c.window, { start: w0.end, end: w0.end + span }); // the next one
+  c.page(1); // past the range's end: stops at it, as long as before
+  assert.deepEqual(c.window, { start: range.end - span, end: range.end });
+  c.page(1);
+  assert.deepEqual(c.window, { start: range.end - span, end: range.end });
+  for (let i = 0; i < 6; i++) c.page(-1); // and at the start
+  assert.deepEqual(c.window, { start: range.start, end: range.start + span });
+  c.dispose();
+});

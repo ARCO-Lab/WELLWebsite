@@ -223,6 +223,30 @@ test.describe("charts under stress", () => {
     await expect(chart(page, "weather").getByTestId("chart-resolution")).toBeVisible();
   });
 
+  test("the ‹ and › buttons step by exactly one window: as long, and adjacent", async ({ page }) => {
+    await open(page);
+    const weather = chart(page, "weather");
+    for (let i = 0; i < 3; i++) await weather.getByRole("button", { name: /Zoom in/ }).click(); // a few hours on Oct 31
+    await page.waitForTimeout(400);
+    // "Oct 31 12:23 – Oct 31 15:38" -> [start, end] in minutes (all on one day, away from the clock change)
+    const read = async () => {
+      const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`) / 60_000);
+      return { a, b };
+    };
+    const w0 = await read();
+    await weather.getByRole("button", { name: "Show the time just before this window" }).click();
+    await page.waitForTimeout(400);
+    const w1 = await read();
+    expect(w1.b).toBe(w0.a); // ends where the last one started
+    expect(w1.b - w1.a).toBe(w0.b - w0.a);
+    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await page.waitForTimeout(400);
+    const w2 = await read();
+    expect(w2.a).toBe(w0.b); // starts where the first one ended
+    expect(w2.b - w2.a).toBe(w0.b - w0.a);
+  });
+
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
     const { net } = await open(page);
     const tab = (name: string) => page.getByRole("tab", { name, exact: true });
