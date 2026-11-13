@@ -209,6 +209,8 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       series: { pointDescriptionEnabledThreshold: 0 },
       point: { describeNull: false },
     },
+    // On a phone the legend is a column of names: past a few rows it pages, so the plot keeps its height
+    responsive: { rules: [{ condition: { maxWidth: 480 }, chartOptions: { legend: { maxHeight: 64 } } }] },
     legend: {
       enabled: true,
       margin: 2, padding: 2, itemDistance: 12,
@@ -257,7 +259,8 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
 }
 
 const MetricChart: React.FC<MetricChartProps> = (props) => {
-  const { id, title, series: specs, axes, height = 320, modalOpen = false } = props;
+  // Taller with more series, whose legend takes rows from the plot (up to ten series' worth)
+  const { id, title, series: specs, axes, height = 280 + 16 * Math.min(props.series.length, 10), modalOpen = false } = props;
   const structure = JSON.stringify({ specs, axes });
   const keys = useMemo(() => (JSON.parse(structure).specs as SeriesSpec[]).map((s) => s.key), [structure]);
   const controller = useChartWindow(modalOpen ? `${id}:modal` : id, keys);
