@@ -172,6 +172,29 @@ class BuildDigestTests(TestCase):
             "2026-11-10", freshness, {}, [], None, attention={"error": "ValueError"})[1])
         self.assertNotIn("Sampling data", build_digest("2026-11-10", freshness, {}, [], None)[1])
 
+    def test_the_new_sections_together_by_keyword(self):
+        """recoveries, quiet_kinds, missed and attention passed together, as scripts/daily_digest.py does: each lands
+        in its own section (keywords, so a parameter added later can't shift them)."""
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        recovery = {"id": 1, "kind": "SUSPECT_VALUES", "key": "suspect:WQData:4501:ODO", "title": "t",
+                    "started_at": "2026-11-09T10:00:00-05:00", "resolved_at": "2026-11-09T12:00:00-05:00",
+                    "recovery_emailed": False}
+        missed = [{"id": 2, "kind": "STALE_SENSOR", "key": "stale:WQData:4501", "title": "t",
+                   "started_at": "2026-11-07T10:00:00-05:00", "resolved_at": "2026-11-08T09:00:00-05:00"}]
+        attention = [{"at": "2026-11-09T21:00:00-05:00", "text": "a.csv: 2 corrections not applied"}]
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None, recoveries=[recovery],
+                                     quiet_kinds=frozenset({"VENDOR_DOWN"}), missed=missed, attention=attention)
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")   # the attention line
+        self.assertIn("## Alerts recovered in the last 24 h\n\n- **Water quality station 4501 dissolved oxygen**: "
+                      "readings back to normal. Mon Nov 9, 10:00 → Mon Nov 9, 12:00 (2 h). Email pending", body)
+        self.assertIn("## Older recoveries that could not be emailed\n\n- **Water quality station 4501**: reporting "
+                      "again. Sat Nov 7, 10:00 → Sun Nov 8, 09:00 (23 h)", body)
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: a.csv: 2 corrections "
+                      "not applied", body)
+
 
 class AttentionRecordTests(TestCase):
     """utils/jobs.record_attention: download_data.py's ATTENTION: lines, kept for the daily digest."""

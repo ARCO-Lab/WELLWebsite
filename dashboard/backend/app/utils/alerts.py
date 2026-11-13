@@ -467,8 +467,9 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
                     latest = max((aware(i.last_notified_at) for i in open_incidents
                                   if i.incident_key.startswith(key + ":") and i.last_notified_at is not None),
                                  default=None)
-                    if latest is not None and (incident.last_notified_at is None
-                                               or latest > aware(incident.last_notified_at)):
+                    # Not if it was never emailed itself: then it is still "new".
+                    last = aware(incident.last_notified_at)
+                    if latest is not None and last is not None and latest > last:
                         result.renotified.append((incident, latest))
                         renotified[id(incident)] = latest
         if incident is None:

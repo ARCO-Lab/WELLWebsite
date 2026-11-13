@@ -895,6 +895,26 @@ class CheckAlertsTests(unittest.TestCase):
         self.assertEqual([r["kind"] for r in missed], [STALE_SENSOR])
         self.assertEqual(len(missed_recoveries(later - dt.timedelta(days=14), later - alerts.RECOVERY_WINDOW)), 2)
 
+    def test_a_reopened_site_alert_never_emailed_is_still_new(self):
+        """The site alert was recorded while SMTP was off, then narrowed to the logger, which was emailed once SMTP
+        was set up. When the site alert reopens it hasn't been emailed itself, so it is emailed as new."""
+        from utils.digest import LOGGER_SENSORS
+        logger = next(iter(LOGGER_SENSORS))
+
+        def h(hours, minutes=0):
+            return NOW + dt.timedelta(hours=hours, minutes=minutes)
+        self.add_readings("Logger", logger, "Water Surface Elevation", NOW - dt.timedelta(days=2))
+        self.add_readings("Weather", WEATHER, "Rain", NOW - dt.timedelta(hours=4))
+        self.record("LI-COR")
+        self.assertEqual(self.run_at(NOW, env={})["email"], "off")                     # the site, not emailed
+        self.add_readings("Weather", WEATHER, "Rain", h(1), count=6)
+        self.assertEqual(self.run_at(h(1, 10), env={})["email"], "off")                # narrowed to the logger
+        self.assertEqual(self.emails_at(h(1, 20)), ["sent"])                            # SMTP on: the logger
+        self.assertTrue(self.sent[0][1].startswith("[WELL] New: Logger"), self.sent[0][1])
+        self.assertEqual(self.emails_at(h(5)), ["sent"])                                # the site again: new
+        self.assertTrue(self.sent[1][1].startswith("[WELL] New: All LI-COR stations silent"), self.sent[1][1])
+        self.assertEqual(sum(i.incident_key == "stale:LI-COR" for i in self.incidents()), 1)   # reopened, not a copy
+
     def test_record_never_raises(self):
         from utils.alert_state import record_vendor_result
         self.db.drop_all()   # as before the migration has run

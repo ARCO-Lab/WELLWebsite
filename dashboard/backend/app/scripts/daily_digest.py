@@ -182,8 +182,9 @@ def main(argv=None):
     attention = read_attention(now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
-                                 incidents, traffic, recoveries, alert_settings.dashboard_url,
-                                 alert_settings.quiet_kinds, missed, attention)
+                                 incidents=incidents, traffic=traffic, recoveries=recoveries,
+                                 dashboard_url=alert_settings.dashboard_url, quiet_kinds=alert_settings.quiet_kinds,
+                                 missed=missed, attention=attention)
 
     def reported():   # what it listed has now been told: neither the alert emails nor the next digest repeat it
         with app.app_context():
