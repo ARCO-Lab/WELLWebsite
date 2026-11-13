@@ -104,6 +104,65 @@ def reading_value(raw):
     return value if math.isfinite(value) and value > SENTINEL_MAX else None
 
 
+class BadRecord(ValueError):
+    """A vendor record that can't be stored (no usable timestamp). Its message is ours: the problem and at most a
+    shortened copy of the offending field, never the whole record."""
+
+
+# What a malformed record raises when it is read: a missing or bad field (BadRecord is a ValueError), a field of the
+# wrong type, or a record that isn't an object.
+RECORD_ERRORS = (ValueError, TypeError, KeyError, AttributeError)
+
+
+def short(value, limit=40):
+    # A field's repr, cut to `limit` characters, for log lines and alert text.
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def licor_time(raw):
+    """A LI-COR timestamp ("2026-11-01 05:00:00Z") as an aware datetime. Raises BadRecord when it is missing,
+    unreadable, or has no UTC offset: LI-COR sends UTC, and guessing the zone of one without an offset would store
+    it hours off without any error."""
+    try:
+        ts = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        raise BadRecord(f"unreadable timestamp {short(raw)}") from None
+    if ts.tzinfo is None:
+        raise BadRecord(f"timestamp {short(raw)} has no UTC offset")
+    return ts
+
+
+class SkippedRecords:
+    """The records of one vendor answer that couldn't be read, so that a bad record is skipped rather than failing
+    every run until it falls out of the look-back. Keeps a count and one example (the problem and the sensor or
+    time, never the whole record) for a single log line, and for vendor_status.last_skipped."""
+
+    def __init__(self, vendor):
+        self.vendor, self.count, self.sample = vendor, 0, None
+
+    def add(self, error, entry):
+        self.count += 1
+        if self.sample is None:
+            problem = str(error) if isinstance(error, BadRecord) else f"malformed record ({type(error).__name__})"
+            where = ""
+            if isinstance(entry, dict) and isinstance(entry.get("sensor_sn"), str):
+                where = f" from sensor {short(entry['sensor_sn'])}"
+            elif isinstance(entry, dict) and "timestamp" in entry:
+                where = f" at {short(entry['timestamp'])}"
+            self.sample = problem + where
+
+    def summary(self):
+        """'3 unreadable record(s), e.g. ...', or None when every record was read."""
+        return f"{self.count} unreadable record(s), e.g. {self.sample}" if self.count else None
+
+    def report(self, log=print):
+        # One line per answer, however many records were skipped.
+        if self.count:
+            log(f"[WARN] {self.vendor}: skipped {self.summary()}. If the vendor changed its format, fix "
+                f"utils/parsers.py and refill the period with the vendor's backfill script.")
+
+
 def parse_weather_entry(entry, logger_id):
     # Parse a single weather data entry into a SensorMeasurement object
     sensor_sn = entry.get("sensor_sn")
@@ -121,7 +180,7 @@ def parse_weather_entry(entry, logger_id):
         measurement_type=weather_measurement_name(sensor_sn, entry.get("sensor_measurement_type")),
         value=value,
         unit=stored_unit(entry),
-        recorded_at=datetime.fromisoformat(entry.get("timestamp"))
+        recorded_at=licor_time(entry.get("timestamp"))
     )
 
 
@@ -146,7 +205,7 @@ def parse_logger_entry(entry):
     h = reading_value(entry.get("value"))
     if h is None or unit_mismatch(entry):
         return None
-    recorded_at = datetime.fromisoformat(entry.get("timestamp"))
+    recorded_at = licor_time(entry.get("timestamp"))
 
     if metric_suffix == '1':
         # Sensor depth -> water surface elevation (m above sea level) from the logger's survey values
@@ -159,14 +218,20 @@ def parse_logger_entry(entry):
     return None
 
 
-def parse_quality_entry(entry, station_id):
+def parse_quality_entry(entry, station_id, skipped=None):
     # Parse a single quality data entry into a list of SensorMeasurement objects.
-    # WQData timestamps are UTC without an offset.
+    # WQData timestamps are UTC without an offset. An entry without a readable timestamp raises; a single malformed
+    # reading (not an object, no parameterId) is skipped and counted in `skipped`, keeping the entry's other readings.
     timestamp = datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     results = []
     for reading in entry["values"]:
-        param_id = reading["parameterId"]
-        if param_id not in QUALITY_PARAM_ID_MAP:
+        try:
+            param_id = reading["parameterId"]
+            if param_id not in QUALITY_PARAM_ID_MAP:
+                continue
+        except RECORD_ERRORS as e:
+            if skipped is not None:
+                skipped.add(e, entry)
             continue
         value = reading_value(reading.get("value"))
         if value is None:
@@ -189,20 +254,27 @@ def to_row(obj, tz):
                  "value": obj.value, "unit": obj.unit, "recorded_at": key[2]}
 
 
-def licor_rows(records, groups, weather_station, tz) -> dict:
+def licor_rows(records, groups, weather_station, tz, skipped=None) -> dict:
     """Rows from LI-COR records for the given groups ("Weather" and/or "Logger"), keyed by unique key.
-    Prints one [ERROR] line per sensor whose records were skipped for an unexpected unit."""
+    Prints one [ERROR] line per sensor whose records were skipped for an unexpected unit, and one [WARN] line for
+    the records that couldn't be read (a caller that passes its own counter, `skipped`, reports it instead)."""
     rows = {}
     wrong_units = {}
+    own = skipped is None   # a caller that passes its own counter reports it
+    skipped = SkippedRecords("LI-COR") if own else skipped
     for entry in records:
-        is_logger = str(entry.get("sensor_sn", "")).startswith(LOGGER_PREFIX)
-        if ("Logger" if is_logger else "Weather") not in groups:
+        try:
+            is_logger = str(entry.get("sensor_sn", "")).startswith(LOGGER_PREFIX)
+            if ("Logger" if is_logger else "Weather") not in groups:
+                continue
+            mismatch = unit_mismatch(entry)
+            if mismatch:
+                wrong_units[mismatch] = wrong_units.get(mismatch, 0) + 1
+                continue
+            obj = parse_logger_entry(entry) if is_logger else parse_weather_entry(entry, weather_station)
+        except RECORD_ERRORS as e:
+            skipped.add(e, entry)
             continue
-        mismatch = unit_mismatch(entry)
-        if mismatch:
-            wrong_units[mismatch] = wrong_units.get(mismatch, 0) + 1
-            continue
-        obj = parse_logger_entry(entry) if is_logger else parse_weather_entry(entry, weather_station)
         if obj is not None:
             key, row = to_row(obj, tz)
             rows.setdefault(key, row)
@@ -212,14 +284,27 @@ def licor_rows(records, groups, weather_station, tz) -> dict:
               f"another spelling of the same unit) in utils/parsers.py "
               f"(and convert if needed), then run scripts/licor_backfill.py --days N for the skipped period: "
               f"the 10-minute ingestion won't fetch it again, since the other sensors' readings move its start.")
+    if own:
+        skipped.report()
     return rows
 
 
-def quality_rows(entries, station_id, tz) -> dict:
-    """Rows from WQData entries, keyed by unique key."""
+def quality_rows(entries, station_id, tz, skipped=None) -> dict:
+    """Rows from WQData entries, keyed by unique key. An entry without a readable timestamp is skipped whole, a
+    malformed reading (no parameterId, say) on its own; each is counted and reported in one [WARN] line, by
+    the caller when it passes its own counter (`skipped`)."""
     rows = {}
+    own = skipped is None
+    skipped = SkippedRecords("WQData") if own else skipped
     for entry in entries:
-        for obj in parse_quality_entry(entry, station_id):
+        try:
+            objs = parse_quality_entry(entry, station_id, skipped)
+        except RECORD_ERRORS as e:
+            skipped.add(e, entry)
+            continue
+        for obj in objs:
             key, row = to_row(obj, tz)
             rows.setdefault(key, row)
+    if own:
+        skipped.report()
     return rows

@@ -89,6 +89,11 @@ class SettingsTests(unittest.TestCase):
 
 
 class VendorErrorTests(unittest.TestCase):
+    def test_records_none_of_which_could_be_read_are_their_own_kind(self):
+        from utils.fetching import UnreadableRecords
+        self.assertEqual(describe_vendor_error(UnreadableRecords("none of WQData's records could be read")),
+                         ("unreadable", None, "none of WQData's records could be read"))
+
     def test_kinds_and_safe_text(self):
         self.assertEqual(describe_vendor_error(http_error(401))[:2], ("auth", 401))
         self.assertEqual(describe_vendor_error(http_error(403))[:2], ("auth", 403))
@@ -128,6 +133,14 @@ class VendorDownTests(unittest.TestCase):
                                      Settings())
         self.assertIn("quota exceeded (HTTP 429 ×3)", found["vendor:WQData"].title)
 
+    def test_unreadable_records_point_at_the_parser_not_the_api(self):
+        error = "none of LI-COR's records could be read: 600 unreadable record(s), e.g. timestamp '2026' has no UTC offset"
+        found, _ = vendor_conditions({"LI-COR": vendor(3, "unreadable", None, error, self.since)}, NOW, Settings())
+        c = found["vendor:LI-COR"]
+        self.assertEqual(c.title, "LI-COR sends records we can't read (×3) — check the ingestion log")
+        self.assertIn("has no UTC offset", c.detail)
+        self.assertNotIn("not responding", c.title)
+
 
 class StaleTests(unittest.TestCase):
     def report(self, rows):
@@ -143,6 +156,18 @@ class StaleTests(unittest.TestCase):
         self.assertEqual(c.title, "Water quality station 4501 silent for 3 h — vendor OK, check the sensor")
         self.assertIn("WQData is responding", c.detail)
         self.assertIn("has sent nothing since Wed Nov 11, 11:00 (3 h)", c.detail)
+
+    def test_unreadable_records_change_the_advice(self):
+        # The vendor answered, but some of its records couldn't be read: they may be the "missing" readings.
+        rows = [latest_row("Quality", WQ, m, dt.timedelta(hours=3)) for m in ("ODO", "Turbidity")]
+        skipped = {**vendor(), "last_skipped": "5 unreadable record(s), e.g. unreadable timestamp None"}
+        found, _ = stale_conditions(self.report(rows), {"WQData": skipped}, NOW)
+        c = found[f"stale:WQData:{WQ}"]
+        self.assertEqual(c.title, "Water quality station 4501 silent for 3 h — WQData sent unreadable records, "
+                                  "check the ingestion log")
+        self.assertIn("5 unreadable record(s)", c.detail)
+        found, _ = stale_conditions(self.report(rows), {"WQData": {**vendor(), "last_skipped": None}}, NOW)
+        self.assertTrue(found[f"stale:WQData:{WQ}"].title.endswith("vendor OK, check the sensor"))
 
     def test_one_sensor_of_a_station(self):
         rows = [latest_row("Weather", WEATHER, "Rain", dt.timedelta(hours=5)),
@@ -776,9 +801,9 @@ class PostgresTests(unittest.TestCase):
         with db.engine.begin() as conn:
             conn.exec_driver_sql("DROP TABLE IF EXISTS alert_incidents, vendor_status")
         SensorMeasurement.__table__.create(db.engine, checkfirst=True)
-        sql = (APP / "db" / "migrations" / "0003_monitoring_alerts.sql").read_text(encoding="utf-8")
-        with db.engine.begin() as conn:   # the tables as the migration makes them, not as create_all would
-            conn.exec_driver_sql(sql)
+        with db.engine.begin() as conn:   # the tables as the migrations make them, not as create_all would
+            for name in ("0003_monitoring_alerts.sql", "0006_vendor_status_fetch_watermark.sql"):
+                conn.exec_driver_sql((APP / "db" / "migrations" / name).read_text(encoding="utf-8"))
         with mock.patch.object(Config, "HOBO_LOGGERS", WEATHER):   # unset in tests; the module builds its services
             cls.ingest = importlib.import_module("scripts.inject_from_api")
 
@@ -790,6 +815,7 @@ class PostgresTests(unittest.TestCase):
         cls.ctx.pop()
 
     def setUp(self):
+        self.db.session.remove()   # a session left open by the previous test would block TRUNCATE
         with self.db.engine.begin() as conn:
             conn.exec_driver_sql("TRUNCATE alert_incidents, vendor_status, sensor_measurements")
 
@@ -838,19 +864,61 @@ class PostgresTests(unittest.TestCase):
         check_alerts.run(env=dict(SMTP), send=lambda *a: sent.append(a), log=lambda *a: None)
         self.assertEqual(len(sent), 1)   # the open-incident index and timestamptz columns work as intended
 
+    def test_unreadable_records_watermark_and_paging_stall(self):
+        from utils.alert_state import fetched_until, vendor_statuses
+        when = dt.datetime.now(UTC) - dt.timedelta(minutes=20)
 
-if __name__ == "__main__":
-    unittest.main()
+        def record(ts):
+            return {"logger_sn": WEATHER, "sensor_sn": "21948438-1", "sensor_measurement_type": "Temperature",
+                    "unit": "°C", "value": 6.5, "timestamp": ts}
+        good, naive = record(when.strftime("%Y-%m-%d %H:%M:%SZ")), record(when.strftime("%Y-%m-%d %H:%M:%S"))
+        ok_wq = reply(200, {"data": [], "info": {}})
+
+        # One record without a UTC offset is skipped and noted; the good one is stored and the fetch marked done.
+        self.ingest_with(reply(200, {"data": [good, {**naive, "sensor_sn": "22154270-1"}]}), ok_wq)
+        self.db.session.remove()
+        row = vendor_statuses()["LI-COR"]
+        self.assertEqual(row["consecutive_failures"], 0)
+        self.assertIn("unreadable record(s)", row["last_skipped"])   # once per 7-day window of the first run
+        self.assertIn("has no UTC offset", row["last_skipped"])
+        mark = fetched_until("LI-COR")
+        self.assertIsNotNone(mark)
+        self.assertEqual(self.db.session.execute(self.db.text("SELECT count(*) FROM sensor_measurements")).scalar(), 1)
+
+        # Nothing readable: a failed call of its own kind, and the mark stays where it was.
+        with self.assertRaisesRegex(RuntimeError, "ingestion failed for: LI-COR$"):
+            self.ingest_with(reply(200, {"data": [naive]}), ok_wq)
+        self.db.session.remove()
+        row = vendor_statuses()["LI-COR"]
+        self.assertEqual((row["consecutive_failures"], row["last_error_kind"]), (1, "unreadable"))
+        self.assertEqual(fetched_until("LI-COR"), mark)
+
+        # WQData paging that doesn't advance: what was read is stored, and the call counts as failed.
+        stamp = when.strftime("%Y-%m-%d %H:%M:%S")
+        stuck = reply(200, {"data": [{"timestamp": stamp, "values": [{"parameterId": 125001, "value": "8.5"}]}],
+                            "info": {"more": True, "count": 1, "total": 9}})
+        with self.assertRaisesRegex(RuntimeError, "ingestion failed for: WQData$"):
+            self.ingest_with(reply(200, {"data": [good]}), stuck)
+        self.db.session.remove()
+        row = vendor_statuses()["WQData"]
+        self.assertEqual((row["consecutive_failures"], row["last_error_kind"]), (1, "bad_response"))
+        self.assertEqual(self.db.session.execute(self.db.text(
+            "SELECT count(*) FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).scalar(), 1)
 
     def test_wqdata_failing_on_page_two_keeps_page_one_and_fails_the_run(self):
         from utils.alert_state import vendor_statuses
         stamp = (dt.datetime.now(UTC) - dt.timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
         page_one = reply(200, {"data": [{"timestamp": stamp, "values": [{"parameterId": 125001, "value": "8.5"}]}],
                                "info": {"more": True, "lastDataPointTimestamp": stamp, "count": 1, "total": 2}})
-        with self.assertRaisesRegex(RuntimeError, "WQData request failed: HTTPError \\(HTTP 503\\)"):
+        with self.assertRaisesRegex(RuntimeError, "ingestion failed for: WQData$"):
             self.ingest_with(reply(200, {"data": []}), [page_one, reply(503)])
         self.db.session.remove()
         stored = self.db.session.execute(self.db.text(
             "SELECT measurement_type, value FROM sensor_measurements WHERE station_id = :s"), {"s": WQ}).all()
         self.assertEqual([tuple(r) for r in stored], [("Water Temperature", 8.5)])
-        self.assertEqual(vendor_statuses()["WQData"]["consecutive_failures"], 1)
+        row = vendor_statuses()["WQData"]
+        self.assertEqual((row["consecutive_failures"], row["last_error"]), (1, "HTTPError (HTTP 503)"))
+
+
+if __name__ == "__main__":
+    unittest.main()

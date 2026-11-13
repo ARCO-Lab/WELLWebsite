@@ -21,6 +21,9 @@ import sys
 
 from sqlalchemy import create_engine, inspect, text
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from db.database import CONNECT_ARGS  # noqa: E402
+
 MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parents[1] / "db" / "migrations"
 NUMBERED = re.compile(r"^(\d{4})_\w+\.sql$")
 NO_TRANSACTION = "-- migrate: no-transaction"
@@ -136,7 +139,9 @@ def main():
     mode.add_argument("--dry-run", action="store_true", help="print the SQL of pending migrations")
     args = parser.parse_args()
 
-    engine = create_engine(os.environ["DATABASE_URL"])
+    url = os.environ["DATABASE_URL"]
+    # The app's connect timeout and TCP keepalives, so an unreachable database fails in seconds instead of hanging.
+    engine = create_engine(url, connect_args=dict(CONNECT_ARGS) if url.startswith("postgresql") else {})
     try:
         if args.status:
             done = applied_versions(engine)

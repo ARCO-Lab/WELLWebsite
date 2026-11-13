@@ -172,7 +172,9 @@ still going:
 
 The `export_worker` container (Celery with its beat scheduler) deletes expired download files every hour. Backfills of
 missed vendor data aren't scheduled: run `scripts/licor_backfill.py` or `scripts/wqdata_backfill.py` by hand (their
-headers explain how). The only cron jobs are the optional `deploy.sh --auto` line
+headers explain how). The 10-minute ingestion fetches a LI-COR group's gap once, in the run that first sees it
+again after more than a day of silence; older readings it resends in later uploads are left to `licor_backfill.py`.
+The only cron jobs are the optional `deploy.sh --auto` line
 ([docs/deploying.md](../../docs/deploying.md)) and the WordPress backup
 ([wordpress/README.md](../../wordpress/README.md#backups)).
 
@@ -511,8 +513,8 @@ was already reported and the next email (reminder or recovery) names it.
 
 | Alert | When | What to do |
 |---|---|---|
-| Vendor down (`VENDOR_DOWN`) | The LI-COR or WQData API call failed on the last `ALERT_VENDOR_FAILURES` runs in a row: an HTTP error, a timeout, or a reply without data. | Check the vendor's status; our sensors may be fine. Ingestion catches up by itself (up to 14 days back) once the API answers. HTTP 401/403 says "rejects our credentials — rotate the API key" (set `HOBOLINK_API_TOKEN` or `WQ_API_KEY` in `.env` and in the repository secret), and WQData's 429 says "request quota exceeded" (stop any `wqdata_backfill.py` run). |
-| Sensor silent (`STALE_SENSOR`) | The vendor answered on the latest run, but a station, or one of its sensors, has sent nothing for longer than its group's limit. If every LI-COR station is silent it is one alert for the site (the loggers report through the weather station). | Go to the sensor: its power, cable, telemetry (cellular modem, data plan). Not raised while the vendor's latest call failed, since then the vendor is the likelier cause. |
+| Vendor down (`VENDOR_DOWN`) | The LI-COR or WQData API call failed on the last `ALERT_VENDOR_FAILURES` runs in a row: an HTTP error, a timeout, a reply without data, or WQData paging that stops advancing. Also when the vendor answered but none of its records could be read (no timestamp, a garbled one, or one without a UTC offset). | Check the vendor's status; our sensors may be fine. Ingestion catches up by itself (up to 14 days back) once the API answers. Unreadable records say "sends records we can't read — check the ingestion log": most likely the vendor changed its format, so `utils/parsers.py` needs a fix. HTTP 401/403 says "rejects our credentials — rotate the API key" (set `HOBOLINK_API_TOKEN` or `WQ_API_KEY` in `.env` and in the repository secret), and WQData's 429 says "request quota exceeded" (stop any `wqdata_backfill.py` run). |
+| Sensor silent (`STALE_SENSOR`) | The vendor answered on the latest run, but a station, or one of its sensors, has sent nothing for longer than its group's limit. If every LI-COR station is silent it is one alert for the site (the loggers report through the weather station). | Go to the sensor: its power, cable, telemetry (cellular modem, data plan). Not raised while the vendor's latest call failed, since then the vendor is the likelier cause. If the vendor's latest answer had records that couldn't be read (they are skipped, one at a time, and logged), the subject says "sent unreadable records, check the ingestion log" instead of "vendor OK", since the missing readings may be among them. |
 | Suspect values (`SUSPECT_VALUES`) | Data arrives but looks wrong over the whole last `ALERT_SUSPECT_HOURS`: a water quality probe stuck on one value (not TSS/turbidity at 0), at least half the readings outside the physical range, dissolved oxygen about 0, or a logger with about 0 m of water over it. A single odd reading is never an alert. | Look at the chart, then check and clean the probe if it isn't a real event. |
 | Recovered | The condition cleared, for an incident that was emailed. A suspect-values recovery waits for the next email or the digest (`ALERT_QUIET_KINDS`). | Nothing; the email says how long it lasted. |
 
@@ -523,7 +525,8 @@ still recorded and the email is written to `logs/alerts.log` instead (in full wh
 line per check), and once SMTP is set up the next check emails the incidents still open. To see what would be sent now
 without recording or sending anything: `docker compose exec worker python scripts/check_alerts.py --dry-run`. The
 state lives in two tables, `vendor_status` (written by every ingestion run) and `alert_incidents`, created by migration
-`0003_monitoring_alerts.sql` (see [Database migrations](#database-migrations)); until it is applied the alert check
+`0003_monitoring_alerts.sql` (see [Database migrations](#database-migrations)); `0006_vendor_status_fetch_watermark.sql`
+adds where the last LI-COR fetch ended and the latest answer's unreadable records; until it is applied the alert check
 fails (logged, reported to Sentry and to `HEALTHCHECK_URL_ALERTS`) and ingestion carries on as before.
 
 | Variable | Default | Meaning |
