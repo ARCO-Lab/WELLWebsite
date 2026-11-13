@@ -230,9 +230,10 @@ test.describe("charts under stress", () => {
     await page.waitForTimeout(500);
     const zoomed = await label(logger);
     await page.getByRole("button", { name: /^Start Date / }).click();
-    const picked = page.locator('[aria-selected="true"]').first();
-    await expect(picked).toBeVisible();
-    await (await picked.locator("button").count() ? picked.locator("button").first() : picked).click();
+    // The picked day in the open picker (not the active tab, which is aria-selected too)
+    const picked = page.locator('[data-radix-popper-content-wrapper] [data-day][data-selected="true"] button');
+    await expect(picked).toHaveCount(1);
+    await picked.click();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(500);
     expect(await label(logger)).toBe(zoomed);

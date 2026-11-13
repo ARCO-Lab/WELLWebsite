@@ -469,7 +469,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       if (active) a11y(false);
       else {
         if (preview.active) place(controller.window);
-        a11yTimer = window.setTimeout(() => { a11y(true); chart.redraw(false); }, 300);
+        a11yTimer = window.setTimeout(guarded(() => { a11y(true); chart.redraw(false); }, crash), 300);
       }
     }, crash));
     return () => {
