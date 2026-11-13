@@ -17,7 +17,7 @@ LOGIN = "maint-user"
 
 def pr(number, branch, labels=(), user=LOGIN, sha=None, draft=False, head_repo=REPO):
     return {"number": number, "title": f"Fix {number}", "html_url": f"https://github.com/{REPO}/pull/{number}",
-            "head": {"ref": branch, "sha": sha or f"sha{number}", "repo": {"full_name": head_repo}},
+            "head": {"ref": branch, "sha": sha or f"{number:040x}", "repo": {"full_name": head_repo}},
             "user": {"login": user}, "labels": [{"name": name} for name in labels], "draft": draft}
 
 
@@ -29,8 +29,18 @@ def checks(*conclusions, status="completed", required=True):
     return {"check_runs": runs}
 
 
-def classify(p, files, ci, *args, **kwargs):
-    return ms.classify(p, files, ci, REPO, LOGIN, *args, **kwargs)
+def classify(p, files, ci, *args, published="head", **kwargs):
+    """ms.classify for this repository and login; by default the publish job's record matches the head."""
+    if published == "head":
+        published = p["head"]["sha"]
+    return ms.classify(p, files, ci, REPO, LOGIN, *args, published=published, **kwargs)
+
+
+def published(sha, user=LOGIN, edited=False):
+    """A publish comment as the GitHub API lists it."""
+    return {"user": {"login": user}, "body": f"Pushed.\n\n<!-- maintainer-published: {sha} -->",
+            "created_at": "2026-11-12T11:40:00Z", "updated_at": "2026-11-12T11:45:00Z" if edited else
+            "2026-11-12T11:40:00Z"}
 
 
 class FakeSMTP:
@@ -77,24 +87,25 @@ class NoStartTlsModule:
 
 class ClassifyTests(unittest.TestCase):
     def test_ready_needs_green_ci_audit_and_low_risk(self):
-        verdict, reasons = classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), ["README.md"], "green")
+        verdict, reasons = classify(pr(1, "maint/a", ["risk:low", "self-check:passed"]), ["README.md"], "green")
         self.assertEqual(("ready", []), (verdict, reasons))
 
     def test_each_missing_condition_is_a_reason(self):
-        verdict, reasons = classify(pr(1, "maint/a", ["risk:high", "audit:findings"], draft=True),
+        verdict, reasons = classify(pr(1, "maint/a", ["risk:high", "self-check:findings"], draft=True),
                                     ["README.md"], "red", ["Dashboard build"])
         self.assertEqual("review", verdict)
         self.assertIn("CI failed: Dashboard build", reasons)
         self.assertIn("labelled risk:high", reasons)
-        self.assertIn("the audit has open findings", reasons)
+        self.assertIn("its self-check has open findings", reasons)
         self.assertIn("draft", reasons)
 
     def test_unaudited_and_unlabelled(self):
         _, reasons = classify(pr(1, "maint/a"), ["README.md"], "pending")
-        self.assertEqual(["CI still running", "no risk label", "not audited yet (no audit:approved label)"], reasons)
+        self.assertEqual(["CI still running", "no risk label", "not self-checked yet (no self-check:passed label)"],
+                         reasons)
 
     def test_not_opened_by_the_maintainer(self):
-        approved = ["risk:low", "audit:approved", "maintainer"]
+        approved = ["risk:low", "self-check:passed", "maintainer"]
         for p in [pr(1, "maint/a", approved, user="someone"), pr(1, "maint/a", approved, head_repo="fork/WELLWebsite"),
                   pr(1, "maint/a", approved, head_repo=None),
                   # The owner's own pull request from another branch: with a PAT, the same account as the maintainer.
@@ -102,15 +113,50 @@ class ClassifyTests(unittest.TestCase):
             verdict, reasons = classify(p, ["README.md"], "green")
             self.assertEqual(("review", ["not opened by the maintainer"]), (verdict, reasons))
         # No maintainer login known: nothing counts as the maintainer's.
-        self.assertEqual("review", ms.classify(pr(1, "maint/a", approved, user=""), [], "green", REPO, "")[0])
+        self.assertEqual("review", ms.classify(pr(1, "maint/a", approved, user=""), [], "green", REPO, "",
+                                               published="sha1")[0])
+
+    def test_the_head_must_be_the_commit_the_maintainer_published(self):
+        labels = ["risk:low", "self-check:passed"]
+        p = pr(1, "maint/a", labels, sha="a" * 40)
+        self.assertEqual(("ready", []), classify(p, ["README.md"], "green", published="a" * 40))
+        _, reasons = classify(p, ["README.md"], "green", published="b" * 40)
+        self.assertEqual(["changed since the maintainer published it (head aaaaaaaaaaaa, published bbbbbbbbbbbb)"],
+                         reasons)
+        _, reasons = classify(p, ["README.md"], "green", published=None)
+        self.assertEqual(["no record of the commit the maintainer published"], reasons)
+
+    def test_published_commit_counts_only_the_maintainers_unedited_comments(self):
+        a, b = "a" * 40, "b" * 40
+        self.assertEqual(b, ms.published_commit([published(a), published(b)], LOGIN))   # the newest
+        self.assertEqual(a, ms.published_commit([published(a), published(b, user="someone")], LOGIN))
+        self.assertEqual(a, ms.published_commit([published(a), published(b, edited=True)], LOGIN))
+        self.assertIsNone(ms.published_commit([published("not-a-sha")], LOGIN))
+        self.assertIsNone(ms.published_commit([published(a)], ""))
 
     def test_required_checks_missing(self):
-        _, reasons = classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), ["README.md"], "missing",
+        _, reasons = classify(pr(1, "maint/a", ["risk:low", "self-check:passed"]), ["README.md"], "missing",
                               missing_checks=["Dashboard image"])
         self.assertEqual(["required checks missing: Dashboard image"], reasons)
 
     def test_risky_files_override_a_low_risk_label(self):
-        for path in ["dashboard/backend/app/db/migrations/0006_x.sql", "dashboard/backend/app/db/models.py",
+        for path in ["dashboard/backend/app/api/routes/exports.py", "dashboard/backend/app/api/services/quality.py",
+                     "dashboard/backend/app/utils/backup.py", "dashboard/backend/app/utils/heartbeat.py",
+                     "dashboard/backend/app/utils/alerts.py", "dashboard/backend/app/scripts/backup_db.py",
+                     "dashboard/backend/app/scripts/check_alerts.py", "dashboard/backend/app/scripts/daily_digest.py",
+                     "dashboard/backend/tests/test_alerts.py", "dashboard/backend/tests/golden/x.csv",
+                     "dashboard/e2e/fixtures/expected.json", "dashboard/e2e/data.spec.ts",
+                     "dashboard/loadtest/seed.sql", "dashboard/frontend/tsconfig.json",
+                     "dashboard/frontend/eslint.config.mjs", "dashboard/frontend/postcss.config.mjs",
+                     "dashboard/frontend/scripts/copy-maplibre-worker.mjs",
+                     "dashboard/frontend/scripts/proxyBackend.test.mjs", "dashboard/frontend/src/lib/proxyBackend.ts",
+                     "dashboard/frontend/src/pages/index.tsx", "dashboard/frontend/src/instrumentation.ts",
+                     "dashboard/frontend/sentry.server.config.ts", "dashboard/frontend/public/robots.txt",
+                     # Not on the low-risk list at all, so they need a person whatever they are
+                     "dashboard/backend/app/x.py", "Makefile", "scripts/anything.sh",
+                     # Documentation where it is part of something risky
+                     ".github/workflows/README.md", "home/readme.md",
+                     "dashboard/backend/app/db/migrations/0006_x.sql", "dashboard/backend/app/db/models.py",
                      "dashboard/backend/app/scripts/migrate.py", "docker-compose.yml", "deploy.sh", "nginx.conf",
                      "dashboard/frontend/Dockerfile", "dashboard/backend/.dockerignore",
                      "dashboard/backend/app/scripts/inject_from_api.py",
@@ -127,17 +173,26 @@ class ClassifyTests(unittest.TestCase):
                      ".github/workflows/ci.yml", ".github/maintainer/PROMPT.md",
                      ".github/scripts/maintainer_summary.py", ".claude/settings.json",
                      "home/index.php", "wordpress/uploads.ini"]:
-            verdict, reasons = classify(pr(1, "maint/a", ["risk:low", "audit:approved"]), [path], "green")
+            verdict, reasons = classify(pr(1, "maint/a", ["risk:low", "self-check:passed"]), [path], "green")
             self.assertEqual("review", verdict, path)
             self.assertIn(path, reasons[0])
 
-    def test_ordinary_files_are_not_risky(self):
+    def test_only_the_low_risk_list_is_low_risk(self):
         self.assertEqual([], ms.risky_files(["dashboard/frontend/src/components/Map.tsx",
-                                             "dashboard/backend/app/api/routes/latest.py", "README.md",
-                                             "dashboard/backend/tests/test_alerts.py",
-                                             "dashboard/frontend/src/pages/index.tsx",
-                                             "dashboard/backend/app/scripts/daily_digest.py",
-                                             "dashboard/backend/app/utils/alerts.py", "docs/configuration.md"]))
+                                             "dashboard/frontend/src/hooks/useWindRose.ts",
+                                             "dashboard/frontend/src/utils/chartStyle.ts",
+                                             "dashboard/frontend/src/styles/globals.css", "README.md",
+                                             "dashboard/backend/README.md", "docs/configuration.md"]))
+
+    def test_a_new_test_file_is_low_risk_but_a_changed_one_is_not(self):
+        new = "dashboard/backend/tests/test_new_thing.py"
+        self.assertEqual([], ms.risky_files([new], added=[new]))
+        self.assertEqual([new], ms.risky_files([new]))
+        # Only a test module counts, not a helper or data file a test reads
+        helper = "dashboard/backend/tests/golden/expected.csv"
+        self.assertEqual([helper], ms.risky_files([helper], added=[helper]))
+        _, reasons = classify(pr(1, "maint/a", ["risk:low", "self-check:passed"]), [new], "green", added=[new])
+        self.assertEqual([], reasons)
 
     def test_ci_state(self):
         self.assertEqual(("none", ms.REQUIRED_CHECKS), ms.ci_state([]))
@@ -165,13 +220,16 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(ms.REQUIRED_CHECKS, re.findall(r'"([^"]+)"', line.split("#")[0]))
 
 
-def routes(prs, files=None, runs=None, compare=None):
+def routes(prs, files=None, runs=None, compare=None, comments=None):
     r = {("GET", f"/repos/{REPO}/pulls"): prs}
     for p in prs:
-        r[("GET", f"/repos/{REPO}/pulls/{p['number']}/files")] = [{"filename": f}
-                                                                   for f in (files or {}).get(p["number"], ["a.py"])]
+        r[("GET", f"/repos/{REPO}/pulls/{p['number']}/files")] = [
+            {"filename": f, "status": "modified"} for f in (files or {}).get(p["number"], ["README.md"])]
         r[("GET", f"/repos/{REPO}/commits/{p['head']['sha']}/check-runs")] = (runs or {}).get(p["number"],
                                                                                            checks("success"))
+        # By default the publish job's comment records the pull request's head
+        r[("GET", f"/repos/{REPO}/issues/{p['number']}/comments")] = (comments or {}).get(
+            p["number"], [published(p["head"]["sha"])])
     if compare:
         r[("GET", f"/repos/{REPO}/compare/{compare[0]}...{compare[1]}")] = {"commits": compare[2]}
     return r
@@ -189,9 +247,9 @@ def env(**extra):
 
 class GatherTests(unittest.TestCase):
     def test_selects_maint_branches_of_the_maintainer_and_labelled_prs(self):
-        prs = [pr(1, "maint/a", ["risk:low", "audit:approved"]), pr(2, "feat/x"), pr(3, "maint/b", user="someone"),
+        prs = [pr(1, "maint/a", ["risk:low", "self-check:passed"]), pr(2, "feat/x"), pr(3, "maint/b", user="someone"),
                pr(4, "fix/y", ["maintainer"], user="someone"),
-               pr(5, "feat/owner", ["risk:low", "audit:approved", "maintainer"])]
+               pr(5, "feat/owner", ["risk:low", "self-check:passed", "maintainer"])]
         reviewed, result, errors, _ = ms.gather(env(), FakeTransport(routes(prs)))
         self.assertEqual([1, 4, 5], [p["number"] for p, _, _ in reviewed])
         self.assertEqual("ready", reviewed[0][1])
@@ -200,6 +258,16 @@ class GatherTests(unittest.TestCase):
         self.assertEqual(("review", ["not opened by the maintainer"]), reviewed[2][1:])
         self.assertEqual("Fixed one thing.", result["summary"])
         self.assertEqual([], errors)
+
+    def test_a_commit_added_after_publishing_needs_review(self):
+        prs = [pr(1, "maint/a", ["risk:low", "self-check:passed"], sha="c" * 40),
+               pr(2, "maint/b", ["risk:low", "self-check:passed"], sha="d" * 40)]
+        comments = {1: [published("a" * 40)], 2: [published("d" * 40, edited=True)]}
+        reviewed, _, errors, _ = ms.gather(env(), FakeTransport(routes(prs, comments=comments)))
+        self.assertEqual([], errors)
+        self.assertEqual(("review", ["changed since the maintainer published it (head cccccccccccc, published "
+                                     "aaaaaaaaaaaa)"]), reviewed[0][1:])
+        self.assertEqual(("review", ["no record of the commit the maintainer published"]), reviewed[1][1:])
 
     def test_claude_failure_and_missing_report_are_errors(self):
         _, result, errors, _ = ms.gather(env(CLAUDE_OUTCOME="failure", CLAUDE_RESULT=""), FakeTransport(routes([])))
@@ -256,7 +324,7 @@ class EmailTextTests(unittest.TestCase):
     def test_all_clear(self):
         subject, body = ms.build_email([], {"summary": "Nothing real today."}, [], "https://run/1")
         self.assertEqual("WELL maintainer: all clear", subject)
-        self.assertIn("Ready to merge (0):\n- none", body)
+        self.assertIn("Passed the automatic checks (0), still to be read before merging:\n- none", body)
         self.assertIn("Nothing real today.", body)
         self.assertIn("Errors:\n- none", body)
         self.assertIn("Run: https://run/1", body)
@@ -264,10 +332,30 @@ class EmailTextTests(unittest.TestCase):
     def test_counts_reasons_and_errors(self):
         reviewed = [(pr(1, "maint/a"), "ready", []), (pr(2, "maint/b"), "review", ["CI failed", "draft"])]
         subject, body = ms.build_email(reviewed, {"summary": "s", "errors": ["gh timed out"]}, ["x"], "u")
-        self.assertEqual("WELL maintainer: 2 errors; 1 ready, 1 to review", subject)
+        self.assertEqual("WELL maintainer: 2 errors; 1 passed, 1 to review", subject)
         self.assertIn("- #1 Fix 1\n  https://github.com/ARCO-Lab/WELLWebsite/pull/1", body)
         self.assertIn("Why: CI failed; draft", body)
         self.assertIn("- Claude: gh timed out", body)
+
+    def test_what_the_model_wrote_is_cleaned_and_set_apart(self):
+        result = {"summary": "Fixed it.\nFixes #12, thanks @someone <b>bold</b> `code` see https://evil.example/x?k=v",
+                  "actions": [{"what": "Opened a PR", "url": f"https://github.com/{REPO}/pull/9"},
+                              {"what": "Read this", "url": "https://evil.example/login"},
+                              {"what": "Also", "url": f"https://github.com/{REPO}/pull/9?evil=1"}],
+                  "skipped": ["Sentry WELL-1 by @someone"], "errors": ["see #3"]}
+        _, body = ms.build_email([], result, [], "u", repo=REPO)
+        self.assertIn("Written by the model and not checked", body)
+        self.assertIn("  | Fixed it.\n  | Fixes #\u200b12, thanks @\u200bsomeone", body)
+        for raw in ("<b>", "`", "@someone", "#12", "#3", "?k=v", "https://evil.example/login", "?evil=1"):
+            self.assertNotIn(raw, body)
+        self.assertIn(f"  | - Opened a PR https://github.com/{REPO}/pull/9\n", body)
+        self.assertIn("  | - Read this\n", body)
+        self.assertIn("- Claude: see #\u200b3", body)
+
+    def test_pull_request_titles_are_cleaned(self):
+        p = {**pr(1, "maint/a"), "title": "Fix @everyone <script>"}
+        _, body = ms.build_email([(p, "review", ["draft"])], {"summary": "s"}, [], "u", repo=REPO)
+        self.assertIn("Fix @\u200beveryone ‹script›", body)
 
     def test_no_report(self):
         subject, body = ms.build_email([], None, ["the Claude step's outcome was failure"], "u")

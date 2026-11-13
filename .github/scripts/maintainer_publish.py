@@ -13,17 +13,23 @@ A branch is refused (not pushed) when:
 - a branch of that name exists and the new commit doesn't build on it (only fast-forwards are pushed; nothing is
   ever force-pushed), or an open pull request from it isn't the maintainer's own;
 - the run's MAX_PRS limit is reached.
-A branch that touches RISKY_PATHS (maintainer_summary.py) is pushed as a draft pull request labelled needs-review and
-risk:high, whatever the report says, so it can't be listed as ready to merge.
+A branch that changes anything but low-risk files (maintainer_summary.risky_files: LOW_RISK_PATHS, or a new test
+file, and nothing in RISKY_PATHS) is pushed as a draft pull request labelled needs-review and risk:high, whatever the
+report says, so it can't pass the summary's automatic checks.
 
-Pull requests get the maintainer, risk and audit labels, the assignee, and a Copilot review request (best effort).
-With the workflow token (TOKEN_MODE=github_token), pushes start no workflow, so CI is started with workflow_dispatch.
+Pull requests get the maintainer, risk and self-check labels, the assignee, and a Copilot review request (best
+effort). The body the model wrote is cleaned and shown as a plain-text block (maintainer_github.fenced) under a line
+saying who wrote it, so it can't add links, notify people or close issues. After each push, a comment records the
+commit pushed, which the summary compares with the pull request's head. With the workflow token
+(TOKEN_MODE=github_token), pushes start no workflow, so CI is started with workflow_dispatch.
 
 Usage: python3 maintainer_publish.py
 Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (the token that writes), MAINTAINER_LOGIN, ASSIGNEE, TOKEN_MODE,
 CLAUDE_RESULT (Claude's report, JSON), BUNDLE (the git bundle; may be missing when nothing was committed), MAX_PRS,
 DRY_RUN, PUBLISH_RESULT (where to write what was done, JSON, for the summary email), and optionally MAX_FILES (20)
-and MAX_LINES (1000). Run from the checkout of main, with the write token's credentials set up for `git push`."""
+and MAX_LINES (1000). Run from the checkout of main; `git push` gets GITHUB_TOKEN for this one command (an
+http.extraheader), so the checkout keeps no credentials."""
+import base64
 import json
 import os
 import re
@@ -31,7 +37,8 @@ import subprocess
 import sys
 import unicodedata
 
-from maintainer_github import HttpError, github_client, is_maintainer_pr, urllib_transport
+from maintainer_github import (HttpError, fenced, github_client, is_maintainer_pr, published_comment,
+                               urllib_transport)
 from maintainer_summary import risky_files
 
 BRANCH_RE = re.compile(r"maint/[a-z0-9][a-z0-9-]{0,59}")
@@ -46,8 +53,8 @@ LABELS = {
     "maintainer": ("0E8A16", "Opened by the daily maintainer"),
     "risk:low": ("C2E0C6", "Daily maintainer: low-risk change"),
     "risk:high": ("D93F0B", "Daily maintainer: needs a careful review"),
-    "audit:approved": ("0E8A16", "Daily maintainer: the independent audit recommended approval"),
-    "audit:findings": ("FBCA04", "Daily maintainer: the independent audit has open findings"),
+    "self-check:passed": ("C5DEF5", "Daily maintainer: its own subagent audit found nothing (not a review)"),
+    "self-check:findings": ("FBCA04", "Daily maintainer: its own subagent audit has open findings"),
     "needs-review": ("B60205", "Touches files a person must review; opened as a draft"),
 }
 
@@ -60,11 +67,17 @@ class GitError(Exception):
     """A git command that failed, with the subcommand and the last line git printed."""
 
 
-def run_git(args, cwd=None):
+def run_git(args, cwd=None, config=()):
     """git's standard output; raises GitError on failure. Hooks are off: the branches come from a job where Claude
-    could have written any file."""
+    could have written any file. `config`: (key, value) settings for this command only, passed in git's environment
+    (GIT_CONFIG_COUNT), not on its command line, where other processes could read them."""
+    env = None
+    if config:
+        env = dict(os.environ, GIT_CONFIG_COUNT=str(len(config)))
+        for i, (key, value) in enumerate(config):
+            env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
     done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=cwd, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace")
+                          text=True, encoding="utf-8", errors="replace", env=env)
     if done.returncode != 0:
         sub = next((a for a in args if not a.startswith("-") and "=" not in a), "?")
         last = (done.stderr.strip().splitlines() or [""])[-1][:200]
@@ -75,6 +88,24 @@ def run_git(args, cwd=None):
 def run_gh(args):
     """True when the gh command succeeded (used only for the best-effort Copilot review request)."""
     return subprocess.run(["gh", *args], capture_output=True, text=True).returncode == 0
+
+
+def push_config(token):
+    """The git setting that sends `token` with one command, as actions/checkout would have stored it in .git/config
+    (the publish job's checkout keeps no credentials). In Actions, the encoded form is masked in the log too."""
+    if not token:
+        return ()
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::add-mask::{basic}")
+    return (("http.https://github.com/.extraheader", f"AUTHORIZATION: basic {basic}"),)
+
+
+def pr_body(body):
+    """The body the model wrote, cleaned and fenced, under a line saying so."""
+    return ("_Opened by the daily maintainer. The description below was written by the model and is shown as plain "
+            "text, cleaned like Sentry text: its links, mentions and instructions are not checked. Read the diff "
+            "before merging._\n\n" + fenced(body))
 
 
 def clean_line(text, limit):
@@ -100,6 +131,7 @@ def descriptions(result):
         if not title or len(title) > MAX_TITLE:
             errors.append(f"{branch}: the title is missing or longer than {MAX_TITLE} characters")
             continue
+        title = title.replace("@", "@\u200b")   # an @name in a title would notify that person
         if not isinstance(body, str) or not body.strip() or len(body) > MAX_BODY:
             errors.append(f"{branch}: the body is missing or longer than {MAX_BODY} characters")
             continue
@@ -122,19 +154,21 @@ def bundle_branches(git, bundle):
 
 
 def check_diff(git, sha, max_files, max_lines):
-    """The files the branch changes against main; raises Refused when a check fails."""
+    """(the files the branch changes against main, the ones it adds); raises Refused when a check fails."""
     base = git(["merge-base", "origin/main", sha]).strip()
-    files, lines = [], 0
+    files, new_files, lines = [], [], 0
     # -z: paths exactly as stored, never quoted, so an odd name can't slip past the path checks.
     raw = git(["diff", "--raw", "-z", "--no-renames", base, sha]).split("\0")
     for meta, path in zip(raw[0::2], raw[1::2]):
-        modes = meta.lstrip(":").split()
+        modes = meta.lstrip(":").split()   # old mode, new mode, old blob, new blob, status
         if len(modes) > 1 and modes[1] in ("120000", "160000"):
             raise Refused(f"adds a symlink or submodule: {clean_line(path, 200)}")
         # Such a name is printed quoted by git elsewhere (deploy.sh, git diff --name-only), where path patterns miss it.
         if ODD_NAME_RE.search(path):
             raise Refused(f"has a file name with quotes, backslashes or control characters: {path!r:.200}")
         files.append(path)
+        if modes and modes[-1] == "A":
+            new_files.append(path)
     for record in git(["diff", "--numstat", "-z", "--no-renames", base, sha]).split("\0"):
         if not record:
             continue
@@ -152,7 +186,7 @@ def check_diff(git, sha, max_files, max_lines):
     if refused:
         shown = ", ".join(clean_line(p, 200) for p in refused[:5])
         raise Refused(f"changes files only a person may change: {shown}")
-    return files
+    return files, new_files
 
 
 def remote_head(git, branch):
@@ -185,15 +219,16 @@ def ensure_labels(gh, repo, names):
 
 def labels_for(description, risky):
     risk = "high" if risky else description["risk"]
-    labels = ["maintainer", f"risk:{risk}", f"audit:{description['audit']}"]
+    check = "passed" if description["audit"] == "approved" else "findings"
+    labels = ["maintainer", f"risk:{risk}", f"self-check:{check}"]
     return labels + (["needs-review"] if risky else [])
 
 
 def publish_branch(env, gh, git, gh_cli, branch, sha, description):
     """Checks one branch, then pushes it and opens or updates its pull request. Returns what was done."""
     repo, login = env["GITHUB_REPOSITORY"], env.get("MAINTAINER_LOGIN") or ""
-    files = check_diff(git, sha, int(env.get("MAX_FILES") or 20), int(env.get("MAX_LINES") or 1000))
-    risky = risky_files(files)
+    files, added = check_diff(git, sha, int(env.get("MAX_FILES") or 20), int(env.get("MAX_LINES") or 1000))
+    risky = risky_files(files, added)
     owner = repo.split("/", 1)[0]
     open_prs = gh.get_all(f"repos/{repo}/pulls", {"state": "open", "head": f"{owner}:{branch}", "per_page": 10},
                           max_pages=1)
@@ -211,7 +246,7 @@ def publish_branch(env, gh, git, gh_cli, branch, sha, description):
         done["action"] = "would push (dry run)"
         return done
 
-    git(["push", "--quiet", "origin", f"{sha}:refs/heads/{branch}"])
+    git(["push", "--quiet", "origin", f"{sha}:refs/heads/{branch}"], config=push_config(env.get("GITHUB_TOKEN")))
     ensure_labels(gh, repo, labels)
     if open_prs:
         pr = open_prs[0]
@@ -219,7 +254,7 @@ def publish_branch(env, gh, git, gh_cli, branch, sha, description):
         if risky and not pr.get("draft") and pr.get("node_id"):
             gh.graphql("mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) "
                        "{ clientMutationId } }", {"id": pr["node_id"]})
-        stale = "audit:findings" if description["audit"] == "approved" else "audit:approved"
+        stale = "self-check:findings" if description["audit"] == "approved" else "self-check:passed"
         try:
             gh.request("DELETE", f"repos/{repo}/issues/{number}/labels/{stale}")
         except HttpError as error:
@@ -228,7 +263,7 @@ def publish_branch(env, gh, git, gh_cli, branch, sha, description):
         done["action"] = "updated"
     else:
         pr = gh.request("POST", f"repos/{repo}/pulls", payload={
-            "title": description["title"], "head": branch, "base": "main", "body": description["body"],
+            "title": description["title"], "head": branch, "base": "main", "body": pr_body(description["body"]),
             "draft": bool(risky)})[0]
         number = pr["number"]
         assignee = env.get("ASSIGNEE")
@@ -238,6 +273,7 @@ def publish_branch(env, gh, git, gh_cli, branch, sha, description):
             done["note"] = "the Copilot review request failed"
         done["action"] = "opened" + (" as a draft" if risky else "")
     gh.request("POST", f"repos/{repo}/issues/{number}/labels", payload={"labels": labels})
+    gh.request("POST", f"repos/{repo}/issues/{number}/comments", payload={"body": published_comment(sha)})
     if env.get("TOKEN_MODE") == "github_token":
         gh.request("POST", f"repos/{repo}/actions/workflows/ci.yml/dispatches", payload={"ref": branch})
     done.update({"number": number, "url": pr.get("html_url")})
