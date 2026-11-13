@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TILE_BUCKETS, bucketFor, tileAt, tileRange, tilesFor, tileQuery, toWall, fromWall, cutIntoTiles, segmentsFor,
-  composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow, coarsen, baseBucket, MAX_TILES,
+  composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow, coarsen, baseBucket, MAX_TILES, bucketInstant,
 } from "../src/lib/seriesTiles.ts";
 import { SeriesLoader, MAX_BATCH, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
 import { ChartController, clampWindow, overviewBucket, fillTiles } from "../src/lib/chartController.ts";
@@ -673,7 +673,7 @@ function aggregate(readings, b, agg) {
   for (const [g, vs] of [...groups].sort((x, y) => x[0] - y[0])) {
     const total = vs.reduce((a, v) => a + v, 0);
     const sin = vs.reduce((a, v) => a + Math.sin(rad(v)), 0), cos = vs.reduce((a, v) => a + Math.cos(rad(v)), 0);
-    s.t.push(fromWall(g * size));
+    s.t.push(bucketInstant(g * size)); // as the server labels it: the repeated hour by its second occurrence
     s.avg.push(agg === "sum" ? total : agg === "vector_mean" ? ((Math.atan2(sin, cos) * 180) / Math.PI + 360) % 360 : total / vs.length);
     s.min.push(Math.min(...vs));
     s.max.push(Math.max(...vs));
@@ -715,6 +715,14 @@ test("coarsen: buckets worked out from finer tiles equal the API's own, across t
     const d = Math.abs(((got.avg[j] - want.avg[j] + 540) % 360) - 180);
     assert.ok(d < 1, `direction ${got.avg[j]} vs ${want.avg[j]}`);
   }
+});
+
+test("bucketInstant: the repeated hour is labelled by its second occurrence, as /api/series does", () => {
+  const w = Date.UTC(2026, 10, 1, 1); // 01:00 on the fall-back day
+  assert.equal(bucketInstant(w), Date.parse("2026-11-01T06:00:00Z")); // 01:00 EST
+  assert.equal(bucketInstant(w + 30 * 60_000), Date.parse("2026-11-01T06:30:00Z"));
+  assert.equal(bucketInstant(Date.UTC(2026, 10, 1, 0)), Date.parse("2026-11-01T04:00:00Z")); // 00:00 EDT: only once
+  assert.equal(bucketInstant(Date.UTC(2026, 10, 1, 2)), Date.parse("2026-11-01T07:00:00Z"));
 });
 
 test("baseBucket: the finest bucket whose whole tiles over the range fit in one request of 8", () => {
@@ -807,4 +815,25 @@ test("session over two weeks: the first request has the raw readings, and nothin
   assert.equal(first.length, 1);
   assert.equal(first[0].bucketS, 600);
   for (const [what, calls] of per) assert.equal(calls.length, 0, what);
+});
+
+test("a narrow chart over two days draws at once: coarser tiles reaching past the range come from its one request", async () => {
+  // At 220 px on a phone two days want 30-minute buckets, whose 7.5-day tile reaches past the one 10-minute tile asked for
+  const end = Date.parse("2026-11-12T17:00:00Z");
+  const range = { start: end - 2 * D, end };
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0);
+  const c = new ChartController("phone", [A, B], range, range, loader, syncFrame, 30);
+  c.setPlotWidth(220);
+  c.setDensity(1);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  await sleep(20);
+  assert.equal(srv.calls.length, 1);
+  assert.equal(c.ovB(), 1800);
+  assert.notEqual(c.snapshot().shownBucket, null);
+  assert.ok(c.overview(A).some((p) => p.y !== null));
+  assert.ok([...c.lastData.series.get(A)].some((p) => p.y !== null && p.x >= range.start && p.x <= range.end));
+  c.dispose();
 });

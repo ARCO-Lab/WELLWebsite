@@ -43,6 +43,7 @@ interface Job {
   tiles: number[]; // consecutive
   wanters: Set<string>;
   priority: number; // lower is sooner
+  whole: boolean; // a chart's whole range: coarser tiles may be worked out from it where they reach past it (deriveUp)
 }
 
 export interface LoaderStats {
@@ -65,6 +66,7 @@ export class SeriesLoader {
   private revisions = new Map<string, number>(); // series -> how many times its tiles were stored (charts redraw on a change)
   private loaded = new Map<string, Set<number>>(); // `${key}#${bucketS}` -> cached tile indexes
   private meta = new Map<string, SeriesMeta>();
+  private partial = new Set<string>(); // series-tiles worked out from only part of their finer tiles (deriveUp)
   private pending = new Map<string, Job>(); // series-tile -> the job that will load it
   private queue: Job[] = [];
   private sent = new Set<Job>();
@@ -91,7 +93,8 @@ export class SeriesLoader {
 
   /** `owner` (one chart's one need, e.g. "logger-1:detail") wants these series at this bucket for these tiles. This
    *  replaces what it wanted before. `onChange` is called whenever one of its requests ends (loaded or failed). */
-  want(owner: string, keys: string[], bucketS: number, indexes: number[], priority: number, onChange: () => void): void {
+  want(owner: string, keys: string[], bucketS: number, indexes: number[], priority: number, onChange: () => void,
+    whole = false): void {
     this.forget(owner);
     this.listeners.set(owner, onChange);
     this.errors.delete(owner);
@@ -117,7 +120,7 @@ export class SeriesLoader {
     let run: number[] = [];
     const flush = () => {
       if (!run.length) return;
-      const job: Job = { seq: this.seq++, keys: new Set(), bucketS, tiles: run, wanters: new Set([owner]), priority };
+      const job: Job = { seq: this.seq++, keys: new Set(), bucketS, tiles: run, wanters: new Set([owner]), priority, whole };
       for (const i of run) for (const k of missing.get(i)!) {
         job.keys.add(k);
         this.pending.set(tileKey(k, bucketS, i), job);
@@ -247,8 +250,10 @@ export class SeriesLoader {
 
   // The coarser tiles that tiles first..last of one series make up, at every bigger bucket on the ladder, wherever all
   // the finer tiles of one are cached (the ones just stored or others): each size divides the next, so a tile of the
-  // next size is a whole number of tiles of this one
-  private deriveUp(key: string, bucketS: number, first: number, last: number): void {
+  // next size is a whole number of tiles of this one. With `whole` (they cover a chart's whole range), a coarser tile
+  // reaching past them is worked out from the part they cover (unless a complete one is cached): its missing part is
+  // outside the range, where that chart draws nothing.
+  private deriveUp(key: string, bucketS: number, first: number, last: number, whole: boolean): void {
     const agg = this.meta.get(key)?.agg ?? "mean";
     let b = bucketS, lo = first, hi = last;
     for (let n = LADDER.indexOf(b) + 1; n > 0 && n < LADDER.length; n++) {
@@ -256,15 +261,18 @@ export class SeriesLoader {
       const clo = Math.floor(lo / per), chi = Math.floor(hi / per);
       for (let i = clo; i <= chi; i++) {
         const parts: TileSeries[] = [];
+        let missing = 0;
         for (let j = i * per; j < (i + 1) * per; j++) {
           const t = this.cache.get(tileKey(key, b, j));
-          if (!t) break;
-          parts.push(t);
+          if (t) parts.push(t);
+          else missing++;
         }
-        if (parts.length === per) {
-          this.put(key, c, i, coarsen(parts, c, agg));
-          this.stats.tilesDerived++;
-        }
+        const tk = tileKey(key, c, i);
+        if (missing && (!whole || !parts.length || (this.cache.has(tk) && !this.partial.has(tk)))) continue;
+        if (missing) this.partial.add(tk);
+        else this.partial.delete(tk);
+        this.put(key, c, i, coarsen(parts, c, agg));
+        this.stats.tilesDerived++;
       }
       b = c; lo = clo; hi = chi;
     }
@@ -293,6 +301,7 @@ export class SeriesLoader {
         continue;
       }
       job.keys = keys;
+      job.whole = job.whole && other.whole;
       job.tiles = Array.from({ length: hi - lo + 1 }, (_, n) => lo + n);
       for (const w of other.wanters) job.wanters.add(w);
       for (const [tk, j] of this.pending) if (j === other) this.pending.set(tk, job);
@@ -329,10 +338,11 @@ export class SeriesLoader {
         const empty = { t: [], avg: [], min: [], max: [], n: [] };
         for (const k of job.keys) {
           for (const [i, tile] of cutIntoTiles(byKey.get(k) ?? empty, first, last, job.bucketS)) {
+            this.partial.delete(tileKey(k, job.bucketS, i));
             this.put(k, job.bucketS, i, tile);
             this.stats.tilesLoaded++;
           }
-          this.deriveUp(k, job.bucketS, first, last);
+          this.deriveUp(k, job.bucketS, first, last, job.whole);
         }
       })
       .catch((err: unknown) => {

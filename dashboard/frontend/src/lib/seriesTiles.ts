@@ -44,6 +44,13 @@ export function fromWall(wall: number): number {
   return toWall(utc - 3_600_000) === wall ? utc - 3_600_000 : utc;
 }
 
+/** The instant /api/series labels a wall-clock bucket with. In the hour the clocks repeat (fall back), a bucket holds
+ *  the readings of both occurrences and PostgreSQL labels it with the second, standard-time one. */
+export function bucketInstant(wall: number): number {
+  const first = fromWall(wall);
+  return toWall(first + 3_600_000) === wall ? first + 3_600_000 : first;
+}
+
 /** The bucket for a chart showing `spanMs` on a plot `plotWidthPx` wide: the smallest on the ladder that gives
  *  about `pointsPerPx` points per pixel or fewer (at least 150 points, at most 3,000). */
 export function bucketFor(spanMs: number, plotWidthPx: number, pointsPerPx = POINTS_PER_PX): number {
@@ -161,7 +168,7 @@ export function coarsen(parts: TileSeries[], toBucketS: number, agg: "mean" | "s
   let group = NaN, sw = 0, sv = 0, sx = 0, sy = 0, seen = 0, lo = Infinity, hi = -Infinity, cnt = 0, counted = false;
   const flush = () => {
     if (Number.isNaN(group)) return;
-    t.push(fromWall(group * size));
+    t.push(bucketInstant(group * size));
     avg.push(!seen ? NaN : agg === "sum" ? sv : agg === "vector_mean"
       ? ((Math.atan2(sy, sx) * 180) / Math.PI + 360) % 360 : sv / sw);
     min.push(lo === Infinity ? NaN : lo);

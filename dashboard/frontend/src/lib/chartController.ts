@@ -460,7 +460,7 @@ export class ChartController {
     const keys = this.keys;
     const near = this.visible ? 0 : 2;
     const base = baseBucket(this.ext);
-    if (!windowOnly) this.loader.want(this.owner("overview"), keys, base, tilesFor(this.ext, base), near, () => this.dataChanged(false));
+    if (!windowOnly) this.loader.want(this.owner("overview"), keys, base, tilesFor(this.ext, base), near, () => this.dataChanged(false), true);
     // Finer than the base: the window's tiles, and more along the way it moved since it last settled
     let tiles: number[] = [];
     if (this.wantB < base) {

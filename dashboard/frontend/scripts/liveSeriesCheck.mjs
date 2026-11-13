@@ -2,8 +2,9 @@
 //   node --experimental-strip-types scripts/liveSeriesCheck.mjs [https://welldash.mcmaster.ca] [days ago]
 // It asks /api/series for one 15-day tile at hourly buckets, and for the same 15 days at 10-minute buckets (six
 // tiles), then works the hourly buckets out from the 10-minute ones the way the charts do (coarsen, in
-// src/lib/seriesTiles.ts) and compares them with the server's own: means, totals, minimums, maximums and counts must
-// match; wind direction (a mean of directions) must be within a degree or two.
+// src/lib/seriesTiles.ts) and compares them with the server's own. The server rounds values to 4 decimals, so means
+// may differ by up to 0.0001 and hourly rain totals (six rounded 10-minute totals) by up to 0.0004; minimums,
+// maximums and counts must match exactly; wind direction (a mean of directions) must be within two degrees.
 
 import { coarsen, cutIntoTiles, seriesKey, tileAt, tileQuery } from "../src/lib/seriesTiles.ts";
 
@@ -40,16 +41,17 @@ for (const key of SERIES) {
   const wantTile = cutIntoTiles(want, tile, tile, HOUR).get(tile);
   const direction = want.agg === "vector_mean";
   let worst = 0, bad = 0;
-  if (got.t.length !== wantTile.t.length) bad++;
+  if (got.t.length !== wantTile.t.length) { bad++; if (process.env.SHOW) console.log("   buckets", got.t.length, wantTile.t.length); }
   for (let j = 0; j < Math.min(got.t.length, wantTile.t.length); j++) {
-    if (got.t[j] !== wantTile.t[j]) { bad++; continue; }
+    if (got.t[j] !== wantTile.t[j]) { bad++; if (process.env.SHOW) console.log("   t", new Date(got.t[j]).toISOString(), new Date(wantTile.t[j]).toISOString()); continue; }
     for (const f of ["avg", "min", "max", "n"]) {
       const a = got[f][j], b = wantTile[f][j];
       if (Number.isNaN(a) && Number.isNaN(b)) continue;
       let d = Math.abs(a - b);
       if (direction && f === "avg") d = Math.abs(((a - b + 540) % 360) - 180);
-      worst = Math.max(worst, f === "avg" ? d : worst);
-      if (d > (direction && f === "avg" ? 2 : 1e-6 * Math.max(1, Math.abs(b)))) bad++;
+      if (f === "avg") worst = Math.max(worst, d);
+      const tolerance = f !== "avg" ? 1e-9 : direction ? 2 : want.agg === "sum" ? 4e-4 : 1e-4;
+      if (d > tolerance) { bad++; if (process.env.SHOW) console.log("  ", f, new Date(wantTile.t[j]).toISOString(), "browser", a, "server", b); }
     }
   }
   failures += bad;
