@@ -94,9 +94,13 @@ The contract for a request with `bucket=` (what `dashboard/frontend/src/lib/seri
 tiles. A tile is 360 buckets (`TILE_BUCKETS`), and tiles start at multiples of their length counted on Toronto's wall
 clock from 1970-01-01T00:00 (for 10-minute buckets, every 2.5 days: 2026-09-26T12:00, 2026-09-29T00:00, ...).
 `start` must be a tile's start and `end` a later tile's start or one second before it, as times without an offset,
-and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start. Only
-these tile requests are kept in the Redis cache: there are only so many tiles, so asking for ranges shifted a few
-minutes at a time can't fill Redis. Requests without `bucket=` take any range and are computed every time. A change to
+and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start. A
+request without `bucket=` (the dashboard doesn't send one; the load test does) is widened to whole buckets of the size
+picked for its span, so ranges shifted a few minutes at a time share one answer; the dashboard's proxy counts it as a
+slow request. Both kinds are kept in the Redis cache. `station_id`, `measurement_type` and `series` values that name no
+series with readings are dropped before the query and the cache key, so made-up values can't add cache entries (a
+filter left with none matches nothing: an empty `series` list), and values with control characters get a 400. Dates
+must fall in the years 1970 to 2100 on every read route. A change to
 the dashboard's tile size or batch size must change `TILE_BUCKETS` or `MAX_TILES` in `app/api/routes/series.py`
 with it.
 Times with an offset (`...Z`) are real instants, times without one are Toronto local time. Each series has an `agg`
@@ -125,7 +129,7 @@ not in `app/.env`, which they take precedence over):
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (tile requests only, see above) and `/api/windrose` keep answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Answers over 3 MB aren't stored (the largest tile request the dashboard makes is about 2.2 MB). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (see above) and `/api/windrose` (ranges over 2 days widened to whole hours, over 60 days to whole days) keep answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Answers over 3 MB aren't stored (the largest tile request the dashboard makes is about 2.2 MB). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
 `/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public,
 max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that
@@ -180,17 +184,29 @@ the job and then downloads the file, which stays in the `exports_data` volume fo
 queue's limits (`EXPORT_MAX_ROWS`, `EXPORT_MAX_ACTIVE_JOBS`, `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` and the time and
 memory limits) are in [docs/configuration.md](../../docs/configuration.md#dashboardbackendappenv-backend-worker-export-worker).
 
-The exports share the VM's disk with the database, so three more limits keep them from filling it:
+The exports share the VM's disk with the database, so these limits keep them from filling it:
 
 - **Free space.** An export that would leave less than `EXPORT_MIN_FREE_MB` (default 2048) free on the exports disk,
   counting its estimated size, is refused with a 507, both when it is asked for and again when the worker starts it.
+  A sensor export's size is estimated from its rows (timestamps) times its columns, since its width is set by the
+  stations and metrics asked for. Stations and metrics that have no readings get no column, and each list in a
+  request may hold at most 50 names (duplicates are dropped).
+- **File size and time.** The writer stops any file that grows past what the disk can spare above
+  `EXPORT_MIN_FREE_MB`, or past `EXPORT_MAX_FILE_MB` (default 1024), and deletes it: 413 for a direct download, a
+  failed job otherwise. A direct download that takes longer than `EXPORT_SYNC_MAX_SECONDS` (default 45) to build is
+  stopped the same way (504). A direct download's temporary file is deleted whether it succeeds or fails.
 - **Jobs per hour.** Each visitor (by IP address) may start `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` (default 6) jobs
-  an hour, finished and failed ones included (429 with `Retry-After` beyond that).
+  an hour, finished and failed ones included (429 with `Retry-After` beyond that). These per-visitor checks come
+  before the row count, so a visitor over a limit costs no query over the range.
+- **Fair share.** A visitor who already has a job queued or running gets a second one only while at least half of the
+  `EXPORT_MAX_ACTIVE_JOBS` places are free, so a few visitors can't hold them all.
 - **Reuse.** A request for exactly the same export as a ready job (same normalised filters) gets that job back (200,
   `"reused": true`) instead of a new one, when its file has at least 10 minutes left and its data can't have changed:
   the range ended a day before the job was made, or the job finished in the last 10 minutes.
 
-A body that isn't a JSON object, or start/end that aren't ISO date strings, gets a 400.
+A body that isn't a JSON object, start/end that aren't ISO date strings, a name with control characters, or an
+unknown `group_types` value gets a 400 with a message for the user (no other error text is passed on). A body over
+64 KB gets a 413 (`MAX_CONTENT_LENGTH`). Job ids are UUIDs: anything else is a 404.
 The file layouts are a public format, pinned by the [golden files](tests/golden/README.md).
 
 ## Off-VM copies: Borealis and SharePoint
@@ -736,6 +752,9 @@ docker compose exec backend python scripts/migrate.py            # apply
 - Each file runs in one transaction, so a failed migration leaves nothing half-done. A file whose first line is
   `-- migrate: no-transaction` runs outside a transaction instead, as `CREATE INDEX CONCURRENTLY` requires; such a
   file holds one statement.
+- A transaction waits at most 5 s for a lock (`MIGRATE_LOCK_TIMEOUT`, e.g. `30s`; `0` waits for ever). An `ALTER
+  TABLE` that has to wait for a long export's read would otherwise hold up every query on that table behind it; it
+  fails with "lock timeout" instead, records nothing, and can be run again when the site is quieter.
 - Indexes are built with `CONCURRENTLY`, which doesn't block reads or inserts, so the index build itself needs no
   downtime: the site and the ingestion keep running while it builds.
 - If a concurrent index build fails part way, PostgreSQL leaves an INVALID index behind. When that index is one the
