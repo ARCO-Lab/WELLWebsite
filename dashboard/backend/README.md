@@ -94,9 +94,19 @@ The contract for a request with `bucket=` (what `dashboard/frontend/src/lib/seri
 tiles. A tile is 360 buckets (`TILE_BUCKETS`), and tiles start at multiples of their length counted on Toronto's wall
 clock from 1970-01-01T00:00 (for 10-minute buckets, every 2.5 days: 2026-09-26T12:00, 2026-09-29T00:00, ...).
 `start` must be a tile's start and `end` a later tile's start or one second before it, as times without an offset,
-and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start. Only
-these tile requests are kept in the Redis cache: there are only so many tiles, so asking for ranges shifted a few
-minutes at a time can't fill Redis. Requests without `bucket=` take any range and are computed every time. A change to
+and the request may cover 1 to 8 tiles (`MAX_TILES`); anything else gets a 400 that names the nearest tile start.
+Tile requests are cached in Redis per series and tile: each series' part of each tile is its own entry, the answer is
+built from the entries (one round trip for all of them), and only missing series and tiles are queried. So any
+combination of series reuses the same entries, and the number of entries is bounded by series x tiles. A tile that
+ends before its group's earliest reading or starts after now is answered empty without a query or an entry, and an
+empty entry is kept for a minute only, so asking for years without data can't fill Redis. A request
+without `bucket=` (the dashboard doesn't send one; the load test does) is never cached, and the dashboard's proxy
+counts it as a slow request. `station_id`, `measurement_type` and `series` values that name no series with readings
+are dropped before the query (a filter left with none matches nothing: an empty `series` list), and values with
+control characters get a 400. Which series exist is read at most every 30 s per process
+(`app/api/services/catalog.py`), so a brand-new series appears in tile answers within 30 s of its first reading; if the
+database is down, the last list is used and cached tiles are still answered. Dates must fall in the years 1970 to 2100
+on every read route. A change to
 the dashboard's tile size or batch size must change `TILE_BUCKETS` or `MAX_TILES` in `app/api/routes/series.py`
 with it.
 Times with an offset (`...Z`) are real instants, times without one are Toronto local time. Each series has an `agg`
@@ -125,7 +135,7 @@ not in `app/.env`, which they take precedence over):
 | Variable | Default | Meaning |
 |---|---|---|
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | PostgreSQL cancels any API query that runs longer, and the API answers **504** with a message the dashboard shows. `0` turns it off. Only the `backend` container sets it: `worker` (ingestion, backfills) and `export_worker` have no limit, and `scripts/migrate.py` opens its own connection without one even when run in the backend container. A script run by hand with `docker compose exec backend` does get the limit; add `-e DB_STATEMENT_TIMEOUT_MS=0`, or run it in `worker`. |
-| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (tile requests only, see above) and `/api/windrose` keep answers (1 minute for a range that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. The key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Answers over 3 MB aren't stored (the largest tile request the dashboard makes is about 2.2 MB). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
+| `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Where `/api/series` (per series and tile, see above) and `/api/windrose` (ranges over 2 days widened to whole hours, over 60 days to whole days) keep answers (1 minute for a range or tile that ends within the last hour, 5 minutes for one that ended earlier, an hour for one that ended over a day ago), shared by all gunicorn workers. A wind rose key is the range with start rounded up and end rounded down to 10-minute marks, where readings fall, so it selects the same readings as the request. Entries over 3 MB aren't stored (one series' tile is a few kilobytes). If Redis is down the API skips the cache for 30 s at a time and queries the database. Empty turns the cache off. |
 
 `/api/latest` and `/api/series` also tell browsers how long they may reuse an answer: `Cache-Control: public,
 max-age=60` at most, and no longer than an answer from the Redis cache has left there; an `/api/series` range that
@@ -182,17 +192,29 @@ the job and then downloads the file, which stays in the `exports_data` volume fo
 queue's limits (`EXPORT_MAX_ROWS`, `EXPORT_MAX_ACTIVE_JOBS`, `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` and the time and
 memory limits) are in [docs/configuration.md](../../docs/configuration.md#dashboardbackendappenv-backend-worker-export-worker).
 
-The exports share the VM's disk with the database, so three more limits keep them from filling it:
+The exports share the VM's disk with the database, so these limits keep them from filling it:
 
 - **Free space.** An export that would leave less than `EXPORT_MIN_FREE_MB` (default 2048) free on the exports disk,
   counting its estimated size, is refused with a 507, both when it is asked for and again when the worker starts it.
+  A sensor export's size is estimated from its rows (timestamps) times its columns, since its width is set by the
+  stations and metrics asked for. Stations and metrics that have no readings get no column, and each list in a
+  request may hold at most 50 names (duplicates are dropped).
+- **File size and time.** The writer stops any file that grows past what the disk can spare above
+  `EXPORT_MIN_FREE_MB`, or past `EXPORT_MAX_FILE_MB` (default 1024), and deletes it: 413 for a direct download, a
+  failed job otherwise. A direct download that takes longer than `EXPORT_SYNC_MAX_SECONDS` (default 45) to build is
+  stopped the same way (504). A direct download's temporary file is deleted whether it succeeds or fails.
 - **Jobs per hour.** Each visitor (by IP address) may start `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` (default 6) jobs
-  an hour, finished and failed ones included (429 with `Retry-After` beyond that).
+  an hour, finished and failed ones included (429 with `Retry-After` beyond that). These per-visitor checks come
+  before the row count, so a visitor over a limit costs no query over the range.
+- **Fair share.** A visitor who already has a job queued or running gets a second one only while at least half of the
+  `EXPORT_MAX_ACTIVE_JOBS` places are free, so a few visitors can't hold them all.
 - **Reuse.** A request for exactly the same export as a ready job (same normalised filters) gets that job back (200,
   `"reused": true`) instead of a new one, when its file has at least 10 minutes left and its data can't have changed:
   the range ended a day before the job was made, or the job finished in the last 10 minutes.
 
-A body that isn't a JSON object, or start/end that aren't ISO date strings, gets a 400.
+A body that isn't a JSON object, start/end that aren't ISO date strings, a name with control characters, or an
+unknown `group_types` value gets a 400 with a message for the user (no other error text is passed on). A body over
+64 KB gets a 413 (`MAX_CONTENT_LENGTH`). Job ids are UUIDs: anything else is a 404.
 The file layouts are a public format, pinned by the [golden files](tests/golden/README.md).
 
 ## Off-VM copies: Borealis and SharePoint
@@ -398,7 +420,14 @@ otherwise (also 503 if the database can't be read or a setting below is invalid)
 
 The worker pings a [Healthchecks.io](https://healthchecks.io) check after each job, and Healthchecks emails the account
 owner when a check reports a failure or stops being pinged, so no SMTP is needed for these. A ping times out after 5 s
-and never stops the job. Unset variables mean no ping.
+and never stops the job. Unset variables mean no ping, so a job, or the whole worker, could stop with nobody told:
+the worker names every unset one (`HEALTHCHECK_URL_RESTORE` only while the drill is on) in a `[WARN]` line when it starts (in `logs/db_injections.log` and in `docker
+compose logs worker`) and as a Sentry warning, and the daily digest lists them first. A run skipped because the
+previous one is still going is recorded in the job's check with Healthchecks' `/log` (shown in its event log, no
+change of state); enough skipped in a row ping `/fail` and send a Sentry warning, since the job is then stuck rather than
+slow. For ingestion that is 3 skips (`SKIPS_BEFORE_FAIL`, half an hour); a job run under a time limit gets one more
+skip than a run can last (the backup 3, the restore drill 5, the upload 5, the digest 2, the weekly download 2), so a
+slow run within its limit is never reported as stuck.
 
 | Variable | Pinged |
 |---|---|
@@ -408,7 +437,8 @@ and never stops the job. Unset variables mean no ping.
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
-| `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check ([Database backups](#database-backups)). |
+| `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check, or the row counts couldn't be checked ([Database backups](#database-backups)). |
+| `HEALTHCHECK_URL_RESTORE` | `/start` when the monthly restore drill begins (05:30 Toronto time on `RESTORE_CHECK_DAY`, default the 2nd), then success, or `/fail` if the restore failed or came back with too few rows ([Database backups](#database-backups)). |
 
 To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough),
 create one check per job, and copy each check's ping URL into the matching variable:
@@ -418,6 +448,8 @@ create one check per job, and copy each check's ping URL into the matching varia
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
 - **WELL alerts**: Simple schedule, period 10 minutes, grace 30 minutes.
 - **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).
+- **WELL restore drill**: Cron `30 5 2 * *` (or your `RESTORE_CHECK_DAY`), time zone America/Toronto, grace 5 hours
+  (the drill is stopped after 4 h).
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan,
 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It
@@ -622,21 +654,28 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
   warning.
 - **Row counts**: a dump of an emptied table still lists data for it, so before dumping, the job also counts the
   rows of those tables (exactly for tables under a million rows; for larger ones, PostgreSQL's estimate right after
-  an `ANALYZE`, or the older estimate with a `WARNING:` line if `ANALYZE` waits more than 30 s for its lock) and compares them with the counts at the last good backup, kept in `backups/.row-counts.json`. If a
+  an `ANALYZE`, or the older estimate with a `WARNING:` line if `ANALYZE` waits more than 30 s for its lock) and
+  compares them with the reference counts in `backups/.row-counts.json`: the most rows each table had at a good
+  backup, so the reference never goes down by itself and small losses can't add up night after night. If a
   table is empty or has more than 5% fewer rows (`BACKUP_MAX_SHRINK_PCT`; these tables only grow, and 5% is well
   above the estimate's error), the dump is still written and checked, but the run fails (`/fail` ping, Sentry) and
   the counts aren't recorded, so the following nights fail too until someone looks. Retention doesn't run then, so
   no good dump is deleted. Each failing dump is listed as such in `.row-counts.json`, and only those listed are
   deleted by the next failing night, so just the newest failing dump is kept next to all the good ones and they
-  don't pile up. Every other successful dump is recorded as good, also while the comparison is off. If the rows
-  were removed on
-  purpose, run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it records the new
-  counts, with a `WARNING:` line naming what was accepted. `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off.
+  don't pile up. The same happens when the counts can't be checked (counting timed out or failed, or
+  `.row-counts.json` is damaged): the dump is always taken and checked first, then the run fails. Every other
+  successful dump is recorded as good, also while the comparison is off. If the rows were removed on purpose (or
+  the record was damaged), run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it
+  records the new counts, with a `WARNING:` line naming what was accepted; it is the only way a reference goes down.
+  `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off. The counts are also written beside each dump
+  (`.welldb-YYYYmmdd-HHMM.dump.counts.json`), for the restore drill to compare with.
 - **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks
-  (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only
-  after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`)
-  stays. The job refuses to start if a dump the size of the last one would leave less than `BACKUP_MIN_FREE_MB`
-  (default 2048) free, since the database shares the disk.
+  (`BACKUP_KEEP_WEEKLY`), so usually at most 15 files. Every dump younger than 24 h is kept too (so one taken by hand
+  at 01:00 before a migration survives that night's run), and so is the last one recorded as good. Only files named
+  `welldb-YYYYmmdd-HHMM.dump` (and their row count files) are ever deleted, and only after a new dump has passed its
+  check; a dump you copy in under another name (e.g. `manual-before-migration.dump`) stays. If a dump the size of
+  the last one would leave less than `BACKUP_MIN_FREE_MB` (default 2048) free, since the database shares the disk,
+  the job applies retention first and checks again, and refuses to start if there still isn't enough.
 
 **Tables the role can't read are left out, and named.** `pg_dump` locks and reads every table it dumps, so by default
 (`BACKUP_EXCLUDE_TABLES` unset or `auto`) the job leaves out any table or sequence the connecting role can't read, and
@@ -652,17 +691,36 @@ nothing, and the dump then fails if anything is unreadable.
 **Run a backup by hand** (e.g. before a migration): `docker compose exec worker python scripts/backup_db.py
 --no-prune`. `--prune-only` applies retention without dumping.
 
-**Restore drill** (optional; once a month is plenty): `docker compose exec worker python scripts/restore_check.py`
-restores the newest dump (or `--file /app/backups/<name>`) into a throwaway database, `welldb_restore_check` (another
-name given with `--database` must start with that, since the drill drops it first), compares each table's row count
-with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing
-from the restore or restored empty fails the drill, unless it was left out on purpose (`BACKUP_EXCLUDE_TABLES`) or
-because the role can't read it. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role
+**Restore drill**: the worker runs it once a month, at 05:30 Toronto time on `RESTORE_CHECK_DAY` (1-28, default the
+2nd; `off` turns it off), and pings `HEALTHCHECK_URL_RESTORE`; it can also be run by hand with `docker compose exec
+worker python scripts/restore_check.py`. It restores the newest dump (or `--file /app/backups/<name>`) into a
+throwaway database, `welldb_restore_check` (another name given with `--database` must start with that, since the
+drill drops it first, and may never be a database the app uses), compares each table's row count with the counts
+recorded beside the dump and with the live database (read-only), and drops it again. Counts that grew since the dump
+are expected. The drill fails when a table is missing from the restore or restored empty, unless it was left out on
+purpose (`BACKUP_EXCLUDE_TABLES`) or because the role can't read it, and when a `BACKUP_EXPECT_TABLES` table restores
+fewer rows than it had when the dump was taken: an exact count must come back in full, an estimate within
+`RESTORE_CHECK_TOLERANCE_PCT` (default 2). For a dump without that record (taken before it was kept), those tables
+must have at least 95% of their live rows instead. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role
 on the VM) has; for another role, grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set
 `RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the
 throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as
 the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus
 `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
+
+If the database has a dedicated restore role (`well_restore`, with `CREATEDB` and no rights on the live data), set
+`RESTORE_CHECK_DATABASE_URL` in `dashboard/backend/app/.env` to a URL for it, e.g.
+`postgresql://well_restore:<password>@host.docker.internal:5432/postgres`, and recreate the worker; the drill then
+creates and drops its database as that role, and reads the live counts with `DATABASE_URL` as before.
+
+**The throwaway database never stays.** It is a full copy of the live database, so it is dropped with `DROP DATABASE
+... WITH (FORCE)`, which also ends a session still connected to it (a `pg_restore` stopped part-way), and each
+`count(*)` is stopped after 20 minutes. A drill killed outright (out of memory, `SIGKILL`) can't drop it, so the
+worker drops every `welldb_restore_check*` database left behind when it starts, after a failed drill, and before each
+nightly backup (before its free-space check); the daily digest lists any that are still there. A drill that is
+running holds a lock, so its database is never taken for a leftover. `--keep` leaves the database for you to look
+at, until the next of those. To drop leftovers by hand: `docker compose exec worker python scripts/restore_check.py
+--drop-leftovers`.
 
 **Restoring for real.** Restore into a new, empty database, put back anything the dump left out, then point the app at
 it. `<app role>` is the role in `BACKEND_DATABASE_URL` (`postgres` on the VM).
@@ -739,6 +797,9 @@ docker compose exec backend python scripts/migrate.py            # apply
 - Each file runs in one transaction, so a failed migration leaves nothing half-done. A file whose first line is
   `-- migrate: no-transaction` runs outside a transaction instead, as `CREATE INDEX CONCURRENTLY` requires; such a
   file holds one statement.
+- A transaction waits at most 5 s for a lock (`MIGRATE_LOCK_TIMEOUT`, e.g. `30s`; `0` waits for ever). An `ALTER
+  TABLE` that has to wait for a long export's read would otherwise hold up every query on that table behind it; it
+  fails with "lock timeout" instead, records nothing, and can be run again when the site is quieter.
 - Indexes are built with `CONCURRENTLY`, which doesn't block reads or inserts, so the index build itself needs no
   downtime: the site and the ingestion keep running while it builds.
 - If a concurrent index build fails part way, PostgreSQL leaves an INVALID index behind. When that index is one the

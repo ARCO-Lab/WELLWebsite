@@ -299,3 +299,13 @@ test("logger palette: every shade at least 3:1 on white, the five hues all diffe
   }
   assert.equal(new Set(LOGGER_PALETTE.flatMap((p) => [p.dark, p.light])).size, 10);
 });
+
+test("guarded: a callback's exception is reported, not thrown; otherwise it runs as usual", async () => {
+  const { guarded } = await import("../src/lib/guarded.ts");
+  const seen = [];
+  const ok = guarded((a, b) => seen.push(a + b), (e) => seen.push(`reported ${e.message}`));
+  ok(1, 2);
+  const bad = guarded(() => { throw new Error("boom"); }, (e) => seen.push(`reported ${e.message}`));
+  assert.doesNotThrow(() => bad());
+  assert.deepEqual(seen, [3, "reported boom"]);
+});

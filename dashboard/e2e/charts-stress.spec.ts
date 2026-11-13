@@ -230,6 +230,13 @@ test.describe("charts under stress", () => {
     await page.waitForTimeout(400);
     // "Oct 31 12:23 – Oct 31 15:38" -> [start, end] in minutes (all on one day, away from the clock change)
     const read = async () => {
+      const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "  test("the ‹ and › buttons step by exactly one window: as long, and adjacent", async ({ page }) => {
+    await open(page);
+    const weather = chart(page, "weather");
+    for (let i = 0; i < 3; i++) await weather.getByRole("button", { name: /Zoom in/ }).click(); // a few hours on Oct 31
+    await page.waitForTimeout(400);
+    // "Oct 31 12:23 – Oct 31 15:38" -> [start, end] in minutes (all on one day, away from the clock change)
+    const read = async () => {
       const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`) / 60_000);
       return { a, b };
     };
@@ -273,6 +280,121 @@ test.describe("charts under stress", () => {
     const w2 = await read();
     expect(w2.a).toBe(w1.a);
     expect(w2.b).toBeGreaterThan(w1.b);
+ 2026 ")}Z`) / 60_000);
+      return { a, b };
+    };
+    const w0 = await read();
+    await weather.getByRole("button", { name: "Show the time just before this window" }).click();
+    await page.waitForTimeout(400);
+    const w1 = await read();
+    expect(w1.b).toBe(w0.a); // ends where the last one started
+    expect(w1.b - w1.a).toBe(w0.b - w0.a);
+    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await page.waitForTimeout(400);
+    const w2 = await read();
+    expect(w2.a).toBe(w0.b); // starts where the first one ended
+    expect(w2.b - w2.a).toBe(w0.b - w0.a);
+  });
+
+  test("one range bar under each chart: no scrollbar, and its keys move and resize the window", async ({ page }) => {
+    await open(page);
+    expect(await page.locator(".highcharts-scrollbar").count()).toBe(0);
+    const weather = chart(page, "weather");
+    await weather.getByRole("button", { name: /Zoom in/ }).click();
+    await page.waitForTimeout(400);
+    const read = async () => {
+      const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "  test("the ‹ and › buttons step by exactly one window: as long, and adjacent", async ({ page }) => {
+    await open(page);
+    const weather = chart(page, "weather");
+    for (let i = 0; i < 3; i++) await weather.getByRole("button", { name: /Zoom in/ }).click(); // a few hours on Oct 31
+    await page.waitForTimeout(400);
+    // "Oct 31 12:23 – Oct 31 15:38" -> [start, end] in minutes (all on one day, away from the clock change)
+    const read = async () => {
+      const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`) / 60_000);
+      return { a, b };
+    };
+    const w0 = await read();
+    await weather.getByRole("button", { name: "Show the time just before this window" }).click();
+    await page.waitForTimeout(400);
+    const w1 = await read();
+    expect(w1.b).toBe(w0.a); // ends where the last one started
+    expect(w1.b - w1.a).toBe(w0.b - w0.a);
+    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await page.waitForTimeout(400);
+    const w2 = await read();
+    expect(w2.a).toBe(w0.b); // starts where the first one ended
+    expect(w2.b - w2.a).toBe(w0.b - w0.a);
+  });
+
+  test("one range bar under each chart: no scrollbar, and its keys move and resize the window", async ({ page }) => {
+    await open(page);
+    expect(await page.locator(".highcharts-scrollbar").count()).toBe(0);
+    const weather = chart(page, "weather");
+    await weather.getByRole("button", { name: /Zoom in/ }).click();
+    await page.waitForTimeout(400);
+    const read = async () => {
+      const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`) / 60_000);
+      return { a, b };
+    };
+    const bar = weather.getByTestId("chart-range-bar");
+    await expect(bar).toHaveAttribute("role", "slider");
+    await expect(bar).toHaveAttribute("aria-label", /time window within the picked days/);
+    await expect(bar).toHaveAttribute("aria-valuetext", (await label(weather))!); // announces the window itself
+    await bar.focus();
+    const w0 = await read();
+    await page.keyboard.press("ArrowLeft"); // moves it
+    await page.waitForTimeout(400);
+    const w1 = await read();
+    expect(w1.a).toBeLessThan(w0.a);
+    expect(w1.b - w1.a).toBe(w0.b - w0.a);
+    await page.keyboard.press("Shift+ArrowRight"); // makes it longer, from its end
+    await page.waitForTimeout(400);
+    const w2 = await read();
+    expect(w2.a).toBe(w1.a);
+    expect(w2.b).toBeGreaterThan(w1.b);
+ 2026 ")}Z`) / 60_000);
+      return { a, b };
+    };
+    const bar = weather.getByTestId("chart-range-bar");
+    await expect(bar).toHaveAttribute("role", "slider");
+    await expect(bar).toHaveAttribute("aria-label", /time window within the picked days/);
+    await expect(bar).toHaveAttribute("aria-valuetext", (await label(weather))!); // announces the window itself
+    await bar.focus();
+    const w0 = await read();
+    await page.keyboard.press("ArrowLeft"); // moves it
+    await page.waitForTimeout(400);
+    const w1 = await read();
+    expect(w1.a).toBeLessThan(w0.a);
+    expect(w1.b - w1.a).toBe(w0.b - w0.a);
+    await page.keyboard.press("Shift+ArrowRight"); // makes it longer, from its end
+    await page.waitForTimeout(400);
+    const w2 = await read();
+    expect(w2.a).toBe(w1.a);
+    expect(w2.b).toBeGreaterThan(w1.b);
+  });
+
+  test("picking the day already picked keeps each chart's window", async ({ page }) => {
+    await open(page);
+    const logger = chart(page, "logger");
+    await logger.getByRole("button", { name: /Zoom in/ }).click();
+    await page.waitForTimeout(500);
+    const zoomed = await label(logger);
+    await page.getByRole("button", { name: /^Start Date / }).click();
+    // The picked day in the open picker (not the active tab, which is aria-selected too)
+    const picked = page.locator('[data-radix-popper-content-wrapper] [data-day][data-selected="true"] button');
+    await expect(picked).toHaveCount(1);
+    await picked.click();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(500);
+    expect(await label(logger)).toBe(zoomed);
+  });
+
+  test("the plot leaves page scrolling and pinch-zoom to the browser", async ({ page }) => {
+    await open(page);
+    const plot = chart(page, "logger").getByRole("group", { name: /chart\. Arrow keys/ });
+    expect(await plot.evaluate((el) => getComputedStyle(el).touchAction)).toBe("pan-y pinch-zoom");
   });
 
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {

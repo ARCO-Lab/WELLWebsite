@@ -16,6 +16,10 @@ MINE = "198.51.100.7"
 LOW_DISK = types.SimpleNamespace(free=2**20)  # what shutil.disk_usage says: 1 MB free
 
 
+# Job ids are UUIDs, as the job routes require (<uuid:job_id>)
+READY1_ID = "00000000-0000-4000-8000-000000000001"
+
+
 class ExportTestCase(AppTestCase):
     def setUp(self):
         super().setUp()
@@ -170,21 +174,21 @@ class ReuseTests(ExportTestCase):
         return job
 
     def test_an_identical_ready_export_is_handed_back(self):
-        self.ready_job("ready1")
+        self.ready_job(READY1_ID)
         r = self.post("/api/exports/jobs", SAMPLING, "198.51.100.99")  # anyone's: the data is public
         self.assertEqual(r.status_code, 200)
         body = r.get_json()
         self.assertEqual((body["job_id"], body["status"], body["reused"], body["estimated_rows"]),
-                         ("ready1", "ready", True, 7))
+                         (READY1_ID, "ready", True, 7))
         self.delay.assert_not_called()
         self.assertEqual(self.db.session.query(self.ExportJob).count(), 1)
         # and it can be downloaded as usual
-        download = self.client.get("/api/exports/jobs/ready1/download")
+        download = self.client.get(f"/api/exports/jobs/{READY1_ID}/download")
         self.assertEqual(download.status_code, 200)
         download.close()
 
     def test_a_reused_export_doesnt_use_up_the_quota(self):
-        self.ready_job("ready1")
+        self.ready_job(READY1_ID)
         with unittest.mock.patch.object(Config, "EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER", 1):
             codes = [self.post("/api/exports/jobs", SAMPLING).status_code for _ in range(5)]
         self.assertEqual(codes, [200] * 5)

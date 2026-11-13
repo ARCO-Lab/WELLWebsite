@@ -7,7 +7,7 @@ import {
   TILE_BUCKETS, bucketFor, tileAt, tileRange, tilesFor, tileQuery, toWall, fromWall, cutIntoTiles, segmentsFor,
   composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow, coarsen, baseBucket, MAX_TILES, bucketInstant,
 } from "../src/lib/seriesTiles.ts";
-import { SeriesLoader, MAX_BATCH, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
+import { SeriesLoader, MAX_BATCH, errorFrom, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
 import { ChartController, clampWindow, overviewBucket, fillTiles } from "../src/lib/chartController.ts";
 
 const H = 3600 * 1000;
@@ -1028,4 +1028,10 @@ test("the arrows page by exactly one window: adjacent, as long, and stopped (sti
   for (let i = 0; i < 6; i++) c.page(-1); // and at the start
   assert.deepEqual(c.window, { start: range.start, end: range.start + span });
   c.dispose();
+});
+
+test("the proxy's 429 for too many requests in flight reads as its message (the wind rose shows it)", async () => {
+  const message = "Too many requests from your address. Please wait a moment and try again.";
+  const res = new Response(JSON.stringify({ error: message }), { status: 429, headers: { "Retry-After": "2" } });
+  assert.equal((await errorFrom(res, "the wind rose")).message, message);
 });

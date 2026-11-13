@@ -79,3 +79,31 @@ a reboot as well, run `sudo iptables -I INPUT -s 10.20.0.0/16 -p tcp --dport 543
 Of the Docker networks in `10.20.0.0/16`, `10.20.2.0/24` is `wp_probe`, used only by welldash²'s check of WordPress
 (see [welldash²](../dashboard/backend/app/ops/README.md)). Nothing on it needs PostgreSQL, so a narrower rule should
 leave it out: welldash² reaches PostgreSQL from `internal_api`, which carries its default route.
+
+**Docker networks.** `docker-compose.yml` pins all three of the stack's networks:
+
+| Network | Subnet | Services |
+|---|---|---|
+| `internal_api` | 10.20.0.0/24 | backend, worker, export_worker, redis, dashboard, ops |
+| `front` | 10.20.1.0/24 | wordpress, db |
+| `wp_probe` | 10.20.2.0/24 | wordpress, ops |
+
+Only backend, worker, export_worker and ops need PostgreSQL, and all four are on `internal_api`. Keep these subnets out
+of Docker's automatic address pools, so no other network can ever be given one of them: set `default-address-pools` in
+`/etc/docker/daemon.json` to ranges that exclude them, for example
+
+```json
+{ "default-address-pools": [ { "base": "10.20.128.0/17", "size": 24 }, { "base": "10.30.0.0/16", "size": 24 } ] }
+```
+
+Merge this into the file's other settings, and keep its `"bip": "10.10.0.1/24"`. That pins the default `docker0`
+bridge, which `host.docker.internal` (mapped for backend, worker and ops in `docker-compose.yml`) resolves to; without
+`bip`, a restart with new pools could move it. Changing the file needs `sudo systemctl restart docker`, which restarts
+every container. User-defined networks, such as this stack's, keep their subnets.
+
+**Rolling back the pins.** Once the pools above exclude 10.20.0.0/24 and the firewall rule is narrowed to it, don't
+remove the `ipam` pins from `docker-compose.yml` on their own: Compose would recreate the networks with subnets from the
+new pools (10.20.128.0/17 or 10.30.0.0/16), outside the narrowed rule, and backend, worker, export_worker and ops would
+lose PostgreSQL with "No route to host", just as when the rule above goes missing. To undo the change, keep the pins and
+revert only `daemon.json`, or first widen the firewall rule again (in `/etc/sysconfig/iptables` and live with
+`iptables -I`) to cover the new pools.

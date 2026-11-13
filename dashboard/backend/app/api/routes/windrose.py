@@ -16,10 +16,13 @@
 # Caching, as /api/series does it: the range is narrowed to 10-minute marks (where readings fall, so the counts don't
 # change), and the answer is kept in Redis (utils/response_cache.py) for as long as /api/series keeps one for a range
 # ending at the same time, under a hash of the narrowed range and the speed types. An answer is a few kilobytes.
+# A range longer than WHOLE_HOURS_AFTER is first widened to whole hours, and one longer than WHOLE_DAYS_AFTER to
+# whole (local) days: otherwise every 10-minute shift of a long range would be a new key and a new count over all of
+# it. Readings that adds at the edges change a long range's percentages by a fraction of a percent at most.
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import current_app, jsonify, request
 from sqlalchemy import text
@@ -28,8 +31,8 @@ from sqlalchemy.exc import OperationalError
 from db.database import db
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ
-from .series import browser_cache_control, local_naive, max_age, parse_iso, snap_range
+from utils.timezone import EST_TZ, check_site_years
+from .series import browser_cache_control, local_naive, max_age, parse_iso, snap_range, whole_buckets
 
 SECTORS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 # Upper edges of the speed classes (m/s); a speed of exactly an edge belongs to the class above it.
@@ -37,6 +40,8 @@ SPEED_EDGES = [0.5, 2, 4, 6, 8, 10]
 SPEEDS = ("Wind Speed", "Gust Speed")
 STATEMENT_TIMEOUT = "15s"  # a range this query can't count in time gets a clear error instead of tying up the DB
 QUERY_CANCELED = "57014"  # PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout
+WHOLE_HOURS_AFTER = timedelta(days=2)  # longer ranges are widened to whole hours (see "Caching" above)
+WHOLE_DAYS_AFTER = timedelta(days=60)  # and longer still to whole days
 
 
 def speed_classes():
@@ -109,6 +114,10 @@ def register_windrose_route(app):
             start_dt, end_dt = local_naive(start_in), local_naive(end_in)
         except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
+        try:
+            check_site_years(start_dt, end_dt)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
         if start_in.tzinfo and end_in.tzinfo:
             # Compared as instants; inside the hour repeated when clocks fall back the wall-clock bounds can run
             # backwards, so they're put in order for the query (as /api/series does).
@@ -118,6 +127,10 @@ def register_windrose_route(app):
         elif end_dt <= start_dt:
             return jsonify({"error": "end must be after start"}), 400
 
+        if end_dt - start_dt > WHOLE_DAYS_AFTER:
+            start_dt, end_dt = whole_buckets(start_dt, end_dt, 24 * 3600)
+        elif end_dt - start_dt > WHOLE_HOURS_AFTER:
+            start_dt, end_dt = whole_buckets(start_dt, end_dt, 3600)
         now = datetime.now(EST_TZ).replace(tzinfo=None)
         age = max_age(end_dt, now)
         start_dt, end_dt = snap_range(start_dt, end_dt)

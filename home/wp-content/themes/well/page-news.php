@@ -1,6 +1,24 @@
 <?php
 // This is the "News" page template for the WELL WordPress theme.
 // It displays a list of recent news posts in a card layout.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
+
+// 9 published posts per page, newest first (well_news_query() in functions.php explains what counts
+// as news). Later pages are /news/page/2/ and so on. Queried before get_header(), so that a page
+// past the last one can still be answered with a 404.
+$news_page  = max(1, (int) get_query_var('paged'), (int) get_query_var('page'));
+$news_query = well_news_query(9, array(), $news_page);
+$news_pages = (int) $news_query->max_num_pages;
+
+if ($news_page > max(1, $news_pages)) {
+  // /news/page/N/ beyond the last page (or any page past 1 while there are no posts): not found.
+  global $wp_query;
+  $wp_query->set_404();
+  status_header(404);
+  nocache_headers();
+  include get_404_template();
+  return;
+}
 
 get_header();
 ?>
@@ -30,11 +48,6 @@ get_header();
       <h2 class="sr-only">News Listing</h2>
       <div class="row row-eq-height">
         <?php
-        // 9 published posts per page, newest first (well_news_query() in functions.php explains
-        // what counts as news). Later pages are /news/page/2/ and so on.
-        $news_page  = max(1, (int) get_query_var('paged'), (int) get_query_var('page'));
-        $news_query = well_news_query(9, array(), $news_page);
-        $news_pages = (int) $news_query->max_num_pages;
         if ($news_query->have_posts()) :
           while ($news_query->have_posts()) : $news_query->the_post(); ?>
             <div class="col-lg-4 col-md-6">
@@ -50,7 +63,7 @@ get_header();
                       </h3>
                       <div class="card-text mb-0">
                         <p class="card-subtitle mt-2 text-maroon">News</p>
-                        <p><?php echo wp_trim_words(get_the_excerpt(), 20); ?></p>
+                        <p><?php echo esc_html(wp_trim_words(get_the_excerpt(), 20)); ?></p>
                       </div>
                     </div>
                     <div class="card-footer border-top-0 px-4 py-3">

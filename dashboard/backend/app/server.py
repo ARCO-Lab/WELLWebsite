@@ -11,7 +11,7 @@ from utils.sentry import capture_job_error, init_sentry
 init_sentry("backend")
 
 from flask import Flask, jsonify, request  # noqa: E402
-from sqlalchemy.exc import OperationalError  # noqa: E402
+from sqlalchemy.exc import DataError, OperationalError  # noqa: E402
 from api.routes import register_routes  # noqa: E402
 from api.routes.health import register_health_routes  # noqa: E402
 from db.database import db, engine_options  # noqa: E402
@@ -20,6 +20,8 @@ from utils.traffic import init_request_metrics  # noqa: E402
 # PostgreSQL's error code for a statement it cancelled, here because it ran past DB_STATEMENT_TIMEOUT_MS.
 QUERY_CANCELED = "57014"
 TOO_MANY_CONNECTIONS = "53300"
+# What psycopg2's ValueError says about a string with a NUL character, which PostgreSQL can't store.
+NUL_IN_STRING = "cannot contain NUL"
 
 
 def is_connection_error(exc):
@@ -61,6 +63,26 @@ def create_app():
         app.logger.error("%s: database error %s (%s)", where, code, type(exc.orig).__name__)
         capture_job_error(exc, source="api")
         return jsonify({"error": "The data service hit a database error. Please try again shortly."}), 503
+
+    # A value from the request that the database can't use is the request's fault, not a bug: a 400 with a fixed
+    # message, and no error report (each would otherwise be a Sentry event, at whatever rate a client sends them).
+    # The routes refuse such text themselves (api/validation.py); these catch what reaches the driver anyway.
+    def bad_value(kind):
+        db.session.rollback()
+        app.logger.warning("%s %s: %s in the request", request.method, request.path, kind)
+        return jsonify({"error": "The request has a value the data service can't use."}), 400
+
+    @app.errorhandler(DataError)
+    def database_value_error(exc):
+        return bad_value(f"database error {getattr(exc.orig, 'pgcode', None)}")
+
+    @app.errorhandler(ValueError)
+    def value_error(exc):
+        # Only the driver's refusals: a NUL character, or text that can't be encoded (a lone surrogate). Any other
+        # ValueError is a bug, so it goes on to the 500 and the error report as before.
+        if isinstance(exc, UnicodeEncodeError) or NUL_IN_STRING in str(exc):
+            return bad_value(type(exc).__name__)
+        raise exc
 
     @app.route('/health')
     def health():
