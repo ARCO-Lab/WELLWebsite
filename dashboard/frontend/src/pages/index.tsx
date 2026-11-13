@@ -471,7 +471,8 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         onEndChange={changeEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                        <Download
+                        {/* Only on the shown tab: leaving the tab unmounts it, which stops an export's status checks */}
+                        {shownTab === "sensor" && <Download
                           activeGroups={activeGroups}
                           subFilters={{
                             weather: subFilters.weather || [],
@@ -481,7 +482,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                           startDate={startDate}
                           endDate={endDate}
                           isSampling={false}
-                        />
+                        />}
                       </div>
                     </div>
                   </StickyPanel>
@@ -644,7 +645,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         onEndChange={setSamplingEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                      <Download
+                      {shownTab === "sampling" && <Download
                         activeGroups={{ gauges: false, weather: false, quality: false }}  // All false for sampling mode
                         subFilters={{ weather: [], quality: [], gauges: [] }}  // Empty for sampling mode
                         activeCreeks={activeCreeks}  // ✅ Correct prop name
@@ -652,7 +653,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
                         isSampling={true}
-                      />
+                      />}
                       {/* For researchers adding sampling files: the standard format, with example rows */}
                       <p className="pt-1 text-center text-sm text-muted">
                         Adding sampling data?{" "}
