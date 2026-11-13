@@ -11,7 +11,7 @@ The VM runs `main`. On the VM, `./deploy.sh`:
   - `wordpress/*.conf` or `*.ini` (Apache/PHP settings mounted into the `wordpress` container) → the `wordpress`
     container is recreated, since Apache and PHP read them only at start (`--auto` holds these for a person);
   - `home/` needs nothing: the `wordpress` service is the stock `wordpress` image with `home/` bind-mounted, so it's
-    live once pulled (which is why `--auto` holds its PHP files for a person).
+    live once pulled (which is why `--auto` holds its PHP, JavaScript, HTML and SVG files for a person).
 - checks the site: `/api/latest`, the dashboard home page (both on port 8081) and the WordPress home page (port 8080).
   If `worker` or `export_worker` was rebuilt, it also checks a minute later that the container is still running and
   hasn't restarted (compose restarts crashing workers, so "running" alone proves nothing);
@@ -21,8 +21,19 @@ The VM runs `main`. On the VM, `./deploy.sh`:
   cache to its 5 GB most recently used (`docker builder prune --reserved-space 5GB`). Volumes are never pruned. The
   log line "pruned ..." says how many images went and how much free disk changed; a failed prune is only logged.
 
-Its lock, the last problem it reported and the last commit it rolled back are kept in `.deploy-state/` next to the
-script (git-ignored), not in `/tmp`, which RHEL empties of files older than 10 days.
+Its lock, the last problem it reported, the commit the containers were last built from and the last commit it rolled
+back are kept in `.deploy-state/` next to the script (git-ignored), not in `/tmp`, which RHEL empties of files older
+than 10 days.
+
+**A deploy stopped halfway is redone.** The script compares `main` with the commit the containers were last built
+from (recorded only once the site was healthy after that build), not with the checkout, and writes a marker while a
+deploy or a rollback is under way. So if a deploy is stopped after the pull (Ctrl-C, a reboot, a lost SSH session, or
+a plain `git pull` on the VM), the next run, by hand or from cron, rebuilds what changed instead of saying "up to
+date". Ctrl-C and shutdowns are logged as `INTERRUPTED` and ping `/fail`. A rollback that was stopped halfway is
+finished by the next `--auto` run (and reported once); the rolled-back commit is still not retried.
+
+The script sets `umask 022` for itself, so the files a pull or a rollback writes stay readable by Apache in the
+`wordpress` container (with a private umask such as 077 they would be 0600, and WordPress would answer 500).
 
 If the site is already unhealthy before a deploy, `--auto` doesn't deploy (so the new commit isn't blamed and rolled
 back); `./deploy.sh` by hand deploys anyway and doesn't roll back.
@@ -38,18 +49,23 @@ tracked files, so change the VM only through `main`.
 `deploy.sh` have passed (`.github/workflows/ci.yml`): "Backend image and tests", "Dashboard build", "Dashboard image",
 "Deploy script" and "End-to-end data (vendors to browser)". The "Lint Python, shell and compose" job isn't waited for,
 so a lint failure alone doesn't stop a deploy. A job that is renamed in `ci.yml` but not in `REQUIRED_CHECKS` counts as
-still running, so nothing deploys until both match. It holds changes that need a person, logging them and leaving them
-for you:
+still running, so nothing deploys until both match. While it waits, it logs once per commit which checks it waits for
+("not started" for one that never ran); if they still haven't finished after `DEPLOY_CI_WAIT_HOURS` (3 hours), it
+reports that once, with a `/fail` ping, since CI that never starts (`[skip ci]` in a squash message, a disabled
+workflow, a renamed job) would otherwise leave the VM on an old commit in silence. It holds changes that need a
+person, logging them and leaving them for you:
 - a new database migration;
 - `docker-compose.yml`;
 - a WordPress core update, which needs its database update run from wp-admin;
-- anything under `.github/` (a changed workflow could also make a bad change pass CI), `deploy.sh` itself, PHP under
-  `home/`, `wp-config*`, `.htaccess`, and the Apache/PHP config in `wordpress/` (`HOLD_PATHS` in `deploy.sh`). These
-  are live as soon as they are pulled, with no rebuild or test, so a merged pull request alone doesn't put them on the
-  VM: a person looks at the change and runs `./deploy.sh`.
+- anything under `.github/` (a changed workflow could also make a bad change pass CI), `deploy.sh` itself, PHP,
+  JavaScript, HTML and SVG under `home/` (script in a logged-in administrator's browser can install a plugin),
+  `wp-config*`, `.htaccess`, and everything in `wordpress/`: the Apache/PHP config, and `backup.sh`, which the host's
+  cron runs from the checkout (`HOLD_PATHS` in `deploy.sh`). These are live as soon as they are pulled, with no
+  rebuild or test, so a merged pull request alone doesn't put them on the VM: a person looks at the change and runs
+  `./deploy.sh`.
 
 Deploy those with `./deploy.sh`. `--auto` reports each problem once, not every 5 minutes: a held commit, failed CI,
-local edits, a non-fast-forward or a merge git refuses, a GitHub API error or unreadable reply, a fetch error, an
+CI that hasn't finished after `DEPLOY_CI_WAIT_HOURS`, local edits, a non-fast-forward or a merge git refuses, a GitHub API error or unreadable reply, a fetch error, an
 already-unhealthy site, or any other command failing (keyed by its line). A commit that was deployed and rolled back
 isn't retried, whatever else fails in between; a newer commit on `main`, or `./deploy.sh` by hand, moves past it.
 
@@ -64,7 +80,9 @@ Check these on the VM first; each is something `--auto` relies on:
   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/
   curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: well.mcmaster.ca' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/
   ```
-- `DASHBOARD_PORT` in `.env` is 8081 (the checks use that port).
+- `DASHBOARD_PORT` in `.env` is 8081 (the checks use that port). If `WORDPRESS_BIND` or `DASHBOARD_BIND` publishes
+  the ports on one address only ([hosting.md](hosting.md#who-can-reach-the-published-ports)), add
+  `DEPLOY_SITE_HOST=<that address>` to the cron line and use it in place of `127.0.0.1` above.
 - Fetching works without an SSH agent, as it will from cron: `env -i HOME=$HOME PATH=/usr/bin:/bin git fetch origin main`.
 - Run `./deploy.sh` once by hand.
 

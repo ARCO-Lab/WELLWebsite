@@ -142,7 +142,9 @@ Details in [wordpress/README.md](../wordpress/README.md#backups).
 | `DEPLOY_HEALTHCHECK_URL` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure or a held commit. |
 | `DEPLOY_BRANCH`, `DEPLOY_REMOTE` | `main`, `origin` | What is deployed. |
 | `DEPLOY_LOG` | `deploy.log` next to the script | Log file. |
-| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported and the last commit rolled back. Earlier versions kept these in `/tmp`; the first run moves them here. |
+| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported, the commit the containers were last built from, a marker while a deploy runs, and the last commit rolled back. Earlier versions kept the lock and state in `/tmp`; the first run moves them here, and once a run has ended well the old `/tmp` files are ignored. |
+| `DEPLOY_SITE_HOST` | `127.0.0.1` | The address the health checks call ports 8080 and 8081 on. Set it when `WORDPRESS_BIND` and `DASHBOARD_BIND` publish those ports on one address that isn't the loopback. |
+| `DEPLOY_CI_WAIT_HOURS` | `3` | How long `--auto` waits for CI to finish on a commit before it reports it (a `/fail` ping and a `FAILED` line). |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
 ## Tests
