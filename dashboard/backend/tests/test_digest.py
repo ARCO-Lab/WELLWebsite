@@ -155,6 +155,20 @@ class BuildDigestTests(TestCase):
         self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("request failed: HTTPError (HTTP 429)", body)
 
+    def test_unset_heartbeats_come_first_and_count_as_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     unset_heartbeats=["HEALTHCHECK_URL_BACKUP", "HEALTHCHECK_URL_RESTORE"])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("Heartbeats not set", body)
+        self.assertIn("HEALTHCHECK_URL_RESTORE", body)
+        self.assertLess(body.index("Heartbeats not set"), body.index("Stale series"))
+        self.assertNotIn("Heartbeats not set", build_digest("2026-11-10", freshness, {}, [], None,
+                                                            unset_heartbeats=[])[1])
+
 
 class ReadGroupsTests(TestCase):
     def test_counts_gaps_and_findings_from_the_database(self):

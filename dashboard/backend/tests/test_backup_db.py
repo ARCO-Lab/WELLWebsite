@@ -73,6 +73,30 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual(backup.dump_name(when), "welldb-20261111-0315.dump")
         self.assertEqual(backup.dump_time(backup.dump_name(when)), when)
 
+    def test_a_dump_taken_by_hand_before_the_nightly_one_survives_that_night(self):
+        # Taken at 01:00 before a migration; the 03:15 dump is that day's newest, which alone would doom it
+        names = ["welldb-20261110-0315.dump", "welldb-20261111-0100.dump", "welldb-20261111-0315.dump"]
+        night = dt.datetime(2026, 11, 11, 3, 20)
+        self.assertEqual(backup.dumps_to_prune(names, 7, 0), ["welldb-20261111-0100.dump"])   # without `now`
+        self.assertEqual(backup.dumps_to_prune(names, 7, 0, now=night), [])
+        # Once it is more than 24 h old, it goes like any other
+        self.assertEqual(backup.dumps_to_prune(names, 7, 0, now=dt.datetime(2026, 11, 12, 0, 30)), [])
+        self.assertEqual(backup.dumps_to_prune(names, 7, 0, now=dt.datetime(2026, 11, 12, 3, 20)),
+                         ["welldb-20261111-0100.dump"])
+
+    def test_the_last_good_dump_is_never_pruned(self):
+        # Ten failing nights after the last good dump (the 1st): retention alone would delete it
+        names = self.names("2026-11-01", 11)
+        self.assertIn("welldb-20261101-0315.dump", backup.dumps_to_prune(names, 7, 0))
+        self.assertNotIn("welldb-20261101-0315.dump",
+                         backup.dumps_to_prune(names, 7, 0, protect=["welldb-20261101-0315.dump", "notes.txt"]))
+
+    def test_row_count_files_follow_their_dumps(self):
+        names = ["welldb-20261110-0315.dump", ".welldb-20261110-0315.dump.counts.json",
+                 ".welldb-20261101-0315.dump.counts.json", ".notes.counts.json", ".row-counts.json"]
+        self.assertEqual(backup.counts_name("welldb-20261110-0315.dump"), ".welldb-20261110-0315.dump.counts.json")
+        self.assertEqual(backup.orphan_counts_files(names), [".welldb-20261101-0315.dump.counts.json"])
+
 
 class ConnectionTests(unittest.TestCase):
     def test_parses_the_apps_url_and_strips_the_driver(self):
@@ -124,8 +148,8 @@ class RowCountTests(unittest.TestCase):
         before = {"sensor_measurements": 1_000_000, "sampling_measurements": 300}
         problems = backup.row_count_problems({"sensor_measurements": 900_000, "sampling_measurements": 0}, before, 5)
         self.assertEqual(problems, [
-            "sensor_measurements has 900,000 rows, 10% fewer than the 1,000,000 at the last good backup",
-            "sampling_measurements is empty (it had 300 rows at the last good backup)"])
+            "sensor_measurements has 900,000 rows, 10% fewer than the 1,000,000 it had at a good backup",
+            "sampling_measurements is empty (it had 300 rows at a good backup)"])
 
     def test_without_an_earlier_count_only_an_empty_or_missing_table_fails(self):
         self.assertEqual(backup.row_count_problems({"a": 5, "b": 0, "c": None}, {}, 5),
@@ -153,19 +177,131 @@ class RowCountTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BACKUP_MAX_SHRINK_PCT": "five"}), self.assertRaises(backup_db.BackupError):
             backup_db.shrink_setting()
 
-    def nightly(self, directory, day, rows, max_shrink_pct=5, **kwargs):
-        """back_up() on 2026-11-`day` at 03:15 with `rows` in the table, pg_dump and its check stood in for."""
+    def test_the_reference_only_goes_down_when_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            when = dt.datetime(2026, 11, 11, 3, 15)
+            backup.save_row_counts(directory, {"a": 100, "b": 5}, "welldb-20261111-0315.dump", when)
+            backup.save_row_counts(directory, {"a": 96, "b": 7}, "welldb-20261112-0315.dump", when)
+            self.assertEqual(backup.load_row_counts(directory), {"a": 100, "b": 7})   # the most each had
+            backup.save_row_counts(directory, None, "welldb-20261113-0315.dump", when)   # nothing counted: kept
+            self.assertEqual(backup.load_row_counts(directory), {"a": 100, "b": 7})
+            backup.save_row_counts(directory, {"a": 96, "b": 7}, "welldb-20261114-0315.dump", when, lower=True)
+            self.assertEqual(backup.load_row_counts(directory), {"a": 96, "b": 7})
+
+    def test_small_losses_cant_add_up_night_after_night(self):
+        import backup_db
+        with tempfile.TemporaryDirectory() as directory:
+            self.nightly(directory, 8, 100)
+            self.nightly(directory, 9, 96)    # 4% fewer: within BACKUP_MAX_SHRINK_PCT, and the reference stays 100
+            self.nightly(directory, 10, 97)
+            with self.assertRaises(backup_db.RowCountError) as failed:
+                self.nightly(directory, 11, 93)   # 7% below the 100, though only 4% below the night before
+            self.assertIn("t has 93 rows, 7% fewer than the 100 it had at a good backup", str(failed.exception))
+            self.assertEqual(backup.load_row_counts(directory), {"t": 100})
+
+    def test_a_count_that_fails_or_times_out_still_takes_the_dump_then_fails(self):
+        import backup_db
+        import psycopg2
+        with tempfile.TemporaryDirectory() as directory:
+            self.nightly(directory, 8, 100)
+            timeout = psycopg2.extensions.QueryCanceledError("canceling statement due to statement timeout")
+            with self.assertRaises(backup_db.RowCountError) as failed:
+                self.nightly(directory, 9, 100, count_error=timeout)
+            self.assertIn("the row counts could not be checked: could not count the rows of t: canceling statement",
+                          str(failed.exception))
+            self.assertEqual(self.dumps(directory), ["welldb-20261108-0315.dump", "welldb-20261109-0315.dump"])
+            record = backup.load_record(directory)
+            self.assertEqual((record["dump"], record["failing_dumps"]),
+                             ("welldb-20261108-0315.dump", ["welldb-20261109-0315.dump"]))
+            # With the comparison off, a failed count is only a warning, and the dump counts as good
+            warnings = []
+            self.nightly(directory, 10, 100, max_shrink_pct=None, count_error=timeout, warn=warnings.append)
+            self.assertEqual(len(warnings), 1, warnings)
+            self.assertEqual(backup.load_record(directory)["dump"], "welldb-20261110-0315.dump")
+
+    def test_a_damaged_record_still_takes_the_dump_and_accepting_replaces_it(self):
+        import backup_db
+        with tempfile.TemporaryDirectory() as directory:
+            self.nightly(directory, 8, 100)
+            pathlib.Path(directory, backup.ROW_COUNTS_NAME).write_text("")   # zero-length, as after a power cut
+            for day in (9, 10):
+                with self.assertRaises(backup_db.RowCountError) as failed:
+                    self.nightly(directory, day, 100)
+                self.assertIn("can't be read", str(failed.exception))
+                self.assertIn("--accept-row-counts", str(failed.exception))
+                self.assertIn(f"welldb-202611{day:02d}-0315.dump", self.dumps(directory))
+            self.nightly(directory, 11, 100, accept_row_counts=True)
+            record = backup.load_record(directory)
+            self.assertEqual((record["dump"], record["counts"]), ("welldb-20261111-0315.dump", {"t": 100}))
+
+    def test_each_dump_gets_its_source_counts_beside_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dump = self.nightly(directory, 8, 1234, exact_tables={"t"})
+            self.assertEqual(backup.load_dump_counts(dump), ({"t": 1234}, {"t"}))
+            self.assertIsNone(backup.load_dump_counts(pathlib.Path(directory, "welldb-20200101-0000.dump")))
+            pathlib.Path(directory, backup.counts_name(dump.name)).write_text("{\"counts\": [1]}")
+            with self.assertRaises(ValueError):
+                backup.load_dump_counts(dump)
+
+    def test_a_full_disk_applies_retention_first_and_checks_again(self):
+        import backup_db
+        made_room = []
+        short = backup_db.BackupError("not enough disk space in /x: 1 GB free")
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(backup_db, "check_free_space", side_effect=[short, None]):
+                self.nightly(directory, 8, 100, make_room=lambda: made_room.append(1))
+            self.assertEqual(made_room, [1])
+            self.assertEqual(self.dumps(directory), ["welldb-20261108-0315.dump"])
+            # Still too full after retention: no dump
+            with mock.patch.object(backup_db, "check_free_space", side_effect=[short, short]), \
+                    self.assertRaises(backup_db.BackupError):
+                self.nightly(directory, 9, 100, make_room=lambda: made_room.append(1))
+            # And without retention allowed (--no-prune), the first check decides
+            with mock.patch.object(backup_db, "check_free_space", side_effect=[short]), \
+                    self.assertRaises(backup_db.BackupError):
+                self.nightly(directory, 10, 100)
+            self.assertEqual(self.dumps(directory), ["welldb-20261108-0315.dump"])
+
+    def test_retention_keeps_the_last_good_dump_and_recent_ones_and_drops_orphan_count_files(self):
+        import backup_db
+        with tempfile.TemporaryDirectory() as directory:
+            for day in range(1, 12):
+                pathlib.Path(directory, f"welldb-202611{day:02d}-0315.dump").write_text("x")
+            pathlib.Path(directory, "welldb-20261111-0100.dump").write_text("x")   # by hand, before a change
+            pathlib.Path(directory, backup.counts_name("welldb-20261031-0315.dump")).write_text("{}")   # orphan
+            pathlib.Path(directory, backup.counts_name("welldb-20261101-0315.dump")).write_text("{}")
+            backup.save_record(directory, {"dump": "welldb-20261101-0315.dump"})
+            deleted = backup_db.prune(directory, 7, 0, log=lambda *a: None,
+                                      now=dt.datetime(2026, 11, 11, 3, 20, tzinfo=backup_db.SITE_TZ))
+            self.assertEqual(deleted, [f"welldb-202611{day:02d}-0315.dump" for day in (2, 3, 4)])
+            names = os.listdir(directory)
+            self.assertIn("welldb-20261101-0315.dump", names)
+            self.assertIn("welldb-20261111-0100.dump", names)
+            self.assertIn(backup.counts_name("welldb-20261101-0315.dump"), names)
+            self.assertNotIn(backup.counts_name("welldb-20261031-0315.dump"), names)
+
+    def nightly(self, directory, day, rows, max_shrink_pct=5, count_error=None, exact_tables=(), warn=None,
+                **kwargs):
+        """back_up() on 2026-11-`day` at 03:15 with `rows` in the table (or counting raising `count_error`), pg_dump
+        and its check stood in for."""
         import backup_db
 
         def fake_dump(cmd, env, timeout):
             pathlib.Path(next(c for c in cmd if c.startswith("--file=")).split("=", 1)[1]).write_text("dump")
 
-        with mock.patch.object(backup_db, "count_rows", return_value={"t": rows}), \
+        def fake_count(settings, tables, warn=None, exact=None):
+            if count_error:
+                raise count_error
+            if exact is not None:
+                exact.update(set(exact_tables))
+            return {"t": rows}
+
+        with mock.patch.object(backup_db, "count_rows", side_effect=fake_count), \
                 mock.patch.object(backup_db, "run_tool", side_effect=fake_dump), \
                 mock.patch.object(backup_db, "verify_dump"), \
                 mock.patch.object(backup_db, "pg_tool", return_value="pg_dump"):
             return backup_db.back_up(directory, {"database": "welldb"}, [], ["t"], 0, log=lambda *a: None,
-                                     warn=lambda *a: None, now=dt.datetime(2026, 11, day, 3, 15),
+                                     warn=warn or (lambda *a: None), now=dt.datetime(2026, 11, day, 3, 15),
                                      max_shrink_pct=max_shrink_pct, **kwargs)
 
     def dumps(self, directory):
@@ -179,7 +315,7 @@ class RowCountTests(unittest.TestCase):
             for day in (10, 11, 12):
                 with self.assertRaises(backup_db.RowCountError) as failed:
                     self.nightly(directory, day, 0)
-                self.assertIn("t is empty (it had 100 rows at the last good backup)", str(failed.exception))
+                self.assertIn("t is empty (it had 100 rows at a good backup)", str(failed.exception))
             self.assertEqual(self.dumps(directory),
                              ["welldb-20261108-0315.dump", "welldb-20261109-0315.dump", "welldb-20261112-0315.dump"])
             self.assertEqual(backup.load_record(directory)["failing_dumps"], ["welldb-20261112-0315.dump"])
@@ -500,14 +636,39 @@ class RoundTrip(unittest.TestCase):
                 self.assertEqual(self.rows(self.RESTORED, table), self.rows(self.SOURCE, table), table)
             self.assertEqual(len(self.rows(self.RESTORED, "sensor_measurements")), 500)
             self.admin_sql(f"DROP DATABASE {self.RESTORED}")
+            # The counts taken just before the dump are beside it, exact for these small tables, and the drill
+            # compared the restore with them
+            dump = os.path.join(directory, dumps[0])
+            self.assertEqual(backup.load_dump_counts(dump),
+                             ({"sensor_measurements": 500, "sampling_measurements": 2},
+                              {"sensor_measurements", "sampling_measurements"}))
+            self.assertIn("Row counts when", drill.stdout)
+
+            # A dump that restores fewer rows than its source had (here: its record says so) fails the drill, and
+            # the throwaway database is dropped
+            record_path = pathlib.Path(directory, backup.counts_name(dumps[0]))
+            record = record_path.read_text()
+            record_path.write_text(record.replace('"sensor_measurements": 500', '"sensor_measurements": 2400000'))
+            short = self.run_script("restore_check.py", "--dir", directory, "--database", self.RESTORED,
+                                    RESTORE_CHECK_DATABASE_URL=os.environ["TEST_POSTGRES_URL"])
+            self.assertEqual(short.returncode, 1, short.stdout + short.stderr)
+            self.assertIn("sensor_measurements restored 500 rows, but had 2,400,000 when the dump was taken",
+                          short.stderr)
+            self.assertIn("Dropped the throwaway database", short.stdout)
+            # Without its record, the drill compares with the live rows instead (shortfalls covers a failure there)
+            record_path.unlink()
+            fallback = self.run_script("restore_check.py", "--dir", directory, "--database", self.RESTORED,
+                                       RESTORE_CHECK_DATABASE_URL=os.environ["TEST_POSTGRES_URL"])
+            self.assertEqual(fallback.returncode, 0, fallback.stdout + fallback.stderr)
+            self.assertIn("has no record of its source's row counts", fallback.stdout)
+            record_path.write_text(record)
 
             # Without the exclusions the owner role can't lock export_jobs: the run fails and leaves no file behind
             failed = self.run_script("backup_db.py", "--dir", directory, "--no-prune", BACKUP_MIN_FREE_MB="0",
                                      BACKUP_EXCLUDE_TABLES="")
             self.assertEqual(failed.returncode, 1)
             self.assertIn("permission denied", failed.stderr)
-            self.assertEqual(sorted(n for n in os.listdir(directory)
-                                    if n not in (".backup.lock", backup.ROW_COUNTS_NAME)), dumps)
+            self.assertEqual(sorted(n for n in os.listdir(directory) if not n.startswith(".")), dumps)
 
     def listing(self, path):
         return subprocess.run([backup.pg_tool("pg_restore"), "--list", path], capture_output=True, text=True,
@@ -559,14 +720,19 @@ class RoundTrip(unittest.TestCase):
 
             first = run()
             self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertIn("Rows now: shrink_check 100, sensor_measurements 500 (last good backup: no earlier count",
-                          first.stdout)
+            self.assertIn("Rows now: shrink_check 100, sensor_measurements 500 (reference, the most at a good backup: "
+                          "no earlier count", first.stdout)
             self.assertEqual(backup.load_row_counts(directory), {"shrink_check": 100, "sensor_measurements": 500})
 
-            # 4% fewer rows passes (within BACKUP_MAX_SHRINK_PCT's default 5%), and becomes the new reference
+            # 4% fewer rows passes (within BACKUP_MAX_SHRINK_PCT's default 5%), but the reference stays at 100, so
+            # losses can't add up night after night
             self.source_sql("DELETE FROM shrink_check WHERE id <= 4")
             self.assertEqual(run("--no-prune").returncode, 0)
-            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 96)
+            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 100)
+            self.source_sql("DELETE FROM shrink_check WHERE id <= 6")   # 6% below the reference, 2% below last night
+            crept = run("--no-prune")
+            self.assertEqual(crept.returncode, 1)
+            self.assertIn("shrink_check has 94 rows, 6% fewer than the 100 it had at a good backup", crept.stderr)
 
             # 50% fewer: the dump is written and checked, but the run fails and the counts aren't recorded
             self.source_sql("DELETE FROM shrink_check WHERE id <= 52")
@@ -588,17 +754,17 @@ class RoundTrip(unittest.TestCase):
             self.assertIn("lock timeout", warnings[0])
             shrunk = run()
             self.assertEqual(shrunk.returncode, 1)
-            self.assertIn("shrink_check has 48 rows, 50% fewer than the 96 at the last good backup", shrunk.stderr)
+            self.assertIn("shrink_check has 48 rows, 52% fewer than the 100 it had at a good backup", shrunk.stderr)
             self.assertIn("--accept-row-counts", shrunk.stderr)
             self.assertIn("Backup written", shrunk.stdout)
-            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 96)
+            self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 100)
 
             # Emptied: still failing, also on the next run
             self.source_sql("TRUNCATE shrink_check")
             for _ in range(2):
                 emptied = run("--no-prune")
                 self.assertEqual(emptied.returncode, 1)
-                self.assertIn("shrink_check is empty (it had 96 rows at the last good backup)", emptied.stderr)
+                self.assertIn("shrink_check is empty (it had 100 rows at a good backup)", emptied.stderr)
 
             # Accepted on purpose: a warning, the new counts recorded, and the next run passes
             accepted = run("--no-prune", "--accept-row-counts")
@@ -607,6 +773,24 @@ class RoundTrip(unittest.TestCase):
             self.assertEqual(backup.load_row_counts(directory)["shrink_check"], 0)
             self.assertEqual(run("--no-prune").returncode, 0)
             self.assertTrue(dumps())
+
+    def test_a_check_that_cant_be_made_still_takes_the_dump(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = self.run_script("backup_db.py", "--dir", directory)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            # A record left zero-length (renamed before it reached the disk, then a power cut): the dump is still
+            # taken and checked, then the run fails and says what to do
+            pathlib.Path(directory, backup.ROW_COUNTS_NAME).write_text("")
+            damaged = self.run_script("backup_db.py", "--dir", directory, "--no-prune")
+            self.assertEqual(damaged.returncode, 1)
+            self.assertIn("the row counts could not be checked", damaged.stderr)
+            self.assertIn("--accept-row-counts", damaged.stderr)
+            self.assertIn("Backup written", damaged.stdout)
+            self.assertEqual(len(backup.dumps_in(os.listdir(directory))), 2)
+            fixed = self.run_script("backup_db.py", "--dir", directory, "--no-prune", "--accept-row-counts")
+            self.assertEqual(fixed.returncode, 0, fixed.stderr)
+            self.assertEqual(backup.load_row_counts(directory), {"sensor_measurements": 500, "sampling_measurements": 2})
+            # (A count stopped by its time limit takes the same path: RowCountTests covers it without a 5 min wait.)
 
 
 class ExclusionSettingTests(unittest.TestCase):
@@ -627,6 +811,103 @@ class ExclusionSettingTests(unittest.TestCase):
         self.assertTrue(any("can't read it" in line for line in lines), lines)
         _, problems = restore_check.compare(restored, live, ["alert_incidents"])
         self.assertEqual(problems, ["public.export_jobs is missing from the backup"])
+
+
+class RestoreShortfallTests(unittest.TestCase):
+    """The drill compares what it restored with the counts recorded beside the dump, not only with "not empty"."""
+    SM, SAMPLING = ("public", "sensor_measurements"), ("public", "sampling_measurements")
+
+    def test_a_nearly_empty_restore_fails(self):
+        import restore_check
+        restored, live = {self.SM: 10, self.SAMPLING: 300}, {self.SM: 2_400_000, self.SAMPLING: 300}
+        recorded = ({"sensor_measurements": 2_399_000, "sampling_measurements": 300}, {"sampling_measurements"})
+        _, problems = restore_check.compare(restored, live, [], recorded)
+        self.assertEqual(problems, ["sensor_measurements restored 10 rows, but had 2,399,000 (estimated) when the dump "
+                                    "was taken"])
+
+    def test_an_estimate_has_a_tolerance_and_an_exact_count_none(self):
+        import restore_check
+        recorded = ({"sensor_measurements": 1_000_000, "sampling_measurements": 300}, {"sampling_measurements"})
+        live = {self.SM: 1_001_000, self.SAMPLING: 300}
+        # 1.5% under an estimate passes (the default tolerance is 2%); one row short of an exact count fails
+        _, problems = restore_check.compare({self.SM: 985_000, self.SAMPLING: 300}, live, [], recorded)
+        self.assertEqual(problems, [])
+        _, problems = restore_check.compare({self.SM: 985_000, self.SAMPLING: 299}, live, [], recorded)
+        self.assertEqual(problems, ["sampling_measurements restored 299 rows, but had 300 when the dump was taken"])
+        _, problems = restore_check.compare({self.SM: 985_000, self.SAMPLING: 300}, live, [], recorded,
+                                            tolerance_pct=1)
+        self.assertEqual(len(problems), 1)
+
+    def test_a_schema_qualified_name_matches_too(self):
+        import restore_check
+        _, problems = restore_check.compare({self.SM: 5}, {self.SM: 5}, [], ({"public.sensor_measurements": 6}, {
+            "public.sensor_measurements"}))
+        self.assertEqual(len(problems), 1)
+
+    def test_without_a_record_the_main_tables_are_compared_with_live(self):
+        import restore_check
+        expected = ["sensor_measurements", "sampling_measurements"]
+        live = {self.SM: 2_400_000, self.SAMPLING: 300, ("public", "alert_incidents"): 50}
+        ok = {self.SM: 2_395_000, self.SAMPLING: 300, ("public", "alert_incidents"): 1}
+        self.assertEqual(restore_check.compare(ok, live, [], None, expected)[1], [])   # other tables may differ
+        _, problems = restore_check.compare({**ok, self.SM: 10}, live, [], None, expected)
+        self.assertEqual(problems, ["sensor_measurements restored 10 rows, more than 5% fewer than the 2,400,000 live "
+                                    "(the dump has no record of its own counts to compare with)"])
+
+
+class RestoreSchedulerTests(unittest.TestCase):
+    """The monthly restore drill's slot in the scheduler, with its own heartbeat."""
+
+    def setUp(self):
+        sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
+        import scheduler_temp
+        self.scheduler = scheduler_temp
+        self.logs, self.pings, self.cmds = [], [], []
+        patcher = mock.patch.object(scheduler_temp, "ping_heartbeat",
+                                    side_effect=lambda name, status="success", **kw: self.pings.append((name, status)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_at(self, day, hour, run, setting="2"):
+        when = dt.datetime(2026, 12, day, hour, 30, tzinfo=self.scheduler.SITE_TZ)
+        with mock.patch.object(self.scheduler, "datetime", mock.Mock(now=lambda tz=None: when)), \
+                mock.patch.object(self.scheduler, "RESTORE_CHECK_DAY", setting), \
+                mock.patch.object(self.scheduler, "capture_job_error") as capture:
+            return self.scheduler.monthly_restore_check(log=self.logs.append, run=run), capture
+
+    def test_runs_only_at_its_hour_on_its_day(self):
+        never = lambda cmd, timeout: self.fail("ran outside its slot")  # noqa: E731
+        for day, hour in ((2, 4), (2, 6), (1, 5), (3, 5)):
+            self.assertIsNone(self.run_at(day, hour, never)[0])
+        self.assertIsNone(self.run_at(2, 5, never, setting="off")[0])
+        self.assertEqual(self.pings, [])
+
+    def test_success_and_failure_ping_the_restore_check(self):
+        def ok(cmd, timeout):
+            self.cmds.append((cmd, timeout))
+            return subprocess.CompletedProcess(cmd, 0, "Restore check passed", "")
+
+        def short(cmd, timeout):
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="ERROR: restore check failed: too few rows")
+
+        self.assertTrue(self.run_at(2, 5, ok)[0])
+        self.assertEqual(self.cmds[0][0][1:], ["scripts/restore_check.py"])
+        self.assertEqual(self.cmds[0][1], self.scheduler.RESTORE_TIMEOUT_S)
+        ran, capture = self.run_at(2, 5, short)
+        self.assertFalse(ran)
+        capture.assert_called_once()
+        self.assertEqual(self.pings, [("restore", "start"), ("restore", "success"), ("restore", "start"),
+                                      ("restore", "fail")])
+
+    def test_a_bad_day_fails_once_a_day(self):
+        never = lambda cmd, timeout: self.fail("ran with a bad setting")  # noqa: E731
+        self.assertIsNone(self.run_at(2, 4, never, setting="31")[0])
+        self.assertIsNone(self.run_at(2, 5, never, setting="31")[0])
+        self.assertEqual(self.pings, [("restore", "fail")])
+
+    def test_it_runs_after_the_backup_can_have_finished(self):
+        start = self.scheduler.BACKUP_HOUR * 60 + 15
+        self.assertLessEqual(start + self.scheduler.BACKUP_TIMEOUT_S // 60, self.scheduler.RESTORE_HOUR * 60 + 30)
 
 
 if __name__ == "__main__":

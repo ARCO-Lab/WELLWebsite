@@ -396,7 +396,12 @@ otherwise (also 503 if the database can't be read or a setting below is invalid)
 
 The worker pings a [Healthchecks.io](https://healthchecks.io) check after each job, and Healthchecks emails the account
 owner when a check reports a failure or stops being pinged, so no SMTP is needed for these. A ping times out after 5 s
-and never stops the job. Unset variables mean no ping.
+and never stops the job. Unset variables mean no ping, so a job, or the whole worker, could stop with nobody told:
+the worker names every unset one in a `[WARN]` line when it starts (in `logs/db_injections.log` and in `docker
+compose logs worker`) and as a Sentry warning, and the daily digest lists them first. A run skipped because the
+previous one is still going is recorded in the job's check with Healthchecks' `/log` (shown in its event log, no
+change of state); 3 skipped in a row (`SKIPS_BEFORE_FAIL`) ping `/fail` and send a Sentry warning, since the job is
+then stuck rather than slow.
 
 | Variable | Pinged |
 |---|---|
@@ -406,7 +411,8 @@ and never stops the job. Unset variables mean no ping.
 | `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent. |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
-| `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check ([Database backups](#database-backups)). |
+| `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check, or the row counts couldn't be checked ([Database backups](#database-backups)). |
+| `HEALTHCHECK_URL_RESTORE` | `/start` when the monthly restore drill begins (05:30 Toronto time on `RESTORE_CHECK_DAY`, default the 2nd), then success, or `/fail` if the restore failed or came back with too few rows ([Database backups](#database-backups)). |
 
 To set them up, sign in to Healthchecks.io with the address that should get the alerts (the free plan is enough),
 create one check per job, and copy each check's ping URL into the matching variable:
@@ -416,6 +422,8 @@ create one check per job, and copy each check's ping URL into the matching varia
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
 - **WELL alerts**: Simple schedule, period 10 minutes, grace 30 minutes.
 - **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).
+- **WELL restore drill**: Cron `30 5 2 * *` (or your `RESTORE_CHECK_DAY`), time zone America/Toronto, grace 5 hours
+  (the drill is stopped after 4 h).
 
 **Uptime monitor.** Point any external HTTP monitor that alerts on a non-2xx status (e.g. UptimeRobot's free plan,
 5-minute interval) at `https://welldash.mcmaster.ca/api/health/data`, with the owner's email as the alert contact. It
@@ -619,21 +627,28 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
   warning.
 - **Row counts**: a dump of an emptied table still lists data for it, so before dumping, the job also counts the
   rows of those tables (exactly for tables under a million rows; for larger ones, PostgreSQL's estimate right after
-  an `ANALYZE`, or the older estimate with a `WARNING:` line if `ANALYZE` waits more than 30 s for its lock) and compares them with the counts at the last good backup, kept in `backups/.row-counts.json`. If a
+  an `ANALYZE`, or the older estimate with a `WARNING:` line if `ANALYZE` waits more than 30 s for its lock) and
+  compares them with the reference counts in `backups/.row-counts.json`: the most rows each table had at a good
+  backup, so the reference never goes down by itself and small losses can't add up night after night. If a
   table is empty or has more than 5% fewer rows (`BACKUP_MAX_SHRINK_PCT`; these tables only grow, and 5% is well
   above the estimate's error), the dump is still written and checked, but the run fails (`/fail` ping, Sentry) and
   the counts aren't recorded, so the following nights fail too until someone looks. Retention doesn't run then, so
   no good dump is deleted. Each failing dump is listed as such in `.row-counts.json`, and only those listed are
   deleted by the next failing night, so just the newest failing dump is kept next to all the good ones and they
-  don't pile up. Every other successful dump is recorded as good, also while the comparison is off. If the rows
-  were removed on
-  purpose, run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it records the new
-  counts, with a `WARNING:` line naming what was accepted. `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off.
+  don't pile up. The same happens when the counts can't be checked (counting timed out or failed, or
+  `.row-counts.json` is damaged): the dump is always taken and checked first, then the run fails. Every other
+  successful dump is recorded as good, also while the comparison is off. If the rows were removed on purpose (or
+  the record was damaged), run `docker compose exec worker python scripts/backup_db.py --accept-row-counts` once: it
+  records the new counts, with a `WARNING:` line naming what was accepted; it is the only way a reference goes down.
+  `BACKUP_MAX_SHRINK_PCT=off` turns the comparison off. The counts are also written beside each dump
+  (`.welldb-YYYYmmdd-HHMM.dump.counts.json`), for the restore drill to compare with.
 - **Retention**: the newest dump of each of the last 7 days (`BACKUP_KEEP_DAILY`) and of each of the last 8 ISO weeks
-  (`BACKUP_KEEP_WEEKLY`), so at most 15 files. Only files named `welldb-YYYYmmdd-HHMM.dump` are ever deleted, and only
-  after a new dump has passed its check; a dump you copy in under another name (e.g. `manual-before-migration.dump`)
-  stays. The job refuses to start if a dump the size of the last one would leave less than `BACKUP_MIN_FREE_MB`
-  (default 2048) free, since the database shares the disk.
+  (`BACKUP_KEEP_WEEKLY`), so usually at most 15 files. Every dump younger than 24 h is kept too (so one taken by hand
+  at 01:00 before a migration survives that night's run), and so is the last one recorded as good. Only files named
+  `welldb-YYYYmmdd-HHMM.dump` (and their row count files) are ever deleted, and only after a new dump has passed its
+  check; a dump you copy in under another name (e.g. `manual-before-migration.dump`) stays. If a dump the size of
+  the last one would leave less than `BACKUP_MIN_FREE_MB` (default 2048) free, since the database shares the disk,
+  the job applies retention first and checks again, and refuses to start if there still isn't enough.
 
 **Tables the role can't read are left out, and named.** `pg_dump` locks and reads every table it dumps, so by default
 (`BACKUP_EXCLUDE_TABLES` unset or `auto`) the job leaves out any table or sequence the connecting role can't read, and
@@ -649,12 +664,17 @@ nothing, and the dump then fails if anything is unreadable.
 **Run a backup by hand** (e.g. before a migration): `docker compose exec worker python scripts/backup_db.py
 --no-prune`. `--prune-only` applies retention without dumping.
 
-**Restore drill** (optional; once a month is plenty): `docker compose exec worker python scripts/restore_check.py`
-restores the newest dump (or `--file /app/backups/<name>`) into a throwaway database, `welldb_restore_check` (another
-name given with `--database` must start with that, since the drill drops it first), compares each table's row count
-with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing
-from the restore or restored empty fails the drill, unless it was left out on purpose (`BACKUP_EXCLUDE_TABLES`) or
-because the role can't read it. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role
+**Restore drill**: the worker runs it once a month, at 05:30 Toronto time on `RESTORE_CHECK_DAY` (1-28, default the
+2nd; `off` turns it off), and pings `HEALTHCHECK_URL_RESTORE`; it can also be run by hand with `docker compose exec
+worker python scripts/restore_check.py`. It restores the newest dump (or `--file /app/backups/<name>`) into a
+throwaway database, `welldb_restore_check` (another name given with `--database` must start with that, since the
+drill drops it first, and may never be a database the app uses), compares each table's row count with the counts
+recorded beside the dump and with the live database (read-only), and drops it again. Counts that grew since the dump
+are expected. The drill fails when a table is missing from the restore or restored empty, unless it was left out on
+purpose (`BACKUP_EXCLUDE_TABLES`) or because the role can't read it, and when a `BACKUP_EXPECT_TABLES` table restores
+fewer rows than it had when the dump was taken: an exact count must come back in full, an estimate within
+`RESTORE_CHECK_TOLERANCE_PCT` (default 2). For a dump without that record (taken before it was kept), those tables
+must have at least 95% of their live rows instead. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role
 on the VM) has; for another role, grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set
 `RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the
 throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as

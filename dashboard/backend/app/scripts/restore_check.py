@@ -1,6 +1,8 @@
 # Restore drill: restores a backup (by default the newest dump in BACKUP_DIR) into a throwaway database, compares
-# each table's row count with the live database, then drops the throwaway database. It shows that the dumps can
-# actually be restored, which the nightly check of the archive alone can't. Optional, and run by hand, e.g. monthly:
+# each table's row count with the counts recorded when the dump was taken and with the live database, then drops the
+# throwaway database. It shows that the dumps can actually be restored, which the nightly check of the archive alone
+# can't. scripts/scheduler_temp.py runs it once a month (RESTORE_CHECK_DAY, default the 2nd, at 05:30 Toronto time,
+# after the night's backup) and pings HEALTHCHECK_URL_RESTORE; it can also be run by hand:
 #
 #   docker compose exec worker python scripts/restore_check.py
 #   docker compose exec worker python scripts/restore_check.py --file /app/backups/welldb-20261111-0315.dump
@@ -12,12 +14,18 @@
 #
 # The live database keeps changing (new readings every 10 minutes), so counts that grew since the dump are
 # expected and reported, not failures. It fails (exit 1) if the restore fails, a table the live database has is
-# missing from the restore, or a table restored empty while the live one has rows. A missing table isn't a failure
-# when BACKUP_EXCLUDE_TABLES lists it, or (by default, "auto") when the role can't read it, which is why the
+# missing from the restore, a table restored empty while the live one has rows, or a table restored with fewer rows
+# than its source had when the dump was taken. Those counts are recorded beside each dump by the backup
+# (.<dump>.counts.json, for the BACKUP_EXPECT_TABLES tables): an exact count must come back in full, and an estimate
+# (large tables) within RESTORE_CHECK_TOLERANCE_PCT percent (default 2). For a dump without that record (one taken
+# before it was kept), those tables must instead have at least 95% of their live rows. A missing table isn't a
+# failure when BACKUP_EXCLUDE_TABLES lists it, or (by default, "auto") when the role can't read it, which is why the
 # backup left it out.
 #
-# The throwaway database is dropped first if it exists (left by an interrupted drill), so its name must start with
-# welldb_restore_check. The restore takes about as much disk as the live database: the drill refuses to start
+# It never touches the live database's data: the live counts are read in a read-only session, and the restore goes
+# into a database of its own. That database is dropped first if it exists (left by an interrupted drill), so its name
+# must start with welldb_restore_check, and it may never be the database DATABASE_URL or RESTORE_CHECK_DATABASE_URL
+# names. The restore takes about as much disk as the live database: the drill refuses to start
 # unless the backup folder's disk (assumed to be the database's, as on the VM) has the live database's size plus
 # BACKUP_MIN_FREE_MB (default 2048) free. --no-space-check skips that when the database is on another disk.
 
@@ -26,6 +34,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -35,9 +44,16 @@ import psycopg2  # noqa: E402
 from psycopg2 import sql  # noqa: E402
 
 from utils.backup import (  # noqa: E402
-    AUTO_EXCLUDE, dumps_in, exclusion_setting, human_size, libpq_env, parse_database_url, pg_tool, psycopg2_kwargs,
-    run_tool, with_database,
+    AUTO_EXCLUDE, DEFAULT_EXPECT_TABLES, csv_setting, dumps_in, exclusion_setting, human_size, libpq_env,
+    load_dump_counts, parse_database_url, pg_tool, psycopg2_kwargs, run_tool, with_database,
 )
+
+# How far below its recorded count an estimated count (a large table's, from the planner) may restore: the estimate
+# comes from a sample and is off by a percent or so either way. Exact counts must come back in full.
+DEFAULT_TOLERANCE_PCT = 2
+# Without a recorded count, the BACKUP_EXPECT_TABLES tables must restore at least this share of their live rows (the
+# newest dump is at most a day old, and these tables only grow by well under a percent a day)
+LIVE_SHORTFALL_PCT = 5
 
 DEFAULT_RESTORE_DATABASE = "welldb_restore_check"
 # The only names the drill restores into (and so drops first): welldb_restore_check, optionally with a suffix
@@ -119,12 +135,45 @@ def admin_execute(settings, statement):
         conn.close()
 
 
-def compare(restored, live, excluded):
+def matches(key, table):
+    """Whether (schema, name) `key` is `table`, given as name or schema.name (as in BACKUP_EXPECT_TABLES)."""
+    return table in (key[1], f"{key[0]}.{key[1]}")
+
+
+def shortfalls(restored, live, recorded, expected, tolerance_pct=DEFAULT_TOLERANCE_PCT):
+    """Problems for tables restored with too few rows. `recorded` is the dump's own record, ({table: rows at dump
+    time}, {tables counted exactly}) from load_dump_counts, or None when it has none: then each `expected` table must
+    restore at least (100 - LIVE_SHORTFALL_PCT)% of its live rows instead."""
+    problems = []
+    if recorded is not None:
+        counts, exact = recorded
+        for table, before in sorted(counts.items()):
+            r = next((rows for key, rows in restored.items() if matches(key, table)), None)
+            if not isinstance(r, int):
+                continue   # missing from the restore (compare reports it) or not readable
+            floor = before if table in exact else before * (1 - tolerance_pct / 100)
+            if r < floor:
+                problems.append(f"{table} restored {r:,} rows, but had {before:,} "
+                                f"{'' if table in exact else '(estimated) '}when the dump was taken")
+        return problems
+    for table in expected:
+        for key, r in restored.items():
+            lv = live.get(key)
+            if not (matches(key, table) and isinstance(r, int) and isinstance(lv, int)):
+                continue
+            if r < lv * (1 - LIVE_SHORTFALL_PCT / 100):
+                problems.append(f"{table} restored {r:,} rows, more than {LIVE_SHORTFALL_PCT}% fewer than the "
+                                f"{lv:,} live (the dump has no record of its own counts to compare with)")
+    return problems
+
+
+def compare(restored, live, excluded, recorded=None, expected=(), tolerance_pct=DEFAULT_TOLERANCE_PCT):
     """Lines describing each table, and the problems that make the check fail. `excluded` is BACKUP_EXCLUDE_TABLES
     (exclusion_setting): a list of tables left out on purpose, or AUTO_EXCLUDE, under which the backup leaves out
     the tables its role can't read, so a table missing from the backup is expected when the live role can't read it
-    either (the drill reads the live counts with the same DATABASE_URL as the backup)."""
-    lines, problems = [], []
+    either (the drill reads the live counts with the same DATABASE_URL as the backup). `recorded`, `expected` and
+    `tolerance_pct`: see shortfalls."""
+    lines, problems = [], shortfalls(restored, live, recorded, expected, tolerance_pct)
     auto = excluded == AUTO_EXCLUDE
     excluded = set() if auto else set(excluded)
     for key in sorted(set(restored) | set(live)):
@@ -159,6 +208,9 @@ def main(argv=None):
                         help="don't check free disk space first (the database is on another disk)")
     parser.add_argument("--keep", action="store_true", help="leave the throwaway database in place afterwards")
     args = parser.parse_args(argv)
+    # The scheduler stops a drill that runs too long with SIGTERM: ending through SystemExit still runs the finally
+    # below, which drops the throwaway database.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
 
     created = False
     admin = None
@@ -172,6 +224,20 @@ def main(argv=None):
         if args.database in (live["database"], admin["database"]):
             raise RestoreCheckError(f"refusing to restore into {args.database}: that is a live database")
         dump = pathlib.Path(args.file) if args.file else latest_dump(args.dir)
+        expected = csv_setting(os.getenv("BACKUP_EXPECT_TABLES", DEFAULT_EXPECT_TABLES))
+        tolerance = (os.getenv("RESTORE_CHECK_TOLERANCE_PCT") or str(DEFAULT_TOLERANCE_PCT)).strip()
+        if not tolerance.isdigit() or int(tolerance) > 50:
+            raise RestoreCheckError(f"RESTORE_CHECK_TOLERANCE_PCT must be a whole number from 0 to 50, got "
+                                    f"{tolerance!r}")
+        tolerance = int(tolerance)
+        recorded = load_dump_counts(dump)   # ValueError if the record is damaged: that fails the drill too
+        if recorded is None:
+            print(f"{dump.name} has no record of its source's row counts; comparing {', '.join(expected)} with "
+                  f"the live counts instead")
+        else:
+            print(f"Row counts when {dump.name} was taken: "
+                  + ", ".join(f"{table} {rows:,}{'' if table in recorded[1] else ' (estimated)'}"
+                              for table, rows in sorted(recorded[0].items())))
         if not args.no_space_check:
             min_free = (os.getenv("BACKUP_MIN_FREE_MB") or "2048").strip()
             if not min_free.isdigit():
@@ -196,7 +262,7 @@ def main(argv=None):
         print("Restored. Counting rows (restored vs live)...")
         restored = row_counts(target)
         current = row_counts(live, read_only=True)
-        lines, problems = compare(restored, current, exclusion_setting())
+        lines, problems = compare(restored, current, exclusion_setting(), recorded, expected, tolerance)
         print("\n".join(lines))
         if problems:
             raise RestoreCheckError("; ".join(problems))

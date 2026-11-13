@@ -6,10 +6,13 @@
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
 # pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload (Borealis and
 # SharePoint each have their own) and digest (utils/heartbeat.py). Every night at 03:15 Toronto time it backs up
-# the database with pg_dump (scripts/backup_db.py) and pings the backup check. After every ingestion run it checks for
-# sensor and vendor problems and emails new ones (scripts/check_alerts.py).
+# the database with pg_dump (scripts/backup_db.py) and pings the backup check, and once a month (RESTORE_CHECK_DAY,
+# default the 2nd, 05:30) it runs the restore drill (scripts/restore_check.py) and pings the restore check. After every
+# ingestion run it checks for sensor and vendor problems and emails new ones (scripts/check_alerts.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
-# started again, so every job runs once per slot. It logs to files under logs/.
+# started again, so every job runs once per slot; each skipped run is logged in the job's heartbeat check, and
+# SKIPS_BEFORE_FAIL in a row fail it. At start-up it names every heartbeat URL that isn't set. It logs to files
+# under logs/.
 # When SENTRY_DSN is set, every failure it logs is also reported to Sentry, tagged with the job (utils/sentry.py).
 # On SIGTERM (docker compose stop, or a deploy recreating the worker) it starts nothing new, gives running jobs
 # STOP_WAIT_S to finish, then stops their subprocesses and exits (shut_down).
@@ -39,7 +42,7 @@ from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
 )
-from utils.heartbeat import ping_heartbeat  # noqa: E402
+from utils.heartbeat import ping_heartbeat, unset_heartbeats  # noqa: E402
 from utils.worklog import file_logger  # noqa: E402
 from utils import sharepoint  # noqa: E402
 import check_alerts  # noqa: E402
@@ -71,10 +74,21 @@ UPLOAD_TIMEOUT_S = 2 * 60 * 60
 LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
 BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds its own steps to 80 + 10 + 15 min (DUMP_TIMEOUT_S etc.)
+RESTORE_TIMEOUT_S = 4 * 60 * 60  # restore_check.py stops pg_restore after 3 h; counting both databases is the rest
 
 # The nightly backup runs at BACKUP_HOUR:15 Toronto time: after the 02:00 uploads, before the working day, and an
 # hour that happens exactly once on DST change days (02:00 is skipped or repeated, 03:00 never is).
 BACKUP_HOUR = 3
+
+# The monthly restore drill (scripts/restore_check.py) runs at RESTORE_HOUR:30 Toronto time on RESTORE_CHECK_DAY
+# (1-28, default the 2nd; "off" turns it off): after that night's backup has finished (it is stopped after 2 h, so
+# by 05:15), and away from the 1st, when the monthly uploads run.
+RESTORE_HOUR = 5
+RESTORE_CHECK_DAY = os.getenv("RESTORE_CHECK_DAY", "2").strip()
+
+# A job whose runs are skipped this many times in a row (the previous run is still going) pings its heartbeat with
+# /fail and is reported to Sentry: it is stuck, not just slow (skip_reporter). Fewer skips are only logged there.
+SKIPS_BEFORE_FAIL = 3
 
 # The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
 # logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
@@ -281,7 +295,16 @@ def upload_due_months(now, target, record_path, first_month_text, first_month_se
     failed = 0
     for year, month in due:
         if upload_job(year, month, target, run):
-            record_uploaded_month(record_path, year, month)
+            try:
+                record_uploaded_month(record_path, year, month)
+            except Exception as e:
+                # The month went up, but unrecorded it is tried again tomorrow (an identical file isn't sent
+                # again, so that is harmless); a full or read-only logs/ still has to reach someone.
+                failed += 1
+                timestamped_print_upload(f"[ERROR] {month_key(year, month)} was uploaded to {target}, but recording "
+                                         f"it in {record_path} failed: {type(e).__name__}: {e}")
+                capture_job_error(e)
+                continue
             timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {record_path}")
         else:
             failed += 1
@@ -399,6 +422,92 @@ def nightly_backup_check(log=None, run=None):
     log(f"========== DATABASE BACKUP {'COMPLETED' if ok else 'FAILED'} ==========")
     return ok
 
+
+def restore_check_day():
+    """RESTORE_CHECK_DAY as a day of the month (1-28, so every month has it), or None when it is "off".
+    ValueError otherwise."""
+    if RESTORE_CHECK_DAY.lower() == "off":
+        return None
+    if not RESTORE_CHECK_DAY.isdigit() or not 1 <= int(RESTORE_CHECK_DAY) <= 28:
+        raise ValueError(f"RESTORE_CHECK_DAY must be a day from 1 to 28, or off, got {RESTORE_CHECK_DAY!r}")
+    return int(RESTORE_CHECK_DAY)
+
+
+def monthly_restore_check(log=None, run=None):
+    """Runs every hour at :30 and acts only at RESTORE_HOUR:30 Toronto time on RESTORE_CHECK_DAY: the restore drill
+    (scripts/restore_check.py) restores the newest dump into a throwaway database, compares its row counts with
+    those recorded when the dump was taken and with the live ones, and drops it. Pings the restore check (/start,
+    then success or /fail). Returns True/False when it ran, None otherwise."""
+    log = log or timestamped_print_backup
+    run = run or run_bounded
+    now = datetime.now(SITE_TZ)
+    try:
+        day = restore_check_day()
+    except ValueError as e:
+        if now.hour == RESTORE_HOUR:   # once a day, not every hour
+            log(f"[ERROR] No restore drill: {e}")
+            capture_job_error(e)
+            ping_heartbeat("restore", "fail")
+        return None
+    if day is None or now.day != day or now.hour != RESTORE_HOUR:
+        return None
+    cmd = [sys.executable, "scripts/restore_check.py"]
+    log("========== RESTORE DRILL STARTED ==========")
+    ping_heartbeat("restore", "start")
+    try:
+        result = run(cmd, RESTORE_TIMEOUT_S)
+        log(f"restore_check.py stdout: {result.stdout}")
+        if result.stderr:
+            log(f"restore_check.py stderr: {result.stderr}")
+        ok = True
+    except subprocess.TimeoutExpired as e:
+        log(f"[ERROR] restore_check.py was stopped after {RESTORE_TIMEOUT_S // 60} min without finishing")
+        capture_job_error(e)
+        log(f"restore_check.py stdout so far: {e.stdout}")
+        ok = False
+    except subprocess.CalledProcessError as e:
+        log(f"[ERROR] restore_check.py failed with exit code {e.returncode}")
+        capture_job_error(e)
+        log(f"restore_check.py stdout: {e.stdout}")
+        log(f"restore_check.py stderr: {e.stderr}")
+        ok = False
+    except Exception as e:
+        log(f"[ERROR] Unexpected error running restore_check.py: {e}")
+        capture_job_error(e)
+        ok = False
+    ping_heartbeat("restore", "success" if ok else "fail")
+    log(f"========== RESTORE DRILL {'PASSED' if ok else 'FAILED'} ==========")
+    return ok
+
+
+def skip_reporter(heartbeat, fail_after=SKIPS_BEFORE_FAIL):
+    """An on_skip callback for run_in_background (utils/jobs.py): each run skipped because the previous one is still
+    going is logged in the job's heartbeat check (/log, which changes nothing there), and from `fail_after` skips in
+    a row on, the check gets /fail and Sentry a warning (once per stuck run), since the job is then stuck rather than
+    slow. A job that starts again resets the count."""
+    def on_skip(skips, message):
+        if skips < fail_after:
+            ping_heartbeat(heartbeat, "log", message=f"{message} ({skips} in a row)")
+            return
+        ping_heartbeat(heartbeat, "fail", message=f"{message}: {skips} runs in a row skipped, so it looks stuck")
+        if skips == fail_after:
+            capture_job_warning(f"{message}: {skips} runs in a row skipped, so it looks stuck")
+    return on_skip
+
+
+def report_unset_heartbeats(log, sentry_warning=None, env=None):
+    """At start-up: name every HEALTHCHECK_URL_* of the worker's jobs that isn't set, in the log (and so, with
+    WORKER_LOG_TO_STDOUT, in docker logs) and as one Sentry warning. Without them, a worker that stops, or a job
+    that stops running, reports nothing anywhere. Returns the names."""
+    state, _ = sharepoint.status(env)
+    missing = unset_heartbeats(env, sharepoint_on=state != "off")
+    if missing:
+        message = (f"Heartbeats not set: {', '.join(missing)}. Those jobs report nothing if they stop or keep "
+                   f"failing (README, Monitoring).")
+        log(f"[WARN] {message}")
+        (sentry_warning or capture_job_warning)(message)
+    return missing
+
 def api_injection_job():
     """Every 10 minutes: fetch new vendor API data and store it, ping the ingestion heartbeat (success, or /fail
     when either vendor failed: inject_all_new_data raises then), then run the alert check."""
@@ -459,12 +568,22 @@ if __name__ == "__main__":
     else:
         builtins._original_print("[scheduler] Logs are written to /app/app/logs/*. Set WORKER_LOG_TO_STDOUT=1 to mirror to stdout.")
 
-    # Each job starts in its own thread and is skipped while its previous run is still going.
-    api_run = run_in_background(api_injection_job, log=print)
-    download_run = run_in_background(download_job, log=timestamped_print_download)
-    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload)
-    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest)
-    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup)
+    # A dead worker can only be noticed through the heartbeats, so the unset ones are named in docker logs too
+    def log_everywhere(line):
+        print(line)
+        if not LOG_TO_STDOUT:
+            builtins._original_print(f"[scheduler] {line}")
+    report_unset_heartbeats(log_everywhere)
+
+    # Each job starts in its own thread and is skipped while its previous run is still going; a skip is logged in
+    # the job's heartbeat check, and several in a row fail it (skip_reporter).
+    api_run = run_in_background(api_injection_job, log=print, on_skip=skip_reporter("ingestion"))
+    download_run = run_in_background(download_job, log=timestamped_print_download, on_skip=skip_reporter("download"))
+    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload, on_skip=skip_reporter("upload"))
+    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest, on_skip=skip_reporter("digest"))
+    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup, on_skip=skip_reporter("backup"))
+    restore_run = run_in_background(monthly_restore_check, log=timestamped_print_backup,
+                                    on_skip=skip_reporter("restore"))
 
     scheduler = schedule.Scheduler()
     scheduler.every(10).minutes.do(api_run)
@@ -472,12 +591,13 @@ if __name__ == "__main__":
     scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
     scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
     scheduler.every().hour.at(":15").do(backup_run)  # acts only at 03:15 Toronto time (nightly_backup_check)
+    scheduler.every().hour.at(":30").do(restore_run)  # acts only at 05:30 on RESTORE_CHECK_DAY (monthly_restore_check)
 
     print("Schedule: API injection every 10 minutes, each followed by the alert check; Borealis download Sundays 00:00; "
           "Borealis upload (then SharePoint, if configured) at 02:00 Toronto time of each ended month not yet "
           "uploaded; "
           f"daily digest at {DIGEST_HOUR}:00 Toronto time; database backup at {BACKUP_HOUR:02d}:15 Toronto time "
-          f"(logs/backup.log).")
+          f"and restore drill at {RESTORE_HOUR:02d}:30 on day {RESTORE_CHECK_DAY} of each month (logs/backup.log).")
     timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
                                "run `python scripts/download_data.py` by hand to fetch now.")
     timestamped_print_upload("Upload scheduler ready: at 02:00 Toronto time, each month from "
@@ -504,4 +624,4 @@ if __name__ == "__main__":
         time.sleep(1)
 
     print("Shutting down the scheduler (stop requested); starting no new jobs")
-    shut_down([api_run, download_run, upload_run, digest_run, backup_run], print)
+    shut_down([api_run, download_run, upload_run, digest_run, backup_run, restore_run], print)
