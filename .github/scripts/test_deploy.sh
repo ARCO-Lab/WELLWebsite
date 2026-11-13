@@ -24,9 +24,11 @@ git clone -q -b main "$T/remote.git" "$T/vm"
 
 # Stubs. docker: `compose up` marks the stack as rebuilt; `compose ps -q <svc>` names a container "id-<svc>" that
 # reports 0 restarts. While $BAD_WORKER_SHA is checked out, service $MISSING has no container, and $CRASHING's
-# restart count reads 2 on the second look (a crash loop that Docker still shows as running). curl: answers
+# restart count reads 2 on the second look (a crash loop that Docker still shows as running). With $KILL_ON_UP=n,
+# the n-th `compose up` sends SIGTERM to deploy.sh, as a shutdown or a lost session would. curl: answers
 # check-runs from $CHECKS_FILE (or fails if $API_DOWN), records health pings, and pages answer $HEALTH_CODE, 500
-# while $BAD_SHA is checked out, or $HEALTH_AFTER_REBUILD once the stack has been rebuilt.
+# while $BAD_SHA is checked out (or $BAD_REBUILT_SHA once the stack has been rebuilt at it), or $HEALTH_AFTER_REBUILD
+# once the stack has been rebuilt; with $EXPECT_HOST, a page on any other host answers 000.
 mkdir "$T/bin"
 cat > "$T/bin/docker" <<'EOF'
 #!/bin/sh
@@ -34,6 +36,10 @@ echo "docker $*" >> "$STUB_LOG"
 bad_head() { [ -n "${BAD_WORKER_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_WORKER_SHA" ]; }
 case "$*" in
   "compose up"*) touch "$T/rebuilt"
+    if [ -n "${KILL_ON_UP:-}" ]; then
+      echo x >> "$T/ups"
+      if [ "$(wc -l < "$T/ups")" -eq "$KILL_ON_UP" ]; then kill -TERM "$PPID"; fi
+    fi
     if [ -n "${BREAK_LOG:-}" ]; then rm -f "$DEPLOY_LOG"; mkdir -p "$DEPLOY_LOG"; fi ;;  # deploy.log unwritable mid-deploy
   "compose ps -q ops") [ -n "${OPS_RUNNING:-}" ] && echo "id-ops" ;;   # welldash²: off unless the test turns it on
   "compose ps -q "*) if [ "$4" = "${MISSING:-}" ] && bad_head; then :; else echo "id-$4"; fi ;;
@@ -63,9 +69,13 @@ case "$*" in
     if [ -n "${WP_BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$WP_BAD_SHA" ]; then printf 500; exit 0; fi
     if [ -n "${WP_SLOW_START:-}" ] && [ -f "$T/rebuilt" ] && [ ! -f "$T/wp-started" ]; then touch "$T/wp-started"; printf 000; exit 0; fi ;;
 esac
+if [ -n "${EXPECT_HOST:-}" ]; then
+  case "$*" in *http_code*) case "$*" in *"//$EXPECT_HOST:"*) ;; *) printf 000; exit 0 ;; esac ;; esac
+fi
 case "$*" in
   *http_code*)
     if [ -n "${BAD_SHA:-}" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_SHA" ]; then printf 500
+    elif [ -n "${BAD_REBUILT_SHA:-}" ] && [ -f "$T/rebuilt" ] && [ "$(git -C "$VM" rev-parse HEAD)" = "$BAD_REBUILT_SHA" ]; then printf 500
     elif [ -n "${HEALTH_AFTER_REBUILD:-}" ] && [ -f "$T/rebuilt" ]; then printf "$HEALTH_AFTER_REBUILD"
     else printf "${HEALTH_CODE:-200}"; fi ;;
 esac
@@ -92,7 +102,7 @@ change() { # commit and push edits to the given paths
 }
 sync_vm() {
   git -C "$T/vm" fetch -q && git -C "$T/vm" reset -q --hard origin/main
-  : > "$STUB_LOG"; rm -rf "$DEPLOY_STATE" "$DEPLOY_STATE.rolled-back" "$DEPLOY_LOG" "$T/rebuilt"
+  : > "$STUB_LOG"; rm -rf "$DEPLOY_STATE" "$DEPLOY_STATE".* "$DEPLOY_LOG" "$T/rebuilt" "$T/ups"
 }
 deploy() { rm -f "$T/rebuilt"; (cd "$T/vm" && bash ./deploy.sh "$@") > "$T/out" 2>&1; echo $? > "$T/rc"; }
 head_is_remote() { [ "$(git -C "$T/vm" rev-parse HEAD)" = "$(git -C "$T/work" rev-parse HEAD)" ]; }
@@ -126,7 +136,23 @@ OPS_RUNNING=1 BAD_WORKER_SHA=$(git -C "$T/work" rev-parse HEAD) CRASHING=ops dep
 check "welldash² crash-looping after a backend change: reported, but the deploy is kept" 'rc 0 && head_is_remote && said "welldash² needs a look" && said "ops container didn'"'"'t stay up" && ! said "rolling back"'
 
 sync_vm; change dashboard/backend/app/x.py; ci pending success; deploy --auto
-check "--auto, CI still running: waits, changes nothing" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && [ ! -s "$T/out" ]'
+check "--auto, CI still running: waits, changes nothing, and logs that it waits" 'rc 0 && ! head_is_remote && [ ! -s "$STUB_LOG" ] && said "waiting for CI" && said "Backend image and tests (in_progress)"'
+deploy --auto
+check "--auto, CI still running: says it waits only once per commit" 'rc 0 && ! head_is_remote && [ ! -s "$T/out" ]'
+# As if that commit had been first seen 4 hours ago: CI that never finishes is reported, once, with a /fail ping
+echo "$(git -C "$T/work" rev-parse HEAD) $(( $(date +%s) - 4 * 3600 ))" > "$DEPLOY_STATE.pending"
+DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "--auto, CI still not finished after DEPLOY_CI_WAIT_HOURS: reported, with a /fail ping" 'rc 1 && ! head_is_remote && said "CI hasn'"'"'t finished" && said "after 3 hours" && ran "ping http://hc.test/x/fail" && ! ran "compose"'
+: > "$STUB_LOG"; DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "--auto, CI still not finished: reported only once" 'rc 0 && [ ! -s "$T/out" ] && [ ! -s "$STUB_LOG" ]'
+ci success success; deploy --auto
+check "--auto, CI finished after all: deploys" 'rc 0 && head_is_remote && said "healthy" && [ ! -e "$DEPLOY_STATE.pending" ]'
+
+# A required check that never started (CI skipped, a job renamed) is named as such
+sync_vm; change dashboard/backend/app/x.py
+python3 -c 'import json; print(json.dumps({"check_runs": [{"name": "Dashboard build", "status": "completed", "conclusion": "success"}]}))' > "$CHECKS_FILE"
+deploy --auto
+check "--auto, a required check that never started: says so" 'rc 0 && ! head_is_remote && said "Backend image and tests (not started)"'
 
 sync_vm; change dashboard/backend/app/x.py; ci failure success; deploy --auto
 check "--auto, CI failed: refuses and says so" 'rc 1 && ! head_is_remote && said "CI didn'"'"'t pass" && ! ran "compose"'
@@ -173,7 +199,9 @@ check "docs-only change: merged, nothing rebuilt" 'rc 0 && head_is_remote && ! r
 
 # HOLD_PATHS: code a merged pull request alone mustn't put live. Each is held by --auto even with CI green.
 for path in .github/workflows/ci.yml home/index.php home/wp-content/plugins/p/p.php home/.htaccess \
-  home/wp-config.php wp-config-extra.php wordpress/apache-hardening.conf wordpress/php-hardening.ini; do
+  home/wp-config.php wp-config-extra.php wordpress/apache-hardening.conf wordpress/php-hardening.ini \
+  wordpress/backup.sh wordpress/README.md home/wp-content/themes/well/js/dashboard-embed.js home/wp-includes/js/x.mjs \
+  home/wp-content/themes/well/page.html home/wp-admin/images/icon.svg; do
   sync_vm; change "$path"; ci success success; deploy --auto
   check "--auto, $path changed: held for a person" 'rc 0 && ! head_is_remote && said "HELD" && said "a person must deploy" && said "$path" && ! ran "compose"'
 done
@@ -312,11 +340,15 @@ check "another deploy holds the lock: by hand, says so and changes nothing" 'rc 
 deploy --auto
 check "another deploy holds the lock: --auto exits quietly" 'rc 0 && [ ! -s "$T/out" ] && ! head_is_remote'
 exec 7>&-
+rm -f "$T/vm/.deploy-state/legacy-retired"   # as before the first run of this version
 exec 7>"$T/well-deploy.lock"; flock 7; deploy
 check "a run of the previous version holds the old lock in TMPDIR: waits for it too" 'rc 1 && said "Another deploy is running" && ! head_is_remote'
 exec 7>&-
 deploy
-check "lock released: deploys" 'rc 0 && head_is_remote'
+check "lock released: deploys, and from then on the old lock is retired" 'rc 0 && head_is_remote && [ -e "$T/vm/.deploy-state/legacy-retired" ]'
+change dashboard/frontend/page.tsx; exec 7>"$T/well-deploy.lock"; flock 7; deploy
+check "once retired, a lock left in TMPDIR (writable by anyone) no longer stops a deploy" 'rc 0 && head_is_remote'
+exec 7>&-
 rm -f "$T/well-deploy.lock"
 
 # Default state location (DEPLOY_STATE empty): a rolled-back marker left in TMPDIR by the previous version is moved
@@ -326,6 +358,61 @@ DEPLOY_STATE='' deploy --auto
 check "old state in TMPDIR: moved into .deploy-state once, and the rolled-back commit still isn't retried" 'rc 0 && ! head_is_remote && [ ! -s "$T/out" ] && [ ! -e "$T/well-deploy.state.rolled-back" ] && [ ! -e "$T/well-deploy.state" ] && [ "$(cat "$T/vm/.deploy-state/state.rolled-back")" = "$(git -C "$T/work" rev-parse HEAD)" ] && [ "$(cat "$T/vm/.deploy-state/state")" = "held x" ]'
 DEPLOY_STATE='' deploy
 check "default state location: a deploy by hand clears it" 'rc 0 && head_is_remote && [ ! -e "$T/vm/.deploy-state/state.rolled-back" ] && [ ! -e "$T/vm/.deploy-state/state" ]'
+
+# umask: whatever the caller's, files the pull writes are readable by others (Apache in the wordpress container)
+sync_vm; change dashboard/frontend/page.tsx home/new-dir/style.css; (umask 077; deploy)
+check "run under umask 077: pulled files are 644 and new folders 755" 'rc 0 && head_is_remote && [ "$(stat -c %a "$T/vm/dashboard/frontend/page.tsx")" = 644 ] && [ "$(stat -c %a "$T/vm/home/new-dir/style.css")" = 644 ] && [ "$(stat -c %a "$T/vm/home/new-dir")" = 755 ]'
+
+# Health checks on another address (DEPLOY_SITE_HOST), for when the ports are published on one address only
+sync_vm; change dashboard/frontend/page.tsx; EXPECT_HOST=10.9.8.7 DEPLOY_SITE_HOST=10.9.8.7 deploy
+check "DEPLOY_SITE_HOST: the health checks call that address" 'rc 0 && head_is_remote && said "healthy"'
+sync_vm; change dashboard/frontend/page.tsx; EXPECT_HOST=10.9.8.7 deploy
+check "without DEPLOY_SITE_HOST: 127.0.0.1 (here answering nothing, so unhealthy)" 'rc 1 && said "already unhealthy"'
+
+# A deploy stopped halfway (SIGTERM during the rebuild, after the merge): the next run redoes the rebuild
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx; ci success success
+KILL_ON_UP=1 DEPLOY_HEALTHCHECK_URL=http://hc.test/x deploy --auto
+check "deploy stopped by SIGTERM during the rebuild: says so, pings /fail, leaves the in-progress line" 'rc 143 && head_is_remote && said "INTERRUPTED by SIGTERM; the next run redoes the rebuild" && ran "ping http://hc.test/x/fail" && grep -q "^deploy $old " "$DEPLOY_STATE.in-progress" && [ ! -e "$DEPLOY_STATE.deployed" ]'
+: > "$STUB_LOG"; deploy --auto
+check "--auto after it: not 'up to date', rebuilds what the stopped run changed" 'rc 0 && head_is_remote && ran "compose up -d --build --no-deps dashboard" && said "stopped halfway" && said "healthy" && [ ! -e "$DEPLOY_STATE.in-progress" ] && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/work" rev-parse HEAD)" ]'
+: > "$STUB_LOG"; deploy --auto
+check "--auto once that rebuild was healthy: up to date, nothing runs" 'rc 0 && [ ! -s "$T/out" ] && ! ran "compose"'
+
+# The checkout moved on without a rebuild and without the in-progress line (killed outright, or a plain git pull):
+# the recorded deployed commit, not HEAD, is what is compared
+sync_vm; git -C "$T/vm" rev-parse HEAD > "$DEPLOY_STATE.deployed"; change dashboard/backend/app/x.py; ci success success
+git -C "$T/vm" fetch -q && git -C "$T/vm" merge -q --ff-only origin/main; deploy --auto
+check "checkout ahead of the deployed commit: --auto rebuilds what changed since the deployed commit" 'rc 0 && head_is_remote && ran "--no-deps backend worker export_worker" && said "healthy" && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/work" rev-parse HEAD)" ]'
+
+# The first run of this version (no deployed commit recorded yet) on an up-to-date checkout: records it, does nothing else
+sync_vm; deploy --auto
+check "first run with no recorded deployed commit: records the checkout's commit, rebuilds and rolls back nothing" 'rc 0 && [ ! -s "$T/out" ] && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/vm" rev-parse HEAD)" ] && ! ran "compose" && [ ! -e "$DEPLOY_STATE.in-progress" ]'
+
+# A deploy stopped halfway before any deployed commit was recorded: the next run sees the checkout at main (OLD looks
+# like NEW), redoes the rebuild, and if that is unhealthy, rolls back to where the stopped run started
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); change dashboard/frontend/page.tsx; new=$(git -C "$T/work" rev-parse HEAD)
+ci success success; KILL_ON_UP=1 deploy --auto
+: > "$STUB_LOG"; BAD_REBUILT_SHA=$new deploy --auto
+check "stopped first deploy, redone and unhealthy: rolls back to the commit the stopped run started from" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "rolling back to $(git -C "$T/vm" rev-parse --short "$old")" && said "healthy again" && [ "$(grep -c "compose up -d --build --no-deps dashboard" "$STUB_LOG")" = 2 ] && [ ! -e "$DEPLOY_STATE.in-progress" ]'
+
+# A deploy by hand stopped halfway, whose changes --auto must hold: --auto holds it (and rebuilds nothing); a person
+# running ./deploy.sh then finishes it
+sync_vm; git -C "$T/vm" rev-parse HEAD > "$DEPLOY_STATE.deployed"; change dashboard/frontend/page.tsx home/held.php
+KILL_ON_UP=1 deploy
+: > "$STUB_LOG"; ci success success; deploy --auto
+check "stopped deploy with held changes: --auto holds it, rebuilds nothing, keeps the in-progress line" 'rc 0 && said "HELD" && said "home/held.php" && ! ran "compose" && [ -s "$DEPLOY_STATE.in-progress" ]'
+deploy
+check "stopped deploy with held changes: ./deploy.sh by hand finishes it" 'rc 0 && head_is_remote && ran "compose up -d --build --no-deps dashboard" && said "healthy" && [ ! -e "$DEPLOY_STATE.in-progress" ] && [ "$(cat "$DEPLOY_STATE.deployed")" = "$(git -C "$T/work" rev-parse HEAD)" ]'
+
+# A rollback stopped halfway: cron finishes it, once, and still doesn't retry the bad commit
+sync_vm; old=$(git -C "$T/vm" rev-parse HEAD); git -C "$T/vm" rev-parse HEAD > "$DEPLOY_STATE.deployed"
+change dashboard/frontend/page.tsx; bad=$(git -C "$T/work" rev-parse HEAD)
+BAD_SHA=$bad KILL_ON_UP=2 deploy
+check "rollback stopped by SIGTERM: says so, the rollback line stays" 'rc 143 && said "rolling back" && said "INTERRUPTED" && grep -q "^rollback $old $bad" "$DEPLOY_STATE.in-progress"'
+: > "$STUB_LOG"; ci success success; BAD_SHA=$bad deploy --auto
+check "--auto after it: finishes the rollback (rebuilds at the old commit) and says so" 'rc 1 && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ] && said "finishing a rollback that was stopped halfway" && ran "compose up -d --build --no-deps dashboard" && said "finished rolling back" && said "healthy again" && [ ! -e "$DEPLOY_STATE.in-progress" ]'
+: > "$STUB_LOG"; BAD_SHA=$bad deploy --auto
+check "--auto after the finished rollback: quiet, and the bad commit still isn't retried" 'rc 0 && [ ! -s "$T/out" ] && ! ran "compose" && [ "$(git -C "$T/vm" rev-parse HEAD)" = "$old" ]'
 
 # --help prints the comment block at the top (line 2 up to the first line that isn't a comment), all of it and no more
 bash "$ROOT/deploy.sh" --help > "$T/out" 2>&1; echo $? > "$T/rc"

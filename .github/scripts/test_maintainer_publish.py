@@ -29,7 +29,9 @@ def routes(open_prs=None):
         ("POST", f"/repos/{REPO}/issues/101/assignees"): (201, {}),
         ("POST", f"/repos/{REPO}/issues/101/labels"): {},
         ("POST", f"/repos/{REPO}/issues/80/labels"): {},
-        ("DELETE", f"/repos/{REPO}/issues/80/labels/audit:findings"): (404, {"message": "Label does not exist"}),
+        ("POST", f"/repos/{REPO}/issues/101/comments"): (201, {}),
+        ("POST", f"/repos/{REPO}/issues/80/comments"): (201, {}),
+        ("DELETE", f"/repos/{REPO}/issues/80/labels/self-check:findings"): (404, {"message": "Label does not exist"}),
         ("POST", f"/repos/{REPO}/actions/workflows/ci.yml/dispatches"): (204, {}),
         ("POST", "/graphql"): {"data": {}},
     }
@@ -101,20 +103,64 @@ class PublishTests(unittest.TestCase):
     def posted(self, transport, path):
         return [c["body"] for c in transport.calls if c["method"] == "POST" and c["path"] == path]
 
-    def test_an_ordinary_branch_is_pushed_and_opened(self):
-        sha = self.branch("maint/fix-x", {"dashboard/backend/app/x.py": "x = 2\n"})
+    def test_a_low_risk_branch_is_pushed_and_opened(self):
+        sha = self.branch("maint/fix-x", {"README.md": "better\n"})
         out, transport = self.publish([description("maint/fix-x")])
         self.assertEqual([], out["refused"] + out["errors"])
         self.assertEqual(sha, self.remote("maint/fix-x"))
         (pr,) = self.posted(transport, f"/repos/{REPO}/pulls")
-        self.assertEqual({"title": "Fix maint/fix-x", "head": "maint/fix-x", "base": "main",
-                          "body": "## Summary\nA fix.", "draft": False}, pr)
+        body = pr.pop("body")
+        self.assertEqual({"title": "Fix maint/fix-x", "head": "maint/fix-x", "base": "main", "draft": False}, pr)
+        # The model's body, fenced, under a line written by this script
+        self.assertTrue(body.startswith("_Opened by the daily maintainer. The description below was written by the "
+                                        "model"), body)
+        self.assertTrue(body.endswith("\n\n```text\n## Summary\nA fix.\n```"), body)
+        # The commit pushed is recorded for the summary
+        (comment,) = self.posted(transport, f"/repos/{REPO}/issues/101/comments")
+        self.assertIn(f"<!-- maintainer-published: {sha} -->", comment["body"])
         (labels,) = self.posted(transport, f"/repos/{REPO}/issues/101/labels")
-        self.assertEqual(["maintainer", "risk:low", "audit:approved"], labels["labels"])
+        self.assertEqual(["maintainer", "risk:low", "self-check:passed"], labels["labels"])
         self.assertEqual([{"assignees": ["owner"]}], self.posted(transport, f"/repos/{REPO}/issues/101/assignees"))
         self.assertEqual([["pr", "edit", "101", "--repo", REPO, "--add-reviewer", "@copilot"]], self.gh_calls)
         self.assertEqual([], self.posted(transport, f"/repos/{REPO}/actions/workflows/ci.yml/dispatches"))
         self.assertEqual("opened", out["published"][0]["action"])
+
+    def test_the_model_cannot_mention_link_or_close_through_the_body_or_title(self):
+        self.branch("maint/fix-y", {"README.md": "y\n"})
+        evil = "Fixes #4 cc @owner\n```\n<img src=x onerror=alert(1)> [click](https://evil.example/?t=1)"
+        _, transport = self.publish([description("maint/fix-y", body=evil, title="Fix for @team")])
+        (pr,) = self.posted(transport, f"/repos/{REPO}/pulls")
+        fence = pr["body"].split("```text\n", 1)[1]
+        self.assertEqual(1, fence.count("```"))   # only the closing fence: the body's own ``` was neutralised
+        for raw in ("#4", "@owner", "<img", "?t=1"):
+            self.assertNotIn(raw, pr["body"])
+        self.assertEqual("Fix for @\u200bteam", pr["title"])
+
+    def test_files_off_the_low_risk_list_become_a_draft(self):
+        self.branch("maint/code", {"dashboard/backend/app/x.py": "x = 2\n",
+                                   "dashboard/backend/tests/test_new.py": "pass\n"})
+        out, transport = self.publish([description("maint/code")])
+        (pr,) = self.posted(transport, f"/repos/{REPO}/pulls")
+        self.assertTrue(pr["draft"])
+        # The new test file is fine; the app file isn't on the list
+        self.assertEqual(["dashboard/backend/app/x.py"], out["published"][0]["risky_files"])
+
+    def test_a_new_test_file_alone_is_low_risk(self):
+        self.branch("maint/test", {"dashboard/backend/tests/test_new.py": "pass\n"})
+        out, transport = self.publish([description("maint/test")])
+        (pr,) = self.posted(transport, f"/repos/{REPO}/pulls")
+        self.assertFalse(pr["draft"])
+        self.assertEqual([], out["published"][0]["risky_files"])
+
+    def test_the_push_token_goes_in_gits_environment_not_its_command_line(self):
+        ((key, value),) = mp.push_config("tok")
+        self.assertEqual("http.https://github.com/.extraheader", key)
+        self.assertEqual("AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dG9r", value)   # x-access-token:tok
+        self.assertEqual([], mp.push_config(""))
+        self.assertEqual(value, mp.run_git(["config", "--get", key], cwd=self.publisher, config=[(key, value)]).strip())
+        # Not stored in the checkout
+        with self.assertRaises(mp.GitError):
+            mp.run_git(["config", "--get", key], cwd=self.publisher)
 
     def test_risky_paths_become_a_draft_labelled_needs_review(self):
         self.branch("maint/deploy-fix", {"deploy.sh": "#!/bin/sh\n", "home/index.php": "<?php\n"})
@@ -122,7 +168,7 @@ class PublishTests(unittest.TestCase):
         (pr,) = self.posted(transport, f"/repos/{REPO}/pulls")
         self.assertTrue(pr["draft"])
         (labels,) = self.posted(transport, f"/repos/{REPO}/issues/101/labels")
-        self.assertEqual(["maintainer", "risk:high", "audit:approved", "needs-review"], labels["labels"])
+        self.assertEqual(["maintainer", "risk:high", "self-check:passed", "needs-review"], labels["labels"])
         self.assertEqual("opened as a draft", out["published"][0]["action"])
         self.assertEqual(["deploy.sh", "home/index.php"], sorted(out["published"][0]["risky_files"]))
 
@@ -223,7 +269,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(second, self.remote("maint/fix"))
         self.assertEqual("updated", out["published"][0]["action"])
         self.assertEqual([], self.posted(transport, f"/repos/{REPO}/pulls"))
-        self.assertEqual([{"labels": ["maintainer", "risk:low", "audit:approved"]}],
+        self.assertEqual([{"labels": ["maintainer", "risk:low", "self-check:passed"]}],
                          self.posted(transport, f"/repos/{REPO}/issues/80/labels"))
         # A rewritten branch (not built on what GitHub has) is refused, never force-pushed.
         git(self.claude, "switch", "-q", "-C", "maint/fix", "origin/main")
