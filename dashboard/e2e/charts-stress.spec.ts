@@ -223,6 +223,28 @@ test.describe("charts under stress", () => {
     await expect(chart(page, "weather").getByTestId("chart-resolution")).toBeVisible();
   });
 
+  test("picking the day already picked keeps each chart's window", async ({ page }) => {
+    await open(page);
+    const logger = chart(page, "logger");
+    await logger.getByRole("button", { name: /Zoom in/ }).click();
+    await page.waitForTimeout(500);
+    const zoomed = await label(logger);
+    await page.getByRole("button", { name: /^Start Date / }).click();
+    // The picked day in the open picker (not the active tab, which is aria-selected too)
+    const picked = page.locator('[data-radix-popper-content-wrapper] [data-day][data-selected="true"] button');
+    await expect(picked).toHaveCount(1);
+    await picked.click();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(500);
+    expect(await label(logger)).toBe(zoomed);
+  });
+
+  test("the plot leaves page scrolling and pinch-zoom to the browser", async ({ page }) => {
+    await open(page);
+    const plot = chart(page, "logger").getByRole("group", { name: /chart\. Arrow keys/ });
+    expect(await plot.evaluate((el) => getComputedStyle(el).touchAction)).toBe("pan-y pinch-zoom");
+  });
+
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
     const { net } = await open(page);
     const tab = (name: string) => page.getByRole("tab", { name, exact: true });
