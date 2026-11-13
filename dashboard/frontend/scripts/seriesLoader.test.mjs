@@ -950,3 +950,52 @@ test("a long zoom gesture asks for nothing until it ends, then once", async () =
   await srv.settle();
   c.dispose();
 });
+
+test("sweep: a narrow range, then the last 90 days, draws no gap where there is data", async () => {
+  const failures = [];
+  for (const today of [Date.parse("2026-11-10T17:00:00Z"), Date.parse("2026-11-11T17:00:00Z")]) {
+    for (const days of [1, 2, 3, 5, 7, 10]) {
+      for (const back of [0, 5, 13, 21, 40]) {
+        let clock = today;
+        const end = today - back * D;
+        const narrow = { start: end - days * D, end };
+        const wide = { start: today - 90 * D, end: today };
+        const srv = fakeServer();
+        const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+        const c = new ChartController("card", [A], narrow, narrow, loader, syncFrame, 30);
+        c.setPlotWidth(600);
+        c.activate();
+        await sleep(40);
+        await srv.settle();
+        clock += 5 * 60_000; // five minutes between the two picks
+        c.setExtent(wide);
+        c.setDefault(wide);
+        await sleep(40);
+        await srv.settle();
+        await sleep(20);
+        await srv.settle();
+        // The fake server has a reading in every bucket: the drawn series must have no break inside the range
+        const pts = (c.lastData.series.get(A) ?? []).filter((p) => p.x > wide.start + D && p.x < wide.end - D);
+        const gap = pts.find((p) => p.y === null);
+        if (!pts.length || gap) failures.push(`${new Date(today).toISOString().slice(0, 10)} ${days} d, ${back} d back: ${gap ? `gap at ${new Date(gap.x).toISOString()}` : "nothing drawn"}`);
+        c.dispose();
+      }
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test("composeSeries: no line break across the fall-back hour, where the API labels 01:00 by its second occurrence", () => {
+  // 00:30-00:50 EDT, then 01:00-01:50 EST (the repeated hour's buckets, as /api/series labels them), then 02:00 EST
+  const t = [
+    ...[30, 40, 50].map((m) => Date.parse("2026-11-01T04:00:00Z") + m * 60_000),
+    ...[0, 10, 20, 30, 40, 50, 60].map((m) => Date.parse("2026-11-01T06:00:00Z") + m * 60_000),
+  ];
+  const s = { t, avg: t.map((_, i) => i), min: t.map(() => null), max: t.map(() => null), n: t.map(() => 1) };
+  const i = tileAt(t[0], 600);
+  const tiles = cutIntoTiles(s, i - 1, i + 1, 600);
+  const segs = segmentsFor([{ bucketS: 600, tiles: [i - 1, i, i + 1] }]);
+  const pts = composeSeries(segs, (b, j) => tiles.get(j), () => () => null);
+  assert.equal(pts.filter((p) => p.y !== null).length, t.length);
+  assert.equal(pts.some((p) => p.y === null), false);
+});

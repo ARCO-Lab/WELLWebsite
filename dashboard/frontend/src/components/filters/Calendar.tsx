@@ -82,7 +82,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
           <PopoverContent className="w-auto p-0" align="start" onOpenAutoFocus={focusPickedDay}>
             <CalendarComponent
               mode="single"
-              required={false}
+              required // a date can't be cleared: the charts would fall back to a range the Filters don't show
               selected={startDate || undefined}
               defaultMonth={startDate || undefined}
               onSelect={(date) => onStartChange(date ?? null)}
@@ -111,7 +111,7 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
           <PopoverContent className="w-auto p-0" align="start" onOpenAutoFocus={focusPickedDay}>
             <CalendarComponent
               mode="single"
-              required={false}
+              required // a date can't be cleared: the charts would fall back to a range the Filters don't show
               selected={endDate || undefined}
               defaultMonth={endDate || undefined}
               onSelect={(date) => onEndChange(date ?? null)}
