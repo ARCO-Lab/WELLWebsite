@@ -1,6 +1,7 @@
 <?php
 // This section renders the "Latest News" carousel for the WELL WordPress theme.
 // It queries and displays the latest 6 blog posts as cards in a Flickity carousel.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 ?>
 <section class="dynamic-content post white my-5">
   <div class="container">
@@ -28,7 +29,7 @@
                           <p class="card-subtitle mt-2 text-maroon">News</p>
                         </div>
                         <div class="card-text mb-0">
-                          <p><?php echo wp_trim_words(get_the_excerpt(), 20); ?></p>
+                          <p><?php echo esc_html(wp_trim_words(get_the_excerpt(), 20)); ?></p>
                         </div>
                       </div>
                       <div class="card-footer border-top-0 px-4 py-3">
@@ -49,7 +50,7 @@
       </div>
     </div>
     <div class="text-left mt-4">
-      <a class="btn btn-info btn-arrow" href="/news">
+      <a class="btn btn-info btn-arrow" href="<?php echo esc_url(home_url('/news/')); ?>">
         More News
       </a>
     </div>

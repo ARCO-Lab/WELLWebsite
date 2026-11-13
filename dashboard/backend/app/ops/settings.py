@@ -3,9 +3,13 @@
 Required:
   OPS_PASSWORD_HASH    werkzeug hash of the one shared password (python -m ops.hashpw prints it)
   OPS_SECRET_KEY       random string, at least 32 characters, that signs the session cookie
+  OPS_BIND             the address docker-compose.yml publishes the port on (127.0.0.1 for an SSH tunnel, or the
+                       VM's campus address). Unset or every address (0.0.0.0, ::) stops the service from starting,
+                       unless OPS_ALLOW_ANY_ADDRESS=1 says that is meant.
 Optional:
   OPS_DATABASE_URL     database to read (default DATABASE_URL); ideally a read-only role, see README.md here
-  OPS_COOKIE_SECURE    1 to send the session cookie over HTTPS only (set it once the site has TLS; default 0)
+  OPS_COOKIE_SECURE    1 to mark the session cookie Secure on every response. Unset, it is Secure whenever the
+                       request came over HTTPS, and left off over plain HTTP (an SSH tunnel), where browsers drop it
   OPS_RETENTION_DAYS   days of request_metrics and uptime_probes to keep (default 90)
   OPS_PROBE_INTERVAL_S seconds between uptime checks (default 60; 0 turns the checks off)
   OPS_PROBE_DASHBOARD_URL, OPS_PROBE_API_URL, OPS_PROBE_WORDPRESS_URL, OPS_PROBE_WORDPRESS_HOST
@@ -19,6 +23,7 @@ Optional:
   OPS_GOATCOUNTER_CODE, OPS_GOATCOUNTER_TOKEN    visitor statistics from GoatCounter (skipped when unset)
 """
 import hashlib
+import ipaddress
 import os
 import re
 from dataclasses import dataclass
@@ -56,6 +61,7 @@ class Settings:
     password_hash: str
     secret_key: str
     database_url: str
+    bind: str = "127.0.0.1"
     cookie_secure: bool = False
     retention_days: int = 90
     probe_interval_s: int = 60
@@ -82,9 +88,27 @@ class Settings:
         return hashlib.sha256(self.password_hash.encode()).hexdigest()[:16]
 
 
+def bind_address(env):
+    """OPS_BIND, which docker-compose.yml publishes the port on and also passes in here, so that a missing or
+    every-address value stops the service: ports Docker publishes bypass the VM's own firewall, so 0.0.0.0 would offer
+    the login page on every address the VM has. OPS_ALLOW_ANY_ADDRESS=1 accepts 0.0.0.0 or :: on purpose."""
+    raw = (env.get("OPS_BIND") or "").strip()
+    if not raw:
+        raise ConfigError("OPS_BIND is not set. Set it in .env to 127.0.0.1 (and reach welldash² through an SSH "
+                          "tunnel) or to the VM's campus address (see dashboard/backend/app/ops/README.md).")
+    try:
+        address = ipaddress.ip_address(raw.strip("[]"))
+    except ValueError:
+        raise ConfigError(f"OPS_BIND must be an IP address, such as 127.0.0.1, got {raw!r}") from None
+    if address.is_unspecified and not flag(env.get("OPS_ALLOW_ANY_ADDRESS")):
+        raise ConfigError(f"OPS_BIND={raw} publishes welldash² on every address the VM has. Set it to 127.0.0.1 "
+                          "or the VM's campus address, or set OPS_ALLOW_ANY_ADDRESS=1 if that is really meant.")
+    return raw
+
+
 def load_settings(env=None):
     """Settings from the environment. ConfigError (saying what to fix, never echoing a secret) if the password
-    hash or the secret key is missing or malformed, or another setting is malformed."""
+    hash, the secret key or OPS_BIND is missing or malformed, or another setting is malformed."""
     env = os.environ if env is None else env
     password_hash = (env.get("OPS_PASSWORD_HASH") or "").strip().strip("'\"")
     if not password_hash:
@@ -107,6 +131,7 @@ def load_settings(env=None):
         password_hash=password_hash,
         secret_key=secret_key.strip(),
         database_url=database_url,
+        bind=bind_address(env),
         cookie_secure=flag(env.get("OPS_COOKIE_SECURE")),
         retention_days=max(1, whole_number(env, "OPS_RETENTION_DAYS", defaults.retention_days)),
         probe_interval_s=whole_number(env, "OPS_PROBE_INTERVAL_S", defaults.probe_interval_s),

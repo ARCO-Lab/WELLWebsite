@@ -19,8 +19,9 @@ backend, export worker and dashboard on the runner, filled with synthetic readin
 4. k6 (`dashboard/loadtest/page-load.js`) plays page views. Each virtual user is a new visitor with its own
    IP address (sent as `X-Forwarded-For`, which the test's Next.js server is told to trust) and no browser cache:
    the page, `/api/latest` and `/api/recent`; a few seconds later the chart overview for a 1-day, 1-week,
-   1-month or 1-year range (half ending today, which visitors share and the cache answers; half ending on a random
-   day, computed afresh); 3-5 zooms (detail requests, only when finer than the overview, as the page does);
+   1-month or 1-year range (half ending today, half ending on a random day); 3-5 zooms (detail requests, only when
+   finer than the overview). These chart requests have no `bucket=`, unlike the dashboard's tile requests, so the
+   backend never caches them: every one is a query over its whole range, the database's worst case;
    sometimes the wind rose's raw readings (`/api/data`); and 1 in 10 a small CSV export through the export queue
    (estimate, job, status polls, download).
 5. Three phases: **30 at once** (everyone opens the page in the same second, one page view each), **30 steady**
@@ -54,8 +55,8 @@ The run's **summary page** has everything; the artifact `load-test-results` has 
 `resources.csv` (the 5-second samples), and the backend, export worker and Next.js logs.
 
 - **Per endpoint, per phase**: request count, p50/p95/p99/max latency and the share that failed. `/api/series`
-  is split three ways: *shared* (ranges ending today, which the Redis cache answers after the first visitor),
-  *cold* (ranges ending on a random day, which PostgreSQL computes) and *zoom* (detail requests, also cold).
+  is split three ways: *shared* (ranges ending today), *cold* (ranges ending on a random day) and *zoom* (detail
+  requests). None of them is cached (no `bucket=`); *shared* ranges are the ones PostgreSQL's own buffers help most.
 - **Error answers**: any status the page would show as an error. Export requests refused with 429 are not errors:
   the queue's limits (2 per visitor, 6 in total, 2 built at a time) are meant to refuse them under load, and they
   are counted on their own line, with how long accepted exports waited.
@@ -83,10 +84,11 @@ Look at which resource ran out first:
   `docker compose up -d --scale backend=2` gives two; the dashboard reaches them through Docker's DNS name
   `backend`, which returns both addresses (Node's fetch uses one per new connection, so the spread is rough).
   Remove `container_name` if one is ever set on the service, or scaling fails.
-- **PostgreSQL's CPU is at its limit** (cold `/api/series` and zooms slow, cached ones fast): the cache is doing
-  its job and the database is the limit. Lengthen the cache times in `dashboard/backend/app/api/routes/series.py`
-  (`MAX_AGE_RECENT`, `MAX_AGE_PAST`) so more visitors share answers, or give PostgreSQL more memory
-  (`shared_buffers`, `work_mem`) on the VM. More backend containers won't help here.
+- **PostgreSQL's CPU is at its limit** (`/api/series` slow): the test's chart requests are never cached, so this
+  is the database's worst case; the dashboard's tile requests share cached per-series tiles. Give PostgreSQL more
+  memory (`shared_buffers`, `work_mem`) on the VM, or lengthen the tile cache times in
+  `dashboard/backend/app/api/routes/series.py` (`MAX_AGE_RECENT`, `MAX_AGE_PAST`). More backend containers won't
+  help here.
 - **`/api/latest` is slow**: it is not cached on the server (browsers keep it for a minute). A short Redis cache
   like the one `/api/series` has would make it one query a minute however many visitors there are.
 - **Many export 429s, or exports wait long**: that is the queue protecting the server. Raise

@@ -56,7 +56,7 @@ flowchart LR
 7. **WordPress.** The `wordpress` container (its data in MySQL, the `db` container) serves the home page, which shows
    the dashboard in an iframe.
 8. **welldash².** The `ops` container is a private, read-only operations dashboard, reachable only on McMaster's
-   network.
+   network, best through an SSH tunnel to the VM.
 
 ## Quick start (development)
 

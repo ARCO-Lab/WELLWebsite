@@ -3,8 +3,8 @@
 The backend counts every request it answers in memory, per (minute, route, method, status class): how many, their
 total and longest time, a small latency histogram and the bytes sent. A background thread in each gunicorn worker
 writes the finished minutes to the request_metrics table about every 15 s, adding to any row another worker wrote
-for the same key (db/migrations/0005_ops_metrics.sql). Only the route pattern is kept ("/api/exports/jobs/<job_id>",
-never the id, the query string, the client's address or its user agent), so the table holds no personal data.
+for the same key (db/migrations/0005_ops_metrics.sql). Only the route pattern is kept
+("/api/exports/jobs/<uuid:job_id>", never the id, the query string, the client's address or its user agent), so the table holds no personal data.
 welldash²'s own uptime check of the API isn't counted (PROBE_HEADER).
 
 Counting is on by default when the database is PostgreSQL; REQUEST_METRICS=0 turns it off. A failed write is
@@ -23,8 +23,10 @@ log = logging.getLogger(__name__)
 # Upper bounds (ms) of the latency histogram's buckets; one more bucket holds anything slower than the last.
 LATENCY_BUCKETS_MS = (10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000)
 BUCKETS = len(LATENCY_BUCKETS_MS) + 1
-# Requests that hand the visitor a CSV file: the small synchronous export and a finished export job's file.
-DOWNLOAD_ENDPOINTS = ("/api/exports/sync", "/api/exports/jobs/<job_id>/download")
+# Requests that hand the visitor a CSV file: the small synchronous export and a finished export job's file. The last
+# is the job route's pattern before it took only UUIDs, which rows written until then still name.
+DOWNLOAD_ENDPOINTS = ("/api/exports/sync", "/api/exports/jobs/<uuid:job_id>/download",
+                      "/api/exports/jobs/<job_id>/download")
 NO_ROUTE = "(no route)"     # a path no route matches (404/405): the path itself isn't kept
 # welldash²'s uptime check of the API (ops/probe.py) sends this header, and isn't counted: it would add a request a
 # minute, and its failures during an outage, to the visitors' numbers. Only containers on the VM can send it: the

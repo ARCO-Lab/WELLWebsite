@@ -25,6 +25,11 @@ class BadVendorResponse(ValueError):
     ours and never holds a URL or key, so it is safe to log and to show in alerts."""
 
 
+class UnreadableRecords(BadVendorResponse):
+    """A vendor answered with records, but none of them could be read (utils/parsers.py): most likely its format
+    changed. The alerts tell this apart from an API that is down."""
+
+
 def windows(start: dt.datetime, end: dt.datetime, size: dt.timedelta = WINDOW) -> Iterator[tuple[dt.datetime, dt.datetime]]:
     """Consecutive [start, end) windows of at most `size`."""
     cur = start

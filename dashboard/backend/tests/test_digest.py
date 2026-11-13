@@ -155,6 +155,32 @@ class BuildDigestTests(TestCase):
         self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("request failed: HTTPError (HTTP 429)", body)
 
+    def test_unset_heartbeats_come_first_and_count_as_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     unset_heartbeats=["HEALTHCHECK_URL_BACKUP", "HEALTHCHECK_URL_RESTORE"])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("Heartbeats not set", body)
+        self.assertIn("HEALTHCHECK_URL_RESTORE", body)
+        self.assertLess(body.index("Heartbeats not set"), body.index("Stale series"))
+        self.assertNotIn("Heartbeats not set", build_digest("2026-11-10", freshness, {}, [], None,
+                                                            unset_heartbeats=[])[1])
+
+    def test_leftover_restore_databases_are_listed_as_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     leftover_databases=["welldb_restore_check"])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("Restore drill databases left behind", body)
+        self.assertIn("welldb_restore_check", body)
+        self.assertNotIn("left behind", build_digest("2026-11-10", freshness, {}, [], None, leftover_databases=[])[1])
+
     def test_sampling_rows_needing_a_decision(self):
         now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
         latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
@@ -173,8 +199,8 @@ class BuildDigestTests(TestCase):
         self.assertNotIn("Sampling data", build_digest("2026-11-10", freshness, {}, [], None)[1])
 
     def test_the_new_sections_together_by_keyword(self):
-        """recoveries, quiet_kinds, missed and attention passed together, as scripts/daily_digest.py does: each lands
-        in its own section (keywords, so a parameter added later can't shift them)."""
+        """recoveries, quiet_kinds, missed, attention, unset_heartbeats and leftover_databases passed together, as
+        scripts/daily_digest.py does: each lands in its own section (keywords, so one added later can't shift them)."""
         now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
         latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
                    "recorded_at": "2026-11-10T06:50:00"}]
@@ -186,8 +212,15 @@ class BuildDigestTests(TestCase):
                    "started_at": "2026-11-07T10:00:00-05:00", "resolved_at": "2026-11-08T09:00:00-05:00"}]
         attention = [{"at": "2026-11-09T21:00:00-05:00", "text": "a.csv: 2 corrections not applied"}]
         subject, body = build_digest("2026-11-10", freshness, {}, [], None, recoveries=[recovery],
-                                     quiet_kinds=frozenset({"VENDOR_DOWN"}), missed=missed, attention=attention)
-        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")   # the attention line
+                                     quiet_kinds=frozenset({"VENDOR_DOWN"}), missed=missed, attention=attention,
+                                     unset_heartbeats=["HEALTHCHECK_URL_RESTORE"],
+                                     leftover_databases=["welldb_restore_check"])
+        # The attention line, the unset heartbeats and the leftover databases.
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 3 to check")
+        self.assertIn("## Heartbeats not set (these jobs, or the whole worker, could stop with nobody told)\n\n"
+                      "- `HEALTHCHECK_URL_RESTORE`", body)
+        self.assertIn("- `welldb_restore_check`", body)
+        self.assertLess(body.index("Restore drill databases left behind"), body.index("Alerts recovered"))
         self.assertIn("## Alerts recovered in the last 24 h\n\n- **Water quality station 4501 dissolved oxygen**: "
                       "readings back to normal. Mon Nov 9, 10:00 → Mon Nov 9, 12:00 (2 h). Email pending", body)
         self.assertIn("## Older recoveries that could not be emailed\n\n- **Water quality station 4501**: reporting "

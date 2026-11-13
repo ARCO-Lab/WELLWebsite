@@ -272,9 +272,11 @@ export class SeriesLoader {
         const parts: TileSeries[] = [];
         let missing = 0;
         for (let j = i * per; j < (i + 1) * per; j++) {
-          const t = this.cache.get(tileKey(key, b, j));
+          const part = tileKey(key, b, j), t = this.cache.get(part);
           if (t) parts.push(t);
-          else missing++;
+          // A finer tile itself worked out from part of its own is drawn, but counts as missing: what it lacks, so
+          // does the coarser one
+          if (!t || this.partial.has(part)) missing++;
         }
         const tk = tileKey(key, c, i);
         if (missing && (!whole || !parts.length || (this.cache.has(tk) && !this.partial.has(tk)))) continue;

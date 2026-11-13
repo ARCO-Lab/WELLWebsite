@@ -208,7 +208,7 @@ def freshness_env(env=None):
 def describe_vendor_error(error):
     """(kind, HTTP status or None, text) for a failed vendor call. The text is the error type and status only (or
     the message of our own BadVendorResponse): requests' messages include the URL, which holds WQData's key."""
-    from utils.fetching import BadVendorResponse
+    from utils.fetching import BadVendorResponse, UnreadableRecords
     status = getattr(getattr(error, "response", None), "status_code", None)
     if status in (401, 403):
         kind = "auth"
@@ -222,6 +222,8 @@ def describe_vendor_error(error):
         kind = "timeout"
     elif isinstance(error, requests.exceptions.ConnectionError):
         kind = "network"
+    elif isinstance(error, UnreadableRecords):
+        kind = "unreadable"
     elif isinstance(error, ValueError):
         kind = "bad_response"
     else:
@@ -274,6 +276,14 @@ def vendor_conditions(vendors, now, settings):
                       f"{site_time(since)}. {last_ok} WQData's hourly quota is shared by the 10-minute ingestion, the "
                       f"daily digest, the API canary and scripts/wqdata_backfill.py: stop any backfill that is "
                       f"running. Ingestion catches up by itself once the quota resets; the sensors may be fine.")
+        elif kind == "unreadable":
+            # It answers, but none of its records could be read: most likely its format changed, so the fix is in
+            # our parser, not at the vendor or in the field.
+            title = f"{source} sends records we can't read (×{failures}) — check the ingestion log"
+            detail = (f"{source} has answered on the last {failures} ingestion runs, since {site_time(since)}, but "
+                      f"none of its records could be read (last error: {row.get('last_error') or 'unknown'}). "
+                      f"{last_ok} The vendor may have changed its format: see the worker's ingestion log and "
+                      f"utils/parsers.py. No {source} data is being stored until then; the sensors may be fine.")
         else:
             title = f"{source} API not responding since {site_time(since)} ({count}) — check vendor status"
             detail = (f"The {source} API call has failed on the last {failures} ingestion runs, since "
@@ -313,14 +323,23 @@ def stale_conditions(freshness, vendors, now):
         else:
             vendor_ok = f"{vendor}'s latest call isn't recorded yet, so this may also be a vendor problem"
         fix = "Check the sensor, its power and its telemetry in the field."
+        # Records of the vendor's latest answer that couldn't be read (vendor_status.last_skipped) may be the missing
+        # readings: then the title points at the ingestion log, not the field.
+        unread = row.get("last_skipped") if row else None
+        unreadable = f"{vendor} sent unreadable records, check the ingestion log"
+        check_site, check_sensor = (unreadable, unreadable) if unread else ("vendor OK, check the site",
+                                                                         "vendor OK, check the sensor")
+        note = (f" {vendor}'s latest answer also had records we couldn't read ({unread}); check the worker's "
+                f"ingestion log before going to the field." if unread else "")
         everything = [s for series in stations.values() for s in series]
         if len(stations) > 1 and all(s["status"] == "stale" for s in everything):
             newest = max(as_site_time(s["newest"]) for s in everything)
             names = ", ".join(station_label(g, st) for g, st in sorted(stations))
-            title = f"Every {vendor} station silent for {duration(now - newest)} — vendor OK, check the site"
+            title = f"Every {vendor} station silent for {duration(now - newest)} — {check_site}"
             detail = (f"{vendor_ok}, but none of its stations ({names}) has sent anything since "
                       f"{site_time(newest)} ({duration(now - newest)}). The water level loggers report through the "
-                      f"weather station, so check the weather station's power, cellular modem and data plan first.")
+                      f"weather station, so check the weather station's power, cellular modem and data plan "
+                      f"first.{note}")
             key = f"stale:{vendor}"
             found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
             continue
@@ -332,18 +351,19 @@ def stale_conditions(freshness, vendors, now):
             if len(stale) == len(series):
                 newest = max(as_site_time(s["newest"]) for s in series)
                 key = f"stale:{vendor}:{station}"
-                title = f"{label} silent for {duration(now - newest)} — vendor OK, check the sensor"
-                detail = f"{vendor_ok}; {label} has sent nothing since {site_time(newest)} ({duration(now - newest)}). {fix}"
+                title = f"{label} silent for {duration(now - newest)} — {check_sensor}"
+                detail = (f"{vendor_ok}; {label} has sent nothing since {site_time(newest)} "
+                          f"({duration(now - newest)}). {fix}{note}")
                 found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
                 continue
             for s in stale:
                 newest = as_site_time(s["newest"])
                 key = f"stale:{vendor}:{station}:{s['measurement_type']}"
                 title = (f"{label} {s['measurement_type']} silent for {duration(now - newest)} — "
-                         f"vendor OK, check the sensor")
+                         + check_sensor)
                 detail = (f"{vendor_ok} and {label}'s other sensors are reporting, but {s['measurement_type']} has "
                           f"sent nothing since {site_time(newest)} ({duration(now - newest)}). Check that sensor and "
-                          f"its cable in the field.")
+                          f"its cable in the field.{note}")
                 found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
     return found, held
 

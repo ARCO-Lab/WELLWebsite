@@ -2,19 +2,46 @@ import csv
 import math
 import os
 import shutil
+import time
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
 
 from sqlalchemy import and_, func, or_, select
 
+from api.services.catalog import known_series
+from api.validation import bad_text
 from config import Config
 from db.database import db
 from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
 from db.ordering import bytewise, sampling_order
-from utils.timezone import EST_TZ, est_now
+from utils.parsers import SENTINEL_MAX
+from utils.timezone import EST_TZ, check_site_years, est_now
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
+SENSOR_GROUPS = ("Weather", "Quality", "Logger")
+
+# Each list in a request (stations, metrics, creeks, sites) may hold at most MAX_LIST_VALUES names of at most
+# MAX_NAME_CHARS characters; duplicates are dropped. The dashboard sends a handful of each. Without a cap, a list of
+# thousands of station ids made every row of a sensor export that many column groups wide.
+MAX_LIST_VALUES = 50
+MAX_NAME_CHARS = 64
+
+
+class ExportValidationError(ValueError):
+    """A request that isn't a valid export. Its message is written for the user and is the only error text the
+    export routes (and a failed job's status) pass on; any other error gets a fixed message."""
+
+
+class ExportAborted(Exception):
+    """An export stopped while it was being written, because its file grew past what the disk can spare or past
+    EXPORT_MAX_FILE_MB, or because it ran past its deadline. The message is for the user; the caller deletes the
+    file. `status` is the HTTP status a direct download answers with."""
+
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
 
 # Rows fetched from the database at a time while an export is written (and how often its progress is saved).
 STREAM_BATCH_ROWS = 5000
@@ -40,25 +67,77 @@ def safe_csv_cell(value):
 
 
 def csv_cell(value):
-    """A cell as the CSV files write it: a missing value (None, or NaN as some older rows store) is an empty
-    field, never "nan"; text goes through safe_csv_cell."""
-    if value is None or (isinstance(value, float) and math.isnan(value)):
+    """A cell as the CSV files write it: a missing value (None, or a NaN, infinity or "no reading" sentinel as some
+    older rows store) is an empty field, never "nan"; text goes through safe_csv_cell."""
+    if value is None or (isinstance(value, float) and (not math.isfinite(value) or value <= SENTINEL_MAX)):
         return ""
     return safe_csv_cell(value)
 
 
 class SafeCsvWriter:
-    """csv.writer whose cells are passed through csv_cell."""
+    """csv.writer whose cells are passed through csv_cell. With a budget (WriteBudget), it raises ExportAborted
+    once the file has grown past the budget's bytes or the clock past its deadline."""
 
-    def __init__(self, file_obj):
-        self._writer = csv.writer(file_obj)
+    def __init__(self, file_obj, budget=None):
+        self._budget = budget
+        self._writer = csv.writer(_CountingFile(file_obj, budget) if budget else file_obj)
 
     def writerow(self, row):
         self._writer.writerow([csv_cell(cell) for cell in row])
+        if self._budget:
+            self._budget.check()
 
     def writerows(self, rows):
         for row in rows:
             self.writerow(row)
+
+
+# How often (in rows written) a budget looks at the clock: cheap enough for every row, but there's no need.
+DEADLINE_CHECK_ROWS = 200
+
+
+class WriteBudget:
+    """The most an export may write (max_bytes) and when it must be done by (deadline, a time.monotonic() value),
+    either None for no limit."""
+
+    def __init__(self, max_bytes=None, deadline=None):
+        self.max_bytes, self.deadline = max_bytes, deadline
+        self.written = 0
+        self._rows = 0
+
+    def check(self):
+        if self.max_bytes is not None and self.written > self.max_bytes:
+            raise ExportAborted("This export is too large to prepare. Choose a shorter date range or fewer "
+                                "measurements.", 413)
+        self._rows += 1
+        if self.deadline is not None and self._rows % DEADLINE_CHECK_ROWS == 0 and time.monotonic() > self.deadline:
+            raise ExportAborted("This export took too long to prepare. Choose a shorter date range or fewer "
+                                "measurements.", 504)
+
+
+class _CountingFile:
+    """A text file that adds what is written to a WriteBudget (characters, close enough to bytes: the cells are
+    numbers and plain names)."""
+
+    def __init__(self, file_obj, budget):
+        self._file, self._budget = file_obj, budget
+
+    def write(self, text):
+        self._budget.written += len(text)
+        return self._file.write(text)
+
+
+def write_budget(deadline_seconds=None):
+    """The WriteBudget for an export starting now: no more than EXPORT_MAX_FILE_MB, and no more than the exports
+    disk can give while keeping EXPORT_MIN_FREE_MB free (the database shares that disk), whatever the estimate said.
+    deadline_seconds from now, if given."""
+    max_bytes = Config.EXPORT_MAX_FILE_MB * 1024 * 1024 if Config.EXPORT_MAX_FILE_MB > 0 else None
+    free = _free_bytes()
+    if free is not None:
+        room = max(0, free - Config.EXPORT_MIN_FREE_MB * 1024 * 1024)
+        max_bytes = room if max_bytes is None else min(max_bytes, room)
+    deadline = time.monotonic() + deadline_seconds if deadline_seconds else None
+    return WriteBudget(max_bytes, deadline)
 
 
 @contextmanager
@@ -202,51 +281,61 @@ SENSOR_STATION_COORDINATES = [
 
 def normalize_export_payload(payload: Dict) -> Dict:
     if not isinstance(payload, dict):
-        raise ValueError("Payload must be a JSON object")
+        raise ExportValidationError("Payload must be a JSON object")
 
     domain = payload.get("domain")
     if not isinstance(domain, str) or domain not in ALLOWED_DOMAINS:
-        raise ValueError("Invalid domain. Expected 'sensor' or 'sampling'.")
+        raise ExportValidationError("Invalid domain. Expected 'sensor' or 'sampling'.")
 
     start = payload.get("start")
     end = payload.get("end")
     if not start or not end:
-        raise ValueError("Missing required fields: start, end")
+        raise ExportValidationError("Missing required fields: start, end")
     if not isinstance(start, str) or not isinstance(end, str):
-        raise ValueError("start and end must be ISO datetime strings")
+        raise ExportValidationError("start and end must be ISO datetime strings")
 
     try:
-        start_dt = datetime.fromisoformat(start)
-        end_dt = datetime.fromisoformat(end)
+        start_in = datetime.fromisoformat(start)
+        end_in = datetime.fromisoformat(end)
         # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in
         # the session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone
         # the export would be hours off. So aware times become site wall-clock time here, before they are compared
         # (comparing an aware with a naive time raises TypeError). OverflowError: a time such as
         # 0001-01-01T00:00+05:00 has no local time.
-        start_dt, end_dt = _site_naive(start_dt), _site_naive(end_dt)
+        start_dt, end_dt = _site_naive(start_in), _site_naive(end_in)
+        check_site_years(start_dt, end_dt)
     except (ValueError, OverflowError) as exc:
-        raise ValueError("Invalid ISO datetime in start/end") from exc
+        raise ExportValidationError("Invalid ISO datetime in start/end") from exc
 
-    if start_dt > end_dt:
-        raise ValueError("start must be before end")
+    if start_in.tzinfo and end_in.tzinfo:
+        # Two real instants: compare those. Inside the hour repeated when clocks fall back their wall-clock times
+        # can run backwards (05:50Z is 01:50 EDT, 06:10Z is 01:10 EST), so they're put in order, as the read
+        # routes do (utils/timezone.site_range).
+        if start_in > end_in:
+            raise ExportValidationError("start must be before end")
+        start_dt, end_dt = min(start_dt, end_dt), max(start_dt, end_dt)
+    elif start_dt > end_dt:
+        raise ExportValidationError("start must be before end")
 
     normalized = {
         "domain": domain,
         "start": start_dt.isoformat(),
         "end": end_dt.isoformat(),
-        "measurement_types": _as_string_list(payload.get("measurement_types", [])),
+        "measurement_types": _as_string_list(payload.get("measurement_types", []), "measurement_types"),
     }
 
     if domain == "sensor":
-        group_types = _as_string_list(payload.get("group_types", []))
+        group_types = _as_string_list(payload.get("group_types", []), "group_types")
         if not group_types:
-            raise ValueError("Sensor exports require at least one group_type")
+            raise ExportValidationError("Sensor exports require at least one group_type")
+        if any(group not in SENSOR_GROUPS for group in group_types):
+            raise ExportValidationError(f"group_types must be among {', '.join(SENSOR_GROUPS)}")
         normalized["group_types"] = group_types
-        normalized["station_ids"] = _as_string_list(payload.get("station_ids", []))
+        normalized["station_ids"] = _as_string_list(payload.get("station_ids", []), "station_ids")
 
         group_measurement_types = _as_group_metric_map(payload.get("group_measurement_types"))
         normalized_group_measurement_types = {
-            group: _as_string_list(group_measurement_types.get(group, []))
+            group: _as_string_list(group_measurement_types.get(group, []), "group_measurement_types")
             for group in group_types
             if group in group_measurement_types
         }
@@ -258,33 +347,62 @@ def normalize_export_payload(payload: Dict) -> Dict:
                 merged_measurements.update(metrics)
             normalized["measurement_types"] = sorted(merged_measurements)
     else:
-        normalized["creek_ids"] = _as_string_list(payload.get("creek_ids", []))
-        normalized["site_ids"] = _as_string_list(payload.get("site_ids", []))
+        normalized["creek_ids"] = _as_string_list(payload.get("creek_ids", []), "creek_ids")
+        normalized["site_ids"] = _as_string_list(payload.get("site_ids", []), "site_ids")
 
     return normalized
 
 
-# About how many bytes of CSV one reading takes (a sensor export's wide rows hold several readings each; a
-# sampling row is one reading of ~80 bytes, but sampling exports are small): enough to tell whether a file fits.
+# About how many bytes of CSV one reading takes in a sampling export (one reading per row), and in an estimate made
+# without the request's filters: enough to tell whether a file fits.
 EXPORT_BYTES_PER_ROW = 80
+# A sensor export has one row per timestamp and one cell per column. These err large: a cell is a number such as
+# 12.345 or 0.30000000000000004 (str of a float) and its comma, and a row starts with its number and its time.
+SENSOR_ROW_BYTES = 48
+SENSOR_CELL_BYTES = 20
+READING_INTERVAL = timedelta(minutes=10)  # every sensor reports every 10 minutes, on the 10-minute marks
+
+DISK_FULL_MESSAGE = ("The server is short of disk space, so it can't prepare this export right now. Please try "
+                     "again later.")
 
 
-def disk_space_error(estimated_rows: int) -> Optional[str]:
-    """None when EXPORTS_DIR's disk can take an export of this many readings and still keep EXPORT_MIN_FREE_MB free;
-    otherwise the message for the user. The database shares this disk on the VM, so a full disk would stop
-    ingestion: running short of space refuses exports rather than filling it."""
+def _free_bytes() -> Optional[int]:
+    """Free bytes on EXPORTS_DIR's disk, or None when that can't be told."""
     directory = Config.EXPORTS_DIR
     while directory and not os.path.isdir(directory):  # not created yet: check the disk it will be on
         parent = os.path.dirname(directory)
         directory = parent if parent != directory else ""
     try:
-        free = shutil.disk_usage(directory or ".").free
+        return shutil.disk_usage(directory or ".").free
     except OSError:
-        return None  # can't tell: don't refuse every export over it
-    needed = max(0, estimated_rows) * EXPORT_BYTES_PER_ROW + Config.EXPORT_MIN_FREE_MB * 1024 * 1024
-    if free >= needed:
         return None
-    return "The server is short of disk space, so it can't prepare this export right now. Please try again later."
+
+
+def export_size_bytes(filters: Dict, row_count: int) -> int:
+    """About how large an export of `row_count` readings will be, erring large. A sensor export's size is set by its
+    columns as much as its readings: it has one row per timestamp (at most one per 10-minute mark of the range, and
+    no more than the readings) and a cell per column (sensor_header_cells)."""
+    row_count = max(0, row_count)
+    if filters.get("domain") != "sensor":
+        return row_count * EXPORT_BYTES_PER_ROW
+    span = datetime.fromisoformat(filters["end"]) - datetime.fromisoformat(filters["start"])
+    timestamps = min(row_count, int(span / READING_INTERVAL) + 1)
+    return timestamps * (SENSOR_ROW_BYTES + SENSOR_CELL_BYTES * len(sensor_header_cells(filters)))
+
+
+def disk_space_error(estimated_rows: int, filters: Optional[Dict] = None) -> Optional[str]:
+    """None when EXPORTS_DIR's disk can take an export of this many readings (sized by export_size_bytes when the
+    request's normalised filters are given) and still keep EXPORT_MIN_FREE_MB free; otherwise the message for the
+    user. The database shares this disk on the VM, so a full disk would stop ingestion: running short of space
+    refuses exports rather than filling it. An estimate can be off, so the writer also stops at that limit
+    (write_budget)."""
+    free = _free_bytes()
+    if free is None:
+        return None  # can't tell: don't refuse every export over it
+    size = export_size_bytes(filters, estimated_rows) if filters else max(0, estimated_rows) * EXPORT_BYTES_PER_ROW
+    if free >= size + Config.EXPORT_MIN_FREE_MB * 1024 * 1024:
+        return None
+    return DISK_FULL_MESSAGE
 
 
 def estimate_rows(payload: Dict) -> int:
@@ -336,21 +454,26 @@ def write_export_csv(
     output_path: str,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     estimated_rows: Optional[int] = None,
+    budget: Optional[WriteBudget] = None,
 ) -> int:
+    """Writes the export's CSV to output_path and returns the readings in it. Raises ExportAborted (leaving the
+    partial file for the caller to delete) when the file outgrows `budget` or runs past its deadline; without a
+    budget, write_budget()'s size limit applies."""
     filters = normalize_export_payload(payload)
     total = estimated_rows if estimated_rows is not None else estimate_rows(filters)
+    budget = budget or write_budget()
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     if filters["domain"] == "sensor":
-        rows_written = _write_sensor_frontend_style_csv(filters, output_path, progress_callback, total)
+        rows_written = _write_sensor_frontend_style_csv(filters, output_path, progress_callback, total, budget)
         if progress_callback:
             progress_callback(rows_written, total)
         return rows_written
 
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
-        writer = SafeCsvWriter(csv_file)
+        writer = SafeCsvWriter(csv_file, budget)
         writer.writerow(
             [
                 "domain",
@@ -494,28 +617,100 @@ def _sampling_conditions(filters: Dict) -> List:
     return conditions
 
 
-def _as_string_list(value):
+def _as_string_list(value, field="list"):
+    """A request's list of names: blanks dropped, duplicates dropped (the first kept, in order), and an
+    ExportValidationError for anything but a list of names, a name with control characters (api/validation.py) or
+    over MAX_NAME_CHARS, or more than MAX_LIST_VALUES names."""
     if value is None:
         return []
-    if isinstance(value, list):
-        return [str(v) for v in value if str(v).strip()]
-    raise ValueError("Expected a list for list-type fields")
+    if not isinstance(value, list):
+        raise ExportValidationError("Expected a list for list-type fields")
+    names = []
+    for item in value:
+        if isinstance(item, (dict, list)):
+            raise ExportValidationError(f"{field} must be a list of names")
+        name = str(item)
+        if not name.strip() or name in names:
+            continue
+        if bad_text(name) or len(name) > MAX_NAME_CHARS:
+            raise ExportValidationError(f"{field} has a name that isn't valid")
+        names.append(name)
+        if len(names) > MAX_LIST_VALUES:
+            raise ExportValidationError(f"{field} may hold at most {MAX_LIST_VALUES} names")
+    return names
 
 
 def _as_group_metric_map(value):
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise ValueError("Expected an object for group_measurement_types")
+        raise ExportValidationError("Expected an object for group_measurement_types")
 
     normalized = {}
     for group, metrics in value.items():
         group_name = str(group).strip()
-        if not group_name:
+        if group_name not in SENSOR_GROUPS:  # only these are ever read, and only when group_types names them
             continue
-        normalized[group_name] = _as_string_list(metrics)
+        normalized[group_name] = metrics
 
     return normalized
+
+
+def _known_columns():
+    """What exists to be a column (api/services/catalog.py): each group's metrics, and the logger stations."""
+    series = known_series()
+    metrics = {group: {m for g, _, m in series if g == group} for group in SENSOR_GROUPS}
+    return metrics, {s for g, s, _ in series if g == "Logger"}
+
+
+def sensor_columns(filters: Dict, found: Optional[Dict] = None) -> Dict:
+    """The columns of a sensor export: {"Weather": [metric, ...], "Quality": [...], "Logger": [...],
+    "stations": [logger station id, ...]}.
+
+    Metrics and stations the request names are kept, in its order, only if they exist (_known_columns): a name that
+    matches no series would only add an empty column to every row. A group with no metrics named gets the metrics
+    `found` holds for it (the readings in the export's range, from _sensor_columns_summary) or, without `found` (the
+    size estimate, made before any reading is read), every metric it has, narrowed to measurement_types if those are
+    given. Without station_ids, the configured loggers come first, then any other logger in `found` (or that exists)."""
+    known_metrics, known_stations = _known_columns()
+    allowed = set(filters.get("measurement_types", []))
+    requested = filters.get("group_measurement_types", {}) or {}
+    columns = {}
+    for group in SENSOR_GROUPS:
+        if requested.get(group):
+            columns[group] = [m for m in requested[group] if m in known_metrics[group]]
+        else:
+            seen = found["metrics"][group] if found else known_metrics[group]
+            columns[group] = sorted(m for m in seen if not allowed or m in allowed)
+    configured = list(SENSOR_FILTER_CONFIG["gauges"]["sites"].keys())
+    if filters.get("station_ids"):
+        columns["stations"] = [s for s in filters["station_ids"] if s in known_stations]
+    else:
+        others = found["logger_stations"] if found else known_stations
+        columns["stations"] = configured + sorted(set(others).difference(configured))
+    return columns
+
+
+def sensor_header_cells(filters: Dict, found: Optional[Dict] = None) -> List[str]:
+    """The header row's cells, before each metric gets its unit: ID, the time, then each requested group's label and
+    metrics (Logger: a Sensor label and the metrics for each station), with a blank cell between groups. Every row
+    has a cell under each of these."""
+    groups = set(filters.get("group_types", []))
+    columns = sensor_columns(filters, found)
+    cells = ["ID", TIMESTAMP_HEADER]
+    for group in SENSOR_GROUPS:
+        if group not in groups:
+            continue
+        if len(cells) > 2:
+            cells.append("")
+        cells.append("Group")
+        if group == "Logger":
+            for _ in columns["stations"]:
+                cells.append("Sensor")
+                cells.extend(columns["Logger"])
+        else:
+            cells.extend(columns[group])
+    return cells
 
 
 def _sensor_columns_summary(conn, conditions) -> Dict:
@@ -565,10 +760,11 @@ def _write_sensor_frontend_style_csv(
     output_path: str,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     total: int = 0,
+    budget: Optional[WriteBudget] = None,
 ) -> int:
     # The header query and the rows share one connection, and so one snapshot (_streaming_connection).
     with _streaming_connection() as conn:
-        return _write_sensor_csv(conn, filters, output_path, progress_callback, total)
+        return _write_sensor_csv(conn, filters, output_path, progress_callback, total, budget)
 
 
 def _write_sensor_csv(
@@ -577,6 +773,7 @@ def _write_sensor_csv(
     output_path: str,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     total: int = 0,
+    budget: Optional[WriteBudget] = None,
 ) -> int:
     """
     Export sensor data matching the exact CSV format from upload_data.py
@@ -590,38 +787,19 @@ def _write_sensor_csv(
     conditions = _sensor_conditions(filters)
     summary = _sensor_columns_summary(conn, conditions)
     units_by_metric = summary["units_by_metric"]
-    all_weather_metrics = summary["metrics"]["Weather"]
-    all_quality_metrics = summary["metrics"]["Quality"]
-    all_logger_metrics = summary["metrics"]["Logger"]
-    all_logger_stations = summary["logger_stations"]
 
     # Set up which groups we should include (based on request, not just what has data)
     include_weather = "Weather" in requested_groups
     include_quality = "Quality" in requested_groups
     include_logger = "Logger" in requested_groups
 
-    # Apply measurement type filters
-    allowed_metrics = set(filters.get("measurement_types", []))
-    if allowed_metrics:
-        all_weather_metrics = {m for m in all_weather_metrics if m in allowed_metrics}
-        all_quality_metrics = {m for m in all_quality_metrics if m in allowed_metrics}
-        all_logger_metrics = {m for m in all_logger_metrics if m in allowed_metrics}
-
-    requested_metric_map: Dict[str, List[str]] = filters.get("group_measurement_types", {}) or {}
-
-    weather_metrics = requested_metric_map.get("Weather") or sorted(all_weather_metrics)
-    quality_metrics = requested_metric_map.get("Quality") or sorted(all_quality_metrics)
-    logger_metrics = requested_metric_map.get("Logger") or sorted(all_logger_metrics)
-
-    # Determine logger stations to include
-    selected_station_ids = filters.get("station_ids") or []
-    if selected_station_ids:
-        effective_logger_stations = [str(sid) for sid in selected_station_ids]
-    else:
-        configured_ids = list(SENSOR_FILTER_CONFIG["gauges"]["sites"].keys())
-        effective_logger_stations = configured_ids
-        extras = sorted(all_logger_stations.difference(set(configured_ids)))
-        effective_logger_stations.extend(extras)
+    # The metrics and logger stations that get columns: those asked for that exist or, for a group with none asked
+    # for, those with readings in the range (sensor_columns)
+    columns = sensor_columns(filters, summary)
+    weather_metrics = columns["Weather"]
+    quality_metrics = columns["Quality"]
+    logger_metrics = columns["Logger"]
+    effective_logger_stations = columns["stations"]
 
     def metric_header(metric):
         unit = units_by_metric.get(metric, "")
@@ -693,7 +871,7 @@ def _write_sensor_csv(
     records = 0
     row_num = 0
     with open(output_path, "w", newline="", encoding="utf-8") as file_obj:
-        writer = SafeCsvWriter(file_obj)
+        writer = SafeCsvWriter(file_obj, budget)
         writer.writerow(headers)
 
         # The readings of one timestamp: metric -> value for Weather and Quality, (station, metric) -> value for
