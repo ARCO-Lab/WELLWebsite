@@ -58,15 +58,45 @@ jobs:
             echo "::error::PostgreSQL tests were skipped"; exit 1
           fi
 
-      # A new database as on a fresh VM: the tables the app creates, then every migration, then a second run that
-      # must find nothing left to apply.
-      - name: Migrations on a fresh database
+      # The same PostgreSQL tests as the role the app connects with on the VM (app/db/roles.sql): no superuser, owner
+      # of what it creates. test_db_roles (which creates the roles itself) and test_backup_db (which creates a role
+      # and databases) need the superuser, and ran in the step above.
+      - name: PostgreSQL tests again, as the app's own role (well_app)
         run: |
           set -o pipefail
-          run=(docker run --rm --network ci-db -w /app/app -e DATABASE_URL=postgresql://postgres:ci@ci-postgres/schema
+          for db in app_tests app_migrate_tests; do
+            docker exec ci-postgres psql -U postgres -qc "CREATE DATABASE $db"
+            docker exec -i ci-postgres psql -U postgres -d "$db" -X -q -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql
+          done
+          docker exec ci-postgres psql -U postgres -qc "ALTER ROLE well_app PASSWORD 'ci'"
+          # Test setup only: test_ops builds its tables in a schema of its own, which needs CREATE on the database
+          docker exec ci-postgres psql -U postgres -qc "GRANT CREATE ON DATABASE app_tests TO well_app"
+          modules=$(cd dashboard/backend && grep -lE "TEST_POSTGRES_URL|MIGRATE_TEST_DATABASE_URL" tests/test_*.py \
+                    | grep -v -e test_backup_db -e test_db_roles | sed -e 's#/#.#' -e 's#\.py$##')
+          echo "$modules"
+          # $modules unquoted on purpose: one argument per module
+          docker run --rm --network ci-db -w /app -e TEST_POSTGRES_URL=postgresql://well_app:ci@ci-postgres/app_tests \
+            -e MIGRATE_TEST_DATABASE_URL=postgresql://well_app:ci@ci-postgres/app_migrate_tests \
+            well-backend:ci python -m unittest -v $modules 2>&1 | tee unittest-app.log
+          if grep -E "skipped 'set (TEST_POSTGRES_URL|MIGRATE_TEST_DATABASE_URL)" unittest-app.log; then
+            echo "::error::PostgreSQL tests were skipped"; exit 1
+          fi
+
+      # A new database as on a fresh VM, set up as the backend README's "Database roles" section says: the roles,
+      # then the tables the app creates and every migration as well_app, then the roles again (for welldash²'s
+      # tables), the roles check, and a second migration run that must find nothing left to apply.
+      - name: Migrations on a fresh database, as well_app
+        run: |
+          set -o pipefail
+          roles() { docker exec -i ci-postgres psql -U postgres -d schema -X -q -v ON_ERROR_STOP=1 < "dashboard/backend/app/db/$1"; }
+          roles roles.sql
+          run=(docker run --rm --network ci-db -w /app/app -e DATABASE_URL=postgresql://well_app:ci@ci-postgres/schema
                well-backend:ci)
           "${run[@]}" python db/init_db.py
           "${run[@]}" python scripts/migrate.py
+          roles roles.sql
+          roles roles_check.sql 2>&1 | tee roles-check.log
+          grep -q "roles check passed" roles-check.log
           "${run[@]}" python scripts/migrate.py | tee migrate-again.log
           grep -q "nothing to apply" migrate-again.log
           "${run[@]}" python scripts/migrate.py --status
@@ -260,8 +290,14 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
 
       # The runner image ships shellcheck.
-      - name: shellcheck on deploy.sh, the WordPress backup, the CI scripts and the load-test scripts
-        run: shellcheck deploy.sh wordpress/*.sh .github/scripts/*.sh dashboard/loadtest/*.sh
+      - name: shellcheck on deploy.sh, the WordPress backup, the CI scripts, the load-test scripts and the roles steps
+        run: shellcheck deploy.sh wordpress/*.sh .github/scripts/*.sh dashboard/loadtest/*.sh dashboard/backend/app/db/*.sh
+
+      # It only prints the steps; check that it does, and that it refuses a database name that isn't a plain name.
+      - name: roles.sh prints the database roles steps
+        run: |
+          bash dashboard/backend/app/db/roles.sh welldb | grep -q "psql -d welldb -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql"
+          if bash dashboard/backend/app/db/roles.sh 'welldb; rm -rf /' 2>/dev/null; then exit 1; fi
 
       # Stub docker and curl first, then a real throwaway MySQL 5.7 with no network: a backup, its restore check, and
       # the restore steps in wordpress/README.md.

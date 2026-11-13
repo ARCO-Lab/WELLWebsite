@@ -133,7 +133,8 @@ services:
     env_file:
       - ./dashboard/backend/app/.env   # your existing backend .env (HOBOLINK, WQ, etc.)
     environment:
-      # Override DB URL at runtime so you don't edit the backend .env for Docker
+      # Override DB URL at runtime so you don't edit the backend .env for Docker. Use the well_app role, never the
+      # superuser (dashboard/backend/README.md, "Database roles").
       DATABASE_URL: ${BACKEND_DATABASE_URL}
       # If you also want to drive the port via env:
       BACKEND_PORT: ${BACKEND_PORT}
@@ -333,7 +334,8 @@ services:
     command: ["gunicorn", "-k", "gthread", "-w", "1", "--threads", "4", "--timeout", "60", "-b", "0.0.0.0:8090",
               "ops.app:create_app()"]
     environment:
-      # A read-only role is better (README); unset, it reads with the backend's role.
+      # The read-only well_ops role (dashboard/backend/README.md, "Database roles"); unset, it reads with the
+      # backend's role.
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-${BACKEND_DATABASE_URL}}
       OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:-}
       OPS_SECRET_KEY: ${OPS_SECRET_KEY:-}

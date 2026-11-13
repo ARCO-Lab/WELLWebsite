@@ -15,6 +15,7 @@ in [docs/configuration.md](../../docs/configuration.md).
 - [Error reporting (Sentry)](#error-reporting-sentry)
 - [Database backups](#database-backups)
 - [Database migrations](#database-migrations)
+- [Database roles](#database-roles)
 - [AI analysis (disabled)](#ai-analysis-disabled)
 - [Tests](#tests)
 
@@ -659,8 +660,8 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
   `logs/backup.log`). It pings `HEALTHCHECK_URL_BACKUP` when it starts and again when it ends (`/fail` if it failed),
   and a failure is reported to Sentry.
 - **What**: `pg_dump -Fc` (PostgreSQL's compressed custom format) of every table the role in `DATABASE_URL` can read
-  (on the VM that is `postgres`, so the whole database), made with `pg_dump` 13, the server's version (the backend
-  image installs `postgresql-client-13` from the PostgreSQL apt repository). The password reaches `pg_dump` through a
+  (`well_app`, which owns every table, so the whole database; see [Database roles](#database-roles)), made with
+  `pg_dump` 13, the server's version (the backend image installs `postgresql-client-13` from the PostgreSQL apt repository). The password reaches `pg_dump` through a
   temporary 0600 password file, never its command line.
 - **Where**: `~/WELLWebsite/backups/welldb-YYYYmmdd-HHMM.dump` on the VM (`/app/backups` in the worker; the folder is
   gitignored). The files are readable by root only (the container runs as root, and the job sets `umask 077`), so use
@@ -700,10 +701,11 @@ be fetched again: LI-COR serves at most one year of history. So the worker backs
 **Tables the role can't read are left out, and named.** `pg_dump` locks and reads every table it dumps, so by default
 (`BACKUP_EXCLUDE_TABLES` unset or `auto`) the job leaves out any table or sequence the connecting role can't read, and
 prints a `WARNING:` line naming them (in `logs/backup.log`, and sent to Sentry as a warning); the backup still counts
-as a success. On the VM the app connects as `postgres`, which reads everything, so nothing is left out. With a more
-limited role, tables created by migrations or by hand as `postgres` (`schema_migrations`, `vendor_status`,
-`alert_incidents`, `export_jobs`, `data_fixes`, `request_metrics`, `uptime_probes`) would be named. Grant that role
-`SELECT` on them (and on any sequence they own), or dump them now and then as `postgres` on the host, e.g.
+as a success. The app's role `well_app` owns every table ([Database roles](#database-roles)), and `postgres` reads
+everything, so with either nothing is left out. With another limited role, tables created by migrations or by hand
+as `postgres` (`schema_migrations`, `vendor_status`, `alert_incidents`, `export_jobs`, `data_fixes`,
+`request_metrics`, `uptime_probes`) would be named. Run `db/roles.sql` again, which hands them to `well_app`, grant
+the role `SELECT` on them (and on any sequence they own), or dump them now and then as `postgres` on the host, e.g.
 `sudo -u postgres pg_dump -Fc -t export_jobs -t data_fixes -f /tmp/well-postgres-tables.dump <database>`. Setting
 `BACKUP_EXCLUDE_TABLES` to a comma-separated list leaves out exactly those, with no warning; an empty value leaves out
 nothing, and the dump then fails if anything is unreadable.
@@ -721,17 +723,17 @@ are expected. The drill fails when a table is missing from the restore or restor
 purpose (`BACKUP_EXCLUDE_TABLES`) or because the role can't read it, and when a `BACKUP_EXPECT_TABLES` table restores
 fewer rows than it had when the dump was taken: an exact count must come back in full, an estimate within
 `RESTORE_CHECK_TOLERANCE_PCT` (default 2). For a dump without that record (taken before it was kept), those tables
-must have at least 95% of their live rows instead. Creating a database needs the `CREATEDB` privilege, which `postgres` (the app's role
-on the VM) has; for another role, grant it once (as `postgres`: `ALTER ROLE <app role> CREATEDB;`), or set
-`RESTORE_CHECK_DATABASE_URL` to a URL for a role that has it, which then creates, restores into and drops the
-throwaway database. Without either, the drill stops with a message saying so. A restore takes about as much disk as
+must have at least 95% of their live rows instead. Creating a database needs the `CREATEDB` privilege, which
+`well_app` doesn't have, so set `RESTORE_CHECK_DATABASE_URL` (in `dashboard/backend/app/.env`, which the worker
+reads) to the `well_restore` role's URL on the server's `postgres` maintenance database
+([Database roles](#database-roles)): that role creates, restores into and drops the throwaway database, drops the
+ones a killed drill left behind, and can't touch the live tables. Without it, the drill stops with a message naming
+`CREATEDB`. A restore takes about as much disk as
 the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus
 `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
 
-If the database has a dedicated restore role (`well_restore`, with `CREATEDB` and no rights on the live data), set
-`RESTORE_CHECK_DATABASE_URL` in `dashboard/backend/app/.env` to a URL for it, e.g.
-`postgresql://well_restore:<password>@host.docker.internal:5432/postgres`, and recreate the worker; the drill then
-creates and drops its database as that role, and reads the live counts with `DATABASE_URL` as before.
+The URL is e.g. `postgresql://well_restore:<password>@host.docker.internal:5432/postgres` (the host as in
+`BACKEND_DATABASE_URL`); recreate the worker after setting it. The live counts are still read with `DATABASE_URL`.
 
 **The throwaway database never stays.** It is a full copy of the live database, so it is dropped with `DROP DATABASE
 ... WITH (FORCE)`, which also ends a session still connected to it (a `pg_restore` stopped part-way), and each
@@ -743,7 +745,11 @@ at, until the next of those. To drop leftovers by hand: `docker compose exec wor
 --drop-leftovers`.
 
 **Restoring for real.** Restore into a new, empty database, put back anything the dump left out, then point the app at
-it. `<app role>` is the role in `BACKEND_DATABASE_URL` (`postgres` on the VM).
+it. `<app role>` is the role in `BACKEND_DATABASE_URL`: `well_app` once the [Database roles](#database-roles) are
+set up. With those roles, after the restore below, also run `roles.sql` in the new database
+(`sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' psql -d welldb_restored -v ON_ERROR_STOP=1 <
+dashboard/backend/app/db/roles.sql`), and put the new database's name in place of the old one on the `well_app`
+and `well_ops` lines of `pg_hba.conf` (`RESTORE_CHECK_DATABASE_URL` names the `postgres` database, so it stays).
 
 ```bash
 cd ~/WELLWebsite
@@ -753,8 +759,8 @@ sudo cat backups/welldb-YYYYmmdd-HHMM.dump | sudo -u postgres pg_restore --no-ow
 ```
 
 The next steps matter only if that night's `logs/backup.log` has a `WARNING:` line saying tables were left out. On the
-VM the app connects as `postgres`, so normally nothing was. If `data_fixes` was left out and you kept a dump of it made
-as `postgres` (see above), restore that:
+VM the app connects as `well_app`, which owns every table, so normally nothing was. If `data_fixes` was left out and
+you kept a dump of it made as `postgres` (see above), restore that:
 `sudo cat /path/to/well-postgres-tables.dump | sudo -u postgres pg_restore --exit-on-error -d welldb_restored`. If
 not, recreate it with a row for each dated fix that had run, so none can run a second time; without its row, running
 `2026-11-10_swap_air_soil_temperature.sql` again would swap air and soil temperature back. Each fix's name is in the
@@ -762,9 +768,10 @@ not, recreate it with a row for each dated fix that had run, so none can run a s
 even if the table came back with the dump:
 
 ```bash
-sudo -u postgres psql -d welldb_restored -v ON_ERROR_STOP=1 \
-  -c "CREATE TABLE IF NOT EXISTS data_fixes (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" \
-  -c "INSERT INTO data_fixes (name) VALUES ('2026-11-10 swap air and soil temperature') ON CONFLICT (name) DO NOTHING"
+# pg_catalog only, so the table is named public.data_fixes ("Database roles" says why)
+sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' psql -d welldb_restored -v ON_ERROR_STOP=1 \
+  -c "CREATE TABLE IF NOT EXISTS public.data_fixes (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" \
+  -c "INSERT INTO public.data_fixes (name) VALUES ('2026-11-10 swap air and soil temperature') ON CONFLICT (name) DO NOTHING"
 ```
 
 Then switch over:
@@ -835,6 +842,187 @@ docker compose exec backend python scripts/migrate.py            # apply
   their comments describe; the runner ignores them.
 - When a migration changes the schema, change `db/models.py` to match, so a fresh database built by `create_all()`
   gets the same result.
+- A migration that creates a table welldash² writes to needs a grant for `well_ops`: add it to `db/roles.sql` and run
+  that again after the migration (see [Database roles](#database-roles)).
+
+## Database roles
+
+The containers reach PostgreSQL on the VM host over TCP from the Docker networks (`10.20.0.0/16`,
+[docs/hosting.md](../../docs/hosting.md#host-firewall-required)). Whatever role they connect as is what a SQL
+injection, a compromised dependency or a bad deploy gets. The superuser `postgres` can run `COPY ... FROM PROGRAM`
+(a shell on the VM as the `postgres` OS user, outside every container limit), read and drop every database on the
+server, and create roles. [`app/db/roles.sql`](app/db/roles.sql) creates three roles that can't:
+
+| Role | Used by | What it may do |
+|---|---|---|
+| `well_app` | `backend`, `worker`, `export_worker` (`BACKEND_DATABASE_URL`), and `scripts/migrate.py`, `db/init_db.py`, `scripts/backup_db.py` run in them | Owns every table, sequence and index in the `public` schema, and may create new ones there. `NOSUPERUSER NOCREATEDB NOCREATEROLE`, a member of no role, so no `COPY` to or from a program or a server file, no `pg_read_file`, no other database. |
+| `well_ops` | welldash² (`OPS_DATABASE_URL`, [ops/README.md](app/ops/README.md)) | `SELECT` on every table; `INSERT` and `DELETE` on `uptime_probes` (its uptime checks and their 90-day cleanup), `DELETE` on `request_metrics` (the cleanup). Creates nothing. |
+| `well_restore` | The restore drill, `scripts/restore_check.py` in `worker` (`RESTORE_CHECK_DATABASE_URL`) | `CREATEDB` and `CONNECT` on the WELL database, nothing else: no privilege on any of its tables, so it can't read or change the live data. Its URL names the server's `postgres` maintenance database, from which it creates the throwaway `welldb_restore_check`, restores into it (owning what it restores) and drops it. The live counts are read with `DATABASE_URL` (`well_app`), in a read-only session. |
+
+**Why `well_app` owns the tables instead of a separate migration role.** Most of what the app does besides reading and
+writing rows needs the table's owner in PostgreSQL 13: `ALTER TABLE` and `CREATE INDEX CONCURRENTLY` in migrations,
+and the `ANALYZE` the nightly backup runs before counting rows. A separate owner role would need its own password,
+URL and container wiring, and the backup's `ANALYZE` would silently fall back to stale estimates. What it would add is
+that a compromised API couldn't `DROP` a table; it could still `DELETE` every row, and both are what the nightly dumps
+are for. What made `postgres` dangerous (programs and files on the host, other databases, new roles) is gone either way.
+
+**What needs which privilege.** Checked in the code; `tests/test_db_roles.py` runs each as these roles:
+
+| What | Needs | As which role |
+|---|---|---|
+| `pg_dump` in `scripts/backup_db.py` | `SELECT` on every table and sequence | Works as `well_app`: it owns them, so nothing is left out and no `WARNING:` line is logged. PostgreSQL 13 has no `pg_read_all_data` role, and none is needed. |
+| `ANALYZE` before the backup's row counts | The table's owner | Works (`well_app`). |
+| Migrations: `ALTER TABLE`, `CREATE INDEX CONCURRENTLY`, `CREATE TABLE` | The table's owner; `CREATE` on `public` | Works (`well_app`). |
+| `scripts/restore_check.py` | `CREATEDB` | `well_restore`, through `RESTORE_CHECK_DATABASE_URL`. As `well_app` alone it stops with a message naming `CREATEDB`. |
+| `SET LOCAL work_mem` (`/api/series`), `statement_timeout`, `lock_timeout` | Nothing (user settings) | Works. |
+| Advisory locks (`migrate.py`, the export limits) | Nothing | Works. |
+| welldash²'s System page (`pg_database_size`, `pg_class`) | `CONNECT` | Works (`well_ops`). |
+| One-off data fixes (`db/migrations/2026-*.sql`), `psql \copy` | Whatever the fix does | Run them with `psql "<the well_app URL>"`. A table made by hand as `postgres` is still usable by `well_app` (default privileges), and the next run of `roles.sql` hands it over. |
+
+**Every `psql` as `postgres` below searches `pg_catalog` only** (`env PGOPTIONS='-c search_path=pg_catalog'`).
+`well_app` may create functions and operators in `public`, and one named like a built-in (e.g.
+`public.format(text, name)`, a closer match than the built-in `format`) would otherwise run as the superuser the next
+time a superuser's query calls that name (the pattern of CVE-2018-1058). `roles.sql` and `roles_check.sql` also set
+the search path themselves. `env` is there because `sudo` would otherwise drop the variable.
+
+**Switching over.** On the VM, from `~/WELLWebsite`, one step at a time. `dashboard/backend/app/db/roles.sh <database>`
+prints these same steps with the database name filled in (it runs nothing). `<database>` is the name at the end of
+`BACKEND_DATABASE_URL` in `.env`. Until step 5 the containers still connect as `postgres`, so steps 2 to 4 change
+nothing for them.
+
+```bash
+cd ~/WELLWebsite
+su_psql() { sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' psql "$@"; }
+
+# 0. The server's version must be 13.16 or newer. Older releases let a table's owner run SQL as the superuser
+#    through autovacuum or maintenance commands (CVE-2022-1552), and a role that can create objects inject SQL
+#    into a concurrent pg_dump (CVE-2024-7348); well_app is both. Older: update the PostgreSQL 13 packages to the
+#    latest minor release first, and restart PostgreSQL.
+su_psql -tAc 'SHOW server_version'
+
+# 1. Drop any restore drill database a killed drill left behind, then a backup. This must happen now, while the
+#    containers still connect as postgres and pg_hba.conf still lets them (step 4 ends that): a leftover is owned by
+#    postgres, so well_restore could never drop it later. The monthly drill, which drops welldb_restore_check before
+#    creating it, would then fail every time, and every nightly backup would log a WARNING for it while the
+#    leftover, a full copy of the database, takes the disk space the backup's free-space check needs.
+docker compose exec worker python scripts/restore_check.py --drop-leftovers
+docker compose exec worker python scripts/backup_db.py --no-prune
+
+# 2. Create the roles, hand the tables to well_app, and check. Safe to run again. It takes a short exclusive lock on
+#    each table whose owner changes and gives up after 10 s rather than stall the API: if it does, run it again.
+su_psql -d <database> -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql
+su_psql -d <database> -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles_check.sql   # "roles check passed"
+
+# 3. A password for each, stored as SCRAM. Hex passwords need no quoting or URL-encoding: openssl rand -hex 24
+su_psql -d <database> -c "SET password_encryption = 'scram-sha-256'" -c '\password well_app'
+su_psql -d <database> -c "SET password_encryption = 'scram-sha-256'" -c '\password well_ops'
+su_psql -d <database> -c "SET password_encryption = 'scram-sha-256'" -c '\password well_restore'
+```
+
+PostgreSQL 13 reached its end of life in November 2025 and gets no more fixes, so 13.16 or newer is the minimum for
+now; plan the upgrade to a supported major version (and `postgresql-client-13` in the backend image with it).
+
+4. **`pg_hba.conf`**: allow the three roles from the Docker networks by password and reject everything else from
+   there, `postgres` included. Find the file with `su_psql -tAc 'SHOW hba_file'` and keep a copy
+   (`sudo cp -p <file> <file>.before-db-roles`). PostgreSQL uses the first line that matches, so put these above
+   every other `host` line whose address could match `10.20.0.0/16`:
+
+   ```
+   # TYPE  DATABASE                         USER          ADDRESS        METHOD
+   host    <database>                       well_app      10.20.0.0/16   scram-sha-256
+   host    <database>                       well_ops      10.20.0.0/16   scram-sha-256
+   host    postgres,welldb_restore_check    well_restore  10.20.0.0/16   scram-sha-256
+   host    all                              all           10.20.0.0/16   reject
+   ```
+
+   - Delete an older line only if its address is exactly `10.20.0.0/16` or a part of it (e.g. `10.20.1.0/24`): the
+     `reject` line now answers for that range, so such a line can never match again; it is usually the one that let
+     `postgres` in. A wider line (e.g. `10.0.0.0/8`, `0.0.0.0/0`) may also serve clients outside Docker: leave it,
+     below these lines, which still decide everything from `10.20.0.0/16`.
+   - `well_restore` connects to `postgres` to create and drop `welldb_restore_check`, the restore drill's throwaway
+     database, and to that one to restore into it. A drill run with
+     `--database welldb_restore_check_<suffix>` needs that name added to the `well_restore` line (PostgreSQL 13 has no
+     wildcard for database names here); without it, that run is refused.
+   - Leave the `local` lines alone: `sudo -u postgres psql` uses the Unix socket (`peer`), not TCP.
+
+   Then reload and check that PostgreSQL read the file without errors:
+
+   ```bash
+   su_psql -c 'SELECT pg_reload_conf()'
+   su_psql -c "SELECT line_number, database, user_name, address, auth_method, error FROM pg_hba_file_rules WHERE error IS NOT NULL OR address = '10.20.0.0'"
+   ```
+
+   Connections already open keep working; the rules apply to new ones. Do this step together with step 5: once it
+   is reloaded, a container that reconnects as `postgres` is refused.
+
+5. **The `.env` files.** Keep a copy of both, outside the repository so they are never committed, then edit them and
+   recreate the containers:
+
+   ```bash
+   (umask 077 && cp -p .env ~/well-root.env.before-db-roles && cp -p dashboard/backend/app/.env ~/well-app.env.before-db-roles)
+   # In .env:
+   #   BACKEND_DATABASE_URL=postgresql://well_app:<password>@host.docker.internal:5432/<database>
+   #   OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/<database>
+   # In dashboard/backend/app/.env (the worker reads it, and the restore drill runs there):
+   #   RESTORE_CHECK_DATABASE_URL=postgresql://well_restore:<password>@host.docker.internal:5432/postgres
+   docker compose up -d --no-deps backend worker export_worker
+   docker compose up -d --no-deps ops      # only if welldash² runs (COMPOSE_PROFILES=ops)
+   ```
+
+   Use the host part that `BACKEND_DATABASE_URL` has today, if it isn't `host.docker.internal`, in all three. The
+   worker reads `app/.env` through its `env_file`, so `RESTORE_CHECK_DATABASE_URL` needs no compose change. Compose sets
+   `DATABASE_URL` from `BACKEND_DATABASE_URL`, so `app/.env` needs no `DATABASE_URL` for Docker. Without
+   `OPS_DATABASE_URL`, welldash² falls back to `BACKEND_DATABASE_URL`, i.e. `well_app`, which works but can write.
+   Without `RESTORE_CHECK_DATABASE_URL`, the drill uses `DATABASE_URL` and stops, since `well_app` has no `CREATEDB`.
+   `app/.env` is also read by `backend` and `export_worker`, so they see that URL too; `well_restore` can do less
+   with the data than the `well_app` they already have.
+
+**Verify.**
+
+```bash
+# Every connection from the containers (client_addr 10.20.x.x) is well_app or well_ops, none postgres
+su_psql -d <database> -c "SELECT usename, application_name, client_addr, count(*) FROM pg_stat_activity WHERE datname = '<database>' GROUP BY 1, 2, 3 ORDER BY 1, 2"
+# The API reads the database (200), a backup as well_app leaves nothing out (no WARNING: line), and the drill passes
+docker compose exec backend curl -fsS -o /dev/null -w '%{http_code}\n' -H 'X-Welldash2-Probe: 1' http://localhost:5000/api/latest
+docker compose exec worker python scripts/backup_db.py --no-prune
+docker compose exec worker python scripts/restore_check.py
+docker compose exec backend python scripts/migrate.py --status
+# well_app can't run a program on the host (expect "permission denied ... COPY to or from an external program")
+docker compose exec backend python -c "import os, sqlalchemy as s; s.create_engine(os.environ['DATABASE_URL']).connect().exec_driver_sql(\"COPY (SELECT 1) TO PROGRAM 'true'\")"
+```
+
+The next ingestion run (every 10 minutes, `logs/db_injections.log`) and welldash²'s System page ("role: well_ops")
+confirm the rest.
+
+**Roll back.** In this order, so the containers are never refused:
+
+```bash
+sudo cp -p <hba file>.before-db-roles <hba file> && su_psql -c 'SELECT pg_reload_conf()'
+cp -p ~/well-root.env.before-db-roles .env && cp -p ~/well-app.env.before-db-roles dashboard/backend/app/.env
+docker compose up -d --no-deps backend worker export_worker   # and ops, if it runs
+```
+
+That is enough: `postgres` can use the tables whoever owns them, so nothing has to be handed back. To remove the
+roles entirely afterwards, drop the drill's throwaway database first (it is owned by `well_restore`, which can't be
+dropped while it owns one; each command runs on its own, since `DROP DATABASE` can't run in a transaction):
+
+```bash
+su_psql -c 'DROP DATABASE IF EXISTS welldb_restore_check'   # and any welldb_restore_check_<suffix>
+su_psql -d <database> -v ON_ERROR_STOP=1 -c 'REASSIGN OWNED BY well_app TO postgres' -c 'DROP OWNED BY well_app' \
+  -c 'DROP OWNED BY well_ops' -c 'DROP OWNED BY well_restore' -c 'GRANT CREATE ON SCHEMA public TO PUBLIC' \
+  -c 'DROP ROLE well_app' -c 'DROP ROLE well_ops' -c 'DROP ROLE well_restore'
+```
+
+(`GRANT CREATE ON SCHEMA public TO PUBLIC` restores PostgreSQL 13's default.)
+
+**A new database** (a new VM, or a restore into a new database): run `roles.sql` first, then `db/init_db.py` and
+`scripts/migrate.py` as `well_app`, then `roles.sql` again, which grants `well_ops` its writes on the tables the
+migrations created. When restoring a dump, restore it as `well_app` (`pg_restore --no-owner --role=well_app`, see
+[Restoring for real](#database-backups)) and run `roles.sql` in the new database before pointing the app at it.
+
+**The restore drill** runs as `well_restore` once `RESTORE_CHECK_DATABASE_URL` is set (step 5):
+`docker compose exec worker python scripts/restore_check.py`. Nothing else needs `CREATEDB`, so `well_app` never gets
+it; a run of `roles.sql` takes it back if it was granted by hand.
 
 ## AI analysis (disabled)
 
