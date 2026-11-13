@@ -58,7 +58,9 @@ export interface LoaderStats {
   failed: number;
 }
 
-const tileKey = (key: string, bucketS: number, index: number) => `${key}#${bucketS}#${index}`;
+// A series-tile's cache key. The separator can't occur in a series name, so an evicted key splits back into its parts.
+const SEP = "\u0000";
+const tileKey = (key: string, bucketS: number, index: number) => `${key}${SEP}${bucketS}${SEP}${index}`;
 
 export class SeriesLoader {
   private cache = new Map<string, TileSeries>(); // insertion order = least recently used first
@@ -94,7 +96,7 @@ export class SeriesLoader {
   /** `owner` (one chart's one need, e.g. "logger-1:detail") wants these series at this bucket for these tiles. This
    *  replaces what it wanted before. `onChange` is called whenever one of its requests ends (loaded or failed). */
   want(owner: string, keys: string[], bucketS: number, indexes: number[], priority: number, onChange: () => void,
-    whole = false): void {
+    whole = false, refresh = false): void {
     this.forget(owner);
     this.listeners.set(owner, onChange);
     this.errors.delete(owner);
@@ -102,7 +104,7 @@ export class SeriesLoader {
     for (const i of indexes) {
       for (const k of keys) {
         const tk = tileKey(k, bucketS, i);
-        if (this.cache.has(tk) && !this.stale(tk)) { this.stats.hits++; continue; }
+        if (this.usable(tk, refresh)) { this.stats.hits++; continue; }
         const job = this.pending.get(tk);
         if (job) {
           this.stats.deduped++;
@@ -167,8 +169,7 @@ export class SeriesLoader {
 
   /** Cached and not due to be fetched again (see LIVE_TTL_MS). */
   fresh(key: string, bucketS: number, index: number): boolean {
-    const tk = tileKey(key, bucketS, index);
-    return this.cache.has(tk) && !this.stale(tk);
+    return this.usable(tileKey(key, bucketS, index), false);
   }
 
   /** The tile indexes of a series cached at a bucket. */
@@ -220,6 +221,13 @@ export class SeriesLoader {
     }
   }
 
+  // Cached and complete: a tile worked out from only part of its finer tiles (deriveUp) is drawn until the real one
+  // arrives, but asked for when wanted. A tile still filling in counts as stale only for a refresh (the 10-minute
+  // timer, a new range), so moving the window never refetches the latest hour on its own.
+  private usable(tk: string, refresh: boolean): boolean {
+    return this.cache.has(tk) && !this.partial.has(tk) && !(refresh && this.stale(tk));
+  }
+
   // A tile still filling in, fetched more than LIVE_TTL_MS ago
   private stale(tk: string): boolean {
     const at = this.liveSince.get(tk);
@@ -243,7 +251,8 @@ export class SeriesLoader {
       const oldest = this.cache.keys().next().value as string;
       this.cache.delete(oldest);
       this.liveSince.delete(oldest);
-      const [k, b, i] = oldest.split("#");
+      this.partial.delete(oldest);
+      const [k, b, i] = oldest.split(SEP);
       this.loaded.get(`${k}#${b}`)?.delete(Number(i));
     }
   }

@@ -444,22 +444,24 @@ test("loader: a tile still filling in is fetched again after a minute; older til
   const live = tileAt(clock - 3600e3, 600); // ends after now - 1 h: still getting readings
   const old = live - 3;
   let changes = 0;
-  loader.want("c", [A], 600, [old, live], 0, () => changes++);
+  loader.want("c", [A], 600, [old, live], 0, () => changes++, false, true);
   await srv.settle();
   const n0 = srv.calls.length;
   const rev0 = loader.revision(A);
   clock += 30_000;
-  loader.want("c", [A], 600, [old, live], 0, () => changes++);
+  loader.want("c", [A], 600, [old, live], 0, () => changes++, false, true);
   assert.equal(srv.calls.length, n0); // fresh for a minute
   clock += 40_000;
   loader.want("c", [A], 600, [old, live], 0, () => changes++);
+  assert.equal(srv.calls.length, n0); // moving the window: a stale live tile still counts as cached
+  loader.want("c", [A], 600, [old, live], 0, () => changes++, false, true); // a refresh fetches it
   assert.equal(srv.calls.length, n0 + 1); // the live tile only
   assert.deepEqual([srv.calls.at(-1).first, srv.calls.at(-1).last], [live, live]);
   assert.ok(loader.has(A, 600, live)); // the old copy is still drawn meanwhile
   await srv.settle();
   assert.ok(loader.revision(A) > rev0); // charts recompose with the new readings
   clock += 10 * 60_000;
-  loader.want("c", [A], 600, [old], 0, () => {});
+  loader.want("c", [A], 600, [old], 0, () => {}, false, true);
   assert.equal(srv.calls.length, n0 + 1); // a past tile stays cached
 });
 
@@ -469,7 +471,7 @@ test("loader: a failed refresh of a cached live tile shows no error and tries ag
   let clock = Date.parse("2026-11-11T17:00:00Z");
   const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
   const live = tileAt(clock - 3600e3, 600);
-  loader.want("c", [A], 600, [live], 0, () => {});
+  loader.want("c", [A], 600, [live], 0, () => {}, false, true);
   await srv.settle();
   const rev = loader.revision(A);
   failing = true;
@@ -477,7 +479,7 @@ test("loader: a failed refresh of a cached live tile shows no error and tries ag
   const warn = console.warn;
   console.warn = () => {};
   try {
-    loader.want("c", [A], 600, [live], 0, () => {});
+    loader.want("c", [A], 600, [live], 0, () => {}, false, true);
     await srv.settle();
   } finally {
     console.warn = warn;
@@ -486,10 +488,10 @@ test("loader: a failed refresh of a cached live tile shows no error and tries ag
   assert.ok(loader.has(A, 600, live));
   assert.equal(loader.revision(A), rev); // nothing replaced
   const n = srv.calls.length;
-  loader.want("c", [A], 600, [live], 0, () => {});
+  loader.want("c", [A], 600, [live], 0, () => {}, false, true);
   assert.equal(srv.calls.length, n + 1); // tried again
   await srv.settle();
-  loader.want("d", [B], 600, [live], 0, () => {}); // never loaded: its failure is an error
+  loader.want("d", [B], 600, [live], 0, () => {}, false, true); // never loaded: its failure is an error
   await srv.settle();
   assert.match(loader.error("d").message, /500/);
 });
@@ -836,4 +838,69 @@ test("a narrow chart over two days draws at once: coarser tiles reaching past th
   assert.ok(c.overview(A).some((p) => p.y !== null));
   assert.ok([...c.lastData.series.get(A)].some((p) => p.y !== null && p.x >= range.start && p.x <= range.end));
   c.dispose();
+});
+
+test("widening the range replaces coarser tiles worked out from part of their finer tiles: no false outage", async () => {
+  const end = Date.parse("2026-11-15T05:00:00Z");
+  const narrow = { start: Date.parse("2026-11-01T04:00:00Z"), end };
+  const wide = { start: Date.parse("2026-10-01T04:00:00Z"), end };
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0);
+  const c = new ChartController("card", [A], narrow, narrow, loader, syncFrame, 30);
+  c.setPlotWidth(600);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  c.setExtent(wide);
+  c.setDefault(wide);
+  await sleep(60);
+  await srv.settle();
+  await sleep(20);
+  await srv.settle();
+  // Every bucket of the navigator's line over the wide range has a value (the fake server has data everywhere)
+  const b = c.ovB();
+  const pts = c.overview(A).filter((p) => p.y !== null);
+  const from = wide.start + b * 1000, to = narrow.start + 3 * D;
+  const missing = [];
+  for (let t = from; t < to; t += b * 1000) if (!pts.some((p) => Math.abs(p.x - (t + b * 500)) < b * 1000)) missing.push(new Date(t).toISOString());
+  assert.deepEqual(missing.slice(0, 3), []);
+  c.dispose();
+});
+
+test("after a minute, moving the window still asks at most once per interaction (stale live tiles are refreshed by the timer)", async () => {
+  let clock = Date.parse("2026-11-12T17:00:00Z");
+  const range = { start: Date.parse("2025-05-08T04:00:00Z"), end: clock };
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+  const c = new ChartController("card", [A, B], range, range, loader, syncFrame, 30);
+  c.setPlotWidth(600);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const steps = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5].map((f) => (ctl) => ctl.zoom(f, undefined, "button"))
+    .concat([1, 2, 3].map(() => (ctl) => ctl.pan(0.5, "button")));
+  for (const act of steps) {
+    clock += 70_000; // past LIVE_TTL_MS every time
+    const n0 = srv.calls.length;
+    act(c);
+    await sleep(60);
+    await srv.settle();
+    assert.ok(srv.calls.length - n0 <= 1, `${srv.calls.length - n0} requests`);
+  }
+  // The 10-minute refresh is what fetches the latest hour again
+  const n1 = srv.calls.length;
+  c.refreshLive();
+  await sleep(60);
+  assert.ok(srv.calls.length > n1);
+  await srv.settle();
+  c.dispose();
+});
+
+test("a series name with the cache key's old separator in it is evicted cleanly", async () => {
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles, 2, 2, 0);
+  const odd = "Logger|1|Level #2";
+  loader.want("c", [odd], 600, [1, 2, 3], 0, () => {});
+  await srv.settle();
+  assert.deepEqual([...loader.loadedTiles(odd, 600)].sort(), [2, 3]); // the oldest tile went, and its index with it
 });

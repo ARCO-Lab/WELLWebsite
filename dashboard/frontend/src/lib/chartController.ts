@@ -332,7 +332,7 @@ export class ChartController {
    *  as a page left open does every few minutes; nothing while a gesture is under way. */
   refreshLive(): void {
     if (this.gestureActive || this.disposed) return;
-    this.request();
+    this.request(false, true);
   }
 
   /** Open on where the series have readings within the extent (once its overview has loaded), until the user moves
@@ -382,7 +382,7 @@ export class ChartController {
     this.defaultWin = clampWindow(this.defaultWin, extent);
     this.win = clampWindow(this.win, extent);
     this.scheduleFrame();
-    this.request();
+    this.request(false, true);
   }
 
   setKeys(keys: string[]): void {
@@ -453,14 +453,14 @@ export class ChartController {
   /** Ask the loader for the chart's whole range at its base bucket (one request, once: every coarser bucket is worked
    *  out from it) and, when the window needs finer buckets than that, its tiles filled up to one request along the
    *  way it moved (fillTiles); with `windowOnly` (the middle of a long gesture), only the latter. */
-  request(windowOnly = false): void {
+  request(windowOnly = false, refresh = false): void {
     if (this.disposed) return;
     const w = this.win, span = w.end - w.start;
     this.wantB = bucketFor(span, this.width, this.density);
     const keys = this.keys;
     const near = this.visible ? 0 : 2;
     const base = baseBucket(this.ext);
-    if (!windowOnly) this.loader.want(this.owner("overview"), keys, base, tilesFor(this.ext, base), near, () => this.dataChanged(false), true);
+    if (!windowOnly) this.loader.want(this.owner("overview"), keys, base, tilesFor(this.ext, base), near, () => this.dataChanged(false), true, refresh);
     // Finer than the base: the window's tiles, and more along the way it moved since it last settled
     let tiles: number[] = [];
     if (this.wantB < base) {
