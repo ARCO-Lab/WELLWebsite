@@ -1,7 +1,9 @@
 # Builds the daily digest of the sensor data: the open email alerts (scripts/check_alerts.py) and those that cleared
 # in the last 24 h (including low-priority recoveries that weren't emailed on their own), stale
-# series, implausible values, readings and gaps per group (and per station within a group) over the last 24 h, the newest reading of every series,
-# the WQData device's primary power and last contact, and yesterday's API traffic (request_metrics, utils/traffic.py). scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
+# series, implausible values, readings and gaps per group (and per station within a group) over the last 24 h, the
+# newest reading of every series, the WQData device's primary power and last contact, yesterday's API traffic
+# (request_metrics, utils/traffic.py), and first of all the worker's heartbeat URLs (HEALTHCHECK_URL_*) that aren't
+# set, if any. scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
 #
 # The digest is Markdown text, sent with the same content as HTML (utils/email_format.py), like the alert emails.
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
@@ -83,6 +85,23 @@ def read_traffic(db, now):
     except Exception as e:   # the type only: a connection error's text can include the database URL
         db.session.rollback()
         return {"error": type(e).__name__}
+
+
+def read_restore_leftovers(db):
+    """The restore drill databases on the server (utils/backup.py), or [] while a drill is running (its database
+    isn't left behind) or if they can't be listed."""
+    from utils.backup import leftover_restore_databases, restore_lock
+    try:
+        with restore_lock() as free:
+            if not free:
+                return []
+            names = db.session.execute(db.text("SELECT datname FROM pg_database")).scalars().all()
+            current = db.session.execute(db.text("SELECT current_database()")).scalar()
+        return leftover_restore_databases(names, {current})
+    except Exception as e:   # the digest still goes out
+        db.session.rollback()
+        print(f"[WARN] could not list the restore drill databases: {type(e).__name__}: {e}")
+        return []
 
 
 def read_wqdata(config, now):
@@ -168,6 +187,7 @@ def main(argv=None):
             db.session.rollback()
             incidents = recoveries = {"error": type(e).__name__}
         traffic = read_traffic(db, now)
+        leftovers = read_restore_leftovers(db)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     from utils.alerts import Settings, settings_from_env
     try:
@@ -175,9 +195,12 @@ def main(argv=None):
     except ValueError as e:   # a bad ALERT_* setting fails the alert check; the digest still goes out
         print(f"[WARN] {e}; the digest uses the default alert settings")
         alert_settings = Settings()
+    from utils import sharepoint
+    from utils.heartbeat import unset_heartbeats
+    unset = unset_heartbeats(sharepoint_on=sharepoint.status()[0] != "off")
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
                                  incidents, traffic, recoveries, alert_settings.dashboard_url,
-                                 alert_settings.quiet_kinds)
+                                 alert_settings.quiet_kinds, unset, leftovers)
     return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject))
 
 

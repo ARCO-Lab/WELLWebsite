@@ -41,8 +41,11 @@ if [ "$MYSQL_PWD" != "$MYSQL_ROOT_PASSWORD" ] || [ "$DUMP" = denied ]; then
 fi
 echo "-- MySQL dump 10.13"
 [ "$DUMP" = no-options ] || echo 'CREATE TABLE `wp_options` (option_id int);'
+[ "$DUMP" = no-options ] || echo 'CREATE TABLE `wp_yoast_options` (x int);'   # a plugin's, not WordPress's own
 echo 'CREATE TABLE `wp_posts` (ID int);'
+[ "$DUMP" = empty-posts ] || echo 'INSERT INTO `wp_posts` VALUES (1),(2);'
 [ "$DUMP" = truncated ] && exit 0
+[ "$DUMP" = no-users ] || { echo 'CREATE TABLE `wp_users` (ID int);'; echo 'INSERT INTO `wp_users` VALUES (1);'; }
 [ "$DUMP" = no-options ] && echo 'CREATE TABLE `wp_other` (x int);'
 echo "-- Dump completed on 2026-11-11  3:45:00"
 EOF
@@ -110,6 +113,12 @@ check "a dump cut short (no closing line): fails, no backup kept" 'rc 1 && said 
 reset; DUMP=no-options run
 check "a dump with no options table: fails" 'rc 1 && said "no options table"'
 
+reset; DUMP=no-users run
+check "a dump with no users table: fails, no backup kept" 'rc 1 && said "the dump has no wp_users table" && ran "/fail" && [ "$(count "wordpress-*")" = 0 ]'
+
+reset; DUMP=empty-posts run
+check "a dump whose posts table is empty (an emptied site): fails" 'rc 1 && said "the dump'"'"'s wp_posts table is empty"'
+
 reset; NO_DB=1 run
 check "db container not running: fails and says so" 'rc 1 && said "the db container isn'"'"'t running" && ran "/fail"'
 
@@ -153,6 +162,16 @@ check "retention deletes the rest, both files of each" 'gone 20261111-0200 && go
 check "retention leaves other files alone (other names, impossible dates)" '[ -e "$B/wordpress-db-before-update.sql.gz" ] && [ -e "$B/wordpress-db-20261399-0000.sql.gz" ] && [ -e "$B/notes.txt" ]'
 check "--prune-only: no dump, no pings" '! ran "mysqldump" && ! ran "ping" && said "4 backups kept" && said "6 deleted"'
 
+# Nights whose uploads archive failed leave only a database dump. They take no retention slot, so complete backups
+# aren't pushed out: here 2 days of slots, 5 database-only nights, then 2 complete ones before them.
+reset; make_backups 20261105-0345 20261104-0345 20261103-0345
+for s in 20261110-0345 20261109-0345 20261108-0345 20261107-0345 20261106-0345 20261102-0345; do
+  : > "$B/wordpress-db-$s.sql.gz"
+done
+EXTRA="WP_BACKUP_KEEP_DAILY=2 WP_BACKUP_KEEP_WEEKLY=0 WP_BACKUP_KEEP_MONTHLY=0" run --prune-only
+check "retention: database-only backups take no slot, so the 2 newest complete ones stay" 'rc 0 && has 20261105-0345 && has 20261104-0345 && gone 20261103-0345'
+check "retention: up to KEEP_DAILY database-only backups newer than every complete one stay, the rest go" '[ -e "$B/wordpress-db-20261110-0345.sql.gz" ] && [ -e "$B/wordpress-db-20261109-0345.sql.gz" ] && gone 20261108-0345 && gone 20261107-0345 && gone 20261106-0345 && gone 20261102-0345'
+
 reset; make_backups 20200101-0000; run --no-prune
 check "--no-prune: backs up and deletes nothing" 'rc 0 && has 20200101-0000 && [ "$(count "wordpress-db-*.sql.gz")" = 2 ]'
 
@@ -174,15 +193,17 @@ CREATE TABLE wp_options (option_id bigint AUTO_INCREMENT PRIMARY KEY, option_nam
 INSERT INTO wp_options (option_name, option_value) VALUES ('siteurl', 'https://example.test'), ('blogname', 'Café ☔');
 CREATE TABLE wp_posts (ID bigint AUTO_INCREMENT PRIMARY KEY, post_title text) DEFAULT CHARSET=utf8mb4;
 INSERT INTO wp_posts (post_title) VALUES ('First'), ('Second'), ('Third');
+CREATE TABLE wp_users (ID bigint AUTO_INCREMENT PRIMARY KEY, user_login varchar(60)) DEFAULT CHARSET=utf8mb4;
+INSERT INTO wp_users (user_login) VALUES ('admin');
 SQL
   reset
   (cd / && env DOCKER=docker CURL=curl HEALTHCHECK_URL_WP_BACKUP="" WP_DB_CONTAINER="$REAL_DB" bash "$SCRIPT") > "$T/out" 2>&1
   echo $? > "$T/rc"
-  check "real MySQL 5.7: backup succeeds with both tables" 'rc 0 && said "(2 tables)"'
+  check "real MySQL 5.7: backup succeeds with all three tables" 'rc 0 && said "(3 tables)"'
   check "real MySQL 5.7: the dump keeps UTF-8 text and holds no password" 'zgrep -qF "Café ☔" "$B"/wordpress-db-*.sql.gz && ! zgrep -qF "$REAL_SECRET" "$B"/wordpress-db-*.sql.gz && ! said "$REAL_SECRET"'
   (cd / && env DOCKER=docker WP_DB_CONTAINER="$REAL_DB" bash "$SCRIPT" --restore-check) > "$T/out" 2>&1
   echo $? > "$T/rc"
-  check "real MySQL 5.7: --restore-check loads it into a throwaway container and passes" 'rc 0 && said "Restore check passed" && said "siteurl https://example.test" && said "3 rows in wp_posts"'
+  check "real MySQL 5.7: --restore-check loads it into a throwaway container and passes" 'rc 0 && said "Restore check passed" && said "siteurl https://example.test" && said "3 rows in wp_posts, 1 in wp_users"'
   check "real MySQL 5.7: --restore-check deletes its container" '[ -z "$(docker ps -aq --filter "name=^wp-restore-check-")" ]'
   # A copy of the dump cut short, under a newer stamp
   stamp=$(find "$B" -maxdepth 1 -name 'wordpress-db-*.sql.gz' -printf '%f\n' | sed -n 's/^wordpress-db-\(.*\)\.sql\.gz$/\1/p' | head -1)

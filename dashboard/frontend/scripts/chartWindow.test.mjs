@@ -283,3 +283,13 @@ test("cardSeries: faulty sensors are noted, TSS starts hidden; nothing selected 
   assert.match(series[1].note, /Jun 2026/);
   assert.deepEqual(cardSeries("Logger", [{ id: "1", name: "Logger 1" }], []).series, []);
 });
+
+test("guarded: a callback's exception is reported, not thrown; otherwise it runs as usual", async () => {
+  const { guarded } = await import("../src/lib/guarded.ts");
+  const seen = [];
+  const ok = guarded((a, b) => seen.push(a + b), (e) => seen.push(`reported ${e.message}`));
+  ok(1, 2);
+  const bad = guarded(() => { throw new Error("boom"); }, (e) => seen.push(`reported ${e.message}`));
+  assert.doesNotThrow(() => bad());
+  assert.deepEqual(seen, [3, "reported boom"]);
+});

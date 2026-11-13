@@ -28,7 +28,8 @@
 // gesture the bands and the accessibility layer are off and requests wait for its end. Screen readers get the chart's
 // description and, from the toolbar, the window once it settles, rather than a description of every point.
 
-import React, { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { guarded } from '@/lib/guarded';
 import Highcharts from 'highcharts';
 import 'highcharts/modules/stock'; // the navigator and its scrollbar
 import 'highcharts/highcharts-more'; // arearange, for the min-max bands
@@ -316,6 +317,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
   const hintRef = useRef<HTMLDivElement>(null);
   const selectRef = useRef<HTMLDivElement>(null);
   const navDragRef = useRef(false); // a navigator drag is on (the canvas preview leaves the chart its pointer events)
+  const [, setCrash] = useState<null>(null); // rethrows a callback's exception during render (see guarded below)
 
   const chartHeight = modalOpen ? Math.round(height * 1.5) : height;
   // Rebuilt (a new chart) only when what is drawn changes: other series, height or the larger view
@@ -447,26 +449,29 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       navigator();
       if (navShown !== before) chart.redraw(false);
     });
-    const offData = controller.onData(apply);
-    const offRedraw = controller.onRedraw(place);
+    // These run from animation frames and fetch replies, outside React: an exception in them goes to the card's
+    // error boundary (rethrown in a state update) instead of leaving the chart half drawn
+    const crash = (err: unknown) => setCrash(() => { throw err; });
+    const offData = controller.onData(guarded(apply, crash));
+    const offRedraw = controller.onRedraw(guarded(place, crash));
     // Between the paced redraws of a gesture, the navigator's window and handles follow every frame (cheap: no series
     // are drawn), so they track the finger even when the chart can only redraw a few times a second
-    const offFrame = controller.onFrame((w) => {
+    const offFrame = controller.onFrame(guarded((w: { start: number; end: number }) => {
       if (controller.inGesture && !preview.active) (chart as Highcharts.Chart & { navigator?: { render(a: number, b: number): void } }).navigator?.render(w.start, w.end);
-    });
+    }, crash));
     // Accessibility repositions its hidden buttons (forcing a page layout) on every redraw: off while the window
     // moves, back 300 ms after (the toolbar's live region still announces where the gesture ended)
     let a11yTimer = 0;
     const a11y = (on: boolean) => chart.update({ accessibility: { enabled: on } }, false);
-    const offGesture = controller.onGesture((active) => {
+    const offGesture = controller.onGesture(guarded((active: boolean) => {
       bands(!active);
       window.clearTimeout(a11yTimer);
       if (active) a11y(false);
       else {
         if (preview.active) place(controller.window);
-        a11yTimer = window.setTimeout(() => { a11y(true); chart.redraw(false); }, 300);
+        a11yTimer = window.setTimeout(guarded(() => { a11y(true); chart.redraw(false); }, crash), 300);
       }
-    });
+    }, crash));
     return () => {
       offData(); offRedraw(); offFrame(); offGesture(); offLegend();
       window.clearTimeout(a11yTimer);
@@ -748,7 +753,13 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       // Fingers more above each other than side by side: not a time zoom (the chart's pinch measures the sideways
       // spread, which barely changes); left to the browser, which zooms the page
       const [ta, tb] = [e.touches[0], e.touches[1]];
-      if (Math.abs(ta.clientY - tb.clientY) > Math.abs(ta.clientX - tb.clientX)) return;
+      if (Math.abs(ta.clientY - tb.clientY) > Math.abs(ta.clientX - tb.clientX)) {
+        if (drag?.touch) { // the first finger's pan ends here too
+          if (drag.moved) controller.endGesture();
+          drag = null;
+        }
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       const c = chart();
@@ -844,7 +855,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
         tabIndex={0}
         role="group"
         aria-label={`${title} chart. Arrow keys move it, plus and minus zoom, 0 resets.`}
-        className="well-chart relative [contain:layout_paint] cursor-grab touch-pan-y rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary active:cursor-grabbing"
+        className="well-chart relative [contain:layout_paint] cursor-grab touch-pan-y touch-pinch-zoom rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary active:cursor-grabbing"
         style={{ height: chartHeight }}
       >
         <HighchartsReact

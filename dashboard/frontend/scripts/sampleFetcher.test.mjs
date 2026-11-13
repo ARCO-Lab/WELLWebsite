@@ -77,3 +77,14 @@ test("cancel() drops the request in flight", async () => {
   f.cancel();
   assert.equal(await pending, null);
 });
+
+test("the proxy's 429 for too many requests in flight is shown as its message, not as a failure code", async () => {
+  // What lib/proxyBackend.ts answers when an address has too many slow requests (sampling rows count as slow)
+  const { fetchImpl, reply } = manualFetch();
+  const f = new SampleFetcher(fetchImpl);
+  const loading = f.load("a", "/a");
+  reply("/a", { error: "Too many requests from your address. Please wait a moment and try again." }, 429);
+  const result = await loading;
+  assert.equal(result.data, null);
+  assert.equal(result.error.message, "Too many requests from your address. Please wait a moment and try again.");
+});

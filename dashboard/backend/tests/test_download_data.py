@@ -66,6 +66,45 @@ class BookkeepingTests(TestCase):
                 download_data.save_state(state)
             self.assertEqual([f["id"] for f in json.loads(pathlib.Path(path).read_text())["processed_files"]], [1])
 
+    def test_a_damaged_state_file_stops_the_run_and_is_kept(self):
+        # Read as empty, every dataset file would be imported again, undoing deletions and held corrections
+        for damaged in ('{"processed_files": [{"id": 1', "", "[]", '{"processed_files": "1,2"}',
+                        b"\xff\xfe not utf-8"):
+            with self.subTest(damaged=damaged), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder, "processed.json")
+                (path.write_bytes if isinstance(damaged, bytes) else path.write_text)(damaged)
+                with mock.patch.object(download_data, "STATE_FILE", str(path)), \
+                        contextlib.redirect_stdout(io.StringIO()), self.assertRaises(download_data.StateFileError) as e:
+                    download_data.load_state()
+                self.assertIn("can't be read", str(e.exception))
+                self.assertIn("processed.json.bad", str(e.exception))
+                bad = pathlib.Path(folder, "processed.json.bad")
+                self.assertEqual(bad.read_bytes(), path.read_bytes())   # the original is left as it was, too
+
+    def test_no_state_file_is_an_empty_state_and_a_good_one_is_read(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder, "processed.json")
+            with mock.patch.object(download_data, "STATE_FILE", str(path)), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(download_data.load_state(), empty_state())
+                path.write_text(json.dumps({"processed_files": [{"id": 1, "filename": "a.csv"}]}))
+                self.assertEqual(download_data.load_state(),
+                                 {"processed_files": [{"id": 1, "filename": "a.csv"}], "refused_files": []})
+
+    def test_a_damaged_state_file_fails_the_run_before_any_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder, "processed.json")
+            path.write_text("{")
+            out = io.StringIO()
+            with mock.patch.object(download_data, "STATE_FILE", str(path)), \
+                    mock.patch.object(download_data, "get_files_from_dataset") as listing, \
+                    mock.patch.object(sys, "argv", ["download_data.py"]), contextlib.redirect_stdout(out), \
+                    self.assertRaises(SystemExit) as exited:
+                download_data.main()
+            self.assertEqual(exited.exception.code, 1)
+            listing.assert_not_called()
+            self.assertIn("can't be read", out.getvalue())
+            self.assertNotIn("OUTPUT:", out.getvalue())
+
     def test_record_moves_a_file_between_lists(self):
         state = empty_state()
         download_data.record(state, BAD, "refused", 7)
