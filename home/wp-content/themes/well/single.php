@@ -1,6 +1,7 @@
 <?php
 // This is the single post template for the WELL WordPress theme.
 // It displays a single news article, its metadata, and related news posts.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 get_header();
 ?>
@@ -13,8 +14,8 @@ if ( have_posts() ) :
 <nav aria-label="breadcrumb" class="breadcrumb-nav">
     <div class="container">
         <ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="<?php echo home_url(); ?>">Home</a></li>
-            <li class="breadcrumb-item"><a href="<?php echo home_url('/news/'); ?>">News</a></li>
+            <li class="breadcrumb-item"><a href="<?php echo esc_url( home_url( '/' ) ); ?>">Home</a></li>
+            <li class="breadcrumb-item"><a href="<?php echo esc_url( home_url( '/news/' ) ); ?>">News</a></li>
             <li class="breadcrumb-item active"><?php the_title(); ?></li>
         </ol>
     </div>
