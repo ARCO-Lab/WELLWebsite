@@ -24,6 +24,7 @@ sys.path.insert(0, str(APP))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
 from config import Config  # noqa: E402
+from api.services import catalog  # noqa: E402
 from api.services.exports import write_export_csv  # noqa: E402
 from utils.sampling_csv import validate_csv  # noqa: E402
 
@@ -73,8 +74,8 @@ def json_bytes(value) -> bytes:
 #                     read as wall time (2026-11-02T04:59:59.999Z is Nov 1 23:59:59.999 Toronto)
 #   2026-11-30 23:45  last reading of November
 #   2026-12-01 00:00  in neither file
-# No value is a vendor "no reading" sentinel (e.g. -100000): the export passes values through unfiltered, and these
-# files pin the format, not sentinel handling.
+# No value is a vendor "no reading" sentinel (e.g. -100000): the files write one as an empty cell (csv_cell in
+# api/services/exports.py, tested in test_export_csv.py and test_api_dos.py), and these files pin the format.
 WEATHER, QUALITY = "22051538", "4501"
 WSE, WT = "Water Surface Elevation", "Water Temperature"
 
@@ -213,6 +214,7 @@ class DatabaseCase(unittest.TestCase):
         from db.models import SensorMeasurement
         cls.db.session.add_all(SensorMeasurement(**r) for r in readings)
         cls.db.session.commit()
+        catalog.forget()  # another test class may have loaded other readings into this database within REFRESH_S
 
     def export(self, payload) -> bytes:
         path = os.path.join(self.tmp, "export.csv")

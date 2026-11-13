@@ -61,7 +61,9 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `EXPORT_MAX_ACTIVE_JOBS` | `6` | Queued or running exports at once, in total. |
 | `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` | `2` | The same, per visitor (by IP address). |
 | `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` | `6` | Jobs one visitor may start in an hour, finished ones included. |
-| `EXPORT_MIN_FREE_MB` | `2048` | Free space to keep on the exports disk after an export's estimated size; exports that would go below it get a 507. |
+| `EXPORT_MIN_FREE_MB` | `2048` | Free space to keep on the exports disk after an export's estimated size; exports that would go below it get a 507, and a file that grows into it is stopped and deleted. |
+| `EXPORT_MAX_FILE_MB` | `1024` | Largest file one export may write; a larger one is stopped and deleted. `0`: no limit besides the free space. |
+| `EXPORT_SYNC_MAX_SECONDS` | `45` | Longest a direct download may take to build (under gunicorn's 60 s timeout); a slower one is stopped (504). |
 | `EXPORT_SOFT_TIME_LIMIT_SECONDS`, `EXPORT_HARD_TIME_LIMIT_SECONDS` | `900`, `1200` | An export past the soft limit is stopped and marked failed; past the hard limit its process is killed. |
 | `EXPORT_WORKER_MAX_MEMORY_KB` | `512000` | An export worker process is replaced once a task leaves it using more memory than this. |
 | `EXPORT_FILE_TTL_MINUTES` | `60` | How long a finished export can be downloaded before the hourly cleanup deletes it. |
@@ -114,8 +116,10 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `FLASK_API_URL` | build time only | from `BACKEND_INTERNAL_URL` | Where the API routes in `src/pages/api/` send requests. The `env` block in `next.config.ts` inlines it into the build, server code included, so the run-time value compose also sets is never read: after changing `BACKEND_INTERNAL_URL`, rebuild with `docker compose up -d --build --no-deps dashboard`. For `next dev` outside Docker, set it to your backend, e.g. `http://localhost:5000`. |
 | `TRUSTED_PROXY_IPS` | run time | see above | Set by `docker-compose.yml` from the root `.env`. |
 | `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | run time | `600`, `600` | API requests one visitor's address may make at once, and per minute after that ([Rate limits](../dashboard/frontend/README.md#rate-limits-and-security-headers)). Not set by `docker-compose.yml`: add them to the dashboard's `environment:` to change them. `0` turns a limit off. |
-| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | run time | `120`, `120` | The same for slow requests (wind rose, `/api/data`, export estimates, direct exports, new export jobs). |
-| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `12` | Slow requests one address may have in flight at once. |
+| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | run time | `120`, `120` | The same for slow requests (wind rose, `/api/data`, `/api/samples`, `/api/series` without `bucket=`, export estimates, direct exports, new export jobs). |
+| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `6` | Slow requests one address may have in flight at once, each until the backend has finished with it. |
+| `RATE_LIMIT_DOWNLOAD_CONCURRENT` | run time | `2` | Export downloads one address may have in flight at once. |
+| `PROXY_BODY_MAX_MS` | run time | `1800000` | The longest a response may take to send before it is cut off. |
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |

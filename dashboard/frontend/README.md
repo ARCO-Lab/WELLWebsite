@@ -23,8 +23,10 @@ Every API route that calls the backend goes through `src/lib/proxyBackend.ts`, w
 | Variable | Default | Meaning |
 |---|---|---|
 | `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | `600`, `600` | Requests one address may make at once, and per minute after that. |
-| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | `120`, `120` | The same for slow requests: the wind rose, `/api/data`, export estimates, direct exports and new export jobs. |
-| `RATE_LIMIT_SLOW_CONCURRENT` | `12` | Slow requests one address may have in flight at once. |
+| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | `120`, `120` | The same for slow requests: the wind rose, `/api/data`, `/api/samples`, `/api/series` without `bucket=`, export estimates, direct exports and new export jobs. |
+| `RATE_LIMIT_SLOW_CONCURRENT` | `6` | Slow requests one address may have in flight at once: half the backend's 12 threads. A request counts until the backend has finished with it, even if the browser left first, so this leaves room for a few requests a visitor abandoned by changing the range quickly. |
+| `RATE_LIMIT_DOWNLOAD_CONCURRENT` | `2` | Export downloads one address may have in flight at once. |
+| `PROXY_BODY_MAX_MS` | `1800000` | The longest any response may take to send (30 minutes), so a browser reading a download very slowly can't hold a backend thread for ever. |
 
 Beyond a limit the answer is a 429 with `Retry-After`, and the backend isn't called. `0` turns a limit off. They are
 read when the server starts; to change one, add it to the `dashboard` service's `environment:` in
