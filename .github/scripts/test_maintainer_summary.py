@@ -220,7 +220,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(ms.REQUIRED_CHECKS, re.findall(r'"([^"]+)"', line.split("#")[0]))
 
 
-def routes(prs, files=None, runs=None, compare=None, comments=None):
+def routes(prs, files=None, runs=None, compare=None, comments=None, commits=None):
     r = {("GET", f"/repos/{REPO}/pulls"): prs}
     for p in prs:
         r[("GET", f"/repos/{REPO}/pulls/{p['number']}/files")] = [
@@ -230,6 +230,9 @@ def routes(prs, files=None, runs=None, compare=None, comments=None):
         # By default the publish job's comment records the pull request's head
         r[("GET", f"/repos/{REPO}/issues/{p['number']}/comments")] = (comments or {}).get(
             p["number"], [published(p["head"]["sha"])])
+        # By default one commit, the head, authored by the maintainer
+        r[("GET", f"/repos/{REPO}/pulls/{p['number']}/commits")] = (commits or {}).get(
+            p["number"], [{"sha": p["head"]["sha"], "author": {"login": LOGIN}}])
     if compare:
         r[("GET", f"/repos/{REPO}/compare/{compare[0]}...{compare[1]}")] = {"commits": compare[2]}
     return r
@@ -268,6 +271,16 @@ class GatherTests(unittest.TestCase):
         self.assertEqual(("review", ["changed since the maintainer published it (head cccccccccccc, published "
                                      "aaaaaaaaaaaa)"]), reviewed[0][1:])
         self.assertEqual(("review", ["no record of the commit the maintainer published"]), reviewed[1][1:])
+
+    def test_commits_by_anyone_else_need_review(self):
+        labels = ["risk:low", "self-check:passed"]
+        prs = [pr(1, "maint/a", labels, sha="c" * 40), pr(2, "maint/b", labels, sha="d" * 40)]
+        commits = {1: [{"sha": "e" * 40, "author": {"login": "someone"}}, {"sha": "c" * 40, "author": {"login": LOGIN}}],
+                   2: [{"sha": "d" * 40, "author": None}]}   # an email GitHub can't tie to an account
+        reviewed, _, errors, _ = ms.gather(env(), FakeTransport(routes(prs, commits=commits)))
+        self.assertEqual([], errors)
+        self.assertEqual(("review", ["has commits not authored by the maintainer: eeeeeeeeeeee"]), reviewed[0][1:])
+        self.assertEqual(("review", ["has commits not authored by the maintainer: dddddddddddd"]), reviewed[1][1:])
 
     def test_claude_failure_and_missing_report_are_errors(self):
         _, result, errors, _ = ms.gather(env(CLAUDE_OUTCOME="failure", CLAUDE_RESULT=""), FakeTransport(routes([])))

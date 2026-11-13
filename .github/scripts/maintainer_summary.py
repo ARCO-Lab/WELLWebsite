@@ -10,7 +10,8 @@ so every pull request still needs a person to read it before merging.
   (with a personal token that is the owner's own account, so the branch is what tells them apart; a `maintainer`
   label alone, which anyone with triage rights can add, isn't enough);
 - its head is still the commit the publish job pushed (recorded in the publish job's comment on it), so commits
-  someone else added since then aren't passed along unseen;
+  someone else added since then aren't passed along unseen, and every commit in it is authored by the maintainer's
+  account (GitHub's author login), so a branch built on someone else's commits isn't either;
 - CI finished, every check passed, and the checks main requires (REQUIRED_CHECKS) are among them;
 - it has the `self-check:passed` label (the model's own subagent audit said "Approval recommended") and no
   `self-check:findings` label;
@@ -135,9 +136,11 @@ def ci_state(check_runs, required=REQUIRED_CHECKS):
     return ("missing", missing) if missing else ("green", [])
 
 
-def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=(), added=(), published=None):
+def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=(), added=(), published=None,
+             foreign_commits=()):
     """("ready", []) or ("review", [reasons]). `added`: the files the pull request adds; `published`: the commit the
-    publish job recorded pushing to it (None when there is no record)."""
+    publish job recorded pushing to it (None when there is no record); `foreign_commits`: the shas of its commits
+    that the maintainer's account didn't author."""
     labels = {label.get("name") for label in pr.get("labels") or []}
     reasons = []
     if not is_maintainer_pr(pr, repo, login):
@@ -147,6 +150,10 @@ def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=(), ad
         reasons.append("no record of the commit the maintainer published")
     elif published != head:
         reasons.append(f"changed since the maintainer published it (head {head[:12]}, published {published[:12]})")
+    if foreign_commits:
+        shown = ", ".join(sha[:12] for sha in foreign_commits[:3])
+        more = f" and {len(foreign_commits) - 3} more" if len(foreign_commits) > 3 else ""
+        reasons.append(f"has commits not authored by the maintainer: {shown}{more}")
     if ci == "red":
         reasons.append("CI failed" + (f": {', '.join(failed_checks)}" if failed_checks else ""))
     elif ci == "pending":
@@ -193,8 +200,11 @@ def review_prs(gh, repo, prs, login):
                          if r.get("status") == "completed" and r.get("conclusion") not in PASSED})
         state, missing = ci_state(runs)
         comments = gh.get_all(f"repos/{repo}/issues/{pr['number']}/comments", {"per_page": 100}, max_pages=5)
+        commits = gh.get_all(f"repos/{repo}/pulls/{pr['number']}/commits", {"per_page": 100}, max_pages=3)
+        foreign = [c.get("sha") or "" for c in commits
+                   if not login or ((c.get("author") or {}).get("login") != login)]
         verdict, reasons = classify(pr, files, state, repo, login, failed, missing, added,
-                                    published_commit(comments, login))
+                                    published_commit(comments, login), foreign)
         out.append((pr, verdict, reasons))
     return out
 
