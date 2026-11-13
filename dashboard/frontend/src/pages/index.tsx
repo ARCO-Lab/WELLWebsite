@@ -41,6 +41,7 @@ import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
 import { useEmbedFrame } from "@/lib/embed";
+import useSelectionLink from "@/hooks/useSelectionLink";
 
 type ActiveFilters = { [key: string]: string[] };
 type SensorGroup = "weather" | "quality" | "gauges";
@@ -92,14 +93,21 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
   // data as they were, instead of rebuilding them all (seconds on a phone). The hidden one keeps its width, out of the
   // flow and unrendered (content-visibility), so showing it again needs no reflow either.
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(["sensor"]));
-  // The tab bar and the shown panel switch at once (Radix holds the value); the page's own state follows in a
+  // The tab bar and the shown panel switch at once (shownTab); the page's own state follows in a
   // transition, so the click isn't held up by re-rendering the whole dashboard
+  const [shownTab, setShownTab] = useState<"sensor" | "sampling">("sensor");
   const showTab = useCallback((value: string) => {
+    setShownTab(value as "sensor" | "sampling");
     startTransition(() => {
       setActiveTab(value as "sensor" | "sampling");
       setVisited((v) => (v.has(value) ? v : new Set([...v, value])));
     });
   }, []);
+  // A shared link's ?tab= opens that tab like a click would
+  const openTab = useCallback((v: React.SetStateAction<"sensor" | "sampling">) => {
+    if (typeof v === "function") setActiveTab(v);
+    else showTab(v);
+  }, [showTab]);
   
   const [activeGroups, setActiveGroups] = useState({
     gauges: false,
@@ -164,6 +172,12 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
       return acc;
     }, {} as ActiveFilters);
 
+
+  // A shared link's ?tab=, ?groups= and ?creeks= tick what its sender had ticked, and the link follows the ticks
+  useSelectionLink({
+    activeTab, setActiveTab: openTab, activeGroups, setActiveGroups, setSubFilters, activeCreeks, setActiveCreeks,
+    setSamplingSubFilters, setOpen, setChevronState,
+  });
 
   // Dates are calendar days at the site (Toronto), whatever the viewer's time zone (utils/siteTime).
   // Dates for the SENSOR Tab: yesterday and today
@@ -402,9 +416,9 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
       {!embedded && <div data-site-chrome><Header /></div>}
       <ChartPageContext.Provider value={chartPage}>
       {/* Embedded, the page is as tall as its content (the iframe is sized to it), never the iframe's height */}
-      <main ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground`}>
+      <main id="main-content" tabIndex={-1} ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground focus:outline-none`}>
         {/* relative: a visited tab that isn't shown is kept, out of the flow, at the page's width (see TabsContent below) */}
-        <Tabs defaultValue="sensor" onValueChange={showTab} className="relative p-6">
+        <Tabs value={shownTab} onValueChange={showTab} className="relative p-6">
           
           {/* Title and tab triggers */}
           <div className="col-span-full mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -466,7 +480,6 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                           }}
                           startDate={startDate}
                           endDate={endDate}
-                          data={[] /* unused for sensors: the backend builds exports */}
                           isSampling={false}
                         />
                       </div>
@@ -638,7 +651,6 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         samplingSubFilters={samplingSubFilters}  // ✅ Correct prop name
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
-                        data={samplingData}
                         isSampling={true}
                       />
                       {/* For researchers adding sampling files: the standard format, with example rows */}

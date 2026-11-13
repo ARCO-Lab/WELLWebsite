@@ -53,7 +53,7 @@
       "as_of": "2026-11-01T02:50:00",
       "tiles": [
         {"label": "Dissolved oxygen", "value": "10.4", "unit": "mg/L"},
-        {"label": "Conductivity", "value": "512.3", "unit": "uS/cm", "last_reading": "2026-10-31T12:00:00", "note": "over 3 hours old, so the tile says when it was taken"},
+        {"label": "Conductivity", "value": "512.3", "unit": "µS/cm", "last_reading": "2026-10-31T12:00:00", "note": "over 3 hours old, so the tile says when it was taken"},
         {"label": "Water temperature", "value": "8.85", "unit": "°C"}
       ],
       "no_data": ["Dissolved solids", "Oxygen saturation", "Suspended solids", "Turbidity", "Salinity"]

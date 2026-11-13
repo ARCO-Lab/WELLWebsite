@@ -2,7 +2,7 @@
 // sub-filters select, each with its colour, line style and unit, and one y-axis per unit. Pure data, tested with plain
 // Node in scripts/seriesLoader.test.mjs.
 
-import { QUALITY_PANELS, UNITS, WEATHER_PANELS, aggOf, measurementColor, seriesNote, type Agg } from "./chartStyle.ts";
+import { QUALITY_PANELS, UNITS, WEATHER_PANELS, aggOf, displayUnit, measurementColor, seriesNote, type Agg } from "./chartStyle.ts";
 
 export type Group = "Weather" | "Quality" | "Logger";
 
@@ -56,7 +56,7 @@ export function cardSeries(
   const series: SeriesSpec[] = [];
   stations.forEach((st, n) => {
     for (const m of picked) {
-      const unit = UNITS[m] ?? "";
+      const unit = displayUnit(UNITS[m] ?? ""); // as the page shows it: µS/cm, ppt, none for pH
       const note = seriesNote(group, m);
       const logger = group === "Logger";
       series.push({

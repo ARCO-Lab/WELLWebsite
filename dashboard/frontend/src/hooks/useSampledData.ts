@@ -1,17 +1,12 @@
 // This file defines the useSampledData React hook for fetching and caching filtered creek sampling data from the API.
 // It manages loading, error, and caching state, and only fetches data when dates and at least one creek are selected.
+// Requests go through SampleFetcher, so only the newest selection's reply is ever shown.
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { siteDayBounds } from "@/utils/siteTime";
+import { SampleFetcher, type SampledData } from "@/lib/sampleFetcher";
 
-export interface SampledData {
-  site_id: string;
-  creek_id: string;
-  measurement_type: string;
-  value: number;
-  unit: string;
-  recorded_at: string;
-}
+export type { SampledData };
 
 export interface CreekSelection {
   ancaster: boolean;
@@ -21,89 +16,59 @@ export interface CreekSelection {
   spencer: boolean;
 }
 
+const NO_ROWS: SampledData[] = [];
+
 const useSampledData = (
   activeCreeks: CreekSelection,
   startDate: Date | null,
   endDate: Date | null
 ) => {
-  const [data, setData] = useState<SampledData[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  // The last rows fetched (kept on screen, under a spinner, while the next selection loads or after it fails), and
+  // the last selection that was answered, with its error if it failed.
+  const [data, setData] = useState<SampledData[]>(NO_ROWS);
+  const [done, setDone] = useState<{ key: string; error: Error | null }>({ key: "", error: null });
 
-  const cache = useRef<Map<string, SampledData[]>>(new Map());
+  const fetcher = useRef<SampleFetcher | null>(null);
 
-  // What is wanted now ("" for nothing), and the last request that finished. Until they match the data is not
-  // this selection's yet, so the hook reports loading: right after a creek is ticked, before the request has even
-  // started, an empty list must not read as "no samples in this range".
-  const wantedKey = useMemo(() => {
-    if (!startDate || !endDate || !Object.values(activeCreeks).some(v => v)) return "";
+  // What is wanted now (null for nothing): its cache key and its URL. The picked days are Toronto days, wherever the
+  // viewer is.
+  const wanted = useMemo(() => {
+    if (!startDate || !endDate || !Object.values(activeCreeks).some(v => v)) return null;
     const { start, end } = siteDayBounds(startDate, endDate);
-    return `${start}|${end}|${JSON.stringify(activeCreeks)}`;
+    const params = new URLSearchParams({ start, end });
+    Object.entries(activeCreeks).forEach(([creek, isSelected]) => {
+      if (isSelected) params.append(creek, "true");
+    });
+    return { key: `${start}|${end}|${JSON.stringify(activeCreeks)}`, url: `/api/samples?${params.toString()}` };
   }, [activeCreeks, startDate, endDate]);
-  const [doneKey, setDoneKey] = useState("");
 
   useEffect(() => {
-    const fetchData = async () => {
-      // Guard against null dates AND no active creeks. Only fetch if both are set.
-      const hasActiveCreeks = Object.values(activeCreeks).some(v => v);
-      if (!startDate || !endDate || !hasActiveCreeks) {
-        setData([]); // Ensure data is cleared if conditions aren't met
-        return;
-      }
-
-      setLoading(true);
-      setError(null);
-
-      // The picked days in Toronto time, wherever the viewer is
-      const { start, end } = siteDayBounds(startDate, endDate);
-
-      const params = new URLSearchParams();
-      params.append("start", start);
-      params.append("end", end);
-
-      Object.entries(activeCreeks).forEach(([creek, isSelected]) => {
-        if (isSelected) {
-          params.append(creek, "true");
-        }
-      });
-
-      const key = `${start}|${end}|${JSON.stringify(activeCreeks)}`;
-      if (cache.current.has(key)) {
-        setData(cache.current.get(key)!);
-        setLoading(false);
-        setDoneKey(key);
-        return;
-      }
-
-      try {
-        const res = await fetch(`/api/samples?${params.toString()}`);
-        if (!res.ok) {
-          // Show the API's own explanation when it gives one (e.g. an invalid date range).
-          let message = `Couldn't load sampling data (HTTP ${res.status}).`;
-          try {
-            const body = await res.json();
-            if (typeof body?.error === "string" && body.error) message = body.error;
-          } catch {
-            // Not JSON; keep the generic message.
-          }
-          throw new Error(message);
-        }
-
-        const json = await res.json();
-        cache.current.set(key, json);
-        setData(json);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        setLoading(false);
-        setDoneKey(key);
-      }
+    const f = (fetcher.current ??= new SampleFetcher());
+    if (!wanted) {
+      f.cancel(); // a request in flight never answers now
+      return;
+    }
+    let live = true;
+    f.load(wanted.key, wanted.url).then((result) => {
+      if (!result || !live) return; // superseded by a newer selection, whose reply will answer
+      if (result.data) setData(result.data);
+      setDone({ key: result.key, error: result.error });
+    });
+    // A newer selection (or leaving the page) aborts this request.
+    return () => {
+      live = false;
+      f.cancel();
     };
+  }, [wanted]);
 
-    fetchData();
-  }, [activeCreeks, startDate, endDate]);
-
-  return { data, loading: loading || (wantedKey !== "" && doneKey !== wantedKey), error };
+  // Until the wanted selection is answered the data is not its own yet, so the hook reports loading: right after a
+  // creek is ticked, before the request has even started, an empty list must not read as "no samples in this range".
+  const answered = wanted !== null && done.key === wanted.key;
+  return {
+    data: wanted ? data : NO_ROWS,
+    loading: wanted !== null && !answered,
+    error: answered ? done.error : null,
+  };
 };
 
 export default useSampledData;
