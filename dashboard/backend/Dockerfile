@@ -36,6 +36,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Runs as an unprivileged user (uid and gid 10001), not root, so code execution in the API isn't root in the
+# container. The code stays root's, read-only to it. The folders it writes (logs/, exports/ and /app/backups, which
+# compose mounts) are writable by any user (mode 1777, like /tmp), so docker-compose.yml can run it as another uid
+# (BACKEND_UID: the VM user that owns the bind-mounted folders), and a named volume created from one starts out
+# writable too. Everything else it writes goes to /tmp.
+RUN groupadd --system --gid 10001 well \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /tmp --no-create-home --shell /usr/sbin/nologin well \
+    && mkdir -p /app/app/logs /app/app/exports /app/backups \
+    && chmod 1777 /app/app/logs /app/app/exports /app/backups
+USER 10001:10001
+
 # Set working directory to app folder where the Python modules are
 WORKDIR /app/app
 

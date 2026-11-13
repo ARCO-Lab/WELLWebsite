@@ -13,6 +13,17 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "5"
 
+# The services built from this repository (backend, worker, export_worker, ops and dashboard) run as an unprivileged
+# user (the images set it; the backend's is BACKEND_UID below) with no Linux capabilities, and can't gain any
+# (no-new-privileges: a setuid program in the image does nothing). None of them needs one: their ports are above 1024
+# and they write only to their own folders and /tmp. The stock images (MySQL, WordPress, Redis) start as root to drop
+# to their own user, which needs capabilities, so they keep Docker's defaults.
+x-unprivileged: &unprivileged
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 networks:
   front:
   internal_api:
@@ -27,10 +38,13 @@ networks:
 # load (normal use is 50 to 250 MB each, about 1 GB together; the backend and WordPress get more for bursts), so only
 # a runaway process reaches them; then the kernel stops a process inside that container, not PostgreSQL or another
 # service on the VM. Health checks show in `docker compose ps`.
+#
+# The stock images are pinned by digest as well as tag, so the image that runs is the one that was reviewed even if
+# the tag is moved; Dependabot's docker-compose updates bump the digest (and the tag) in a pull request.
 services:
   # --- WordPress + MySQL as you had ---
   db:
-    image: mysql:5.7
+    image: mysql:5.7@sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb
     volumes:
       - db_data:/var/lib/mysql
     restart: always
@@ -47,7 +61,7 @@ services:
   wordpress:
     # Only PHP and Apache come from this image. WordPress core and plugins live in ./home
     # (tracked in git) and are updated there, so bump this tag for PHP/Apache fixes.
-    image: wordpress:7.1.4-php8.3-apache
+    image: wordpress:7.1.4-php8.3-apache@sha256:8b64037bb2a3bdc41bebccb165f20ad5e4c786b684ae4a2bd5981f98aa1eb107
     depends_on:
       - db
     volumes:
@@ -56,8 +70,12 @@ services:
       - ./wordpress/apache-hardening.conf:/etc/apache2/conf-enabled/zz-hardening.conf:ro
       # Browser caching and compression for the site (wordpress/zz-performance.conf explains each rule).
       - ./wordpress/zz-performance.conf:/etc/apache2/conf-enabled/zz-performance.conf:ro
+    # On every address by default. WORDPRESS_BIND (and DASHBOARD_BIND below) publishes it on that one address
+    # instead, e.g. the VM's address that haproxy connects to; then set DEPLOY_SITE_HOST to it for deploy.sh's
+    # checks. Docker-published ports bypass the host's INPUT rules either way: docs/hosting.md has the DOCKER-USER
+    # rules that let only haproxy reach 8080 and 8081.
     ports:
-      - "8080:80"
+      - "${WORDPRESS_BIND:+${WORDPRESS_BIND}:}8080:80"
     restart: always
     # Apache (prefork) runs one process per request, each with mod_php and its own PHP memory (WordPress allows up
     # to 256 MB in the admin), so a burst of visitors adds up quickly (about 155 MB in normal use). 2 GB lets dozens
@@ -85,6 +103,11 @@ services:
     build:
       context: ./dashboard/backend
       # dockerfile: Dockerfile   # optional if named "Dockerfile"
+    <<: *unprivileged
+    # The image's own user is 10001. Set BACKEND_UID and BACKEND_GID in .env to the VM user that owns the checkout
+    # (`id -u`, `id -g`), so the logs and backups the worker writes into the checkout belong to that user
+    # (docs/hosting.md, "Containers run unprivileged"). The same for worker, export_worker and ops.
+    user: "${BACKEND_UID:-10001}:${BACKEND_GID:-10001}"
     env_file:
       - ./dashboard/backend/app/.env   # your existing backend .env (HOBOLINK, WQ, etc.)
     environment:
@@ -135,7 +158,7 @@ services:
   # (utils/response_cache.py), Celery's queue keys never do, so the queue is never evicted to make room for the
   # cache. mem_limit leaves room above maxmemory for Redis's own overhead.
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru", "--save", ""]
     restart: unless-stopped
     mem_limit: 512m
@@ -156,6 +179,8 @@ services:
   worker:
     build:
       context: ./dashboard/backend
+    <<: *unprivileged
+    user: "${BACKEND_UID:-10001}:${BACKEND_GID:-10001}"
     command: ["python","scripts/scheduler_temp.py"]     # correct path from /app/app working directory
     env_file:
       - ./dashboard/backend/app/.env
@@ -191,15 +216,20 @@ services:
     volumes:
       # Persist worker logs on host for easy access
       - ./dashboard/backend/app/logs:/app/app/logs
-      # Nightly database dumps (scripts/backup_db.py), on the host in ./backups (gitignored, readable by root only)
+      # Nightly database dumps (scripts/backup_db.py), on the host in ./backups (gitignored; folders 0700 and files
+      # 0600, owned by BACKEND_UID)
       - ./backups:/app/backups
 
   export_worker:
     build:
       context: ./dashboard/backend
-    # -B runs the beat scheduler inside this (single) worker, for the hourly cleanup of expired exports.
+    <<: *unprivileged
+    user: "${BACKEND_UID:-10001}:${BACKEND_GID:-10001}"
+    # -B runs the beat scheduler inside this (single) worker, for the hourly cleanup of expired exports; its
+    # schedule file goes to /tmp, since the code folder isn't writable by the container's user.
     # Two exports at a time at most (the default is one per CPU), so large exports can't take the VM's memory.
-    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--concurrency=2", "--loglevel=info"]
+    command: ["celery", "-A", "tasks.celery_app.celery_app", "worker", "-B", "--schedule-filename=/tmp/celerybeat-schedule",
+              "--concurrency=2", "--loglevel=info"]
     env_file:
       - ./dashboard/backend/app/.env
     environment:
@@ -234,6 +264,7 @@ services:
         # Build-time only (for next.config.js rewrites & public env)
         FLASK_API_URL: ${BACKEND_INTERNAL_URL}
         NEXT_PUBLIC_FLASK_API_URL: ${NEXT_PUBLIC_FLASK_API_URL}
+    <<: *unprivileged   # runs as the image's nextjs user
     env_file:
       - ./dashboard/frontend/.env.local  # runtime server-side vars if you have any
     environment:
@@ -248,7 +279,7 @@ services:
       backend:
         condition: service_started
     ports:
-      - "${DASHBOARD_PORT}:8081"
+      - "${DASHBOARD_BIND:+${DASHBOARD_BIND}:}${DASHBOARD_PORT}:8081"   # DASHBOARD_BIND: as WORDPRESS_BIND above
     restart: always
     mem_limit: 512m
     logging: *default-logging
@@ -274,6 +305,8 @@ services:
     profiles: ["ops"]
     build:
       context: ./dashboard/backend
+    <<: *unprivileged
+    user: "${BACKEND_UID:-10001}:${BACKEND_GID:-10001}"
     # One worker process: the failed-login limit and the uptime checks live in its memory. Threads serve pages.
     command: ["gunicorn", "-k", "gthread", "-w", "1", "--threads", "4", "--timeout", "60", "-b", "0.0.0.0:8090",
               "ops.app:create_app()"]
@@ -292,9 +325,10 @@ services:
       OPS_GOATCOUNTER_CODE: ${OPS_GOATCOUNTER_CODE:-}
       OPS_GOATCOUNTER_TOKEN: ${OPS_GOATCOUNTER_TOKEN:-}
     ports:
-      # Set OPS_BIND to the VM's campus address (README): Docker's published ports bypass the host firewall, and
-      # 0.0.0.0 publishes it on every address the VM has.
-      - "${OPS_BIND:-0.0.0.0}:${OPS_PORT:-8090}:8090"
+      # Set OPS_BIND in .env (ops README): 127.0.0.1 for an SSH tunnel, or the VM's campus address. Docker's
+      # published ports bypass the host firewall, so 0.0.0.0 would publish it on every address the VM has; unset, it
+      # is published on the loopback only, never everywhere.
+      - "${OPS_BIND:-127.0.0.1}:${OPS_PORT:-8090}:8090"
     extra_hosts:
       - "host.docker.internal:host-gateway"   # PostgreSQL runs on the VM itself
     depends_on:
