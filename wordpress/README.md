@@ -26,10 +26,58 @@ in it can be fetched from the site.
   - a dedicated Dashboard page (`page-dashboard.php`) that embeds the dashboard in an iframe, from `DASHBOARD_URL`.
   How to add, edit and delete news posts is in [the theme's README](../home/wp-content/themes/well/README.md).
 - **This folder** holds the Apache and PHP settings mounted into the container one file at a time
-  (`apache-hardening.conf`, `zz-performance.conf`, `php-hardening.ini`; each file's comments explain its rules);
+  (`apache-hardening.conf`, `zz-performance.conf`, `remoteip.conf`, `php-hardening.ini`; each file's comments explain
+  its rules);
   `theme-images.mjs` (run from the repository root after changing a photo:
   `npm install --no-save sharp && node wordpress/theme-images.mjs`, then commit the files it writes); and `backup.sh`,
   the nightly backup of the database and uploads ([Backups](#backups)).
+- **Hardening** (details in [Hardening](#hardening) below): Apache rules and security headers in
+  `apache-hardening.conf`, the must-use plugin `home/wp-content/mu-plugins/well-hardening.php`, and
+  `DISALLOW_FILE_EDIT` through `WORDPRESS_CONFIG_EXTRA` in `docker-compose.yml`.
+
+## Hardening
+
+- **Apache** (`apache-hardening.conf`) refuses `xmlrpc.php`, `wp-comments-post.php`, `wp-trackback.php`,
+  `readme.html`, `license.txt`, `wp-config-sample.php`, and plugins' and themes' readmes, changelogs and package
+  files (they name versions). It never runs PHP from `wp-content/uploads`, and ignores `.htaccess` files there, so an
+  uploaded one can't allow PHP again.
+- **Client addresses.** `remoteip.conf` replaces the image's own, which made Apache believe `X-Forwarded-For` from any
+  private or loopback address. Apache's logs therefore show the campus proxy (130.113.68.30) as the client of every
+  visitor. Only the failed-login limit reads the forwarded address, and only from `WELL_TRUSTED_PROXY_IPS`.
+- **Security headers**, from the same file: `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN`, and:
+  - `Strict-Transport-Security: max-age=86400` (one day), kept short at first so a mistake can't strand visitors for
+    long. Once the site has worked over HTTPS for a few weeks, raise it to `max-age=31536000`.
+  - A `Content-Security-Policy-Report-Only` header listing what the theme loads. Browsers enforce nothing yet; they
+    log what the policy would block in the developer console. When the site's pages show no such messages, rename the
+    header to `Content-Security-Policy` to enforce it, and add any new outside host (a new script, font or embed)
+    to it first.
+- **The must-use plugin** (`home/wp-content/mu-plugins/well-hardening.php`; deleting the file undoes it):
+  - keeps account names from anonymous visitors: 401 for the REST API's `/wp-json/wp/v2/users`; `/?author=N` and
+    author archives redirect to the home page; no author fields in oEmbed answers; no users in the core sitemap; and
+    bylines and feeds say "WELL team" while an account's display name is its login name (set a different display
+    name in Users > Profile to show it instead);
+  - limits failed logins: every attempt is counted before its password is checked, in one database statement, so
+    parallel requests can't slip past. After 5 from one client address with less than 15 minutes between them, that
+    address is refused until 15 minutes after its last counted attempt. Refused attempts and opening the login page
+    don't count, and a successful login clears the count. IPv6 clients are counted per /64. The client address
+    comes from the proxy's `X-Forwarded-For` only when the connection comes from a proxy in
+    `WELL_TRUSTED_PROXY_IPS` (`docker-compose.yml`; haproxy by default). The counts are `well_login_fail_*` rows in
+    the options table; old ones are deleted now and then;
+  - closes comments and pingbacks everywhere, turns off XML-RPC logins and pingbacks, and removes the links
+    advertising them and the WordPress version (`<meta name="generator">`).
+- **The login page.** The campus proxy blocks `/wp-admin/` from outside McMaster's network, but not
+  `/wp-login.php`, so the login form (and its "lost password" page, which says whether a user name exists) is open
+  to the internet, with only the limit above. Ask McMaster IT, who run `haproxy.cas.mcmaster.ca`, to restrict
+  `/wp-login.php` the same way as `/wp-admin/`.
+- **`DISALLOW_FILE_EDIT`** (`WORDPRESS_CONFIG_EXTRA` in `docker-compose.yml`) turns off the theme and plugin editors
+  in wp-admin. `DISALLOW_FILE_MODS` is deliberately not set, so plugins and core can still be updated from wp-admin
+  (which also means an administrator can upload a plugin, if Apache can write to `home/`).
+- **Jetpack** isn't connected to WordPress.com, so blocking `xmlrpc.php` breaks nothing. If it is ever connected and
+  reports a connection problem, remove the `xmlrpc.php` block from `apache-hardening.conf` and recreate the container.
+
+A change to `apache-hardening.conf` needs the container recreated (`docker compose up -d --no-deps wordpress`); one
+to the plugin is live once pulled.
 
 ## Settings
 
