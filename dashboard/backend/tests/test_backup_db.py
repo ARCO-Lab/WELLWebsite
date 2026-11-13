@@ -781,12 +781,15 @@ class RoundTrip(unittest.TestCase):
             # A record left zero-length (renamed before it reached the disk, then a power cut): the dump is still
             # taken and checked, then the run fails and says what to do
             pathlib.Path(directory, backup.ROW_COUNTS_NAME).write_text("")
+            # Dumps are named by the minute, so the first one goes first: the one left must be the new one
+            for _, name in backup.dumps_in(os.listdir(directory)):
+                os.remove(os.path.join(directory, name))
             damaged = self.run_script("backup_db.py", "--dir", directory, "--no-prune")
             self.assertEqual(damaged.returncode, 1)
             self.assertIn("the row counts could not be checked", damaged.stderr)
             self.assertIn("--accept-row-counts", damaged.stderr)
             self.assertIn("Backup written", damaged.stdout)
-            self.assertEqual(len(backup.dumps_in(os.listdir(directory))), 2)
+            self.assertEqual(len(backup.dumps_in(os.listdir(directory))), 1)
             fixed = self.run_script("backup_db.py", "--dir", directory, "--no-prune", "--accept-row-counts")
             self.assertEqual(fixed.returncode, 0, fixed.stderr)
             self.assertEqual(backup.load_row_counts(directory), {"sensor_measurements": 500, "sampling_measurements": 2})
