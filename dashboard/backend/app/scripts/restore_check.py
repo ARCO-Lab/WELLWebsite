@@ -5,10 +5,10 @@
 #   docker compose exec worker python scripts/restore_check.py
 #   docker compose exec worker python scripts/restore_check.py --file /app/backups/welldb-20261111-0315.dump
 #
-# Creating a database needs the CREATEDB privilege, which the app's role well_app (db/roles.sql) doesn't keep. Grant
-# it for the drill (as postgres: ALTER ROLE well_app CREATEDB; and NOCREATEDB after), or point
-# RESTORE_CHECK_DATABASE_URL at a role that has it; that role creates, restores into and drops the throwaway
-# database, and the live counts are still read with DATABASE_URL, in a read-only session.
+# Creating a database needs the CREATEDB privilege, which the app's role well_app (db/roles.sql) doesn't have. Point
+# RESTORE_CHECK_DATABASE_URL at the well_restore role from db/roles.sql (CREATEDB, no access to the live tables); that
+# role creates, restores into and drops the throwaway database, and the live counts are still read with
+# DATABASE_URL, in a read-only session.
 #
 # The live database keeps changing (new readings every 10 minutes), so counts that grew since the dump are
 # expected and reported, not failures. It fails (exit 1) if the restore fails, a table the live database has is

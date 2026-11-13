@@ -9,9 +9,13 @@
 --   well_ops  welldash² (dashboard/backend/app/ops/). SELECT on every table; its only writes are its uptime checks
 --             (INSERT into uptime_probes) and the 90-day cleanup (DELETE on uptime_probes and request_metrics).
 --             Can't create anything.
+--   well_restore  the monthly restore drill (scripts/restore_check.py, through RESTORE_CHECK_DATABASE_URL), which
+--             restores a dump into a throwaway database and drops it. CREATEDB and CONNECT on this database, and
+--             nothing else: no privilege on any table here, so it can't read or change the live data.
 --
 -- Run it as a superuser, in the WELL database (the README's "Database roles" section has every step):
---   sudo -u postgres psql -d <database> -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql
+--   sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' \
+--     psql -d <database> -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql
 -- It sets no password (set them with \password afterwards), so it holds no secret. It is safe to run again, and
 -- should be: after a migration that creates a table welldash² writes to, and whenever a table was created by hand
 -- as postgres (it hands such tables to well_app). Each run takes a short exclusive lock on each table whose owner
@@ -19,6 +23,10 @@
 
 \set ON_ERROR_STOP on
 BEGIN;
+-- well_app may create functions and operators in public. With public on the search path, one named like a built-in
+-- this file calls (e.g. public.format(text, name), a closer match than pg_catalog's format(text, VARIADIC "any"))
+-- would run here as the superuser. So only pg_catalog is searched, and every object here is named public.<name>.
+SET LOCAL search_path = pg_catalog, pg_temp;
 SET LOCAL lock_timeout = '10s';
 
 -- The roles, created without a password: one that has none can't sign in with a password at all.
@@ -30,10 +38,14 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'well_ops') THEN
         CREATE ROLE well_ops LOGIN;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'well_restore') THEN
+        CREATE ROLE well_restore LOGIN;
+    END IF;
 END $$;
--- Repeated on every run, so a privilege added by hand (e.g. CREATEDB for the restore drill) is taken away again.
+-- Repeated on every run, so a privilege added by hand (e.g. CREATEDB on well_app) is taken away again.
 ALTER ROLE well_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
 ALTER ROLE well_ops LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+ALTER ROLE well_restore LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
 
 -- No role membership either: pg_execute_server_program, pg_read_server_files and pg_write_server_files would each
 -- give back part of what a superuser has.
@@ -42,7 +54,7 @@ DECLARE m record;
 BEGIN
     FOR m IN SELECT g.rolname AS granted, u.rolname AS member
              FROM pg_auth_members a JOIN pg_roles g ON g.oid = a.roleid JOIN pg_roles u ON u.oid = a.member
-             WHERE u.rolname IN ('well_app', 'well_ops')
+             WHERE u.rolname IN ('well_app', 'well_ops', 'well_restore')
     LOOP
         EXECUTE format('REVOKE %I FROM %I', m.granted, m.member);
         RAISE NOTICE 'revoked membership of % from %', m.granted, m.member;
@@ -51,8 +63,14 @@ END $$;
 
 DO $$
 BEGIN
-    EXECUTE format('GRANT CONNECT ON DATABASE %I TO well_app, well_ops', current_database());
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO well_app, well_ops, well_restore', current_database());
 END $$;
+
+-- well_restore connects here only to run CREATE and DROP DATABASE; take back anything granted to it by hand.
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM well_restore;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM well_restore;
+REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM well_restore;
+REVOKE ALL ON SCHEMA public FROM well_restore;
 
 -- Only well_app creates objects. On PostgreSQL 13 every role may create in public by default, well_ops included.
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

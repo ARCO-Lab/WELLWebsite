@@ -50,6 +50,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `WQ_API_KEY` | required | WQData API key. |
 | `WQ_DEVICE_ID` | required | WQData device (the water quality sonde). |
 | `DATABASE_URL` | none | PostgreSQL URL. In Docker it is set from `BACKEND_DATABASE_URL` above; set it here only to run the backend or scripts outside Docker. |
+| `RESTORE_CHECK_DATABASE_URL` | `DATABASE_URL` | The role the restore drill (`scripts/restore_check.py`, in `worker`) creates, restores into and drops its throwaway database with: the `well_restore` role, which has `CREATEDB` and no access to the live tables ([Database roles](../dashboard/backend/README.md#database-roles)). `well_app` has no `CREATEDB`, so without it the drill stops. |
 
 **API and exports**
 

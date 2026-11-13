@@ -1,11 +1,13 @@
 """The least-privileged database roles (app/db/roles.sql, checked by app/db/roles_check.sql).
 
 Builds a database the way the VM's was built (the tables created by a superuser), applies roles.sql, then runs the
-migrations, the backup and its restore drill as well_app and welldash²'s reads and writes as well_ops, and checks
-that neither role can do what made the superuser dangerous: run programs or read files on the database host, create
-roles or databases. Runs only when TEST_POSTGRES_URL points at a disposable server reached as a superuser (CI's
-postgres:13 container), because it creates the cluster-wide roles well_app and well_ops and drops them again;
-never point it at a real one. Run from dashboard/backend: python -m unittest tests.test_db_roles"""
+migrations and the backup as well_app, the restore drill as well_restore and welldash²'s reads and writes as
+well_ops, and checks that none of them can do what made the superuser dangerous: run programs or read files on the
+database host, create roles (or, but for well_restore, databases), and that nothing well_app plants in public runs
+when the superuser applies roles.sql. Runs only when TEST_POSTGRES_URL points at a disposable server reached as a
+superuser (CI's postgres:13 container), because it creates the cluster-wide roles well_app, well_ops and
+well_restore and drops them again; never point it at a real one.
+Run from dashboard/backend: python -m unittest tests.test_db_roles"""
 import datetime as dt
 import os
 import pathlib
@@ -22,7 +24,9 @@ ROLES_SQL = APP / "db" / "roles.sql"
 CHECK_SQL = APP / "db" / "roles_check.sql"
 DATABASE = "well_roles_test"
 RESTORED = "welldb_restore_check_roles_test"
-PASSWORDS = {"well_app": "app-test-password", "well_ops": "ops-test-password"}
+ROLES = ("well_app", "well_ops", "well_restore")
+PASSWORDS = {"well_app": "app-test-password", "well_ops": "ops-test-password",
+             "well_restore": "restore-test-password"}
 INSUFFICIENT_PRIVILEGE = "42501"
 
 
@@ -38,7 +42,7 @@ class DatabaseRoles(unittest.TestCase):
         cls.admin = backup.parse_database_url(os.environ["TEST_POSTGRES_URL"])
         if not cls.server_sql("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")[0][0]:
             raise unittest.SkipTest("set TEST_POSTGRES_URL to a superuser's URL: roles.sql transfers ownership")
-        existing = cls.server_sql("SELECT rolname FROM pg_roles WHERE rolname IN ('well_app', 'well_ops')")
+        existing = cls.server_sql(f"SELECT rolname FROM pg_roles WHERE rolname IN {ROLES}")
         if existing:
             raise RuntimeError(f"{existing} already exist on this server: run this test against a throwaway one")
         cls.superuser_url = cls.url(None)   # from here on, tearDownClass cleans up
@@ -86,8 +90,8 @@ class DatabaseRoles(unittest.TestCase):
         cls.server_sql(f"DROP DATABASE IF EXISTS {RESTORED}")
         cls.server_sql(f"DROP DATABASE IF EXISTS {DATABASE}")
         # Their privileges and default privileges were in that database only, so the roles can go now
-        cls.server_sql("DROP ROLE IF EXISTS well_app")
-        cls.server_sql("DROP ROLE IF EXISTS well_ops")
+        for role in ROLES:
+            cls.server_sql(f"DROP ROLE IF EXISTS {role}")
 
     # --- helpers ---------------------------------------------------------------------------------------------
 
@@ -167,25 +171,27 @@ class DatabaseRoles(unittest.TestCase):
 
     def test_roles_have_none_of_the_superuser_powers(self):
         rows = self.db_sql("SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, "
-                           "rolcanlogin FROM pg_roles WHERE rolname IN ('well_app', 'well_ops') ORDER BY 1")
+                           f"rolcanlogin FROM pg_roles WHERE rolname IN {ROLES} ORDER BY 1")
         self.assertEqual(rows, [("well_app", False, False, False, False, False, True),
-                                ("well_ops", False, False, False, False, False, True)])
+                                ("well_ops", False, False, False, False, False, True),
+                                ("well_restore", False, False, True, False, False, True)])   # CREATEDB, for the drill
         self.assertEqual(self.db_sql("SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member "
-                                     "WHERE r.rolname IN ('well_app', 'well_ops')"), [(0,)])
+                                     f"WHERE r.rolname IN {ROLES}"), [(0,)])
         self.assertIn("roles check passed", self.check_output)
 
     def test_roles_sql_handed_the_superusers_objects_to_well_app(self):
-        self.assertIn("owner of sensor_measurements is now well_app", self.roles_output)
-        self.assertIn("owner of data_fixes is now well_app", self.roles_output)
-        self.assertIn("owner of sequence standalone_seq is now well_app", self.roles_output)
-        self.assertIn("owner of type fix_kind is now well_app", self.roles_output)
+        # Schema-qualified: roles.sql searches pg_catalog only
+        self.assertIn("owner of public.sensor_measurements is now well_app", self.roles_output)
+        self.assertIn("owner of public.data_fixes is now well_app", self.roles_output)
+        self.assertIn("owner of sequence public.standalone_seq is now well_app", self.roles_output)
+        self.assertIn("owner of type public.fix_kind is now well_app", self.roles_output)
         owners = self.db_sql("SELECT DISTINCT pg_get_userbyid(c.relowner) FROM pg_class c "
                              "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'")
         self.assertEqual(owners, [("well_app",)])   # tables, indexes, sequences, the migrations' new tables too
         self.assertEqual(self.db_sql("SELECT pg_get_userbyid(typowner) FROM pg_type WHERE typname = 'fix_kind'"),
                          [("well_app",)])
 
-    def test_neither_role_can_run_programs_read_files_or_create_roles(self):
+    def test_no_role_can_run_programs_read_files_or_create_roles(self):
         statements = [
             "COPY (SELECT 1) TO PROGRAM 'true'",
             "COPY data_fixes (name) FROM PROGRAM 'id'",
@@ -197,12 +203,57 @@ class DatabaseRoles(unittest.TestCase):
             "ALTER ROLE well_app SUPERUSER",
             "ALTER ROLE well_ops CREATEROLE",
             "GRANT pg_execute_server_program TO well_app",
-            "CREATE DATABASE well_roles_intruder",
+            "ALTER ROLE well_restore SUPERUSER",
+            "GRANT pg_read_server_files TO well_restore",
         ]
-        for role in ("well_app", "well_ops"):
-            for statement in statements:
+        for role in ROLES:
+            # well_restore may create databases (the drill's throwaway one); the other two may not
+            extra = [] if role == "well_restore" else ["CREATE DATABASE well_roles_intruder"]
+            for statement in statements + extra:
                 with self.subTest(role=role, statement=statement):
                     self.assertEqual(self.refused(role, statement), INSUFFICIENT_PRIVILEGE)
+
+    def test_well_restore_cannot_touch_the_live_tables(self):
+        for table in self.public_tables():
+            for statement in (f"SELECT count(*) FROM {table}", f"DELETE FROM {table}", f"TRUNCATE {table}",
+                              f"DROP TABLE {table}"):
+                with self.subTest(statement=statement):
+                    self.assertEqual(self.refused("well_restore", statement), INSUFFICIENT_PRIVILEGE)
+        self.assertEqual(self.refused("well_restore", "CREATE TABLE public.restore_made (id int)"),
+                         INSUFFICIENT_PRIVILEGE)
+
+    def test_superuser_scripts_never_call_what_well_app_planted(self):
+        """well_app may create in public. A function or operator there that matches a call in roles.sql or
+        roles_check.sql more closely than the built-in would run as the superuser applying them (the pattern of
+        CVE-2018-1058); both files search pg_catalog only, so neither is ever called."""
+        conn = self.connect("well_app")
+        with conn, conn.cursor() as cur:
+            cur.execute("CREATE TABLE public.planted_calls (caller name, what text)")
+            # format(text, name): roles.sql calls format('... %I ...', current_database()) and current_user (name)
+            cur.execute("CREATE FUNCTION public.format(text, name) RETURNS text LANGUAGE plpgsql AS $f$ BEGIN "
+                        "INSERT INTO public.planted_calls VALUES (current_user, 'format'); "
+                        "RETURN pg_catalog.format($1, $2::text); END $f$")
+            # <>(oid, regrole): both files compare an owner's oid with 'well_app'::regrole
+            cur.execute("CREATE FUNCTION public.planted_ne(oid, regrole) RETURNS boolean LANGUAGE plpgsql AS $f$ "
+                        "BEGIN INSERT INTO public.planted_calls VALUES (current_user, '<>'); "
+                        "RETURN $1 OPERATOR(pg_catalog.<>) $2::oid; END $f$")
+            cur.execute("CREATE OPERATOR public.<> (LEFTARG = oid, RIGHTARG = regrole, FUNCTION = public.planted_ne)")
+        conn.close()
+        try:
+            # With the default search path the superuser does call them, so a call would show here
+            self.db_sql("SELECT format('%I', current_database())", "SELECT 1::oid <> 'well_app'::regrole")
+            self.assertEqual(sorted(self.db_sql("SELECT caller::text, what FROM public.planted_calls")),
+                             [("postgres", "<>"), ("postgres", "format")])
+            self.db_sql("DELETE FROM public.planted_calls")
+
+            self.run_ok(self.psql(ROLES_SQL))
+            self.assertIn("roles check passed", self.run_ok(self.psql(CHECK_SQL)))
+            self.assertEqual(self.db_sql("SELECT caller::text, what FROM public.planted_calls"), [])
+        finally:
+            self.db_sql("DROP OPERATOR IF EXISTS public.<> (oid, regrole)",
+                        "DROP FUNCTION IF EXISTS public.planted_ne(oid, regrole)",
+                        "DROP FUNCTION IF EXISTS public.format(text, name)",
+                        "DROP TABLE IF EXISTS public.planted_calls")
 
     # --- well_app: the API, the worker, the export worker, migrations, backups -------------------------------
 
@@ -261,7 +312,7 @@ class DatabaseRoles(unittest.TestCase):
         finally:
             self.db_sql("DROP TABLE IF EXISTS roles_test_later", "DROP TABLE IF EXISTS roles_test_by_hand")
 
-    def test_backup_and_restore_drill_as_well_app(self):
+    def test_backup_as_well_app_and_restore_drill_as_well_restore(self):
         conn = self.connect("well_app")
         with conn, conn.cursor() as cur:
             cur.execute("INSERT INTO sensor_measurements (station_id, group_type, measurement_type, value, unit, "
@@ -276,17 +327,14 @@ class DatabaseRoles(unittest.TestCase):
             self.assertNotIn("WARNING", done.stderr.decode(), "well_app owns everything, so nothing is left out")
             self.assertIn("every table", out)
 
-            # Creating the throwaway database needs CREATEDB, which well_app lacks; the README grants it for the drill
+            # Creating the throwaway database needs CREATEDB, which well_app lacks: as well_app alone the drill stops
             drill = self.run_app("scripts/restore_check.py", self.app_url, "--dir", directory, "--database", RESTORED)
             self.assertEqual(drill.returncode, 1)
             self.assertIn("CREATEDB", drill.stderr.decode())
-            self.db_sql("ALTER ROLE well_app CREATEDB")
-            try:
-                drill = self.run_app("scripts/restore_check.py", self.app_url, "--dir", directory, "--database",
-                                     RESTORED)
-                self.assertIn("Restore check passed", self.run_ok(drill))
-            finally:
-                self.db_sql("ALTER ROLE well_app NOCREATEDB")
+            # With well_restore in RESTORE_CHECK_DATABASE_URL, as the README sets it up, it passes
+            drill = self.run_app("scripts/restore_check.py", self.app_url, "--dir", directory, "--database", RESTORED,
+                                 RESTORE_CHECK_DATABASE_URL=self.url("well_restore"))
+            self.assertIn("Restore check passed", self.run_ok(drill))
             self.assertEqual(self.server_sql(f"SELECT count(*) FROM pg_database WHERE datname = '{RESTORED}'"), [(0,)])
 
     # --- well_ops: welldash² -----------------------------------------------------------------------------------
