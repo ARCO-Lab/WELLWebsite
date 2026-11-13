@@ -38,7 +38,7 @@ $su_psql -d $db -c "SET password_encryption = 'scram-sha-256'" -c '\\password we
 #    Keep a copy, edit, then reload:
 #      host  $db                       well_app      10.20.0.0/16  scram-sha-256
 #      host  $db                       well_ops      10.20.0.0/16  scram-sha-256
-#      host  $db,welldb_restore_check  well_restore  10.20.0.0/16  scram-sha-256
+#      host  postgres,welldb_restore_check  well_restore  10.20.0.0/16  scram-sha-256
 #      host  all                       all           10.20.0.0/16  reject
 #    The first matching line wins, so these go above every other host line that could match 10.20.0.0/16. Delete an
 #    older line only if its address is 10.20.0.0/16 or a part of it; a wider one (e.g. 10.0.0.0/8, 0.0.0.0/0) stays,
@@ -53,7 +53,7 @@ $su_psql -c "SELECT line_number, database, user_name, address, auth_method, erro
 #      BACKEND_DATABASE_URL=postgresql://well_app:<password>@host.docker.internal:5432/$db
 #      OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/$db
 #    In dashboard/backend/app/.env (the worker reads it, and the restore drill runs there):
-#      RESTORE_CHECK_DATABASE_URL=postgresql://well_restore:<password>@host.docker.internal:5432/$db
+#      RESTORE_CHECK_DATABASE_URL=postgresql://well_restore:<password>@host.docker.internal:5432/postgres
 docker compose up -d --no-deps backend worker export_worker
 docker compose up -d --no-deps ops                   # only if welldash² runs
 

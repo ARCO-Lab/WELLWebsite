@@ -657,8 +657,8 @@ name given with `--database` must start with that, since the drill drops it firs
 with the live database (read-only), and drops it again. Counts that grew since the dump are expected; a table missing
 from the restore or restored empty fails the drill, unless it was left out on purpose (`BACKUP_EXCLUDE_TABLES`) or
 because the role can't read it. Creating a database needs the `CREATEDB` privilege, which `well_app` doesn't have,
-so set `RESTORE_CHECK_DATABASE_URL` (in `dashboard/backend/app/.env`) to the `well_restore` role's URL
-([Database roles](#database-roles)): that role creates, restores into and drops the throwaway database, and can't
+so set `RESTORE_CHECK_DATABASE_URL` (in `dashboard/backend/app/.env`) to the `well_restore` role's URL, on the
+server's `postgres` maintenance database ([Database roles](#database-roles)): that role creates, restores into and drops the throwaway database, and can't
 touch the live tables. Without it, the drill stops with a message naming `CREATEDB`. A restore takes about as much disk as
 the live database, so the drill first checks that the backup folder's disk (the database's, on the VM) has that plus
 `BACKUP_MIN_FREE_MB` free; `--no-space-check` skips this when the database is on another disk.
@@ -667,8 +667,8 @@ the live database, so the drill first checks that the backup folder's disk (the 
 it. `<app role>` is the role in `BACKEND_DATABASE_URL`: `well_app` once the [Database roles](#database-roles) are
 set up. With those roles, after the restore below, also run `roles.sql` in the new database
 (`sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' psql -d welldb_restored -v ON_ERROR_STOP=1 <
-dashboard/backend/app/db/roles.sql`), and put the new database's name in place of the old one on the `well_app`,
-`well_ops` and `well_restore` lines of `pg_hba.conf` and in `RESTORE_CHECK_DATABASE_URL`.
+dashboard/backend/app/db/roles.sql`), and put the new database's name in place of the old one on the `well_app`
+and `well_ops` lines of `pg_hba.conf` (`RESTORE_CHECK_DATABASE_URL` names the `postgres` database, so it stays).
 
 ```bash
 cd ~/WELLWebsite
@@ -773,7 +773,7 @@ server, and create roles. [`app/db/roles.sql`](app/db/roles.sql) creates three r
 |---|---|---|
 | `well_app` | `backend`, `worker`, `export_worker` (`BACKEND_DATABASE_URL`), and `scripts/migrate.py`, `db/init_db.py`, `scripts/backup_db.py` run in them | Owns every table, sequence and index in the `public` schema, and may create new ones there. `NOSUPERUSER NOCREATEDB NOCREATEROLE`, a member of no role, so no `COPY` to or from a program or a server file, no `pg_read_file`, no other database. |
 | `well_ops` | welldash² (`OPS_DATABASE_URL`, [ops/README.md](app/ops/README.md)) | `SELECT` on every table; `INSERT` and `DELETE` on `uptime_probes` (its uptime checks and their 90-day cleanup), `DELETE` on `request_metrics` (the cleanup). Creates nothing. |
-| `well_restore` | The restore drill, `scripts/restore_check.py` in `worker` (`RESTORE_CHECK_DATABASE_URL`) | `CREATEDB` and `CONNECT` on the WELL database, nothing else: no privilege on any of its tables, so it can't read or change the live data. It creates the throwaway `welldb_restore_check`, restores into it (owning what it restores) and drops it. The live counts are read with `DATABASE_URL` (`well_app`). |
+| `well_restore` | The restore drill, `scripts/restore_check.py` in `worker` (`RESTORE_CHECK_DATABASE_URL`) | `CREATEDB` and `CONNECT` on the WELL database, nothing else: no privilege on any of its tables, so it can't read or change the live data. Its URL names the server's `postgres` maintenance database, from which it creates the throwaway `welldb_restore_check`, restores into it (owning what it restores) and drops it. The live counts are read with `DATABASE_URL` (`well_app`), in a read-only session. |
 
 **Why `well_app` owns the tables instead of a separate migration role.** Most of what the app does besides reading and
 writing rows needs the table's owner in PostgreSQL 13: `ALTER TABLE` and `CREATE INDEX CONCURRENTLY` in migrations,
@@ -842,7 +842,7 @@ now; plan the upgrade to a supported major version (and `postgresql-client-13` i
    # TYPE  DATABASE                         USER          ADDRESS        METHOD
    host    <database>                       well_app      10.20.0.0/16   scram-sha-256
    host    <database>                       well_ops      10.20.0.0/16   scram-sha-256
-   host    <database>,welldb_restore_check  well_restore  10.20.0.0/16   scram-sha-256
+   host    postgres,welldb_restore_check    well_restore  10.20.0.0/16   scram-sha-256
    host    all                              all           10.20.0.0/16   reject
    ```
 
@@ -850,7 +850,8 @@ now; plan the upgrade to a supported major version (and `postgresql-client-13` i
      `reject` line now answers for that range, so such a line can never match again; it is usually the one that let
      `postgres` in. A wider line (e.g. `10.0.0.0/8`, `0.0.0.0/0`) may also serve clients outside Docker: leave it,
      below these lines, which still decide everything from `10.20.0.0/16`.
-   - `welldb_restore_check` is the restore drill's throwaway database. A drill run with
+   - `well_restore` connects to `postgres` to create and drop `welldb_restore_check`, the restore drill's throwaway
+     database, and to that one to restore into it. A drill run with
      `--database welldb_restore_check_<suffix>` needs that name added to the `well_restore` line (PostgreSQL 13 has no
      wildcard for database names here); without it, that run is refused.
    - Leave the `local` lines alone: `sudo -u postgres psql` uses the Unix socket (`peer`), not TCP.
@@ -874,12 +875,13 @@ now; plan the upgrade to a supported major version (and `postgresql-client-13` i
    #   BACKEND_DATABASE_URL=postgresql://well_app:<password>@host.docker.internal:5432/<database>
    #   OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/<database>
    # In dashboard/backend/app/.env (the worker reads it, and the restore drill runs there):
-   #   RESTORE_CHECK_DATABASE_URL=postgresql://well_restore:<password>@host.docker.internal:5432/<database>
+   #   RESTORE_CHECK_DATABASE_URL=postgresql://well_restore:<password>@host.docker.internal:5432/postgres
    docker compose up -d --no-deps backend worker export_worker
    docker compose up -d --no-deps ops      # only if welldash² runs (COMPOSE_PROFILES=ops)
    ```
 
-   Use the host part that `BACKEND_DATABASE_URL` has today, if it isn't `host.docker.internal`. Compose sets
+   Use the host part that `BACKEND_DATABASE_URL` has today, if it isn't `host.docker.internal`, in all three. The
+   worker reads `app/.env` through its `env_file`, so `RESTORE_CHECK_DATABASE_URL` needs no compose change. Compose sets
    `DATABASE_URL` from `BACKEND_DATABASE_URL`, so `app/.env` needs no `DATABASE_URL` for Docker. Without
    `OPS_DATABASE_URL`, welldash² falls back to `BACKEND_DATABASE_URL`, i.e. `well_app`, which works but can write.
    Without `RESTORE_CHECK_DATABASE_URL`, the drill uses `DATABASE_URL` and stops, since `well_app` has no `CREATEDB`.

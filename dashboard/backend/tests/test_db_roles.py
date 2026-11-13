@@ -96,8 +96,8 @@ class DatabaseRoles(unittest.TestCase):
     # --- helpers ---------------------------------------------------------------------------------------------
 
     @classmethod
-    def url(cls, role):
-        url = cls.admin_url.set(database=DATABASE)
+    def url(cls, role, database=DATABASE):
+        url = cls.admin_url.set(database=database)
         if role:
             url = url.set(username=role, password=PASSWORDS[role])
         return url.render_as_string(hide_password=False)
@@ -331,9 +331,10 @@ class DatabaseRoles(unittest.TestCase):
             drill = self.run_app("scripts/restore_check.py", self.app_url, "--dir", directory, "--database", RESTORED)
             self.assertEqual(drill.returncode, 1)
             self.assertIn("CREATEDB", drill.stderr.decode())
-            # With well_restore in RESTORE_CHECK_DATABASE_URL, as the README sets it up, it passes
+            # With well_restore in RESTORE_CHECK_DATABASE_URL, on the postgres database as the README sets it up, it
+            # passes: well_restore creates, restores into and drops the throwaway database; well_app reads live counts
             drill = self.run_app("scripts/restore_check.py", self.app_url, "--dir", directory, "--database", RESTORED,
-                                 RESTORE_CHECK_DATABASE_URL=self.url("well_restore"))
+                                 RESTORE_CHECK_DATABASE_URL=self.url("well_restore", "postgres"))
             self.assertIn("Restore check passed", self.run_ok(drill))
             self.assertEqual(self.server_sql(f"SELECT count(*) FROM pg_database WHERE datname = '{RESTORED}'"), [(0,)])
 

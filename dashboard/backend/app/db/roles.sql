@@ -10,8 +10,9 @@
 --             (INSERT into uptime_probes) and the 90-day cleanup (DELETE on uptime_probes and request_metrics).
 --             Can't create anything.
 --   well_restore  the monthly restore drill (scripts/restore_check.py, through RESTORE_CHECK_DATABASE_URL), which
---             restores a dump into a throwaway database and drops it. CREATEDB and CONNECT on this database, and
---             nothing else: no privilege on any table here, so it can't read or change the live data.
+--             restores a dump into a throwaway database and drops it (its URL names the postgres maintenance
+--             database). CREATEDB and CONNECT on this database, and nothing else: no privilege on any table here,
+--             so it can't read or change the live data.
 --
 -- Run it as a superuser, in the WELL database (the README's "Database roles" section has every step):
 --   sudo -u postgres env PGOPTIONS='-c search_path=pg_catalog' \
@@ -66,7 +67,7 @@ BEGIN
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO well_app, well_ops, well_restore', current_database());
 END $$;
 
--- well_restore connects here only to run CREATE and DROP DATABASE; take back anything granted to it by hand.
+-- well_restore needs nothing on this database's objects; take back anything granted to it by hand.
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM well_restore;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM well_restore;
 REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM well_restore;
