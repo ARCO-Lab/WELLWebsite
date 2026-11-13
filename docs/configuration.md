@@ -30,6 +30,8 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`, which is fixed when the image is built, so a change needs a dashboard rebuild. |
 | `NEXT_PUBLIC_FLASK_API_URL` | none | Passed to the dashboard build and container, but no code reads it. |
 | `DASHBOARD_PORT` | none (use `8081`) | Host port of the dashboard. `deploy.sh`'s health checks assume 8081. |
+| `WORDPRESS_BIND`, `DASHBOARD_BIND` | none (every address) | Publish port 8080 (WordPress) or the dashboard's port on this one host address only, e.g. the address haproxy connects to. Then set `DEPLOY_SITE_HOST` for `deploy.sh`. See [who can reach the published ports](hosting.md#who-can-reach-the-published-ports). |
+| `BACKEND_UID`, `BACKEND_GID` | `10001` | The user and group `backend`, `worker`, `export_worker` and `ops` run as. Set them to the VM user that owns the checkout (`id -u`, `id -g`), so the files the worker writes into `dashboard/backend/app/logs/` and `backups/` are that user's. See [containers run unprivileged](hosting.md#containers-run-unprivileged). |
 | `TRUSTED_PROXY_IPS` | `130.113.68.30` | Reverse proxies whose `X-Forwarded-For` the dashboard believes, comma-separated. The default is McMaster's `haproxy.cas.mcmaster.ca`. Set but empty trusts none. See `dashboard/frontend/src/lib/clientIp.ts`. |
 | `DB_STATEMENT_TIMEOUT_MS` | `25000` | API queries running longer are cancelled (the API answers 504). Backend container only; `0` turns it off. Don't put it in `app/.env`: there it would also limit ingestion and exports. |
 | `API_CACHE_REDIS_URL` | `redis://redis:6379/2` | Redis database for the short `/api/series` and `/api/windrose` response cache. Empty turns the cache off. |
@@ -62,7 +64,9 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `EXPORT_MAX_ACTIVE_JOBS` | `6` | Queued or running exports at once, in total. |
 | `EXPORT_MAX_ACTIVE_JOBS_PER_REQUESTER` | `2` | The same, per visitor (by IP address). |
 | `EXPORT_MAX_JOBS_PER_HOUR_PER_REQUESTER` | `6` | Jobs one visitor may start in an hour, finished ones included. |
-| `EXPORT_MIN_FREE_MB` | `2048` | Free space to keep on the exports disk after an export's estimated size; exports that would go below it get a 507. |
+| `EXPORT_MIN_FREE_MB` | `2048` | Free space to keep on the exports disk after an export's estimated size; exports that would go below it get a 507, and a file that grows into it is stopped and deleted. |
+| `EXPORT_MAX_FILE_MB` | `1024` | Largest file one export may write; a larger one is stopped and deleted. `0`: no limit besides the free space. |
+| `EXPORT_SYNC_MAX_SECONDS` | `45` | Longest a direct download may take to build (under gunicorn's 60 s timeout); a slower one is stopped (504). |
 | `EXPORT_SOFT_TIME_LIMIT_SECONDS`, `EXPORT_HARD_TIME_LIMIT_SECONDS` | `900`, `1200` | An export past the soft limit is stopped and marked failed; past the hard limit its process is killed. |
 | `EXPORT_WORKER_MAX_MEMORY_KB` | `512000` | An export worker process is replaced once a task leaves it using more memory than this. |
 | `EXPORT_FILE_TTL_MINUTES` | `60` | How long a finished export can be downloaded before the hourly cleanup deletes it. |
@@ -87,7 +91,10 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
   `HEALTH_QUIET_HOURS_<GROUP>` (Quality `18-12`, others off), `HEALTH_QUIET_MARGIN_HOURS_<GROUP>` (default `1`),
   `HEALTH_EXCLUDED_SERIES` (default `2577535:*`). `<GROUP>` is `WEATHER`, `LOGGER` or `QUALITY`.
 - Heartbeats (Healthchecks.io ping URLs): `HEALTHCHECK_URL_INGESTION`, `_UPLOAD`, `_SHAREPOINT`, `_DOWNLOAD`,
-  `_DIGEST`, `_ALERTS`. `HEALTHCHECK_URL_BACKUP` is for the nightly database backup ([Database backups](../dashboard/backend/README.md#database-backups)).
+  `_DIGEST`, `_ALERTS`. `HEALTHCHECK_URL_BACKUP` is for the nightly database backup and `HEALTHCHECK_URL_RESTORE`
+  for the monthly restore drill (`RESTORE_CHECK_DAY`, default `2`; `RESTORE_CHECK_TOLERANCE_PCT`, default `2`; `RESTORE_CHECK_DATABASE_URL`, the role that creates and drops the throwaway database, e.g. a `well_restore` role where there is one)
+  ([Database backups](../dashboard/backend/README.md#database-backups)). The worker logs a warning at start-up, and
+  the daily digest lists, every one of these that isn't set.
 - Email (digest and alerts): `ALERT_EMAILS`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`,
   `DIGEST_HOUR` (default `7`, Toronto time).
 - Alert rules: `ALERT_STALE_HOURS`, `ALERT_STALE_HOURS_<GROUP>` (`3`, `3`, `2`), `ALERT_VENDOR_FAILURES` (`3`),
@@ -112,8 +119,10 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `FLASK_API_URL` | build time only | from `BACKEND_INTERNAL_URL` | Where the API routes in `src/pages/api/` send requests. The `env` block in `next.config.ts` inlines it into the build, server code included, so the run-time value compose also sets is never read: after changing `BACKEND_INTERNAL_URL`, rebuild with `docker compose up -d --build --no-deps dashboard`. For `next dev` outside Docker, set it to your backend, e.g. `http://localhost:5000`. |
 | `TRUSTED_PROXY_IPS` | run time | see above | Set by `docker-compose.yml` from the root `.env`. |
 | `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE` | run time | `600`, `600` | API requests one visitor's address may make at once, and per minute after that ([Rate limits](../dashboard/frontend/README.md#rate-limits-and-security-headers)). Not set by `docker-compose.yml`: add them to the dashboard's `environment:` to change them. `0` turns a limit off. |
-| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | run time | `120`, `120` | The same for slow requests (wind rose, `/api/data`, export estimates, direct exports, new export jobs). |
-| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `12` | Slow requests one address may have in flight at once. |
+| `RATE_LIMIT_SLOW_BURST`, `RATE_LIMIT_SLOW_PER_MINUTE` | run time | `120`, `120` | The same for slow requests (wind rose, `/api/data`, `/api/samples`, `/api/series` without `bucket=`, export estimates, direct exports, new export jobs). |
+| `RATE_LIMIT_SLOW_CONCURRENT` | run time | `6` | Slow requests one address may have in flight at once, each until the backend has finished with it. |
+| `RATE_LIMIT_DOWNLOAD_CONCURRENT` | run time | `2` | Export downloads one address may have in flight at once. |
+| `PROXY_BODY_MAX_MS` | run time | `1800000` | The longest a response may take to send before it is cut off. |
 | `NEXT_PUBLIC_WP_HOME` | build arg | `https://well.mcmaster.ca` | The WordPress site the header links to. |
 | `NEXT_PUBLIC_SENTRY_DSN` | build arg | the dashboard project's key | Empty turns browser and server error reporting off. |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | build arg | `production` | Use `development` for local images. |
@@ -143,7 +152,9 @@ Details in [wordpress/README.md](../wordpress/README.md#backups).
 | `DEPLOY_HEALTHCHECK_URL` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure or a held commit. |
 | `DEPLOY_BRANCH`, `DEPLOY_REMOTE` | `main`, `origin` | What is deployed. |
 | `DEPLOY_LOG` | `deploy.log` next to the script | Log file. |
-| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported and the last commit rolled back. Earlier versions kept these in `/tmp`; the first run moves them here. |
+| `DEPLOY_STATE_DIR` | `.deploy-state` next to the script (git-ignored) | The lock, the last problem reported, the commit the containers were last built from, a marker while a deploy runs, and the last commit rolled back. Earlier versions kept the lock and state in `/tmp`; the first run moves them here, and once a run has ended well the old `/tmp` files are ignored. |
+| `DEPLOY_SITE_HOST` | `127.0.0.1` | The address the health checks call ports 8080 and 8081 on. Set it when `WORDPRESS_BIND` and `DASHBOARD_BIND` publish those ports on one address that isn't the loopback. |
+| `DEPLOY_CI_WAIT_HOURS` | `3` | How long `--auto` waits for CI to finish on a commit before it reports it (a `/fail` ping and a `FAILED` line). |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
 ## Tests

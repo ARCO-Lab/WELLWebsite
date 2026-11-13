@@ -18,6 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
 from config import Config  # noqa: E402
+from api.services import catalog  # noqa: E402
 from api.services import exports as export_service  # noqa: E402
 from api.services.exports import (  # noqa: E402
     SENSOR_FILTER_CONFIG,
@@ -248,6 +249,7 @@ class StreamedCsvMatchesTheOldOne:
         cls.db.session.query(SensorMeasurement).delete()
         cls.db.session.add_all(SensorMeasurement(**r) for r in fixture_readings())
         cls.db.session.commit()
+        catalog.forget()  # another test class may have loaded other readings into this database within REFRESH_S
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="export-csv-test-")
@@ -358,9 +360,10 @@ class FormulaInjectionTests(unittest.TestCase):
             self.assertEqual(safe_csv_cell(value), value)
 
     def test_a_missing_value_is_an_empty_field(self):
-        for value in (None, float("nan")):
+        # NaN, infinities and the vendors' "no reading" sentinel are stored in some older rows; none is a reading
+        for value in (None, float("nan"), float("inf"), float("-inf"), -100000.0, -99999.0):
             self.assertEqual(csv_cell(value), "")
-        for value in (0.0, -2.5, float("inf"), "=1+1"):
+        for value in (0.0, -2.5, -99998.5, "=1+1"):
             self.assertEqual(csv_cell(value), safe_csv_cell(value))
 
 

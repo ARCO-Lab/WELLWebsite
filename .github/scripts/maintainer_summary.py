@@ -1,19 +1,28 @@
 """The daily maintainer's email (.github/workflows/daily-maintainer.yml): its open pull requests, sorted into
-"Ready to merge" and "Needs your review", what this run did, and anything that went wrong. Sent every run, also
-when there is nothing to report, so a missing email means the job itself didn't run.
+"Passed the automatic checks" and "Needs your review", what this run did, and anything that went wrong. Sent every
+run, also when there is nothing to report, so a missing email means the job itself didn't run.
 
 A pull request is the maintainer's if it comes from a maint/* branch of the maintainer's account, or carries the
-`maintainer` label. It is "Ready to merge" only when all of these hold; otherwise it "Needs your review", with the
-reasons listed:
+`maintainer` label. It passed the automatic checks only when all of these hold; otherwise it "Needs your review",
+with the reasons listed. Passing them is not a review: the model's self-check is the same run checking its own work,
+so every pull request still needs a person to read it before merging.
 - it is the maintainer's own: from a maint/* branch of this repository, opened by the maintainer's account
   (with a personal token that is the owner's own account, so the branch is what tells them apart; a `maintainer`
   label alone, which anyone with triage rights can add, isn't enough);
+- its head is still the commit the publish job pushed (recorded in the publish job's comment on it), so commits
+  someone else added since then aren't passed along unseen, and every commit in it is authored by the maintainer's
+  account (GitHub's author login), so a branch built on someone else's commits isn't either;
 - CI finished, every check passed, and the checks main requires (REQUIRED_CHECKS) are among them;
-- it has the `audit:approved` label (set after an independent audit said "Approval recommended") and no
-  `audit:findings` label;
+- it has the `self-check:passed` label (the model's own subagent audit said "Approval recommended") and no
+  `self-check:findings` label;
 - it has the `risk:low` label and not `risk:high`;
-- none of its files match RISKY_PATHS (checked here too, whatever the labels say);
+- every file it changes is low risk (LOW_RISK_PATHS, or a new test file), and none matches RISKY_PATHS. Checked
+  here, from the pull request's files, whatever the labels say: the model's own risk label is never enough;
 - it isn't a draft.
+
+What the model wrote (its summary, actions, skips and errors) is cleaned as Sentry text is for public issues
+(maintainer_github.model_lines) and set apart under a line saying so; a link it gives is kept only when it points
+into this repository.
 
 The email goes through SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD and SMTP_FROM to ALERT_EMAILS, the same
 settings and TLS rules as the backend's daily digest (dashboard/backend/app/scripts/daily_digest.py). Without
@@ -31,10 +40,25 @@ import ssl
 import sys
 from email.message import EmailMessage
 
-from maintainer_github import HttpError, clip, github_client, is_maintainer_pr, urllib_transport
+from maintainer_github import (HttpError, clip, github_client, is_maintainer_pr, model_lines, published_commit,
+                               urllib_transport)
+from sentry_issues import scrub
 
-# Changes a person must look at, whatever the audit said: data, schema, deploy, infrastructure, dependencies,
-# security, the WordPress site, and the automation itself. PROMPT.md tells Claude to label these risk:high.
+# The only changes that can pass without "Needs your review" on the files alone: documentation and the dashboard's
+# browser code (its components, hooks, browser helpers and styles). Anything else needs a person, so a backdoor in a
+# file nobody thought to list can't be waved through.
+LOW_RISK_PATHS = [
+    r"\.md$", r"^docs/",
+    r"^dashboard/frontend/src/(components|hooks|utils|styles)/",
+]
+# A test file a branch adds (not changes or deletes: weakening a test is how a branch would make its own CI pass).
+# Frontend tests are listed one by one in package.json, which is risky, so in practice this is the backend's.
+ADDED_TEST_PATHS = [r"^dashboard/backend/tests/test_[A-Za-z0-9_]+\.py$",
+                    r"^dashboard/frontend/scripts/[A-Za-z0-9_-]+\.test\.mjs$"]
+# Changes a person must look at, whatever the self-check said, even where LOW_RISK_PATHS would match: data, schema,
+# deploy, infrastructure, dependencies, security, the API and the background jobs, what CI runs to judge a change
+# (tests, build and lint configuration), the WordPress site, and the automation itself. PROMPT.md tells Claude to
+# label these risk:high.
 RISKY_PATHS = [
     r"^dashboard/backend/app/db/",                      # schema and migrations
     r"(^|/)migrate\.py$",
@@ -49,8 +73,17 @@ RISKY_PATHS = [
     r"^dashboard/backend/app/scripts/(inject|licor|wqdata|clean|clear|upload|download|sharepoint|scheduler)_",
     r"^dashboard/backend/app/utils/(parsers|fetching|borealis|sharepoint|sampling_\w+|sensor_names|timezone)\.py$",
     r"^dashboard/backend/app/utils/(sentry|guards)\.py$",   # error reporting and request guards
-    r"^dashboard/frontend/src/lib/sentry\.ts$",
-    r"^dashboard/frontend/src/pages/api/",              # the dashboard's server side: proxying to the backend
+    r"^dashboard/backend/app/api/(routes|services)/",   # the public API and what it runs
+    r"^dashboard/backend/app/(utils|scripts)/",          # backups, alerts, heartbeats and every job the worker runs
+    # Tests and what CI runs to judge a change: changed or deleted tests, the end-to-end and load tests with their
+    # fixtures, and the build and lint settings (a new backend test file is allowed, ADDED_TEST_PATHS)
+    r"^dashboard/backend/tests/", r"^dashboard/e2e/", r"^dashboard/loadtest/",
+    r"(^|/)tsconfig[^/]*\.json$", r"(^|/)eslint\.config\.[^/]+$", r"(^|/)\.eslintrc[^/]*$",
+    r"(^|/)postcss\.config\.[^/]+$", r"^dashboard/frontend/scripts/",
+    r"^dashboard/frontend/src/lib/",                    # the backend proxy, rate limits, client addresses, Sentry
+    r"^dashboard/frontend/src/pages/",                  # every page, and the API routes (the dashboard's server side)
+    r"^dashboard/frontend/[^/]+$",                      # next.config, instrumentation, Sentry's server config, ...
+    r"^dashboard/frontend/public/",
     r"(^|/)next\.config\.[^/]+$",
     r"(^|/)\.git(ignore|attributes)$",
     r"^\.github/",                                       # workflows, Dependabot, and this maintainer
@@ -64,8 +97,17 @@ REQUIRED_CHECKS = ["Backend image and tests", "Dashboard build", "Dashboard imag
 PASSED = {"success", "neutral", "skipped"}
 
 
-def risky_files(paths):
-    return [p for p in paths if any(re.search(pattern, p) for pattern in RISKY_PATHS)]
+def _matches(path, patterns):
+    return any(re.search(pattern, path) for pattern in patterns)
+
+
+def risky_files(paths, added=()):
+    """The paths that need a person: every one but a new test file (ADDED_TEST_PATHS, when it is in `added`) or a
+    LOW_RISK_PATHS file that matches no RISKY_PATHS."""
+    added = set(added)
+    return [p for p in paths
+            if not ((p in added and _matches(p, ADDED_TEST_PATHS))
+                    or (_matches(p, LOW_RISK_PATHS) and not _matches(p, RISKY_PATHS)))]
 
 
 def latest_runs(check_runs):
@@ -94,12 +136,24 @@ def ci_state(check_runs, required=REQUIRED_CHECKS):
     return ("missing", missing) if missing else ("green", [])
 
 
-def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=()):
-    """("ready", []) or ("review", [reasons])."""
+def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=(), added=(), published=None,
+             foreign_commits=()):
+    """("ready", []) or ("review", [reasons]). `added`: the files the pull request adds; `published`: the commit the
+    publish job recorded pushing to it (None when there is no record); `foreign_commits`: the shas of its commits
+    that the maintainer's account didn't author."""
     labels = {label.get("name") for label in pr.get("labels") or []}
     reasons = []
     if not is_maintainer_pr(pr, repo, login):
         reasons.append("not opened by the maintainer")
+    head = (pr.get("head") or {}).get("sha") or ""
+    if not published:
+        reasons.append("no record of the commit the maintainer published")
+    elif published != head:
+        reasons.append(f"changed since the maintainer published it (head {head[:12]}, published {published[:12]})")
+    if foreign_commits:
+        shown = ", ".join(sha[:12] for sha in foreign_commits[:3])
+        more = f" and {len(foreign_commits) - 3} more" if len(foreign_commits) > 3 else ""
+        reasons.append(f"has commits not authored by the maintainer: {shown}{more}")
     if ci == "red":
         reasons.append("CI failed" + (f": {', '.join(failed_checks)}" if failed_checks else ""))
     elif ci == "pending":
@@ -112,14 +166,14 @@ def classify(pr, files, ci, repo, login, failed_checks=(), missing_checks=()):
         reasons.append("labelled risk:high")
     elif "risk:low" not in labels:
         reasons.append("no risk label")
-    risky = risky_files(files)
+    risky = risky_files(files, added)
     if risky:
         shown = ", ".join(risky[:5]) + (f" and {len(risky) - 5} more" if len(risky) > 5 else "")
         reasons.append(f"touches files that need a person: {shown}")
-    if "audit:findings" in labels:
-        reasons.append("the audit has open findings")
-    elif "audit:approved" not in labels:
-        reasons.append("not audited yet (no audit:approved label)")
+    if "self-check:findings" in labels:
+        reasons.append("its self-check has open findings")
+    elif "self-check:passed" not in labels:
+        reasons.append("not self-checked yet (no self-check:passed label)")
     if pr.get("draft"):
         reasons.append("draft")
     return ("review", reasons) if reasons else ("ready", [])
@@ -137,14 +191,20 @@ def review_prs(gh, repo, prs, login):
     """[(pr, verdict, reasons)] with each pull request's files and checks looked up."""
     out = []
     for pr in prs:
-        files = [f["filename"] for f in gh.get_all(f"repos/{repo}/pulls/{pr['number']}/files",
-                                                   {"per_page": 100}, max_pages=30)]
+        changed = gh.get_all(f"repos/{repo}/pulls/{pr['number']}/files", {"per_page": 100}, max_pages=30)
+        files = [f["filename"] for f in changed]
+        added = [f["filename"] for f in changed if f.get("status") == "added"]
         runs = latest_runs(gh.get_all(f"repos/{repo}/commits/{pr['head']['sha']}/check-runs",
                                       {"per_page": 100, "filter": "latest"}, max_pages=3, key="check_runs"))
         failed = sorted({r.get("name") for r in runs
                          if r.get("status") == "completed" and r.get("conclusion") not in PASSED})
         state, missing = ci_state(runs)
-        verdict, reasons = classify(pr, files, state, repo, login, failed, missing)
+        comments = gh.get_all(f"repos/{repo}/issues/{pr['number']}/comments", {"per_page": 100}, max_pages=5)
+        commits = gh.get_all(f"repos/{repo}/pulls/{pr['number']}/commits", {"per_page": 100}, max_pages=3)
+        foreign = [c.get("sha") or "" for c in commits
+                   if not login or ((c.get("author") or {}).get("login") != login)]
+        verdict, reasons = classify(pr, files, state, repo, login, failed, missing, added,
+                                    published_commit(comments, login), foreign)
         out.append((pr, verdict, reasons))
     return out
 
@@ -170,20 +230,42 @@ def parse_result(text):
 
 
 def pr_line(pr, reasons=()):
-    line = f"- #{pr['number']} {pr.get('title', '')}\n  {pr.get('html_url', '')}"
+    # The title can be anyone's (a stray `maintainer` label lists other pull requests too), so it is cleaned too
+    line = f"- #{pr['number']} {scrub(pr.get('title', ''), 200)}\n  {pr.get('html_url', '')}"
     if reasons:
         line += "\n  Why: " + "; ".join(reasons)
     return line
 
 
-def build_email(reviewed, result, errors, run_url, dry_run=False, notes=()):
+def repo_url(url, repo):
+    """The URL when it is a page of this repository (a pull request, an issue, a run, a commit), else ""."""
+    url = str(url or "")
+    pattern = rf"https://github\.com/{re.escape(repo)}/(pull|issues|actions/runs|commit)/[A-Za-z0-9/_.#-]+"
+    return url if repo and re.fullmatch(pattern, url) else ""
+
+
+def model_said(result, repo):
+    """(lines, errors) from Claude's report, cleaned (model_lines) and indented under the line that says who wrote
+    them. Links are kept only when they point into this repository."""
+    lines = model_lines(clip(str(result.get("summary") or "(no summary)"), 3000))
+    for action in result.get("actions") or []:
+        if isinstance(action, dict):
+            url = repo_url(action.get("url"), repo)
+            lines.append(f"- {' '.join(model_lines(clip(str(action.get('what', '')), 500)))}{' ' + url if url else ''}")
+    for skipped in result.get("skipped") or []:
+        lines.append(f"- Skipped: {' '.join(model_lines(clip(str(skipped), 500)))}")
+    errors = [f"Claude: {' '.join(model_lines(clip(str(e), 500)))}" for e in result.get("errors") or []]
+    return ["  | " + line for line in lines], errors
+
+
+def build_email(reviewed, result, errors, run_url, dry_run=False, notes=(), repo=""):
     """(subject, body)."""
     ready = [(pr, r) for pr, verdict, r in reviewed if verdict == "ready"]
     review = [(pr, r) for pr, verdict, r in reviewed if verdict == "review"]
     lines = []
     if dry_run:
         lines += ["This was a dry run: nothing was pushed or opened.", ""]
-    lines.append(f"Ready to merge ({len(ready)}):")
+    lines.append(f"Passed the automatic checks ({len(ready)}), still to be read before merging:")
     lines += [pr_line(pr) for pr, _ in ready] or ["- none"]
     lines += ["", f"Needs your review ({len(review)}):"]
     lines += [pr_line(pr, r) for pr, r in review] or ["- none"]
@@ -191,14 +273,9 @@ def build_email(reviewed, result, errors, run_url, dry_run=False, notes=()):
     if result is None:
         lines.append("- Claude gave no report (see the errors below and the run log).")
     else:
-        lines.append(clip(str(result.get("summary") or "(no summary)"), 3000))
-        for action in result.get("actions") or []:
-            if isinstance(action, dict):
-                url = f" {action['url']}" if action.get("url") else ""
-                lines.append(f"- {clip(str(action.get('what', '')), 500)}{url}")
-        for skipped in result.get("skipped") or []:
-            lines.append(f"- Skipped: {clip(str(skipped), 500)}")
-        errors = list(errors) + [f"Claude: {clip(str(e), 500)}" for e in result.get("errors") or []]
+        said, claude_errors = model_said(result, repo)
+        lines += ["  Written by the model and not checked (links outside this repository removed):"] + said
+        errors = list(errors) + claude_errors
     if notes:
         lines += ["", "Notes:"] + [f"- {n}" for n in notes]
     lines += ["", "Errors:"] + ([f"- {e}" for e in errors] or ["- none"])
@@ -209,9 +286,9 @@ def build_email(reviewed, result, errors, run_url, dry_run=False, notes=()):
     elif not reviewed:
         headline = "all clear"
     else:
-        headline = f"{len(ready)} ready to merge, {len(review)} need your review"
+        headline = f"{len(ready)} passed the automatic checks, {len(review)} need your review"
     if errors and reviewed:
-        headline += f"; {len(ready)} ready, {len(review)} to review"
+        headline += f"; {len(ready)} passed, {len(review)} to review"
     return f"WELL maintainer: {headline}", "\n".join(lines) + "\n"
 
 
@@ -336,7 +413,8 @@ def main(env=None, transport=urllib_transport, smtp=smtplib):
     if invalid:
         notes.append(f"ALERT_EMAILS: ignored {len(invalid)} entries that aren't email addresses")
     subject, body = build_email(reviewed, result, errors, env.get("RUN_URL") or "",
-                                dry_run=(env.get("DRY_RUN") or "").lower() == "true", notes=notes)
+                                dry_run=(env.get("DRY_RUN") or "").lower() == "true", notes=notes,
+                                repo=env["GITHUB_REPOSITORY"])
     summary_file = env.get("GITHUB_STEP_SUMMARY")
     if summary_file:
         with open(summary_file, "a", encoding="utf-8") as f:

@@ -3,7 +3,7 @@
 # .github/scripts/maintainer_inputs.py), fixes real problems on at most MAX_PRS local maint/* branches and audits
 # each one, with a read-only token. A later job with no model (.github/scripts/maintainer_publish.py) checks those
 # branches, pushes them and opens and labels their pull requests. Then .github/scripts/maintainer_summary.py emails
-# what is ready to merge and what needs a person. Nothing in it merges. The steps are in
+# what passed the automatic checks and what needs a person. Nothing in it merges. The steps are in
 # maintainer-run.yml; its instructions are .github/maintainer/PROMPT.md, its tool rules
 # .github/maintainer/settings.json. See .github/workflows/README.md, "Daily maintainer", for the secrets and how to
 # pause it.
@@ -53,15 +53,17 @@ jobs:
             exit 1
           fi
 
+      # Only whether each secret is set ("true" or "false"): the secrets themselves are never put in this step's
+      # environment, so no command here can read or print them.
       - name: Check the secrets
         id: mode
         env:
           EVENT: ${{ github.event_name }}
-          PAT: ${{ secrets.WELL_MAINTAINER_PAT }}
-          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HAS_PAT: ${{ secrets.WELL_MAINTAINER_PAT != '' }}
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
-          if [ -z "$OAUTH" ] && [ -z "$API_KEY" ]; then
+          if [ "$HAS_OAUTH" != true ] && [ "$HAS_API_KEY" != true ]; then
             if [ "$EVENT" = "workflow_dispatch" ]; then
               echo "::error::Set CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token') or ANTHROPIC_API_KEY"; exit 1
             fi
@@ -69,7 +71,7 @@ jobs:
             echo "mode=skip" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ -n "$PAT" ]; then
+          if [ "$HAS_PAT" = true ]; then
             echo "mode=pat" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::WELL_MAINTAINER_PAT is not set: pull requests are opened as github-actions[bot]"

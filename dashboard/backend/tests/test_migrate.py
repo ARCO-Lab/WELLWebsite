@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from sqlalchemy import create_engine, inspect, text
 
@@ -123,7 +124,7 @@ class RepoMigrations(unittest.TestCase):
 
 @unittest.skipUnless(os.getenv("MIGRATE_TEST_DATABASE_URL"), "set MIGRATE_TEST_DATABASE_URL to a disposable PostgreSQL")
 class PostgresRunner(Runner):
-    TABLES = "schema_migrations, t, t2, x"
+    TABLES = "schema_migrations, t, t2, x, export_jobs"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -257,6 +258,36 @@ class PostgresRunner(Runner):
             blocker.close()
             first.join(30)   # always, so a failure here can't leave the first run going into the next test
         self.assertEqual(results, [["0001_index"]])
+
+    def test_a_migration_waiting_for_a_lock_gives_up_at_the_lock_timeout(self):
+        # A long read (an export, say) holds a lock the ALTER TABLE needs. Waiting for it would queue every later
+        # query on the table behind the migration; it fails instead, records nothing, and can be run again.
+        self.sql("CREATE TABLE t (a int)")
+        self.write("0001_alter.sql", "ALTER TABLE t ADD COLUMN b int")
+        reader = self.engine.connect()
+        reader.execute(text("SELECT count(*) FROM t"))   # its transaction stays open, holding the lock
+        try:
+            started = time.monotonic()
+            with mock.patch.object(migrate, "LOCK_TIMEOUT", "200ms"), \
+                    self.assertRaisesRegex(Exception, "lock timeout"):
+                self.run_migrate()
+            self.assertLess(time.monotonic() - started, 5)
+        finally:
+            reader.rollback()
+            reader.close()
+        self.assertEqual(self.recorded(), [])
+        self.assertEqual(self.run_migrate(), ["0001_alter"])
+
+    def test_the_export_jobs_fingerprint_migration_can_run_on_any_database(self):
+        sql = migrate.read(migrate.MIGRATIONS_DIR / "0007_export_jobs_requester_fingerprint.sql")
+        self.write("0001_no_table_yet.sql", sql)
+        self.assertEqual(self.run_migrate(), ["0001_no_table_yet"])   # no export_jobs: db.create_all() makes it
+        self.sql("CREATE TABLE export_jobs (id varchar(36) PRIMARY KEY)")   # one made before the column existed
+        self.write("0002_adds_the_column.sql", sql)
+        self.write("0003_again.sql", sql)
+        self.assertEqual(self.run_migrate(), ["0002_adds_the_column", "0003_again"])
+        columns = {c["name"]: c for c in inspect(self.engine).get_columns("export_jobs")}
+        self.assertTrue(columns["requester_fingerprint"]["nullable"])
 
 
 if __name__ == "__main__":

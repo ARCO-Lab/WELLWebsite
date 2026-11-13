@@ -2,6 +2,7 @@
 // This section renders the homepage hero carousel for the WELL WordPress theme.
 // It displays rotating banners with images and calls to action for WELL, Dashboard, and News.
 // The slide images are pre-sized WebP copies (see well_media_img() in functions.php).
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 // How wide the slide image is drawn, following the .carousel-bg-left/-right rules in css/mcm-bw.css:
 // full width on phones and tablets, about 1170 px (500 px tall) up to 1300 px, then 90% down to 69%.

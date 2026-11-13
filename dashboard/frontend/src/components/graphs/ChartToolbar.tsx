@@ -82,7 +82,7 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
       </p>
       <span className="sr-only" role="status" aria-live="polite">{status}</span>
       <div className="ml-auto flex gap-1" role="group" aria-label={`${title}: time window`}>
-        <ToolButton label="Show earlier" title="Earlier" off={w.start <= ext.start} onPress={() => controller.pan(-0.5)}>
+        <ToolButton label="Show the time just before this window" title="Earlier" off={w.start <= ext.start} onPress={() => controller.page(-1)}>
           <ChevronLeft aria-hidden className="h-3.5 w-3.5" />
         </ToolButton>
         <ToolButton label="Zoom out: show twice as much time" title="Zoom out" off={w.end - w.start >= ext.end - ext.start}
@@ -93,7 +93,7 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
           onPress={() => controller.zoom(0.5)}>
           <Plus aria-hidden className="h-3.5 w-3.5" />
         </ToolButton>
-        <ToolButton label="Show later" title="Later" off={w.end >= ext.end} onPress={() => controller.pan(0.5)}>
+        <ToolButton label="Show the time just after this window" title="Later" off={w.end >= ext.end} onPress={() => controller.page(1)}>
           <ChevronRight aria-hidden className="h-3.5 w-3.5" />
         </ToolButton>
         <ToolButton label="Reset: show the picked days" title="Reset" off={atDefault} onPress={() => controller.reset()}>

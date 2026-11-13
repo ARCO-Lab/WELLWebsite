@@ -251,6 +251,7 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
 
 // ---- one chart per card: its series and axes ----
 import { cardSeries } from "../src/utils/cardSeries.ts";
+import { LOGGER_PALETTE } from "../src/utils/chartStyle.ts";
 
 test("cardSeries: every selected measurement in one chart, one y-axis per unit, in a fixed order", () => {
   const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }],
@@ -263,15 +264,14 @@ test("cardSeries: every selected measurement in one chart, one y-axis per unit, 
   assert.equal(series.find((s) => s.measurement === "Rain").agg, "sum");
 });
 
-test("cardSeries: loggers share one chart, a colour per logger, temperature dashed, two axes", () => {
+test("cardSeries: loggers share one chart, a hue per logger (level dark, temperature light and dashed), two axes", () => {
   const { series, axes } = cardSeries("Logger", [{ id: "2577531", name: "Logger 1" }, { id: "2577534", name: "Logger 4" }],
     ["Water Temperature", "Water Surface Elevation", "All Loggers"]);
   assert.deepEqual(series.map((s) => s.name), [
     "Logger 1 · Water Surface Elevation (m asl)", "Logger 1 · Water Temperature (°C)",
     "Logger 4 · Water Surface Elevation (m asl)", "Logger 4 · Water Temperature (°C)",
   ]);
-  assert.equal(series[0].color, series[1].color);
-  assert.notEqual(series[0].color, series[2].color);
+  assert.deepEqual(series.map((s) => s.color), [LOGGER_PALETTE[0].dark, LOGGER_PALETTE[0].light, LOGGER_PALETTE[1].dark, LOGGER_PALETTE[1].light]);
   assert.deepEqual(series.map((s) => s.dash ?? ""), ["", "ShortDash", "", "ShortDash"]);
   assert.deepEqual(axes, [{ unit: "m asl", measurements: ["Water Surface Elevation"] }, { unit: "°C", measurements: ["Water Temperature"] }]);
 });
@@ -282,4 +282,30 @@ test("cardSeries: faulty sensors are noted, TSS starts hidden; nothing selected 
   assert.equal(series[2].hidden, true);
   assert.match(series[1].note, /Jun 2026/);
   assert.deepEqual(cardSeries("Logger", [{ id: "1", name: "Logger 1" }], []).series, []);
+});
+
+test("cardSeries: wind direction is not drawn on the weather chart (the wind rose shows it)", () => {
+  const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }], ["Wind Direction", "Wind Speed"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Wind Speed"]);
+  assert.deepEqual(axes.map((a) => a.unit), ["m/s"]);
+  assert.deepEqual(cardSeries("Weather", [{ id: "22051538", name: "Weather station" }], ["Wind Direction"]).series, []);
+});
+
+test("logger palette: every shade at least 3:1 on white, the five hues all different", () => {
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  for (const { dark, light } of LOGGER_PALETTE) {
+    assert.ok(1.05 / (lum(dark) + 0.05) >= 4.5, dark);
+    assert.ok(1.05 / (lum(light) + 0.05) >= 3, light);
+  }
+  assert.equal(new Set(LOGGER_PALETTE.flatMap((p) => [p.dark, p.light])).size, 10);
+});
+
+test("guarded: a callback's exception is reported, not thrown; otherwise it runs as usual", async () => {
+  const { guarded } = await import("../src/lib/guarded.ts");
+  const seen = [];
+  const ok = guarded((a, b) => seen.push(a + b), (e) => seen.push(`reported ${e.message}`));
+  ok(1, 2);
+  const bad = guarded(() => { throw new Error("boom"); }, (e) => seen.push(`reported ${e.message}`));
+  assert.doesNotThrow(() => bad());
+  assert.deepEqual(seen, [3, "reported boom"]);
 });

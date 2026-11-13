@@ -7,7 +7,7 @@ import {
   TILE_BUCKETS, bucketFor, tileAt, tileRange, tilesFor, tileQuery, toWall, fromWall, cutIntoTiles, segmentsFor,
   composeSeries, typicalFor, coarsestIn, tileSpanMs, fitWindow, coarsen, baseBucket, MAX_TILES, bucketInstant,
 } from "../src/lib/seriesTiles.ts";
-import { SeriesLoader, MAX_BATCH, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
+import { SeriesLoader, MAX_BATCH, errorFrom, fetchFromApi, RETRY_DELAYS_MS } from "../src/lib/seriesLoader.ts";
 import { ChartController, clampWindow, overviewBucket, fillTiles } from "../src/lib/chartController.ts";
 
 const H = 3600 * 1000;
@@ -277,6 +277,15 @@ test("loader: least recently used tiles go first when the cache is full", async 
 });
 
 // ---- the chart controller ----
+
+// One series at the controller's overview bucket over its extent, as drawn from the loader's tiles: what fitting and
+// the first view rely on (the chart's own points are lastData)
+function overviewOf(c, loader, key) {
+  const ovB = c.ovB();
+  const tiles = [...loader.loadedTiles(key, ovB)];
+  const pts = composeSeries(segmentsFor([{ bucketS: ovB, tiles }]), (b, i) => loader.tile(key, b, i), () => () => null);
+  return pts.filter((p) => p.x >= c.extent.start && p.x <= c.extent.end);
+}
 
 const now = Date.parse("2026-11-11T17:00:00Z");
 const extent = { start: Date.parse("2025-05-08T04:00:00Z"), end: now };
@@ -558,7 +567,7 @@ test("controller: opens on where the data is, keeps the navigator's extent, and 
   assert.equal(c.window.end, to);
   assert.deepEqual(c.extent, range); // the navigator still covers both days
   assert.equal(c.ovB(), 600); // two days at 10-minute readings from the start
-  assert.equal(c.overview(A).filter((p) => p.y !== null).length, (to - from) / 600e3);
+  assert.equal(overviewOf(c, loader, A).filter((p) => p.y !== null).length, (to - from) / 600e3);
   // Reset returns to the fitted window; after the user moves, new data doesn't move it
   c.pan(-0.5, "key");
   await sleep(40);
@@ -835,7 +844,7 @@ test("a narrow chart over two days draws at once: coarser tiles reaching past th
   assert.equal(srv.calls.length, 1);
   assert.equal(c.ovB(), 1800);
   assert.notEqual(c.snapshot().shownBucket, null);
-  assert.ok(c.overview(A).some((p) => p.y !== null));
+  assert.ok(overviewOf(c, loader, A).some((p) => p.y !== null));
   assert.ok([...c.lastData.series.get(A)].some((p) => p.y !== null && p.x >= range.start && p.x <= range.end));
   c.dispose();
 });
@@ -857,9 +866,9 @@ test("widening the range replaces coarser tiles worked out from part of their fi
   await srv.settle();
   await sleep(20);
   await srv.settle();
-  // Every bucket of the navigator's line over the wide range has a value (the fake server has data everywhere)
+  // Every bucket of the overview over the wide range has a value (the fake server has data everywhere)
   const b = c.ovB();
-  const pts = c.overview(A).filter((p) => p.y !== null);
+  const pts = overviewOf(c, loader, A).filter((p) => p.y !== null);
   const from = wide.start + b * 1000, to = narrow.start + 3 * D;
   const missing = [];
   for (let t = from; t < to; t += b * 1000) if (!pts.some((p) => Math.abs(p.x - (t + b * 500)) < b * 1000)) missing.push(new Date(t).toISOString());
@@ -949,4 +958,80 @@ test("a long zoom gesture asks for nothing until it ends, then once", async () =
   assert.ok(srv.calls.length - n0 <= 1);
   await srv.settle();
   c.dispose();
+});
+
+test("sweep: a narrow range, then the last 90 days, draws no gap where there is data", async () => {
+  const failures = [];
+  for (const today of [Date.parse("2026-11-10T17:00:00Z"), Date.parse("2026-11-11T17:00:00Z")]) {
+    for (const days of [1, 2, 3, 5, 7, 10]) {
+      for (const back of [0, 5, 13, 21, 40]) {
+        let clock = today;
+        const end = today - back * D;
+        const narrow = { start: end - days * D, end };
+        const wide = { start: today - 90 * D, end: today };
+        const srv = fakeServer();
+        const loader = new SeriesLoader(srv.fetchTiles, 3000, 2, 0, () => clock);
+        const c = new ChartController("card", [A], narrow, narrow, loader, syncFrame, 30);
+        c.setPlotWidth(600);
+        c.activate();
+        await sleep(40);
+        await srv.settle();
+        clock += 5 * 60_000; // five minutes between the two picks
+        c.setExtent(wide);
+        c.setDefault(wide);
+        await sleep(40);
+        await srv.settle();
+        await sleep(20);
+        await srv.settle();
+        // The fake server has a reading in every bucket: the drawn series must have no break inside the range
+        const pts = (c.lastData.series.get(A) ?? []).filter((p) => p.x > wide.start + D && p.x < wide.end - D);
+        const gap = pts.find((p) => p.y === null);
+        if (!pts.length || gap) failures.push(`${new Date(today).toISOString().slice(0, 10)} ${days} d, ${back} d back: ${gap ? `gap at ${new Date(gap.x).toISOString()}` : "nothing drawn"}`);
+        c.dispose();
+      }
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test("composeSeries: no line break across the fall-back hour, where the API labels 01:00 by its second occurrence", () => {
+  // 00:30-00:50 EDT, then 01:00-01:50 EST (the repeated hour's buckets, as /api/series labels them), then 02:00 EST
+  const t = [
+    ...[30, 40, 50].map((m) => Date.parse("2026-11-01T04:00:00Z") + m * 60_000),
+    ...[0, 10, 20, 30, 40, 50, 60].map((m) => Date.parse("2026-11-01T06:00:00Z") + m * 60_000),
+  ];
+  const s = { t, avg: t.map((_, i) => i), min: t.map(() => null), max: t.map(() => null), n: t.map(() => 1) };
+  const i = tileAt(t[0], 600);
+  const tiles = cutIntoTiles(s, i - 1, i + 1, 600);
+  const segs = segmentsFor([{ bucketS: 600, tiles: [i - 1, i, i + 1] }]);
+  const pts = composeSeries(segs, (b, j) => tiles.get(j), () => () => null);
+  assert.equal(pts.filter((p) => p.y !== null).length, t.length);
+  assert.equal(pts.some((p) => p.y === null), false);
+});
+
+test("the arrows page by exactly one window: adjacent, as long, and stopped (still as long) at the range's edges", () => {
+  const loader = new SeriesLoader(async () => []);
+  const range = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-20T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-06T23:30:00Z"), end: Date.parse("2026-09-12T13:29:00Z") }; // Sep 6 19:30 - Sep 12 09:29
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  const span = w0.end - w0.start;
+  c.page(-1);
+  assert.deepEqual(c.window, { start: w0.start - span, end: w0.start });
+  c.page(1);
+  assert.deepEqual(c.window, w0);
+  c.page(1);
+  assert.deepEqual(c.window, { start: w0.end, end: w0.end + span }); // the next one
+  c.page(1); // past the range's end: stops at it, as long as before
+  assert.deepEqual(c.window, { start: range.end - span, end: range.end });
+  c.page(1);
+  assert.deepEqual(c.window, { start: range.end - span, end: range.end });
+  for (let i = 0; i < 6; i++) c.page(-1); // and at the start
+  assert.deepEqual(c.window, { start: range.start, end: range.start + span });
+  c.dispose();
+});
+
+test("the proxy's 429 for too many requests in flight reads as its message (the wind rose shows it)", async () => {
+  const message = "Too many requests from your address. Please wait a moment and try again.";
+  const res = new Response(JSON.stringify({ error: message }), { status: 429, headers: { "Retry-After": "2" } });
+  assert.equal((await errorFrom(res, "the wind rose")).message, message);
 });

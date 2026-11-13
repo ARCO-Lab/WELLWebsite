@@ -27,6 +27,13 @@ def frozen_clock(instant_utc):
     return mock.patch("utils.timezone.datetime", Frozen)
 
 
+# Job ids are UUIDs, as the job routes require (<uuid:job_id>)
+LATE_ID = "00000000-0000-4000-8000-000000000001"
+FRESH_ID = "00000000-0000-4000-8000-000000000002"
+DST_ID = "00000000-0000-4000-8000-000000000003"
+LEAKY_ID = "00000000-0000-4000-8000-000000000004"
+
+
 class EstAfterTests(TestCase):
     def test_adds_real_time_across_the_spring_dst_jump(self):
         # 01:45 EST on 2026-03-08; clocks jump from 02:00 to 03:00, so 60 real minutes later it's 03:45
@@ -135,28 +142,28 @@ class CleanupTests(TestCase):
         self.assertIsNone(self.get("stuck").artifact_path)
 
     def test_download_of_an_expired_job_leaves_the_file_for_cleanup(self):
-        path = self.job("late", -5, os.path.join(self.exports, "late", "x.csv"))
-        r = self.app.test_client().get("/api/exports/jobs/late/download")
+        path = self.job(LATE_ID, -5, os.path.join(self.exports, LATE_ID, "x.csv"))
+        r = self.app.test_client().get(f"/api/exports/jobs/{LATE_ID}/download")
         self.assertEqual(r.status_code, 410)
         self.db.session.expire_all()
-        self.assertEqual((self.get("late").status, self.get("late").artifact_path), ("expired", path))
+        self.assertEqual((self.get(LATE_ID).status, self.get(LATE_ID).artifact_path), ("expired", path))
         self.assertTrue(os.path.exists(path))
 
     def test_download_within_the_window(self):
-        self.job("fresh", 30, os.path.join(self.exports, "fresh", "x.csv"))
-        r = self.app.test_client().get("/api/exports/jobs/fresh/download")
+        self.job(FRESH_ID, 30, os.path.join(self.exports, FRESH_ID, "x.csv"))
+        r = self.app.test_client().get(f"/api/exports/jobs/{FRESH_ID}/download")
         self.assertEqual((r.status_code, r.data), (200, b"a,b\n"))
         r.close()
 
     def test_download_right_after_ready_on_the_fall_back_night(self):
-        self.job("dst", 0, os.path.join(self.exports, "dst", "x.csv"), expires_at=est_after(60, FALL_BACK_DONE))
+        self.job(DST_ID, 0, os.path.join(self.exports, DST_ID, "x.csv"), expires_at=est_after(60, FALL_BACK_DONE))
         client = self.app.test_client()
         with frozen_clock(FALL_BACK_DONE + dt.timedelta(seconds=3)):  # when the page asks for the file
-            r = client.get("/api/exports/jobs/dst/download")
+            r = client.get(f"/api/exports/jobs/{DST_ID}/download")
         self.assertEqual(r.status_code, 200)
         r.close()
         with frozen_clock(FALL_BACK_DONE + dt.timedelta(minutes=61)):
-            self.assertEqual(client.get("/api/exports/jobs/dst/download").status_code, 410)
+            self.assertEqual(client.get(f"/api/exports/jobs/{DST_ID}/download").status_code, 410)
 
     def fail_job(self, job_id, exc):
         """Runs generate_export_job with write_export_csv raising `exc`, and returns the job afterwards."""
@@ -176,16 +183,38 @@ class CleanupTests(TestCase):
         from tasks.exports import EXPORT_FAILED_MESSAGE
         leak = RuntimeError("(psycopg2.OperationalError) SELECT * FROM measurements WHERE site_id = %(p)s "
                             "(Background on this error at: https://sqlalche.me/e/20/e3q8) /app/app/db/x.py")
-        job = self.fail_job("leaky", leak)
+        job = self.fail_job(LEAKY_ID, leak)
         self.assertEqual(job.status, "failed")
         self.assertEqual(job.error_message, EXPORT_FAILED_MESSAGE)
-        r = self.app.test_client().get("/api/exports/jobs/leaky")
+        r = self.app.test_client().get(f"/api/exports/jobs/{LEAKY_ID}")
         self.assertNotIn("SELECT", r.get_data(as_text=True))
         self.assertNotIn("sqlalche.me", r.get_data(as_text=True))
 
     def test_a_failed_job_keeps_a_validation_message(self):
-        job = self.fail_job("invalid", ValueError("start must be before end"))
+        from api.services.exports import ExportValidationError
+        job = self.fail_job("invalid", ExportValidationError("start must be before end"))
         self.assertEqual(job.error_message, "start must be before end")
+
+    def test_a_failed_job_hides_the_drivers_value_error(self):
+        # psycopg2 refuses a NUL character with a plain ValueError; its text isn't a message for the user
+        from tasks.exports import EXPORT_FAILED_MESSAGE
+        job = self.fail_job("nul", ValueError("A string literal cannot contain NUL (0x00) characters."))
+        self.assertEqual(job.error_message, EXPORT_FAILED_MESSAGE)
+
+    def test_a_job_stopped_by_its_size_limit_says_why_and_is_not_re_raised(self):
+        from api.services.exports import ExportAborted
+        from tasks import exports as export_tasks
+        payload = {"domain": "sampling", "start": "2026-11-01T00:00:00", "end": "2026-11-02T00:00:00"}
+        self.db.session.add(self.ExportJob(id="big", status="queued", domain="sampling", payload=payload,
+                                           estimated_rows=1))
+        self.db.session.commit()
+        stopped = ExportAborted("This export is too large to prepare.", 413)
+        with mock.patch.object(export_tasks, "write_export_csv", side_effect=stopped), \
+                mock.patch.object(export_tasks, "worker_app", return_value=self.app):
+            export_tasks.generate_export_job("big")   # a limit doing its job: logged, not raised to Sentry
+        self.db.session.expire_all()
+        job = self.get("big")
+        self.assertEqual((job.status, job.error_message), ("failed", "This export is too large to prepare."))
 
     def test_a_failed_job_hides_a_value_error_subclass(self):
         from tasks.exports import EXPORT_FAILED_MESSAGE

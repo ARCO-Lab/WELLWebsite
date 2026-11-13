@@ -138,6 +138,30 @@ def fmt_age(minutes):
     return f"{minutes / 1440:.1f} days"
 
 
+def age_text(minutes):
+    # "3.5 h ago", or "2.0 h ahead" for a reading dated in the future.
+    return f"{fmt_age(-minutes)} ahead" if minutes is not None and minutes < 0 else f"{fmt_age(minutes)} ago"
+
+
+def station_name(station_id):
+    logger = LOGGER_SENSORS.get(str(station_id))
+    return f"Logger {logger[0]}" if logger else str(station_id)
+
+
+def station_gaps(group_gaps, by_station, start, end):
+    """[(station name, from, to)]: the gaps of each station ({station_id: sorted aware UTC times}) that a gap of the
+    whole group (group_gaps) doesn't already cover. One logger silent for 12 h while the others report leaves no
+    gap in the group's time slots; this lists it. Empty for a group with a single station."""
+    if len(by_station) < 2:
+        return []
+    found = []
+    for station, timestamps in sorted(by_station.items()):
+        for lo, hi in find_gaps(timestamps, start, end):
+            if not any(g0 <= lo and hi <= g1 for g0, g1 in group_gaps):
+                found.append((station_name(station), lo, hi))
+    return found
+
+
 def to_markdown(lines):
     """The digest's lines as Markdown: a line ending in ":" at the left margin is a `## ` heading, an indented line
     (with or without its "- ") a bullet, a line indented twice a nested bullet, and any other line a paragraph."""
@@ -158,16 +182,21 @@ def to_markdown(lines):
 
 
 def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
-                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None):
+                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None, unset_heartbeats=None,
+                 leftover_databases=None):
     """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
-    freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
-    last 24 h of the live series. findings: anomaly strings. wqdata: {"error"} or {"power_min", "power_max", "power_readings",
+    freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps", optional
+    "station_gaps" [(station name, from, to)]}} for the last 24 h of the live series. findings: anomaly strings. wqdata: {"error"} or {"power_min", "power_max", "power_readings",
     "last_point", "last_point_age_minutes", optional "note"} or None when skipped. incidents: the open email alerts
     (utils/alert_state.alerts_report()["open"]), {"error": ...} if they couldn't be read, or None to leave them out.
     traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
     recoveries: alerts cleared in the last 24 h (utils/alert_state.recent_recoveries()), {"error": ...}, or None.
     quiet_kinds: ALERT_QUIET_KINDS (Settings.quiet_kinds); None is the default.
+    unset_heartbeats: the HEALTHCHECK_URL_* settings that aren't set (utils/heartbeat.unset_heartbeats), listed first
+    as a problem, since those jobs report nothing if they stop; None or [] to leave it out.
+    leftover_databases: restore drill databases still on the server while no drill runs (utils/backup.py), each a
+    full copy of the live database; listed as a problem. None or [] to leave it out.
     """
     # Here, not at the top: utils.alerts imports this module.
     from utils.alerts import DEFAULT_QUIET_KINDS, RECOVERED_AS, Settings, is_quiet, status
@@ -180,9 +209,21 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     now = datetime.fromisoformat(freshness["checked_at"])
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
-    problems = len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
+    problems = (len(stale) + len(findings) + (1 if wqdata and wqdata.get("error") else 0)
+                + (1 if unset_heartbeats else 0) + (1 if leftover_databases else 0))
     subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
     lines = [f"WELL dashboard daily digest for the 24 h before {when(now)} (Toronto time).", ""]
+
+    if unset_heartbeats:
+        lines.append("Heartbeats not set (these jobs, or the whole worker, could stop with nobody told):")
+        lines += [f"  - `{name}`" for name in unset_heartbeats]
+        lines.append("")
+
+    if leftover_databases:
+        lines.append("Restore drill databases left behind (each a full copy of the database; the next backup drops "
+                     "them, or drop them by hand):")
+        lines += [f"  - `{name}`" for name in leftover_databases]
+        lines.append("")
 
     if incidents is not None:
         lines.append("Open alerts (each was emailed when it began):")
@@ -204,9 +245,11 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
                       for r in recoveries] or ["  none"]
         lines.append("")
 
-    lines.append("Stale series (newest reading older than its limit):")
+    lines.append("Stale series (newest reading older than its limit, or dated in the future):")
     lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {when_local(s['newest'])} "
-              f"({fmt_age(s['age_minutes'])} ago; limit {s['max_age_hours']:g} h)" for s in stale] or ["  none"]
+              + (f"({age_text(s['age_minutes'])}: check the device clock, then delete the future-dated rows)"
+                 if s.get("status") == "future" else
+                 f"({fmt_age(s['age_minutes'])} ago; limit {s['max_age_hours']:g} h)") for s in stale] or ["  none"]
     lines.append("")
 
     lines.append("Implausible values:")
@@ -225,6 +268,9 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
         for start, end in info["gaps"]:
             minutes = int((end - start).total_seconds() // 60)
             lines.append(f"    gap {when_local(start)} → {when_local(end)} ({fmt_age(minutes)})")
+        for name, start, end in info.get("station_gaps", ()):
+            minutes = int((end - start).total_seconds() // 60)
+            lines.append(f"    {name} gap {when_local(start)} → {when_local(end)} ({fmt_age(minutes)})")
     lines.append("")
 
     lines.append("WQData device:")
@@ -256,6 +302,6 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
                      + (f", quiet {info['quiet_hours']}" if info["quiet_hours"] else "") + "):")
         for s in info["series"]:
             lines.append(f"    {series_label(s['station_id'], s['measurement_type'])}: {when_local(s['newest'])} "
-                         f"({fmt_age(s['age_minutes'])} ago){'' if s['status'] == 'ok' else ', ' + s['status']}")
+                         f"({age_text(s['age_minutes'])}){'' if s['status'] == 'ok' else ', ' + s['status']}")
     lines = to_markdown(lines) + [""] + footer(dashboard_url)
     return subject, "\n".join(lines) + "\n"

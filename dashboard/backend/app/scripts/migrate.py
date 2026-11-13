@@ -4,7 +4,9 @@
 #   python scripts/migrate.py --status     list applied and pending migrations; changes nothing
 #   python scripts/migrate.py --dry-run    print the SQL that would run; changes nothing
 #
-# A file runs in one transaction, so a failure leaves nothing half-applied. A file whose first line is
+# A file runs in one transaction, so a failure leaves nothing half-applied. On PostgreSQL that transaction waits at
+# most LOCK_TIMEOUT for a lock: an ALTER TABLE queued behind a long export's read would otherwise block every query
+# on that table behind it, so it fails instead and can be run again later. A file whose first line is
 # "-- migrate: no-transaction" runs in autocommit instead; statements such as CREATE INDEX CONCURRENTLY require
 # it. Such a file must hold a single statement, because PostgreSQL treats several as one transaction block.
 # Dated one-off fixes (e.g. 2026-11-10_swap_air_soil_temperature.sql) aren't numbered, so they're left alone:
@@ -19,10 +21,14 @@ import sys
 
 from sqlalchemy import create_engine, inspect, text
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from db.database import CONNECT_ARGS  # noqa: E402
+
 MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parents[1] / "db" / "migrations"
 NUMBERED = re.compile(r"^(\d{4})_\w+\.sql$")
 NO_TRANSACTION = "-- migrate: no-transaction"
 LOCK_KEY = 4_206_190_001   # arbitrary pg_advisory_lock key, so two runs at once take turns instead of racing
+LOCK_TIMEOUT = os.getenv("MIGRATE_LOCK_TIMEOUT", "5s")   # see the top of this file; "0" waits for ever
 
 
 class MigrationError(Exception):
@@ -72,6 +78,8 @@ def apply(engine, path, log=print):
     record = text("INSERT INTO schema_migrations (version) VALUES (:version)")
     if not needs_autocommit(sql):
         with engine.begin() as conn:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("SELECT set_config('lock_timeout', :timeout, true)"), {"timeout": LOCK_TIMEOUT})
             conn.exec_driver_sql(sql, execution_options={"no_parameters": True})   # "%" reaches the driver as is
             conn.execute(record, {"version": path.stem})
         return
@@ -131,7 +139,9 @@ def main():
     mode.add_argument("--dry-run", action="store_true", help="print the SQL of pending migrations")
     args = parser.parse_args()
 
-    engine = create_engine(os.environ["DATABASE_URL"])
+    url = os.environ["DATABASE_URL"]
+    # The app's connect timeout and TCP keepalives, so an unreachable database fails in seconds instead of hanging.
+    engine = create_engine(url, connect_args=dict(CONNECT_ARGS) if url.startswith("postgresql") else {})
     try:
         if args.status:
             done = applied_versions(engine)

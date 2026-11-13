@@ -1,9 +1,12 @@
 # This file defines the /api/latest route: the newest reading of every series, where a series is one
 # (station_id, measurement_type) pair. The dashboard's Latest Data panel calls it on every page view and every
 # 10 minutes per open tab, so it has to stay cheap as sensor_measurements grows.
+# A newest reading that is a "no reading" sentinel or isn't finite (stored before ingestion skipped such values) is
+# sent as null, so one bad row can't put a bare NaN in the JSON and break the panel for everyone.
 
 from flask import jsonify
 from db.database import db
+from utils.parsers import reading_value
 
 # Walks the (station_id, measurement_type, recorded_at) unique index instead of reading the whole table:
 # the recursive part hops from one series to the next (one index probe per series), and the final join
@@ -50,7 +53,7 @@ def query_latest_per_series():
             "station_id": r.station_id,
             "group_type": r.group_type,
             "measurement_type": r.measurement_type,
-            "value": r.value,
+            "value": reading_value(r.value),
             "unit": r.unit,
             "recorded_at": r.recorded_at.isoformat(),
         }

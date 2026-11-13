@@ -5,6 +5,7 @@ import React, { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SENSOR_FILTER_CONFIG } from '@/components/config/filters';
 import { cardSeries } from '@/utils/cardSeries';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 const MetricChart = dynamic(() => import('./highcharts/MetricChart'), {
   ssr: false,
@@ -33,7 +34,9 @@ const LoggerGraph = ({ subFilters, modalOpen = false }: Props) => {
           <p className="text-sm text-muted">Tick Water Surface Elevation or Water Temperature under Filters to see the loggers&apos; readings.</p>
         </>
       ) : (
-        <MetricChart id="logger" title="Water Loggers" series={series} axes={axes} modalOpen={modalOpen} />
+        <ChartErrorBoundary title="Water Loggers">
+          <MetricChart id="logger" title="Water Loggers" series={series} axes={axes} modalOpen={modalOpen} />
+        </ChartErrorBoundary>
       )}
     </div>
   );

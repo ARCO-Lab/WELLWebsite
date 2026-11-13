@@ -19,8 +19,8 @@ from sqlalchemy.exc import OperationalError  # noqa: E402
 
 from config import Config, parse_timeout_ms  # noqa: E402
 import server  # noqa: E402
-from db.database import db, engine_options  # noqa: E402
-from api.routes.series import MAX_AGE_PAST, MAX_AGE_RECENT, MAX_AGE_SETTLED, cache_key, max_age, snap_range  # noqa: E402
+from db.database import CONNECT_ARGS as CONNECT, db, engine_options  # noqa: E402
+from api.routes.series import MAX_AGE_PAST, MAX_AGE_RECENT, MAX_AGE_SETTLED, max_age, snap_range  # noqa: E402
 from utils import response_cache  # noqa: E402
 
 # Config reads DATABASE_URL once, when first imported; another test module may have imported it first.
@@ -46,17 +46,26 @@ class TimeoutSettingTests(TestCase):
 class EngineOptionsTests(TestCase):
     def test_postgres_gets_the_timeout_at_connect(self):
         self.assertEqual(engine_options("postgresql://u:p@h/db", 25000),
-                         {"pool_pre_ping": True, "connect_args": {"options": "-c statement_timeout=25000"}})
+                         {"pool_pre_ping": True, "connect_args": {**CONNECT, "options": "-c statement_timeout=25000"}})
 
     def test_no_timeout_when_zero(self):
-        self.assertEqual(engine_options("postgresql://u:p@h/db", 0), {"pool_pre_ping": True})
+        self.assertEqual(engine_options("postgresql://u:p@h/db", 0), {"pool_pre_ping": True, "connect_args": CONNECT})
+
+    def test_postgres_connections_fail_fast_and_are_kept_alive(self):
+        # An unreachable database (packets dropped) fails a connection attempt in 5 s instead of about two minutes,
+        # and a connection whose server stopped answering is dropped by TCP keepalives.
+        args = engine_options("postgresql+psycopg2://u:p@h/db")["connect_args"]
+        self.assertEqual((args["connect_timeout"], args["keepalives"]), (5, 1))
+        self.assertLessEqual(args["keepalives_idle"] + args["keepalives_interval"] * args["keepalives_count"], 120)
+        args["connect_timeout"] = 99   # each engine gets its own copy
+        self.assertEqual(CONNECT["connect_timeout"], 5)
 
     def test_sqlite_never_gets_postgres_options(self):
         self.assertEqual(engine_options("sqlite://", 25000), {"pool_pre_ping": True})
 
     def test_postgres_connections_are_named(self):
         self.assertEqual(engine_options("postgresql://u:p@h/db", 0, "well-export_worker"),
-                         {"pool_pre_ping": True, "connect_args": {"application_name": "well-export_worker"}})
+                         {"pool_pre_ping": True, "connect_args": {**CONNECT, "application_name": "well-export_worker"}})
         self.assertEqual(engine_options("sqlite://", 0, "well-backend"), {"pool_pre_ping": True})
 
     def test_the_app_uses_them(self):
@@ -65,7 +74,7 @@ class EngineOptionsTests(TestCase):
                 mock.patch.object(Config, "SQLALCHEMY_DATABASE_URI", "postgresql://u:p@h/db"):
             app = server.create_app()
         self.assertEqual(app.config["SQLALCHEMY_ENGINE_OPTIONS"]["connect_args"],
-                         {"options": "-c statement_timeout=1234", "application_name": "well-test"})
+                         {**CONNECT, "options": "-c statement_timeout=1234", "application_name": "well-test"})
 
 
 class FakePgError(Exception):
@@ -157,12 +166,10 @@ class SeriesCacheRulesTests(TestCase):
         start = dt.datetime.max - dt.timedelta(minutes=1)
         self.assertEqual(snap_range(start, dt.datetime.max)[0], start)
 
-    def test_requests_minutes_apart_share_a_key(self):
+    def test_requests_minutes_apart_select_the_same_readings(self):
         a = snap_range(dt.datetime(2026, 10, 1, 9, 1), dt.datetime(2026, 11, 1, 9, 1))
         b = snap_range(dt.datetime(2026, 10, 1, 9, 8), dt.datetime(2026, 11, 1, 9, 8))
-        self.assertEqual(cache_key(1800, *a, ["Weather", "Logger"]), cache_key(1800, *b, ["Logger", "Weather"]))
-        self.assertNotEqual(cache_key(1800, *a, ["Weather"]), cache_key(3600, *a, ["Weather"]))
-        self.assertNotEqual(cache_key(1800, *a, ["Weather"]), cache_key(1800, *a, ["Weather", "Logger"]))
+        self.assertEqual(a, b)
 
     def test_max_age_is_short_until_the_range_has_been_over_for_an_hour(self):
         now = dt.datetime(2026, 11, 11, 12, 0)
@@ -179,6 +186,7 @@ class FakeRedis:
     """Enough of redis.Redis for response_cache: set with a TTL, and a pipeline of get and ttl."""
     def __init__(self):
         self.store, self.ttl = {}, {}
+        self.round_trips = 0
 
     def set(self, key, value, ex=None):
         self.store[key], self.ttl[key] = value, ex
@@ -195,7 +203,13 @@ class FakeRedis:
                 results.append(fake.ttl.get(key, -2))
                 return self
 
+            def set(self, key, value, ex=None):
+                fake.set(key, value, ex)
+                results.append(True)
+                return self
+
             def execute(self):
+                fake.round_trips += 1
                 return results
         return Pipeline()
 
@@ -275,6 +289,25 @@ class ResponseCacheTests(TestCase):
             with self.assertLogs(response_cache.log, "WARNING"):
                 self.assertIsNone(response_cache.get("k"))
             self.assertLess(time.monotonic() - started, 0.9)  # a retry would take at least 0.6 s
+
+    def test_many_entries_in_one_round_trip(self):
+        fake = FakeRedis()
+        with mock.patch.object(Config, "API_CACHE_REDIS_URL", "redis://cache/2"), \
+                mock.patch.object(response_cache.redis.Redis, "from_url", return_value=fake):
+            big = b"x" * (response_cache.MAX_BYTES + 1)
+            response_cache.put_many([("a", b"1", 60), ("b", b"2", 3600), ("big", big, 60)])
+            self.assertEqual(fake.round_trips, 1)
+            self.assertEqual(response_cache.get_many(["a", "b", "c", "big"]), {"a": (b"1", 60), "b": (b"2", 3600)})
+            self.assertEqual(fake.round_trips, 2)
+            self.assertEqual(response_cache.get_many([]), {})
+            self.assertEqual(fake.round_trips, 2, "nothing to read: no round trip")
+
+    def test_many_fails_open(self):
+        with mock.patch.object(Config, "API_CACHE_REDIS_URL", "redis://cache/2"), \
+                mock.patch.object(response_cache.redis.Redis, "from_url", return_value=BrokenRedis()):
+            with self.assertLogs(response_cache.log, "WARNING"):
+                self.assertEqual(response_cache.get_many(["a"]), {})
+            response_cache.put_many([("a", b"1", 60)])  # within the back-off: not tried, and no error
 
     def test_the_client_never_retries(self):
         with mock.patch.object(Config, "API_CACHE_REDIS_URL", "redis://127.0.0.1:1/2"):

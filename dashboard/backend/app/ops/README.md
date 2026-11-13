@@ -1,8 +1,10 @@
 # welldash² (operations dashboard)
 
-welldash² ("WELLdashSquared") is a small, read-only dashboard for whoever runs the site. It is reachable **only on
-McMaster's network or the McMaster VPN**, at **http://well.cas.mcmaster.ca:8090** (the port is `OPS_PORT`), and asks
-for one shared password; there is no user name. It has five pages:
+welldash² ("WELLdashSquared") is a small, read-only dashboard for whoever runs the site. The recommended way to reach
+it is **an SSH tunnel to the VM** ([below](#reaching-it-through-an-ssh-tunnel-recommended)), with `OPS_BIND=127.0.0.1`
+so no network can reach the port at all. It can instead be published on the VM's campus address, for McMaster's network
+and VPN only, at **http://well.cas.mcmaster.ca:8090** (the port is `OPS_PORT`). It asks for one shared password; there
+is no user name. It has five pages:
 
 - **Overview**: whether the dashboard (with its data API and database) and the WordPress site answer right now; data
   freshness per group (the `/health/data` rules); open and recently cleared email alerts; the vendor APIs' latest call
@@ -26,7 +28,7 @@ for one shared password; there is no user name. It has five pages:
 It runs as the `ops` service in `docker-compose.yml` (code in this folder, built from the backend's image, with no
 JavaScript or outside files), and stores its uptime checks and the request counts in two tables from migration
 `0005_ops_metrics.sql`, kept for 90 days (`OPS_RETENTION_DAYS`). The service starts only when the `ops` compose
-profile is on, and refuses to start without its password hash and secret key.
+profile is on, and refuses to start without its password hash, secret key and `OPS_BIND`.
 
 **Never route it through the public proxy.** `haproxy.cas.mcmaster.ca` forwards `welldash.mcmaster.ca` to port 8081
 and `well.mcmaster.ca` to port 8080; it must never forward anything to 8090. welldash² takes the client's address
@@ -48,18 +50,20 @@ On the VM, from `~/WELLWebsite`:
    ```bash
    docker compose exec backend python -m ops.hashpw
    ```
-3. Add those two lines, `COMPOSE_PROFILES=ops` and `OPS_BIND=130.113.68.63` (the VM's campus address, which
-   `well.cas.mcmaster.ca` resolves to; check with `getent hosts well.cas.mcmaster.ca`) to `.env` in `~/WELLWebsite`
-   (the env file docker compose reads, which already holds the other passwords), and keep it readable by you only.
-   Keep `umask` in a subshell, so files created later in the same shell aren't private too:
+3. Add those two lines, `COMPOSE_PROFILES=ops` and `OPS_BIND` to `.env` in `~/WELLWebsite` (the env file docker
+   compose reads, which already holds the other passwords), and keep it readable by you only. `OPS_BIND=127.0.0.1`
+   (recommended) is for the SSH tunnel below; `OPS_BIND=130.113.68.63` is the VM's campus address, which
+   `well.cas.mcmaster.ca` resolves to (check with `getent hosts well.cas.mcmaster.ca`). Keep `umask` in a subshell, so
+   files created later in the same shell aren't private too:
    ```bash
    (umask 077 && nano .env)   # paste the two lines as printed (keep the single quotes); add COMPOSE_PROFILES=ops and OPS_BIND=...
    chmod 600 .env
    ```
-   `OPS_BIND` publishes the port on that address only. Without it, Docker publishes it on every address the VM has,
-   and ports Docker publishes bypass the VM's own firewall rules (ufw, iptables INPUT). The single quotes matter: the
-   hash contains `$` signs, which compose would otherwise read as variables (welldash² then refuses to start, and
-   says so). Never put the password itself in any file, only its hash.
+   `OPS_BIND` publishes the port on that address only. Ports Docker publishes bypass the VM's own firewall rules
+   (ufw, iptables INPUT), so welldash² refuses to start when `OPS_BIND` is unset or `0.0.0.0`/`::` (every address),
+   unless `OPS_ALLOW_ANY_ADDRESS=1` is also set. The single quotes matter: the hash contains `$` signs, which compose
+   would otherwise read as variables (welldash² then refuses to start, and says so). Never put the password itself in
+   any file, only its hash.
 4. Start it:
    ```bash
    docker compose up -d --build --no-deps ops
@@ -67,13 +71,26 @@ On the VM, from `~/WELLWebsite`:
 5. Check it:
    ```bash
    docker compose logs --tail 20 ops      # no "welldash² not started" line
-   curl -s -o /dev/null -w '%{http_code}\n' http://130.113.68.63:8090/login   # 200 (your OPS_BIND address)
-   curl -s -o /dev/null -w '%{http_code}\n' http://130.113.68.63:8090/        # 302 (to the login page)
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/login   # 200 (use your OPS_BIND address)
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/        # 302 (to the login page)
    ```
-   Then, on the VPN, open http://well.cas.mcmaster.ca:8090 and sign in. The Uptime page shows its first checks after
-   a minute, and the Traffic page the first requests a minute or two after someone uses the dashboard. If the page
-   doesn't load from your laptop but the `curl` lines work on the VM, a firewall blocks port 8090: McMaster IT can
+   Then open it through the tunnel below, or, with the campus address, on the VPN at
+   http://well.cas.mcmaster.ca:8090, and sign in. The Uptime page shows its first checks after a minute, and the
+   Traffic page the first requests a minute or two after someone uses the dashboard. With the campus address, if the
+   page doesn't load from your laptop but the `curl` lines work on the VM, a firewall blocks port 8090: McMaster IT can
    allow TCP 8090 to the VM from the campus network and the VPN address ranges.
+
+### Reaching it through an SSH tunnel (recommended)
+
+With `OPS_BIND=127.0.0.1` the port is open on the VM's loopback only, and SSH carries the password and the session
+cookie encrypted, with no certificate and no firewall rule needed. From your laptop (on the VPN, with the SSH access
+you already use for the VM):
+```bash
+ssh -N -L 8090:127.0.0.1:8090 <you>@well.cas.mcmaster.ca
+```
+then open http://localhost:8090 and leave the command running while you use it (Ctrl+C ends the tunnel). Any free
+local port works in place of the first `8090`. Everyone using the tunnel reaches welldash² from the same Docker
+address, so they share one failed-login count.
 
 With `COMPOSE_PROFILES=ops` set, `docker compose up -d --build` includes welldash², and `./deploy.sh` rebuilds it with
 the backend whenever it is running. To stop it: `docker compose stop ops`, and remove `COMPOSE_PROFILES=ops` from
@@ -85,21 +102,29 @@ the backend whenever it is running. To stop it: `docker compose stop ops`, and r
 
 ## How it is protected
 
-One password, checked against its scrypt hash in constant time. After 5 wrong passwords from one address in 15
-minutes (or 50 from all addresses together), login is refused until the 15 minutes have passed. (Clients that reach
-the VM from the same address, as through some NAT or IPv6 paths, share one count; at worst a stranger's attempts lock
-them out for 15 minutes.) The session is a signed cookie (`OPS_SECRET_KEY`), HttpOnly and SameSite=Strict, that lasts
-8 hours from login however it is used; "Sign out" ends it sooner. The login and sign-out forms carry a CSRF token.
+One password, checked against its scrypt hash in constant time, and only after the form's CSRF token and the
+failed-login limit have passed, so nobody can make the service hash passwords faster than the limit allows. After 5
+failed attempts (a wrong password or a bad CSRF token) from one address in 15 minutes, that address is refused until
+the 15 minutes have passed. Other addresses' failures never lock anyone out: when 50 or more have failed from all
+addresses together, each address that has failed must also wait a minute between tries, and an address with no
+failures can still sign in. (Clients that reach the VM from the same address, as through some NAT paths or the SSH
+tunnel, share one count; at worst a stranger's attempts lock them out for 15 minutes.) The session is a signed cookie
+(`OPS_SECRET_KEY`), HttpOnly and SameSite=Strict, that lasts 8 hours from login however it is used. Each login also
+has a random id that the service keeps in memory: "Sign out" deletes it, so the cookie stops working even if a copy
+of it was taken, and restarting the service (a deploy that rebuilds it, for example) signs everyone out. The login
+and sign-out forms carry a CSRF token.
 Every page except the login page needs the session, and every page is read-only: the pages read the database in
 read-only transactions, and no value from a request reaches the SQL. Pages send a Content-Security-Policy
 (`default-src 'self'`, no scripts, `frame-ancestors 'none'`), `nosniff` and `noindex`. welldash²'s only writes are its
 uptime checks and the daily deletion of rows older than 90 days.
 
-**HTTP or HTTPS.** Over plain HTTP, the password and the session cookie travel unencrypted between the VPN and the VM,
-so someone able to watch McMaster's internal network could read them. That is a reasonable trade-off for read-only
-operational numbers, but HTTPS is better: when TLS is set up in front of port 8090 (with a certificate from McMaster's
-internal certificate authority), set `OPS_COOKIE_SECURE=1` in `.env` and recreate the container, so the cookie is
-never sent over HTTP. With it on but no HTTPS, signing in silently fails (the browser drops the cookie).
+**HTTP or HTTPS.** Published on the campus address over plain HTTP, the password and the session cookie travel
+unencrypted between the VPN and the VM, so someone able to watch McMaster's internal network could read them. The SSH
+tunnel avoids that. If TLS is set up in front of port 8090 instead (with a certificate from McMaster's internal
+certificate authority), the cookie is marked Secure on every request that came over HTTPS without any setting; set
+`OPS_COOKIE_SECURE=1` in `.env` as well (and recreate the container) if the TLS proxy's `X-Forwarded-Proto` isn't
+trusted by gunicorn (its `FORWARDED_ALLOW_IPS`), so the cookie is never sent over HTTP. With `OPS_COOKIE_SECURE=1`
+but no HTTPS, signing in silently fails (the browser drops the cookie).
 
 ### A read-only database role (recommended)
 
@@ -127,8 +152,9 @@ In `.env` at the repository root; recreate the container after changing them.
 | Variable | Default | Meaning |
 |---|---|---|
 | `OPS_PORT` | `8090` | Port on the VM. |
-| `OPS_BIND` | `0.0.0.0` | Address the port is published on. Set it to the VM's campus address (setup step 3). |
-| `OPS_COOKIE_SECURE` | `0` | `1` once welldash² is served over HTTPS (see above). |
+| `OPS_BIND` | required | Address the port is published on: `127.0.0.1` for the SSH tunnel, or the VM's campus address (setup step 3). Unset or every address (`0.0.0.0`, `::`), the service refuses to start. |
+| `OPS_ALLOW_ANY_ADDRESS` | off | `1` lets `OPS_BIND` be `0.0.0.0` or `::`, for when publishing on every address is really meant. |
+| `OPS_COOKIE_SECURE` | unset | Unset, the cookie is marked Secure on requests that came over HTTPS. `1` marks it Secure always (see above). |
 | `OPS_DATABASE_URL` | `BACKEND_DATABASE_URL` | Database URL, with the read-only `well_ops` role above. |
 | `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
 | `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |

@@ -11,6 +11,7 @@ import { ChartPageContext } from '@/hooks/useChartWindow';
 import useWindRose from '@/hooks/useWindRose';
 import { cardSeries } from '@/utils/cardSeries';
 import { windowLabel } from '@/components/graphs/ChartToolbar';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 const MetricChart = dynamic(() => import("@/components/graphs/highcharts/MetricChart"), { ssr: false });
 const WindRose = dynamic(() => import("@/components/graphs/highcharts/WindRose"), { ssr: false });
@@ -113,7 +114,20 @@ const WeatherGraph = ({
   return (
     <div className="rounded bg-white p-4 shadow max-sm:p-0 max-sm:shadow-none">
       {tabs}
-      <MetricChart id="weather" title="Weather Station" series={series} axes={axes} modalOpen={modalOpen} />
+      {series.length === 0 ? (
+        <>
+          <h3 className="mb-2 text-lg font-bold">Weather Station</h3>
+          <p className="text-sm text-muted">
+            {mappedWeather.includes("Wind Direction")
+              ? "Wind direction is shown on the wind rose (with Wind Speed or Gust Speed ticked, in the larger view). Tick another measurement under Weather Station in Filters to chart it."
+              : "Tick a measurement under Weather Station in Filters to see its readings."}
+          </p>
+        </>
+      ) : (
+        <ChartErrorBoundary title="Weather Station">
+          <MetricChart id="weather" title="Weather Station" series={series} axes={axes} modalOpen={modalOpen} />
+        </ChartErrorBoundary>
+      )}
     </div>
   );
 };

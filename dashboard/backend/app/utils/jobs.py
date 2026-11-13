@@ -12,7 +12,7 @@ import sentry_sdk
 from utils.sentry import capture_job_error
 
 
-def run_in_background(job, log=print, name=None):
+def run_in_background(job, log=print, name=None, on_skip=None):
     """Wrap `job` so each call starts it in its own thread and returns at once.
 
     If the previous run of the same job is still going, the call is skipped and logged instead,
@@ -21,17 +21,28 @@ def run_in_background(job, log=print, name=None):
     timeouts), since a run that never returns keeps the lock. Returning at once matters too: the
     `schedule` library only moves a job's next run time after the scheduled callable returns, so a
     job that blocks the loop looks "still due" to anything else polling the scheduler meanwhile.
+    `on_skip(skips, message)`, if given, is called after each skip with the number of runs skipped in a row (back
+    to 0 once a run starts), so the scheduler can report a job that stays stuck (scripts/scheduler_temp.py).
     """
     lock = threading.Lock()
     started_at = [None]
+    skipped = [0]
     label = name or getattr(job, "__name__", "job")
 
     def start():
         if not lock.acquire(blocking=False):
             minutes = (time.monotonic() - started_at[0]) / 60 if started_at[0] else 0
-            log(f"[WARN] {label} is still running (started {minutes:.0f} min ago); skipping this run")
+            skipped[0] += 1
+            message = f"{label} is still running (started {minutes:.0f} min ago); skipping this run"
+            log(f"[WARN] {message}")
+            if on_skip:
+                try:
+                    on_skip(skipped[0], message)
+                except Exception as e:   # reporting a skip must never stop the scheduler loop
+                    log(f"[ERROR] reporting the skipped {label} run failed: {e}")
             return None
         started_at[0] = time.monotonic()
+        skipped[0] = 0
 
         def target():
             # Errors reported to Sentry during this run (utils/sentry.py; a no-op when it is off) carry the job name.
