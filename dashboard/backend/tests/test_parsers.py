@@ -294,8 +294,11 @@ class Units(unittest.TestCase):
             rows = parsers.licor_rows(records, {"Weather"}, STATION, UTC)   # the logger isn't asked for: not reported
         self.assertEqual([k[1] for k in rows], ["Soil Temperature"])
         lines = out.getvalue().splitlines()
-        self.assertEqual(len(lines), 1)
+        self.assertEqual(len(lines), 2)
         self.assertTrue(lines[0].startswith("[ERROR] LI-COR sensor 21948438-1 reports '°F', not '°C': skipped its 2"))
+        # and counted with the answer's skipped records, which the alerts read (vendor_status.last_skipped)
+        self.assertTrue(lines[1].startswith("[WARN] LI-COR: skipped 2 record(s) in an unexpected unit, e.g. sensor "
+                                            "'21948438-1' reports '°F', not '°C'"), lines[1])
 
 
 if __name__ == "__main__":
