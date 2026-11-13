@@ -8,7 +8,7 @@ import statistics
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from utils.email_format import footer, since, span, what, when
+from utils.email_format import footer, since, span, what, when, when_local
 from utils.parsers import LOGGER_CONFIG
 from utils.timezone import EST_TZ
 from utils.traffic import traffic_lines
@@ -128,11 +128,6 @@ def anomalies(group, station_id, measurement_type, values):
     return found
 
 
-def site(ts):
-    """An aware time as site (Toronto) time, for display; naive times are already site time."""
-    return ts.astimezone(EST_TZ) if ts.tzinfo else ts
-
-
 def fmt_age(minutes):
     if minutes is None:
         return "never"
@@ -163,7 +158,7 @@ def to_markdown(lines):
 
 
 def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
-                 dashboard_url="https://welldash.mcmaster.ca/"):
+                 dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None):
     """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps"}} for the
@@ -172,8 +167,16 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     (utils/alert_state.alerts_report()["open"]), {"error": ...} if they couldn't be read, or None to leave them out.
     traffic: utils/traffic.summarize_traffic() of yesterday, {"error": ...}, or None to leave it out.
     recoveries: alerts cleared in the last 24 h (utils/alert_state.recent_recoveries()), {"error": ...}, or None.
+    quiet_kinds: ALERT_QUIET_KINDS (Settings.quiet_kinds); None is the default.
     """
-    from utils.alerts import RECOVERED_AS, status   # here, not at the top: utils.alerts imports this module
+    # Here, not at the top: utils.alerts imports this module.
+    from utils.alerts import DEFAULT_QUIET_KINDS, RECOVERED_AS, Settings, is_quiet, status
+    quiet = Settings(quiet_kinds=DEFAULT_QUIET_KINDS if quiet_kinds is None else quiet_kinds)
+
+    def unsent(r):
+        # A recovery not emailed yet: a quiet kind's waits for the next email; any other's is being retried.
+        return ". Not emailed yet (low priority)" if is_quiet(SimpleNamespace(**r), quiet) else ". Email pending"
+
     now = datetime.fromisoformat(freshness["checked_at"])
     stale = freshness["stale"]
     expected_per_series = int(timedelta(hours=24) / INTERVAL)
@@ -197,12 +200,12 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
         else:
             lines += [f"  **{what(r['key'])}**: {RECOVERED_AS.get(r['kind'], 'recovered')}. "
                       f"{span(r['started_at'], r['resolved_at'])}"
-                      + ("" if r["recovery_emailed"] else ". Low priority, so not emailed on its own")
+                      + ("" if r["recovery_emailed"] else unsent(r))
                       for r in recoveries] or ["  none"]
         lines.append("")
 
     lines.append("Stale series (newest reading older than its limit):")
-    lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {s['newest']} "
+    lines += [f"  - {series_label(s['station_id'], s['measurement_type'])}: newest {when_local(s['newest'])} "
               f"({fmt_age(s['age_minutes'])} ago; limit {s['max_age_hours']:g} h)" for s in stale] or ["  none"]
     lines.append("")
 
@@ -221,7 +224,7 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
                      f"{len(info['timestamps'])} of {expected_per_series} time slots{note}")
         for start, end in info["gaps"]:
             minutes = int((end - start).total_seconds() // 60)
-            lines.append(f"    gap {site(start):%m-%d %H:%M} to {site(end):%m-%d %H:%M} ({fmt_age(minutes)})")
+            lines.append(f"    gap {when_local(start)} → {when_local(end)} ({fmt_age(minutes)})")
     lines.append("")
 
     lines.append("WQData device:")
@@ -236,7 +239,7 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
             lines.append(f"  primary power: {wqdata['power_min']:g} to {wqdata['power_max']:g} V "
                          f"over {wqdata['power_readings']} readings")
         if wqdata.get("last_point"):
-            lines.append(f"  last contact (newest data point): {wqdata['last_point']} "
+            lines.append(f"  last contact (newest data point): {when_local(wqdata['last_point'])} "
                          f"({fmt_age(wqdata['last_point_age_minutes'])} ago)")
         else:
             lines.append("  last contact: no data points in the last 24 h")
@@ -252,7 +255,7 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
         lines.append(f"  {group} (limit {info['max_age_hours']:g} h"
                      + (f", quiet {info['quiet_hours']}" if info["quiet_hours"] else "") + "):")
         for s in info["series"]:
-            lines.append(f"    {series_label(s['station_id'], s['measurement_type'])}: {s['newest']} "
+            lines.append(f"    {series_label(s['station_id'], s['measurement_type'])}: {when_local(s['newest'])} "
                          f"({fmt_age(s['age_minutes'])} ago){'' if s['status'] == 'ok' else ', ' + s['status']}")
     lines = to_markdown(lines) + [""] + footer(dashboard_url)
     return subject, "\n".join(lines) + "\n"

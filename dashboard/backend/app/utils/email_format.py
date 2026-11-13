@@ -50,6 +50,15 @@ def when(ts):
     return f"{t:%a %b} {t.day}, {t:%H:%M}"
 
 
+def when_local(recorded_at):
+    """A reading's recorded_at (naive Toronto wall-clock time, or its ISO string) as when() writes it, or "never"."""
+    if recorded_at is None:
+        return "never"
+    if isinstance(recorded_at, str):
+        recorded_at = datetime.fromisoformat(recorded_at)
+    return when(recorded_at if recorded_at.tzinfo else recorded_at.replace(tzinfo=EST_TZ))
+
+
 def since(start, now):
     """ "Since Wed Nov 11, 12:00 (20 h)" for something still going on."""
     return f"Since {when(start)} ({duration(aware(now) - aware(start))})"
@@ -185,4 +194,10 @@ def markdown_to_html(text, title="WELL"):
     return ("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
             f"<title>{html.escape(title)}</title></head>\n"
-            f'<body style="{BODY}"><div style="{WRAP}">\n' + "\n".join(out) + "\n</div></body></html>\n")
+            f'<body style="{BODY}">\n'
+            # Outlook on Windows ignores max-width and would run the text across the whole window, so it gets a
+            # fixed 640 px table instead. Every other client reads the div, which also narrows to fit a phone.
+            '<!--[if mso]><table role="presentation" width="640" align="center" cellpadding="0" cellspacing="0" '
+            'border="0"><tr><td><![endif]-->\n'
+            f'<div style="{WRAP}">\n' + "\n".join(out) + "\n</div>\n"
+            "<!--[if mso]></td></tr></table><![endif]-->\n</body></html>\n")

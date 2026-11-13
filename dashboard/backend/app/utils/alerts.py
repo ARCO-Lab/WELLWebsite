@@ -42,7 +42,6 @@ from utils.email_format import (
 from utils.digest import (DEPTH_NEAR_ZERO, FLATLINE_MIN_READINGS, FLATLINE_TYPES, FLATLINE_ZERO_OK, LOGGER_SENSORS,
                           ODO_NEAR_ZERO, PLAUSIBLE_RANGES)
 from utils.monitoring import DEFAULT_EXCLUDED_SERIES, as_site_time, env_key, parse_excluded_series, parse_hours
-from utils.timezone import EST_TZ
 
 STALE_SENSOR, VENDOR_DOWN, SUSPECT_VALUES = "STALE_SENSOR", "VENDOR_DOWN", "SUSPECT_VALUES"
 KIND_ORDER = {VENDOR_DOWN: 0, STALE_SENSOR: 1, SUSPECT_VALUES: 2}
@@ -234,8 +233,8 @@ def describe_vendor_error(error):
 
 
 def site_time(ts):
-    # A database time as "YYYY-MM-DD HH:MM" site (America/Toronto) time, for the email text.
-    return aware(ts).astimezone(EST_TZ).strftime("%Y-%m-%d %H:%M")
+    # A database time in Toronto time, written like everywhere else in the emails: "Wed Nov 11, 12:00".
+    return when(ts)
 
 
 def station_label(group, station_id):

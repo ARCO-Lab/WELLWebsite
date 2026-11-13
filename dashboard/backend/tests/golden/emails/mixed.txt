@@ -7,13 +7,13 @@ Subject: [WELL] 2 new, 1 still open, 1 back again, 2 recovered
 - **LI-COR API**: rejects our credentials
   Since Thu Nov 12, 07:30 (33 min)
   To do: Rotate the API key.
-  Details: LI-COR has refused the API credentials on the last 3 ingestion runs, since 2026-11-12 07:30. The last successful call was at 2026-11-12 07:20. Get a new key from LI-COR, set HOBOLINK_API_TOKEN in dashboard/backend/app/.env on the VM and in the repository secret of the same name, then recreate the worker. No LI-COR data is being stored until then; the sensors may be fine.
+  Details: LI-COR has refused the API credentials on the last 3 ingestion runs, since Thu Nov 12, 07:30. The last successful call was at Thu Nov 12, 07:20. Get a new key from LI-COR, set HOBOLINK_API_TOKEN in dashboard/backend/app/.env on the VM and in the repository secret of the same name, then recreate the worker. No LI-COR data is being stored until then; the sensors may be fine.
   Dashboard: https://welldash.mcmaster.ca/
 
 - **Logger 4**: silent 4 h
   Since Thu Nov 12, 04:00 (4 h)
   To do: Vendor OK, check the sensor.
-  Details: LI-COR is responding (latest call 2026-11-12 08:00); Water level logger 4 has sent nothing since 2026-11-12 04:00 (4 h). Check the sensor, its power and its telemetry in the field.
+  Details: LI-COR is responding (latest call Thu Nov 12, 08:00); Water level logger 4 has sent nothing since Thu Nov 12, 04:00 (4 h). Check the sensor, its power and its telemetry in the field.
   Dashboard: https://welldash.mcmaster.ca/
 
 ## Still open (reminder)
@@ -29,7 +29,7 @@ Subject: [WELL] 2 new, 1 still open, 1 back again, 2 recovered
 - **WQData API**: not responding
   Back since Thu Nov 12, 07:30 (33 min); first seen Thu Nov 12, 07:20
   To do: Check vendor status.
-  Details: The WQData API call has failed on the last 3 ingestion runs, since 2026-11-12 07:20 (last error: HTTPError (HTTP 503)). The last successful call was at 2026-11-12 07:10. Check the vendor's status page or support; our sensors may be fine. Ingestion catches up on missed readings by itself once the API answers (up to 14 days back).
+  Details: The WQData API call has failed on the last 3 ingestion runs, since Thu Nov 12, 07:20 (last error: HTTPError (HTTP 503)). The last successful call was at Thu Nov 12, 07:10. Check the vendor's status page or support; our sensors may be fine. Ingestion catches up on missed readings by itself once the API answers (up to 14 days back).
   Dashboard: https://welldash.mcmaster.ca/
 
 ## Recovered

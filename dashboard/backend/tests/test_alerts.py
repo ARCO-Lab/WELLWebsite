@@ -115,7 +115,7 @@ class VendorDownTests(unittest.TestCase):
         self.assertEqual(held, set())
         c = found["vendor:LI-COR"]
         self.assertEqual(c.kind, VENDOR_DOWN)
-        self.assertIn("LI-COR API not responding since 2026-11-11 13:00 (HTTP 503 ×6)", c.title)
+        self.assertIn("LI-COR API not responding since Wed Nov 11, 13:00 (HTTP 503 ×6)", c.title)
         self.assertIn("our sensors may be fine", c.detail)
 
     def test_auth_and_quota_have_their_own_advice(self):
@@ -142,7 +142,7 @@ class StaleTests(unittest.TestCase):
         self.assertEqual(c.kind, STALE_SENSOR)
         self.assertEqual(c.title, "Water quality station 4501 silent for 3 h — vendor OK, check the sensor")
         self.assertIn("WQData is responding", c.detail)
-        self.assertIn("has sent nothing since 2026-11-11 11:00 (3 h)", c.detail)
+        self.assertIn("has sent nothing since Wed Nov 11, 11:00 (3 h)", c.detail)
 
     def test_one_sensor_of_a_station(self):
         rows = [latest_row("Weather", WEATHER, "Rain", dt.timedelta(hours=5)),

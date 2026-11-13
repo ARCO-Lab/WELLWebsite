@@ -163,10 +163,15 @@ def main(argv=None):
             incidents = recoveries = {"error": type(e).__name__}
         traffic = read_traffic(db, now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
-    from utils.alerts import DEFAULT_DASHBOARD_URL
-    dashboard_url = (os.environ.get("ALERT_DASHBOARD_URL") or "").strip() or DEFAULT_DASHBOARD_URL
+    from utils.alerts import Settings, settings_from_env
+    try:
+        alert_settings = settings_from_env()
+    except ValueError as e:   # a bad ALERT_* setting fails the alert check; the digest still goes out
+        print(f"[WARN] {e}; the digest uses the default alert settings")
+        alert_settings = Settings()
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
-                                 incidents, traffic, recoveries, dashboard_url)
+                                 incidents, traffic, recoveries, alert_settings.dashboard_url,
+                                 alert_settings.quiet_kinds)
     return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject))
 
 

@@ -137,11 +137,11 @@ class BuildDigestTests(TestCase):
                                      {"power_min": 12.1, "power_max": 13.4, "power_readings": 59,
                                       "last_point": "2026-11-10 06:50:00", "last_point_age_minutes": 10})
         self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 2 to check")
-        self.assertIn("Logger 2 Water Temperature: newest 2026-11-10T01:00:00 (6.0 h ago; limit 3 h)", body)
+        self.assertIn("Logger 2 Water Temperature: newest Tue Nov 10, 01:00 (6.0 h ago; limit 3 h)", body)
         self.assertIn("Weather: 140 rows of 144 expected (1 series), 140 of 144 time slots", body)
-        self.assertIn("gap 11-10 05:00 to 11-10 06:00 (60 min)", body)
+        self.assertIn("gap Tue Nov 10, 05:00 → Tue Nov 10, 06:00 (60 min)", body)
         self.assertIn("primary power: 12.1 to 13.4 V over 59 readings", body)
-        self.assertIn("last contact (newest data point): 2026-11-10 06:50:00 (10 min ago)", body)
+        self.assertIn("last contact (newest data point): Tue Nov 10, 06:50 (10 min ago)", body)
         self.assertIn("dissolved oxygen", body)
 
     def test_all_ok_and_wqdata_error(self):

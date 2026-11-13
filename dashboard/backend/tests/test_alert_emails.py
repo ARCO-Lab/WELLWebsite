@@ -41,8 +41,8 @@ def incident(key, kind, title, detail, started, resolved=None, reopened=None):
 
 LOGGER4_SILENT = incident(
     "stale:LI-COR:2577534", STALE_SENSOR, "Water level logger 4 silent for 4 h — vendor OK, check the sensor",
-    "LI-COR is responding (latest call 2026-11-12 08:00); Water level logger 4 has sent nothing since "
-    "2026-11-12 04:00 (4 h). Check the sensor, its power and its telemetry in the field.", toronto(12, 4))
+    "LI-COR is responding (latest call Thu Nov 12, 08:00); Water level logger 4 has sent nothing since "
+    "Thu Nov 12, 04:00 (4 h). Check the sensor, its power and its telemetry in the field.", toronto(12, 4))
 LOGGER1_LEVEL = incident(
     "suspect:LI-COR:2577531:Water Surface Elevation", SUSPECT_VALUES,
     "Water level logger 1 Water Surface Elevation looks wrong — check the probe",
@@ -57,15 +57,15 @@ WQ_ODO = incident(
     "the sensor in the field if it isn't a real event.", toronto(11, 6, 30))
 WQDATA_DOWN = incident(
     "vendor:WQData", VENDOR_DOWN,
-    "WQData API not responding since 2026-11-12 07:20 (HTTP 503 ×3) — check vendor status",
-    "The WQData API call has failed on the last 3 ingestion runs, since 2026-11-12 07:20 (last error: HTTPError "
-    "(HTTP 503)). The last successful call was at 2026-11-12 07:10. Check the vendor's status page or support; our "
+    "WQData API not responding since Thu Nov 12, 07:20 (HTTP 503 ×3) — check vendor status",
+    "The WQData API call has failed on the last 3 ingestion runs, since Thu Nov 12, 07:20 (last error: HTTPError "
+    "(HTTP 503)). The last successful call was at Thu Nov 12, 07:10. Check the vendor's status page or support; our "
     "sensors may be fine. Ingestion catches up on missed readings by itself once the API answers (up to 14 days "
     "back).", toronto(12, 7, 20))
 LICOR_AUTH = incident(
     "vendor:LI-COR", VENDOR_DOWN, "LI-COR rejects our credentials (HTTP 401 ×3) — rotate the API key",
-    "LI-COR has refused the API credentials on the last 3 ingestion runs, since 2026-11-12 07:30. The last "
-    "successful call was at 2026-11-12 07:20. Get a new key from LI-COR, set HOBOLINK_API_TOKEN in "
+    "LI-COR has refused the API credentials on the last 3 ingestion runs, since Thu Nov 12, 07:30. The last "
+    "successful call was at Thu Nov 12, 07:20. Get a new key from LI-COR, set HOBOLINK_API_TOKEN in "
     "dashboard/backend/app/.env on the VM and in the repository secret of the same name, then recreate the "
     "worker. No LI-COR data is being stored until then; the sensors may be fine.", toronto(12, 7, 30))
 WEATHER_RAIN_RECOVERED = incident(
@@ -197,9 +197,17 @@ class DigestSnapshot(unittest.TestCase):
                                      incidents, None, recoveries)
         self.assertEqual(subject, "[WELL] Daily digest 2026-11-12: 2 to check")
         self.assertIn("- **Logger 1 water level**: readings back to normal. Wed Nov 11, 12:00 → Thu Nov 12, 06:03 "
-                      "(18 h). Low priority, so not emailed on its own", body)
+                      "(18 h). Not emailed yet (low priority)", body)
         check_golden(self, "digest.txt", f"Subject: {subject}\n\n{body}")
         check_golden(self, "digest.html", email_format.markdown_to_html(body, subject))
+
+        # A recovery not emailed yet that isn't a quiet kind is waiting for a failed send to be retried.
+        unsent = [{**recoveries[1], "recovery_emailed": False}]
+        _, body = build_digest("2026-11-12", freshness, {}, [], None, [], None, unsent)
+        self.assertIn("(4 h). Email pending\n", body)
+        _, body = build_digest("2026-11-12", freshness, {}, [], None, [], None, unsent,
+                               quiet_kinds=frozenset({STALE_SENSOR}))
+        self.assertIn("(4 h). Not emailed yet (low priority)\n", body)
 
 
 class QuietKindsTests(unittest.TestCase):
