@@ -79,8 +79,9 @@ class SentryInMemory:
 
     def start_sentry(self):
         real_init = sentry_sdk.init
-        with unittest.mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}), \
-                unittest.mock.patch("sentry_sdk.init", side_effect=lambda **o: real_init(transport=MemoryTransport, **o)):
+        to_memory = unittest.mock.patch("sentry_sdk.init",
+                                        side_effect=lambda **o: real_init(transport=MemoryTransport, **o))
+        with unittest.mock.patch.dict(os.environ, {"SENTRY_DSN": FAKE_DSN}), to_memory:
             self.assertTrue(well_sentry.init_sentry("backend"))
         self.addCleanup(stop_sentry)
         self.transport = sentry_sdk.get_client().transport
@@ -198,8 +199,8 @@ class GunicornWorkerExitTests(SentryInMemory, unittest.TestCase):
 
     def test_a_sync_worker_logging_its_own_exit_sends_nothing(self):
         # What gunicorn's sync worker did: the arbiter's SIGABRT ran handle_abort while the worker was reading a
-        # request, and the worker's handler for any exception (BaseException, so the exit too) logged it ("Error handling
-        # request"), which the logging integration turns into an error event. Only the exit is caught here.
+        # request, and the worker's handler for any exception (BaseException, so the exit too) logged it ("Error
+        # handling request"), which the logging integration turns into an error event. Only the exit is caught here.
         try:
             from gunicorn.workers.base import Worker
         except ImportError:
