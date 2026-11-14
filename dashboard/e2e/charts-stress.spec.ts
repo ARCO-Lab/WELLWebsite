@@ -320,23 +320,26 @@ test.describe("charts under stress", () => {
 
   test("a tiny window on the range bar slides when dragged from its middle", async ({ page }) => {
     const { net } = await open(page);
-    // A shared link to two hours of Sep 1: the bar spans Sep 1 to the picked days, so the window is under a pixel wide
-    await page.goto("/?from=2026-09-01T10:00&to=2026-09-01T12:00");
-    for (const group of ["Water Loggers", "Weather Station", "Water Quality"]) await page.getByRole("checkbox", { name: group, exact: true }).click();
     const weather = chart(page, "weather");
-    await expect(weather.getByTestId("chart-window-label")).toHaveText("Sep 1 10:00 – Sep 1 12:00");
+    // Zoomed in to the narrowest window, an hour of the two picked days: a few pixels of the bar
+    const zoomIn = weather.getByRole("button", { name: /Zoom in/ });
+    while (await zoomIn.isEnabled()) await zoomIn.click(); // off (aria-disabled) at the narrowest
     await settled(page, net);
+    const read = async () => (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
+    const [a0, b0] = await read();
+    expect(b0 - a0).toBe(3600_000);
     const mask = (await weather.locator(".highcharts-navigator-mask-inside").boundingBox())!;
     expect(mask.width).toBeGreaterThanOrEqual(18); // drawn at the minimum grab width
     const x = mask.x + mask.width / 2, y = mask.y + mask.height / 2;
     await page.mouse.move(x, y);
     await page.mouse.down();
-    for (let i = 1; i <= 10; i++) { await page.mouse.move(x + i * 4, y); await page.waitForTimeout(16); }
+    for (let i = 1; i <= 10; i++) { await page.mouse.move(x - i * 4, y); await page.waitForTimeout(16); }
     await page.mouse.up();
-    const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
-    expect(a).toBeGreaterThan(Date.parse("Sep 1 2026 10:00Z")); // slid later
-    expect(b - a).toBe(2 * 3600_000); // still two hours: slid, not resized
+    await expect.poll(async () => (await read())[0]).toBeLessThan(a0); // slid earlier
+    const [a1, b1] = await read();
+    expect(b1 - a1).toBe(3600_000); // still an hour: slid, not resized
   });
+
 
   test("rain is drawn as bars, and the larger view shows the hover tooltip", async ({ page }) => {
     await open(page);
