@@ -15,8 +15,9 @@ import type { WindRoseResponse } from '@/hooks/useWindRose';
 import { calmPercent } from '@/utils/windRose';
 
 const FONT = "'Poppins', Arial, sans-serif";
-// Slowest to fastest: pale sky blue through teal to deep navy (each step visibly darker; the last ones still apart)
-const RAMP = ['#d4ecf7', '#a6d8ee', '#6fbfe0', '#3aa0cc', '#1b7fb0', '#155f8d', '#0d3f66'];
+// Slowest to fastest: light sky blue to deep navy, each step visibly darker. Every band also has a dark hairline
+// (see plotOptions), so even the lightest stands out at 3:1 or more against the pale pane behind the rose.
+const RAMP = ['#8cc8e6', '#5fb0d8', '#3a96c6', '#2a7bb0', '#1c6096', '#13487a', '#0b3157'];
 const CARDINAL = new Set(['N', 'E', 'S', 'W']);
 
 interface WindRoseProps {
@@ -144,8 +145,8 @@ const WindRose: React.FC<WindRoseProps> = ({ data, speed, title, period }) => {
         shadow: false,
         groupPadding: 0,
         pointPadding: 0.04,
-        borderWidth: 0.5,
-        borderColor: '#ffffff',
+        borderWidth: 0.6,
+        borderColor: '#1f3f5c', // a hairline around each band (3:1 or more against the pane)
         pointPlacement: 'on',
         animation: reducedMotion() ? false : { duration: 700 },
         states: { inactive: { opacity: 0.25 } },
