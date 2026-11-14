@@ -332,3 +332,16 @@ test("range bar: a tiny window still slides from its middle and resizes from jus
   // However narrow, some middle always slides
   for (const w of [0, 0.5, 5, 19, 20, 25, 30, 47, 48, 60]) assert.equal(barPart(500 + w / 2, 500, 500 + w), "window", `${w} px`);
 });
+
+test("wind rose: the calm share is the slowest class's percent summed over every direction", async () => {
+  const { calmPercent } = await import("../src/utils/windRose.ts");
+  const data = {
+    sectors: ["N", "E", "S", "W"],
+    speed_classes: [{ name: "<0.5 m/s", from: 0, to: 0.5 }, { name: "0.5-2 m/s", from: 0.5, to: 2 }],
+    roses: { "Wind Speed": { total: 100, counts: [[2, 3, 1, 4], [20, 30, 25, 15]], percent: [[2, 3, 1, 4], [20, 30, 25, 15]] } },
+  };
+  assert.equal(calmPercent(data, "Wind Speed"), 10);
+  assert.equal(calmPercent(data, "Gust Speed"), null); // no rose for it
+  assert.equal(calmPercent({ ...data, roses: { "Wind Speed": { ...data.roses["Wind Speed"], total: 0 } } }, "Wind Speed"), null);
+  assert.equal(calmPercent(null, "Wind Speed"), null);
+});
