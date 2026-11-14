@@ -62,6 +62,11 @@ EXPOSE 5000
 # (dashboard/frontend/src/lib/proxyBackend.ts, 5 s) keeps it for reuse, so the dashboard closes idle connections
 # first: if gunicorn closed them first (its default is 2 s), Next could send a request on a connection gunicorn
 # had just closed, and the page got a 502. The access log goes to stdout (docker compose logs backend).
+# Not the sync worker: it reads each request in its only thread, so a client that sent nothing for --timeout got the
+# worker stopped, and its SystemExit reached Sentry as an error (WELL-BACKEND-2). gthread gives a new connection 5 s
+# to start sending, then parks it without holding a thread. Once a request has started, gunicorn doesn't limit how
+# long the rest takes to arrive: 12 clients trickling headers or a body hold all 12 threads. So the backend has no
+# public port: only the dashboard's proxy connects, and it sends each request whole, after Next has read it.
 CMD ["gunicorn", "-k", "gthread", "-w", "3", "--threads", "4", "--timeout", "60", "--graceful-timeout", "30", \
      "--max-requests", "1000", "--max-requests-jitter", "100", "--keep-alive", "10", "--access-logfile", "-", \
      "-b", "0.0.0.0:5000", "server:app"]

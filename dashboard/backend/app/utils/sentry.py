@@ -210,11 +210,38 @@ def _unhandled_request_error(event):
     return any((value.get("mechanism") or {}).get("type") == "flask" for value in values)
 
 
+# gunicorn's worker signal handlers, which end a worker with sys.exit: handle_abort when the arbiter stops a worker
+# that missed its --timeout heartbeat, handle_quit on SIGQUIT or SIGINT.
+GUNICORN_EXIT_HANDLERS = ("handle_abort", "handle_quit")
+
+
+def gunicorn_worker_exit(event, exc=None):
+    """Whether the event is the SystemExit a gunicorn worker raises when it is stopped (GUNICORN_EXIT_HANDLERS).
+
+    It surfaces in whatever the worker was doing. A sync worker catches it while reading a request and logs it as
+    "Error handling request", which the logging integration sent as an error: a client that sent its request slowly,
+    or not at all, held the worker until gunicorn stopped it (WELL-BACKEND-2). That is a worker restart, which
+    gunicorn's own log shows ("WORKER TIMEOUT"), not a bug in the app."""
+    if exc is not None and not isinstance(exc, SystemExit):
+        return False
+    for value in (event.get("exception") or {}).get("values") or []:
+        frames = (value.get("stacktrace") or {}).get("frames") or []
+        if value.get("type") == "SystemExit" and frames:
+            innermost = frames[-1]
+            if (str(innermost.get("module") or "").startswith("gunicorn.workers.")
+                    and innermost.get("function") in GUNICORN_EXIT_HANDLERS):
+                return True
+    return False
+
+
 def before_send(event, hint=None):
-    """Strip what could identify a visitor or leak a credential before an event leaves the process, and drop an
-    unhandled request error already sent in the last REPEAT_AFTER_S for the same path, type and message: a client
-    repeating a request that fails would otherwise send an event per request and use up the monthly quota."""
+    """Strip what could identify a visitor or leak a credential before an event leaves the process, drop a gunicorn
+    worker's exit (gunicorn_worker_exit), and drop an unhandled request error already sent in the last
+    REPEAT_AFTER_S for the same path, type and message: a client repeating a request that fails would otherwise send
+    an event per request and use up the monthly quota."""
     exc = ((hint or {}).get("exc_info") or (None, None))[1]
+    if gunicorn_worker_exit(event, exc):
+        return None
     if exc is not None and _unhandled_request_error(event):
         path = str((event.get("request") or {}).get("url", "")).split("?")[0]
         if not _first_in_a_while(("request", path, type(exc).__name__, failure_signature(exc))):
