@@ -55,10 +55,10 @@ export const UNITS: Record<string, string> = {
 export const aggOf = (measurement: string): Agg =>
   measurement === "Rain" ? "sum" : measurement === "Wind Direction" ? "vector_mean" : "mean";
 
-/** Rain totals as a stepped area (each bucket's total flat across its span; one shape, where bars would be hundreds of
- *  rectangles to redraw); wind direction (an angle: a line from 350° to 10° would cross the whole chart) as points. */
-export function seriesType(agg: Agg): "line" | "area" | "scatter" {
-  return agg === "sum" ? "area" : agg === "vector_mean" ? "scatter" : "line";
+/** Rain totals as bars, a column per bucket (how precipitation is usually read: each bar is the rain in that bucket);
+ *  wind direction (an angle: a line from 350° to 10° would cross the whole chart) as points. */
+export function seriesType(agg: Agg): "line" | "column" | "scatter" {
+  return agg === "sum" ? "column" : agg === "vector_mean" ? "scatter" : "line";
 }
 
 /** "225° (SW)": a direction with its 16-point compass name. */

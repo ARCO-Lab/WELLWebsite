@@ -1035,3 +1035,81 @@ test("the proxy's 429 for too many requests in flight reads as its message (the 
   const res = new Response(JSON.stringify({ error: message }), { status: 429, headers: { "Retry-After": "2" } });
   assert.equal((await errorFrom(res, "the wind rose")).message, message);
 });
+
+// ---- holding ‹ › ----
+
+// A clock whose frames and timers run when told to
+function fakeClock() {
+  let t = 0, id = 0;
+  const frames = new Map(), timers = new Map();
+  return {
+    now: () => t,
+    frame: (cb) => { frames.set(++id, cb); return id; },
+    cancelFrame: (i) => frames.delete(i),
+    every: (ms, cb) => { timers.set(++id, { ms, cb, next: t + ms }); return id; },
+    stopEvery: (i) => timers.delete(i),
+    advance(ms, step = 16) { // run frames every `step` ms and due timers, for `ms`
+      for (const end = t + ms; t < end;) {
+        t += step;
+        const due = [...frames.values()]; frames.clear(); for (const cb of due) cb();
+        for (const tm of timers.values()) while (tm.next <= t) { tm.next += tm.ms; tm.cb(); }
+      }
+    },
+  };
+}
+
+test("holding ‹ ›: eases up from slow to a steady speed, one request after the release, stops at the range's edge", async () => {
+  const { holdSpeed, startSlide, START_SPEED, TOP_SPEED, EASE_MS } = await import("../src/lib/holdSlide.ts");
+  assert.equal(holdSpeed(0), START_SPEED);
+  assert.equal(holdSpeed(EASE_MS), TOP_SPEED);
+  assert.ok(holdSpeed(EASE_MS / 2) > START_SPEED && holdSpeed(EASE_MS / 2) < TOP_SPEED);
+  for (let ms = 0; ms < EASE_MS; ms += 100) assert.ok(holdSpeed(ms + 100) >= holdSpeed(ms)); // never slows down
+
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const range = { start: Date.parse("2026-08-01T04:00:00Z"), end: Date.parse("2026-11-01T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-02T04:00:00Z") };
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const n0 = srv.calls.length;
+  const clock = fakeClock();
+  const stop = startSlide(c, 1, clock, false);
+  clock.advance(2000);
+  const day = 86_400_000;
+  // In 2 s: about 0.25-2 windows a second, eased, so between 1.5 and 4 windows later, and still a day long
+  const moved = (c.window.start - w0.start) / day;
+  assert.ok(moved > 1.5 && moved < 4, `${moved} windows`);
+  assert.equal(c.window.end - c.window.start, day);
+  assert.equal(c.inGesture, true);
+  await sleep(60);
+  assert.equal(srv.calls.length, n0); // nothing asked for while held
+  stop();
+  assert.equal(c.inGesture, false);
+  await sleep(60);
+  assert.ok(srv.calls.length - n0 <= 1);
+  await srv.settle();
+  // Held towards the start: slides there and stops by itself
+  const stop2 = startSlide(c, -1, clock, false);
+  clock.advance(60_000);
+  assert.equal(c.window.start, range.start);
+  assert.equal(c.inGesture, false);
+  stop2(); // harmless after it stopped
+  c.dispose();
+});
+
+test("holding ‹ › with reduced motion steps a window at a time", async () => {
+  const { startSlide, STEP_EVERY_MS } = await import("../src/lib/holdSlide.ts");
+  const loader = new SeriesLoader(async () => []);
+  const range = { start: Date.parse("2026-08-01T04:00:00Z"), end: Date.parse("2026-11-01T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-02T04:00:00Z") };
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  const clock = fakeClock();
+  const stop = startSlide(c, 1, clock, true);
+  assert.equal(c.window.start, w0.end); // one window at once
+  clock.advance(STEP_EVERY_MS * 2 + 10);
+  assert.equal(c.window.start, w0.end + 2 * 86_400_000); // and one more per step
+  stop();
+  c.dispose();
+});

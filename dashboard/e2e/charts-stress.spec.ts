@@ -234,13 +234,13 @@ test.describe("charts under stress", () => {
       return { a, b };
     };
     const w0 = await read();
-    await weather.getByRole("button", { name: "Show the time just before this window" }).click();
+    await weather.getByRole("button", { name: /^Show the time just before this window/ }).click();
     await page.waitForTimeout(400);
     const w1 = await read();
     expect(w1.b).toBe(w0.a); // ends where the last one started
     expect(w1.b - w1.a).toBe(w0.b - w0.a);
-    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
-    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await weather.getByRole("button", { name: /^Show the time just after this window/ }).click();
+    await weather.getByRole("button", { name: /^Show the time just after this window/ }).click();
     await page.waitForTimeout(400);
     const w2 = await read();
     expect(w2.a).toBe(w0.b); // starts where the first one ended
@@ -295,6 +295,111 @@ test.describe("charts under stress", () => {
     await open(page);
     const plot = chart(page, "logger").getByRole("group", { name: /chart\. Arrow keys/ });
     expect(await plot.evaluate((el) => getComputedStyle(el).touchAction)).toBe("pan-y pinch-zoom");
+  });
+
+  test("holding › slides the window on and asks for its data once, after the release", async ({ page }) => {
+    const { net } = await open(page);
+    const weather = chart(page, "weather");
+    for (let i = 0; i < 3; i++) await weather.getByRole("button", { name: /Zoom in/ }).click(); // a few hours, room to slide
+    await settled(page, net);
+    const span = async () => { const [a, b] = (await label(weather))!.split(" – "); return [a, b]; };
+    const before = await span();
+    const n0 = net.requests.length;
+    const later = weather.getByRole("button", { name: /^Show the time just after this window/ });
+    const box = (await later.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(1500); // held: slides
+    expect(net.requests.length - n0).toBe(0); // nothing asked for while held
+    await page.mouse.up();
+    const after = await span();
+    expect(after).not.toEqual(before);
+    await settled(page, net);
+    expect(net.requests.length - n0).toBeLessThanOrEqual(1);
+  });
+
+  test("a tiny window on the range bar slides when dragged from its middle", async ({ page }) => {
+    const { net } = await open(page);
+    const weather = chart(page, "weather");
+    // Zoomed in to the narrowest window, an hour of the two picked days: a few pixels of the bar
+    const zoomIn = weather.getByRole("button", { name: /Zoom in/ });
+    // Eight clicks reach the narrowest; once there the button is aria-disabled and a (forced) click does nothing
+    for (let i = 0; i < 8; i++) { await zoomIn.click({ force: true }); await page.waitForTimeout(150); }
+    await settled(page, net);
+    const read = async () => (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
+    const [a0, b0] = await read();
+    expect(b0 - a0).toBe(3600_000);
+    const mask = (await weather.locator(".highcharts-navigator-mask-inside").boundingBox())!;
+    expect(mask.width).toBeGreaterThanOrEqual(18); // drawn at the minimum grab width
+    const x = mask.x + mask.width / 2, y = mask.y + mask.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) { await page.mouse.move(x - i * 4, y); await page.waitForTimeout(16); }
+    await page.mouse.up();
+    await expect.poll(async () => (await read())[0]).toBeLessThan(a0); // slid earlier
+    const [a1, b1] = await read();
+    expect(b1 - a1).toBe(3600_000); // still an hour: slid, not resized
+  });
+
+
+  test("rain is drawn as bars, and the larger view shows the hover tooltip", async ({ page }) => {
+    await open(page);
+    const types = await page.evaluate(() => {
+      type HChart = { container: HTMLElement; series: { name: string; type: string }[] };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      return (H?.charts ?? []).flatMap((c) => (c?.series ?? []).filter((s) => s.name.startsWith("Rain")).map((s) => s.type));
+    });
+    expect(types).toContain("column");
+    expect(types).not.toContain("area");
+    // The larger view: hovering the plot shows the values
+    await page.getByRole("button", { name: /Open the weather graphs in a larger view/ }).click();
+    const dialog = page.getByRole("dialog");
+    const plot = dialog.locator(".highcharts-plot-background").first();
+    await expect(plot).toBeVisible();
+    await page.waitForTimeout(800);
+    const box = (await plot.boundingBox())!;
+    await page.mouse.move(box.x + box.width * 0.4, box.y + box.height / 2);
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height / 2, { steps: 5 });
+    const tooltip = dialog.locator(".highcharts-tooltip");
+    await expect(tooltip.first()).toBeVisible();
+    await expect(tooltip.first()).toContainText(/°C/);
+  });
+
+  test("a tiny window at either end of the range bar stays on it and can still be resized", async ({ page }) => {
+    const { net, errors } = await open(page);
+    const weather = chart(page, "weather");
+    const zoomIn = weather.getByRole("button", { name: /Zoom in/ });
+    for (let i = 0; i < 8; i++) { await zoomIn.click({ force: true }); await page.waitForTimeout(150); } // an hour: a few pixels
+    await settled(page, net);
+    const read = async () => (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
+    const track = (await weather.locator(".highcharts-navigator-outline").boundingBox())!;
+    const mask = () => weather.locator(".highcharts-navigator-mask-inside").boundingBox();
+    const drag = async (x: number, y: number, dx: number) => {
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) { await page.mouse.move(x + (dx * i) / 8, y); await page.waitForTimeout(16); }
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+    };
+    for (const [button, side] of [[/^Show the time just before this window/, "start"], [/^Show the time just after this window/, "end"]] as const) {
+      const step = weather.getByRole("button", { name: button });
+      for (let i = 0; i < 60 && !(await step.getAttribute("aria-disabled")); i++) await step.click({ force: true }); // to the end
+      await page.waitForTimeout(400);
+      const m = (await mask())!;
+      expect(m.width).toBeGreaterThanOrEqual(18);
+      expect(m.x).toBeGreaterThanOrEqual(track.x - 1); // on the bar, not past its ends
+      expect(m.x + m.width).toBeLessThanOrEqual(track.x + track.width + 1);
+      // At the start end, the end handle (just right of the window) makes it longer; at the far end, the start handle
+      const [a0, b0] = await read();
+      const y = m.y + m.height / 2;
+      if (side === "start") await drag(m.x + m.width + 7, y, 30);
+      else await drag(m.x - 7, y, -30);
+      const [a1, b1] = await read();
+      expect(b1 - a1).toBeGreaterThan(b0 - a0);
+      if (side === "start") expect(a1).toBe(a0); else expect(b1).toBe(b0);
+      for (let i = 0; i < 8; i++) { await zoomIn.click({ force: true }); await page.waitForTimeout(100); } // tiny again
+    }
+    expect(errors).toEqual([]); // no "negative width" from the masks
   });
 
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
