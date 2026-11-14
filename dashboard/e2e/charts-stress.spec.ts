@@ -297,6 +297,70 @@ test.describe("charts under stress", () => {
     expect(await plot.evaluate((el) => getComputedStyle(el).touchAction)).toBe("pan-y pinch-zoom");
   });
 
+  test("holding › slides the window on and asks for its data once, after the release", async ({ page }) => {
+    const { net } = await open(page);
+    const weather = chart(page, "weather");
+    for (let i = 0; i < 3; i++) await weather.getByRole("button", { name: /Zoom in/ }).click(); // a few hours, room to slide
+    await settled(page, net);
+    const span = async () => { const [a, b] = (await label(weather))!.split(" – "); return [a, b]; };
+    const before = await span();
+    const n0 = net.requests.length;
+    const later = weather.getByRole("button", { name: /^Show the time just after this window/ });
+    const box = (await later.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(1500); // held: slides
+    expect(net.requests.length - n0).toBe(0); // nothing asked for while held
+    await page.mouse.up();
+    const after = await span();
+    expect(after).not.toEqual(before);
+    await settled(page, net);
+    expect(net.requests.length - n0).toBeLessThanOrEqual(1);
+  });
+
+  test("a tiny window on the range bar slides when dragged from its middle", async ({ page }) => {
+    const { net } = await open(page);
+    // A shared link to two hours of Sep 1: the bar spans Sep 1 to the picked days, so the window is under a pixel wide
+    await page.goto("/?from=2026-09-01T10:00&to=2026-09-01T12:00");
+    for (const group of ["Water Loggers", "Weather Station", "Water Quality"]) await page.getByRole("checkbox", { name: group, exact: true }).click();
+    const weather = chart(page, "weather");
+    await expect(weather.getByTestId("chart-window-label")).toHaveText("Sep 1 10:00 – Sep 1 12:00");
+    await settled(page, net);
+    const mask = (await weather.locator(".highcharts-navigator-mask-inside").boundingBox())!;
+    expect(mask.width).toBeGreaterThanOrEqual(18); // drawn at the minimum grab width
+    const x = mask.x + mask.width / 2, y = mask.y + mask.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) { await page.mouse.move(x + i * 4, y); await page.waitForTimeout(16); }
+    await page.mouse.up();
+    const [a, b] = (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
+    expect(a).toBeGreaterThan(Date.parse("Sep 1 2026 10:00Z")); // slid later
+    expect(b - a).toBe(2 * 3600_000); // still two hours: slid, not resized
+  });
+
+  test("rain is drawn as bars, and the larger view shows the hover tooltip", async ({ page }) => {
+    await open(page);
+    const types = await page.evaluate(() => {
+      type HChart = { container: HTMLElement; series: { name: string; type: string }[] };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      return (H?.charts ?? []).flatMap((c) => (c?.series ?? []).filter((s) => s.name.startsWith("Rain")).map((s) => s.type));
+    });
+    expect(types).toContain("column");
+    expect(types).not.toContain("area");
+    // The larger view: hovering the plot shows the values
+    await page.getByRole("button", { name: /Open the weather graphs in a larger view/ }).click();
+    const dialog = page.getByRole("dialog");
+    const plot = dialog.locator(".highcharts-plot-background").first();
+    await expect(plot).toBeVisible();
+    await page.waitForTimeout(800);
+    const box = (await plot.boundingBox())!;
+    await page.mouse.move(box.x + box.width * 0.4, box.y + box.height / 2);
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height / 2, { steps: 5 });
+    const tooltip = dialog.locator(".highcharts-tooltip");
+    await expect(tooltip.first()).toBeVisible();
+    await expect(tooltip.first()).toContainText(/°C/);
+  });
+
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
     const { net } = await open(page);
     const tab = (name: string) => page.getByRole("tab", { name, exact: true });

@@ -35,7 +35,7 @@ export function resolutionLabel(bucketS: number, kind: "means" | "totals"): stri
 
 const buttonClass =
   "inline-grid h-7 min-w-7 place-items-center rounded-md border border-gray-300 bg-white px-1.5 text-xs text-gray-800 hover:bg-gray-50 "
-  + "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-sm:h-11 max-sm:min-w-11 " // 44 px to tap on a phone
+  + "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-sm:h-11 max-sm:min-w-0 max-sm:flex-1 " // on a phone: 44 px tall, sharing the row (about 44 px wide each)
   + "aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-white";
 
 const ToolButton: React.FC<{ label: string; title: string; off: boolean; onPress: () => void; children: React.ReactNode }> =
@@ -127,7 +127,7 @@ const ChartToolbar: React.FC<Props> = ({ controller, title, kind, headingLevel =
         <span aria-hidden="true" className={`h-3 w-3 shrink-0 rounded-full border-2 border-gray-300 border-t-gray-700 ${snap.loading ? "motion-safe:animate-spin" : "invisible"}`} />
       </p>
       <span className="sr-only" role="status" aria-live="polite">{status}</span>
-      <div className="ml-auto flex gap-1" role="group" aria-label={`${title}: time window`}>
+      <div className="ml-auto flex gap-1 max-sm:w-full max-sm:gap-0.5" role="group" aria-label={`${title}: time window`}>
         <PageButton controller={controller} dir={-1} label="Show the time just before this window (hold to slide)" title="Earlier" off={w.start <= ext.start}>
           <ChevronLeft aria-hidden className="h-3.5 w-3.5" />
         </PageButton>

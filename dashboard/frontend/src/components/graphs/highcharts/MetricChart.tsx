@@ -925,11 +925,19 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           Hold Ctrl (⌘ on a Mac) and scroll to zoom
         </div>
         {firstLoad && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/70" aria-hidden="true">
-            <span className="flex items-center gap-2 text-sm text-gray-700">
-              <span className="h-4 w-4 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
-              Loading data…
-            </span>
+          // A skeleton of the chart while its first data loads: the plot's place, faint lines, the range bar and the
+          // legend, so the card keeps its size and nothing jumps when the chart draws
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col gap-2 rounded bg-white p-2" data-testid="chart-skeleton">
+            <span className="sr-only" role="status">Loading data…</span>
+            <div className="relative flex-1 overflow-hidden rounded bg-gray-100 motion-safe:animate-pulse">
+              <div className="absolute inset-x-3 top-1/4 h-px bg-gray-200" />
+              <div className="absolute inset-x-3 top-1/2 h-px bg-gray-200" />
+              <div className="absolute inset-x-3 top-3/4 h-px bg-gray-200" />
+            </div>
+            <div className="h-5 rounded bg-gray-100 motion-safe:animate-pulse" />
+            <div className="flex flex-wrap justify-center gap-2">
+              {specs.slice(0, 6).map((sp) => <div key={sp.key} className="h-3 w-24 rounded bg-gray-100 motion-safe:animate-pulse" />)}
+            </div>
           </div>
         )}
         {!firstLoad && !error && (noData || windowEmpty) && (
