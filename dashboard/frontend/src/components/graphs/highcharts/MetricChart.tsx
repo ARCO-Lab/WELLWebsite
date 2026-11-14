@@ -6,7 +6,7 @@
 //
 // Drawing: one y-axis per unit, each scaled to its own data (alignTicks off); the cards hide the axes (the tooltip
 // gives values, the legend units), the larger view shows them. A colour per measurement (per logger on the loggers'
-// chart, temperature dashed); rain as a stepped area of totals, flat across each bucket; wind direction as points; in the larger
+// chart, temperature dashed); rain as bars of totals, one per bucket; wind direction as points; in the larger
 // view a band from the smallest to the largest reading behind each averaged line. Averaged buckets sit at their middle
 // and the tooltip names the span they cover. Points the line alone wouldn't show get a marker: filled for a reading
 // between two gaps, hollow for a bucket with under half the readings its series usually has at that time of day.
@@ -31,6 +31,7 @@
 
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { guarded } from '@/lib/guarded';
+import { HANDLE_PX, MIN_GRAB_PX, barPart } from '@/lib/rangeBar';
 import Highcharts from 'highcharts';
 import 'highcharts/modules/stock'; // the navigator, which is the range bar
 import 'highcharts/highcharts-more'; // arearange, for the min-max bands
@@ -59,7 +60,6 @@ const FONT = 'Poppins, Arial, sans-serif';
 const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
 const WHEEL_SETTLE_MS = 300; // a burst of wheel events is one gesture until none has come for this long
 const HINT_EVERY_MS = 30_000; // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
-const NAV_HANDLE_PX = 14; // how near a navigator handle a finger must land to take it
 const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does
 const LEGEND_ROWS = 3, LEGEND_ROW_PX = 24; // a phone's legend page: whole rows, each a comfortable tap target
 // What a gesture shows (gesturePreview.ts). canvas (the default): painted from the loaded data, one Highcharts redraw
@@ -67,6 +67,31 @@ const LEGEND_ROWS = 3, LEGEND_ROW_PX = 24; // a phone's legend page: whole rows,
 // every paced frame. NEXT_PUBLIC_CHART_PREVIEW picks another at build time, to compare them.
 const PREVIEW = process.env.NEXT_PUBLIC_CHART_PREVIEW ?? 'canvas';
 const PREVIEW_IDLE_MS = 180; // with the bitmap preview, a gesture still for this long gets a real redraw
+// A window only a few pixels wide on the range bar is drawn MIN_GRAB_PX wide around its middle, with its handles just
+// outside that, matching where presses slide or resize it (lib/rangeBar.ts): Stock drew both handles on top of it.
+type NavigatorDraw = { left: number; zoomedMin: number; zoomedMax: number };
+const navProto = (Highcharts as unknown as { Navigator?: { prototype: Record<string, unknown> & { __wellGrab?: boolean } } }).Navigator?.prototype;
+if (navProto && !navProto.__wellGrab) {
+  navProto.__wellGrab = true;
+  const widen = (min: number, max: number): [number, number] => {
+    if (max - min >= MIN_GRAB_PX) return [min, max];
+    const mid = (min + max) / 2;
+    return [mid - MIN_GRAB_PX / 2, mid + MIN_GRAB_PX / 2];
+  };
+  for (const name of ['drawMasks', 'drawOutline']) {
+    Highcharts.wrap(navProto, name, function (this: NavigatorDraw, proceed: (...a: unknown[]) => void, min: number, max: number, ...rest: unknown[]) {
+      const [a, b] = widen(min, max);
+      proceed.call(this, a, b, ...rest);
+    });
+  }
+  Highcharts.wrap(navProto, 'drawHandle', function (this: NavigatorDraw, proceed: (...a: unknown[]) => void, x: number, index: number, ...rest: unknown[]) {
+    const min = Math.round(this.zoomedMin), max = Math.round(this.zoomedMax);
+    if (max - min >= MIN_GRAB_PX) return proceed.call(this, x, index, ...rest);
+    const mid = (min + max) / 2, off = MIN_GRAB_PX / 2 + HANDLE_PX / 2;
+    return proceed.call(this, index === 0 ? mid - off : mid + off, index, ...rest);
+  });
+}
+
 // Axis dates on the 24-hour clock, like the rest of the dashboard (Highcharts would follow the browser locale: 1 PM)
 const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
   millisecond: '%H:%M:%S', second: '%H:%M:%S', minute: '%H:%M', hour: '%H:%M', day: '%b %e', week: '%b %e',
@@ -170,10 +195,11 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       showInNavigator: false, // the navigator's base is the extent series (below)
       ...(s.dash ? { dashStyle: s.dash } : {}),
       ...(type === 'line' ? { lineWidth: 1.5 } : {}),
-      ...(type === 'area' ? { step: 'center', threshold: 0, lineWidth: 1, fillOpacity: 0.35, legendSymbol: 'rectangle' } : {}),
+      // Bars a bucket wide, touching (no padding or grouping), from 0; the legend keeps the rectangle swatch
+      ...(type === 'column' ? { pointPadding: 0, groupPadding: 0, borderWidth: 0, grouping: false, threshold: 0, minPointLength: 0, legendSymbol: 'rectangle' } : {}),
       ...(type === 'scatter' ? { marker: { enabled: true, radius: 2, symbol: 'circle' }, findNearestPointBy: 'x' } : {}),
     } as Highcharts.SeriesOptionsType);
-    if (type !== 'scatter') {
+    if (type === 'line') {
       // Markers, as series of their own so every series keeps plain [x, y] data: hollow for a bucket with fewer
       // readings than usual, filled for a reading between two gaps (a line can't show a single point)
       const marks = (id: string, fill: string) => series.push({
@@ -278,7 +304,9 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
     },
     // followTouchMove off: a finger moving over the chart scrolls the page (Highcharts would otherwise hold the touch
     // for its tooltip and cancel touchend mid-scroll); a tap still shows the tooltip
-    tooltip: { shared: true, split: false, followTouchMove: false, formatter: tooltipText, style: { fontFamily: FONT, fontSize: '12px' }, outside: true },
+    // outside on a card (so a narrow chart doesn't clip it), inside in the larger view: an outside tooltip lives in the
+    // page body, beneath the dialog's overlay, and never showed there
+    tooltip: { shared: true, split: false, followTouchMove: false, formatter: tooltipText, style: { fontFamily: FONT, fontSize: '12px' }, outside: !axes },
     plotOptions: {
       series: {
         animation: false,
@@ -403,7 +431,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     // no redraw) and when the gesture ends. Without one, every paced frame is a real redraw.
     const paintSeries = (): PaintSeries[] => specs.map((sp) => ({
       id: sp.key, points: controller.lastData.series.get(sp.key) ?? [],
-      kind: sp.agg === 'sum' ? 'area' : sp.agg === 'vector_mean' ? 'dots' : 'line',
+      kind: sp.agg === 'sum' ? 'bars' : sp.agg === 'vector_mean' ? 'dots' : 'line',
     }));
     const preview: GesturePreview = PREVIEW === 'canvas' ? canvasPreview(chart, chart.container, paintSeries, () => navDragRef.current)
       : PREVIEW === 'bitmap' ? bitmapPreview(chart, chart.container) : noPreview;
@@ -609,10 +637,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const x = e.clientX - c.container.getBoundingClientRect().left;
       const w = controller.window;
       const a = axis.toPixels(w.start, false), b = axis.toPixels(w.end, false);
-      // A window narrower than two handles is moved from inside it, and resized from just outside
-      const narrow = b - a < 2 * NAV_HANDLE_PX;
-      const part = narrow && x >= a && x <= b ? 'window'
-        : Math.abs(x - a) <= NAV_HANDLE_PX ? 'start' : Math.abs(x - b) <= NAV_HANDLE_PX ? 'end' : x > a && x < b ? 'window' : 'track';
+      const part = barPart(x, a, b); // a tiny window still has a slide area, and handle zones outside it
       nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId, mouse: e.pointerType === 'mouse' };
       // A mouse press is captured at once, so its release is heard wherever it happens (a finger's waits for its
       // direction: up or down is the page's scroll)

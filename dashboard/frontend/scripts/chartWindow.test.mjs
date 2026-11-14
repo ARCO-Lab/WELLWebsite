@@ -231,7 +231,7 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Dew Point"));
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Soil Temperature"));
   assert.equal(measurementColor("Something new"), measurementColor("Something new")); // unknown: stable too
-  assert.equal(seriesType("sum"), "area"); // stepped
+  assert.equal(seriesType("sum"), "column"); // rain as bars
   assert.equal(seriesType("vector_mean"), "scatter");
   assert.equal(seriesType("mean"), "line");
   assert.equal(compassLabel(225), "225° (SW)");
@@ -308,4 +308,27 @@ test("guarded: a callback's exception is reported, not thrown; otherwise it runs
   const bad = guarded(() => { throw new Error("boom"); }, (e) => seen.push(`reported ${e.message}`));
   assert.doesNotThrow(() => bad());
   assert.deepEqual(seen, [3, "reported boom"]);
+});
+
+test("range bar: a tiny window still slides from its middle and resizes from just outside it", async () => {
+  const { barPart, MIN_GRAB_PX, HANDLE_PX } = await import("../src/lib/rangeBar.ts");
+  // A two-hour window of a year on a 700 px bar: a fraction of a pixel wide
+  const a = 400, b = 400.2;
+  assert.equal(barPart(400.1, a, b), "window");
+  assert.equal(barPart(400 - MIN_GRAB_PX / 2 + 1, a, b), "window");
+  assert.equal(barPart(400 + MIN_GRAB_PX / 2 - 1, a, b), "window");
+  assert.equal(barPart(400 - MIN_GRAB_PX / 2 - HANDLE_PX / 2, a, b), "start");
+  assert.equal(barPart(400 + MIN_GRAB_PX / 2 + HANDLE_PX / 2, a, b), "end");
+  assert.equal(barPart(300, a, b), "track");
+  // Between MIN_GRAB_PX and that plus two handles: the middle slides, the handles take their outer side
+  assert.equal(barPart(430, 420, 440), "window");
+  assert.equal(barPart(415, 420, 440), "start");
+  assert.equal(barPart(445, 420, 440), "end");
+  // A wide window: as before
+  assert.equal(barPart(105, 100, 300), "start");
+  assert.equal(barPart(200, 100, 300), "window");
+  assert.equal(barPart(295, 100, 300), "end");
+  assert.equal(barPart(50, 100, 300), "track");
+  // However narrow, some middle always slides
+  for (const w of [0, 0.5, 5, 19, 20, 25, 30, 47, 48, 60]) assert.equal(barPart(500 + w / 2, 500, 500 + w), "window", `${w} px`);
 });
