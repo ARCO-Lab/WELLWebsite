@@ -103,17 +103,16 @@ def with_retries(http, sleep=time.sleep, delays=RETRY_DELAYS_S, log=print):
     no response, since a POST that failed that way may still have gone through (an issue opened twice); a 429 means
     the request wasn't handled, so that is retried for every method."""
     def request(method, url, headers, body=None):
-        for attempt in range(len(delays) + 1):
+        for delay in delays:
             try:
                 return http(method, url, headers, body)
             except HttpError as err:
-                if attempt == len(delays) or not err.retryable or (method != "GET" and err.status != 429):
+                if not err.retryable or (method != "GET" and err.status != 429):
                     raise
-                wait = delays[attempt]
-                if err.retry_after is not None:
-                    wait = min(err.retry_after, RETRY_AFTER_MAX_S)
+                wait = delay if err.retry_after is None else min(err.retry_after, RETRY_AFTER_MAX_S)
                 log(f"{err}; trying again in {wait} s")
                 sleep(wait)
+        return http(method, url, headers, body)   # the last try: its error, if any, is the caller's
     return request
 
 
