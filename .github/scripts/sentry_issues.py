@@ -34,8 +34,8 @@ from sentry_github import (  # noqa: E402
     MARKER, UNTRUSTED_NOTE, HttpError, http_request, run, safe_exception_type, scrub, with_retries,
 )
 
-__all__ = ["MARKER", "UNTRUSTED_NOTE", "HttpError", "http_request", "run", "safe_exception_type", "scrub",
-           "with_retries", "main"]
+__all__ = ["LOADED_FILES", "MARKER", "UNTRUSTED_NOTE", "HttpError", "http_request", "run", "safe_exception_type",
+           "scrub", "with_retries", "main"]
 
 
 def main():
