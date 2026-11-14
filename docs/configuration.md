@@ -103,6 +103,13 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
   `ALERT_DASHBOARD_URL` (`https://welldash.mcmaster.ca/`).
 - Sentry: `SENTRY_DSN` (unset turns reporting off), `SENTRY_ENVIRONMENT` (default `production`), `GIT_SHA` (optional
   release name). `SENTRY_COMPONENT` is set by `docker-compose.yml` for `worker` and `export_worker`.
+- Sentry errors as GitHub issues, every minute from the worker (off, with one line in its log at start-up, until both
+  tokens are set; the daily workflow runs either way): `SENTRY_API_TOKEN` (a Sentry auth token with only `org:read`,
+  `project:read` and `event:read`), `GITHUB_ISSUES_TOKEN` (a fine-grained GitHub token for this repository only, with
+  the *Issues: Read and write* permission and nothing else), `SENTRY_ORG` (default `well-cs`; every project in it is
+  checked), `GITHUB_ISSUES_REPO` (default `ARCO-Lab/WELLWebsite`), `SENTRY_SYNC_INTERVAL_S` (default `60`, at least
+  `30`), and `SENTRY_JUMP_FACTOR`, `SENTRY_JUMP_MIN`, `SENTRY_API_URL` as for the workflow. It logs to
+  `logs/sentry_github.log` ([Sentry errors as GitHub issues](../.github/workflows/README.md#sentry-errors-as-github-issues)).
 
 **Set for one command only, never in a file**
 

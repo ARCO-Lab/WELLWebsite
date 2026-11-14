@@ -346,6 +346,34 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(fake.comments[7]), 2)
         self.assertIn("last reported here: 3", fake.comments[7][1]["body"])
 
+    def test_state_markers_from_the_workers_token_count(self):
+        # The worker comments with a maintainer's token: GitHub marks those comments MEMBER (or OWNER, COLLABORATOR).
+        issue = {"number": 7, "state": "open", "body": si.MARKER.format("WELL-DASHBOARD-2") +
+                 "\n<!-- sentry-state count=3 last_seen=x -->"}
+        worker = {"body": "Event count jumped\n<!-- sentry-state count=60 last_seen=x -->",
+                  "user": {"login": "maintainer"}, "author_association": "MEMBER"}
+        fake = Fake([[sentry_issue(count="100")]], gh_issues=[issue], comments={7: [worker]})
+        run(fake)
+        self.assertEqual(len(fake.comments[7]), 1)   # 100 isn't a jump from 60
+
+    def test_rate_limits_are_retried_and_writes_are_not_retried_after_a_server_error(self):
+        sleeps, calls = [], []
+
+        def flaky(method, url, headers, body=None):
+            calls.append(method)
+            if len(calls) == 1:
+                raise si.HttpError(429, url, retry_after=3)
+            if method == "POST":
+                raise si.HttpError(502, url)
+            return 200, {}, []
+
+        http = si.with_retries(flaky, sleep=sleeps.append, log=lambda line: None)
+        self.assertEqual(http("GET", SENTRY, {})[0], 200)
+        self.assertEqual(sleeps, [3])
+        with self.assertRaises(si.HttpError):
+            http("POST", GITHUB, {}, {})
+        self.assertEqual(calls, ["GET", "GET", "POST"])
+
     def test_issues_without_the_marker_or_pull_requests_dont_count(self):
         other = {"number": 5, "state": "open", "body": "mentions WELL-DASHBOARD-2 but has no marker"}
         pr = {"number": 6, "state": "open", "body": si.MARKER.format("WELL-DASHBOARD-2"), "pull_request": {}}
