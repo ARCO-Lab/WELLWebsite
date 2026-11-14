@@ -21,6 +21,9 @@ import pathlib
 import sys
 
 SHARED = pathlib.Path(__file__).resolve().parents[2] / "dashboard" / "backend" / "app" / "utils" / "sentry_github.py"
+# Every file this script loads from outside .github/scripts. The workflow's sparse checkout must include each one
+# (test_sentry_issues.py checks it does).
+LOADED_FILES = (SHARED,)
 _spec = importlib.util.spec_from_file_location("sentry_github", SHARED)
 sentry_github = importlib.util.module_from_spec(_spec)
 sys.modules["sentry_github"] = sentry_github

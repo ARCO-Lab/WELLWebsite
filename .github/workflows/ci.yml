@@ -285,9 +285,10 @@ jobs:
       - name: Unit tests of the daily maintainer's scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_maintainer*.py' -v
 
-      # The daily Sentry check (.github/workflows/sentry-issues.yml), against an in-memory Sentry and GitHub.
+      # The daily Sentry check (.github/workflows/sentry-issues.yml), against an in-memory Sentry and GitHub, and its
+      # sparse checkout: every file the script loads is listed, and the script runs from those folders alone.
       - name: sentry_issues.py unit tests
-        run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
+        run: python3 -m unittest discover -s .github/scripts -p "test_sentry_issues.py" -v
 
       # The runner image ships shellcheck.
       - name: shellcheck on deploy.sh, the WordPress backup, the CI scripts, the load-test scripts and the roles steps

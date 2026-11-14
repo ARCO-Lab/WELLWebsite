@@ -5,7 +5,11 @@
 import io
 import json
 import os
+import pathlib
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 import unittest.mock
 import urllib.error
@@ -432,6 +436,45 @@ class RunTest(unittest.TestCase):
         run(fake)
         for _, _, body in fake.writes():
             json.dumps(body)
+
+
+class WorkflowCheckoutTest(unittest.TestCase):
+    """sentry-issues.yml checks out only some folders: everything the script loads must be in them."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[2]
+    WORKFLOW = ROOT / ".github" / "workflows" / "sentry-issues.yml"
+
+    def sparse_paths(self):
+        """The folders listed under `sparse-checkout: |` in the workflow."""
+        lines = self.WORKFLOW.read_text(encoding="utf-8").splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip() == "sparse-checkout: |")
+        indent = len(lines[start + 1]) - len(lines[start + 1].lstrip())
+        paths = []
+        for line in lines[start + 1:]:
+            if not line.strip() or len(line) - len(line.lstrip()) < indent:
+                break
+            paths.append(line.strip().rstrip("/"))
+        return paths
+
+    def test_every_loaded_file_is_checked_out(self):
+        paths = self.sparse_paths()
+        self.assertIn(".github/scripts", paths)
+        for loaded in si.LOADED_FILES:
+            relative = pathlib.Path(loaded).resolve().relative_to(self.ROOT).as_posix()
+            with self.subTest(file=relative):
+                self.assertTrue(any(relative == p or relative.startswith(p + "/") for p in paths),
+                                f"{relative} is not in the sparse checkout of {self.WORKFLOW.name}: {paths}")
+
+    def test_the_script_runs_from_that_checkout_alone(self):
+        # Only the listed folders, as on the runner; -I so nothing from this checkout's environment is imported
+        with tempfile.TemporaryDirectory() as tmp:
+            for path in self.sparse_paths():
+                shutil.copytree(self.ROOT / path, pathlib.Path(tmp) / path)
+            script = pathlib.Path(tmp) / ".github" / "scripts" / "sentry_issues.py"
+            result = subprocess.run([sys.executable, "-I", str(script), "--help"], cwd=tmp, capture_output=True,
+                                    text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--dry-run", result.stdout)
 
 
 if __name__ == "__main__":
