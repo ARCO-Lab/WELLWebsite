@@ -48,6 +48,7 @@ from utils.heartbeat import ping_heartbeat, unset_heartbeats, first_report_today
 from utils.worklog import file_logger  # noqa: E402
 from utils import sharepoint  # noqa: E402
 from utils.borealis import upload_status as borealis_upload_status  # noqa: E402
+from utils.sentry_poller import SentryPoller  # noqa: E402
 import check_alerts  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
@@ -56,6 +57,7 @@ upload_log_file_path = "logs/db_uploads.log"
 digest_log_file_path = "logs/daily_digest.log"
 alerts_log_file_path = "logs/alerts.log"
 backup_log_file_path = "logs/backup.log"
+sentry_github_log_file_path = "logs/sentry_github.log"
 # Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
 # on the host), so it survives restarts and rebuilds.
 uploaded_months_path = "logs/uploaded_months.json"
@@ -120,6 +122,7 @@ timestamped_print_upload = file_logger(upload_log_file_path, LOG_TO_STDOUT)     
 timestamped_print_digest = file_logger(digest_log_file_path, LOG_TO_STDOUT)      # daily digest
 timestamped_print_alerts = file_logger(alerts_log_file_path, LOG_TO_STDOUT)      # alert check
 timestamped_print_backup = file_logger(backup_log_file_path, LOG_TO_STDOUT)      # nightly backup
+timestamped_print_sentry = file_logger(sentry_github_log_file_path, LOG_TO_STDOUT)  # Sentry issues to GitHub
 
 # Touched by the scheduler loop every ALIVE_EVERY_S; docker-compose.yml's healthcheck reports the worker unhealthy
 # when it is older than a few minutes (the loop has stopped or hangs). Outside logs/, so nothing on the host sees it.
@@ -671,6 +674,15 @@ if __name__ == "__main__":
     scheduler.every().hour.at(":15").do(backup_run)  # acts only at 03:15 Toronto time (nightly_backup_check)
     scheduler.every().hour.at(":30").do(restore_run)  # acts only at 05:30 on RESTORE_CHECK_DAY (monthly_restore_check)
 
+    # New Sentry errors as GitHub issues every SENTRY_SYNC_INTERVAL_S, when SENTRY_API_TOKEN and GITHUB_ISSUES_TOKEN
+    # are set (utils/sentry_poller.py); one start-up line either way. A poll never raises and bounds its requests.
+    sentry_poller = SentryPoller(log=timestamped_print_sentry, warn=capture_job_warning)
+    log_everywhere(sentry_poller.describe())
+    sentry_jobs = []
+    if sentry_poller.enabled:
+        sentry_jobs.append(run_in_background(sentry_poller.poll, log=timestamped_print_sentry, name="sentry_github"))
+        scheduler.every(sentry_poller.interval_s).seconds.do(sentry_jobs[0])
+
     print("Schedule: API injection every 10 minutes, each followed by the alert check; Borealis download Sundays 00:00; "
           "Borealis upload (then SharePoint, if configured) at 02:00 Toronto time of each ended month not yet "
           "uploaded; "
@@ -707,4 +719,4 @@ if __name__ == "__main__":
         time.sleep(1)
 
     print("Shutting down the scheduler (stop requested); starting no new jobs")
-    shut_down([api_run, download_run, upload_run, digest_run, backup_run, restore_run], print)
+    shut_down([api_run, download_run, upload_run, digest_run, backup_run, restore_run, *sentry_jobs], print)

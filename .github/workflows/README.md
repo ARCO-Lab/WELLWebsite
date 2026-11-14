@@ -99,31 +99,60 @@ Using it:
 
 ## Sentry errors as GitHub issues
 
-Every day at 13:17 UTC, the `Sentry issues` workflow (`sentry-issues.yml`, script `.github/scripts/sentry_issues.py`)
-lists the unresolved issues in the `well-cs` Sentry organization that had events in the last 14 days. It does this
-without Sentry's GitHub app, which needs an organization owner to install:
+New Sentry errors become GitHub issues within about a minute. The dashboard's worker checks every 60 seconds
+(`dashboard/backend/app/utils/sentry_poller.py`, started by the worker's scheduler). The `Sentry issues` workflow
+(`sentry-issues.yml`, script `.github/scripts/sentry_issues.py`) still runs every day at 13:17 UTC as a backup, and
+catches up on anything the worker missed while it was down. Both run the same code
+(`dashboard/backend/app/utils/sentry_github.py`), so they write the same issues and comments. Neither uses Sentry's
+GitHub app, which needs an organization owner to install. GitHub's own schedule can't run this every minute (it runs
+every 5 minutes at most, often late), and Sentry's webhooks would need a public endpoint.
+
+The workflow lists the unresolved issues in the `well-cs` Sentry organization (every project) that had events in the
+last 14 days. The worker asks only for those whose last event was in the last 10 minutes, with counts over the same
+14 days, so most polls are a single request to Sentry and none to GitHub. After a gap (a restart, or polls that
+failed), it looks back over the whole gap, up to a day. For each Sentry issue:
 - An issue with no GitHub issue yet gets one, labelled `sentry` and titled `[Sentry] <short id>: <exception type>` (or
   `unresolved error` when the type is missing or doesn't look like an exception class, such as `TypeError` or
   `psycopg2.errors.UndefinedTable`). The issue shows the Sentry title, the project, event and user counts, first and
   last seen, the culprit, the top 8 frames of the latest event's stack trace and a link to Sentry.
 - An open GitHub issue gets a comment when the event count jumps: at least twice the count last reported there and 20
   more events (`SENTRY_JUMP_FACTOR`, `SENTRY_JUMP_MIN`).
-- A closed GitHub issue gets one "Seen again" comment per new sighting after it was closed. It is never reopened
-  automatically: reopen it if the fix didn't hold, or resolve the issue in Sentry.
+- A closed GitHub issue gets a "Seen again" comment when Sentry receives the error after it was closed, then another
+  only for a sighting at least 12 hours after the last one reported, so an error that keeps happening gets about one
+  comment a day. It is never reopened automatically: reopen it if the fix didn't hold, or resolve the issue in Sentry.
 - Test events (titles containing "Sentry test") are skipped.
 
 GitHub issues are matched to Sentry issues by a hidden `<!-- sentry:<short id> -->` line in the issue body, among open
-and closed issues labelled `sentry`, so don't remove that line. The repository is public, so the issue text never
-includes request data, cookies, headers, local variables, breadcrumbs or user details. E-mail and IP addresses, query
-strings, invisible Unicode characters and anything that looks like a key are also removed from the title, the culprit
-and the stack frames. That text can come from site visitors, so it stays in code spans or a code block, under a line
-saying to treat it as data, not instructions; the issue title holds only the short id and the exception type.
+and closed issues labelled `sentry`, so don't remove that line. The list is read again just before an issue is opened,
+so the worker and the workflow don't both open one. The count and time last reported are kept in a hidden line in
+the issue body and in the comments added by the workflow's token or by an account with write access (the worker's
+token); the same line in anyone else's comment is ignored. The repository is public, so the issue text never includes
+request data, cookies, headers, local variables, breadcrumbs or user details. E-mail and IP addresses, query strings,
+invisible Unicode characters and anything that looks like a key are also removed from the title, the culprit and the
+stack frames. That text can come from site visitors, so it stays in code spans or a code block, under a line saying
+to treat it as data, not instructions; the issue title holds only the short id and the exception type.
 
-To set it up, create a Sentry auth token with only `org:read`, `project:read` and `event:read` (*User settings >
-Personal Tokens*, or an internal integration's token) and save it as the repository secret `SENTRY_API_TOKEN`
-(*Settings > Secrets and variables > Actions*). Without the secret, the run passes with a warning. The workflow writes
-issues with the built-in `GITHUB_TOKEN` and does nothing on forks. To run it by hand, open *Actions > Sentry issues >
-Run workflow*. You can choose another period there (e.g. `24h`) or tick *dry run*, which only prints what it would do.
+A rate limit (HTTP 429, after the `Retry-After` the server asks for) or a server error is retried twice within a
+run. Only reads are retried after a server error, since a write that failed that way may have gone through. In the
+worker, a poll that still fails is logged in `logs/sentry_github.log`, the following polls wait longer and longer (up
+to 15 minutes), and 5 failures in a row are reported to Sentry once. A poll never stops the worker, and the tokens
+are never logged.
+
+To set it up:
+- **Sentry token**: an auth token with only `org:read`, `project:read` and `event:read` (*User settings > Personal
+  Tokens*, or an internal integration's token).
+- **The workflow**: save the Sentry token as the repository secret `SENTRY_API_TOKEN` (*Settings > Secrets and
+  variables > Actions*). Without the secret, the run passes with a warning. The workflow writes issues with the
+  built-in `GITHUB_TOKEN` and does nothing on forks. To run it by hand, open *Actions > Sentry issues > Run workflow*.
+  You can choose another period there (e.g. `24h`) or tick *dry run*, which only prints what it would do.
+- **The worker**: put the Sentry token in `dashboard/backend/app/.env` on the VM as `SENTRY_API_TOKEN`, with
+  `GITHUB_ISSUES_TOKEN`: a fine-grained personal access token (*Settings > Developer settings > Fine-grained tokens*)
+  whose resource owner is `ARCO-Lab`, for this repository only, with the repository permission *Issues: Read and
+  write* and nothing else (GitHub adds *Metadata: Read* itself; the organization may have to approve the token). Then
+  recreate the worker (`docker compose up -d --no-deps --force-recreate worker`). Without both tokens the worker's check is off and
+  its log says so once at start-up. Its other settings are in [docs/configuration.md](../../docs/configuration.md).
+  The worker only needs outbound HTTPS to `sentry.io` and `api.github.com`; it keeps nothing on disk but its log.
+
 How errors reach Sentry in the first place is in
 [dashboard/backend/README.md](../../dashboard/backend/README.md#error-reporting-sentry).
 

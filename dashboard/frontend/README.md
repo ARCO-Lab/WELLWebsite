@@ -130,7 +130,8 @@ data and tooltip, in the Latest Data tiles and in the downloaded CSV. The CI job
    more than two at a time, and keeps charts independent; `STRESS_MINUTES=5 npx playwright test charts-stress
    --project=toronto` runs a longer soak. `sampling.spec.ts` answers every API call itself (no data needed, so it also
    runs against `next dev` alone with `E2E_BASE_URL`): the sampling tab's charts and legend, replies arriving out of
-   order, a shared link's ticks, the Download button leaving its tab, and an axe accessibility scan of both tabs.
+   order, a shared link's ticks, the Download button leaving its tab, the Filters boxes' tick colours, and an axe
+   accessibility scan of both tabs.
 
 `fixtures/expected.json` lists every expected row and tile, with notes on the cases they cover (the clocks going back,
 duplicates, re-reads, N/A values, readings near midnight). To run it yourself, start the same pieces as the CI job and
