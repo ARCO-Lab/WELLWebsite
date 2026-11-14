@@ -150,13 +150,15 @@ class PollTest(TestCase):
         self.assertTrue(p.poll())
         clock.now += 60
         self.assertTrue(p.poll())
+        self.assertTrue(poller(fake)[0].poll())   # a restarted worker, which remembers nothing: found by its marker
         created = [b for m, path, b in fake.writes() if path == f"/repos/{REPO}/issues"]
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0]["title"], "[Sentry] WELL-DASHBOARD-7: TypeError")
         self.assertEqual(created[0]["labels"], ["sentry"])
         self.assertTrue(created[0]["body"].startswith("<!-- sentry:WELL-DASHBOARD-7 -->\n"))
         self.assertIn(sentry_github.UNTRUSTED_NOTE, created[0]["body"])
-        self.assertIn("WELL-DASHBOARD-7: #100 is up to date", lines)
+        self.assertIn("WELL-DASHBOARD-7: opened #100", lines)
+        self.assertFalse(any("up to date" in line for line in lines))   # logged by the daily run only
 
     def test_same_issue_as_the_daily_workflow_writes(self):
         fake = Fake([sentry_issue()])
@@ -236,6 +238,82 @@ class PollTest(TestCase):
         self.assertEqual(fake.writes(), [])
         self.assertFalse(any(u.startswith(GITHUB) for _, u, _, _ in fake.calls))
         self.assertIn("WELL-DASHBOARD-7: a test event, skipped", lines)
+
+
+class HandledTest(TestCase):
+    """The poller remembers each issue's (count, last seen) it has handled, and skips it until either changes."""
+
+    def github_calls(self, fake, since=0):
+        return [(m, urlparse(u).path) for m, u, _, _ in fake.calls[since:] if u.startswith(GITHUB)]
+
+    def test_an_unchanged_issue_costs_one_sentry_request_and_no_log_line(self):
+        clock = Clock()
+        fake = Fake([sentry_issue()])
+        p, lines, _, _ = poller(fake, clock=clock)
+        p.poll()
+        before, logged = len(fake.calls), len(lines)
+        for _ in range(5):
+            clock.now += 60
+            self.assertTrue(p.poll())
+        self.assertEqual(len(fake.calls) - before, 5)   # one Sentry listing per poll
+        self.assertEqual(self.github_calls(fake, before), [])
+        self.assertEqual(lines[logged:], [])
+
+    def test_a_new_event_is_looked_at_again(self):
+        for change in ({"lastSeen": "2026-11-14T10:06:00Z"}, {"count": "4"}):
+            with self.subTest(change=change):
+                clock = Clock()
+                fake = Fake([sentry_issue()])
+                p, lines, _, _ = poller(fake, clock=clock)
+                p.poll()
+                before, logged = len(fake.calls), len(lines)
+                fake.sentry = [sentry_issue(**change)]
+                clock.now += 60
+                self.assertTrue(p.poll())
+                self.assertIn(("GET", f"/repos/{REPO}/issues/100/comments"), self.github_calls(fake, before))
+                self.assertEqual(fake.writes()[-1][1], f"/repos/{REPO}/issues")   # no new comment: not a jump
+                self.assertFalse(any("up to date" in line for line in lines[logged:]))
+                clock.now += 60
+                calls = len(fake.calls)
+                p.poll()   # and then remembered again
+                self.assertEqual(self.github_calls(fake, calls), [])
+
+    def test_a_failed_poll_forgets_nothing_it_did_not_finish(self):
+        clock = Clock()
+        fake = Fake([sentry_issue("WELL-DASHBOARD-7"), sentry_issue("WELL-DASHBOARD-8")])
+        p, _, _, _ = poller(fake, clock=clock)
+        real = fake.__call__
+        opened = []
+
+        def second_create_fails(method, url, headers, body=None):
+            if method == "POST" and urlparse(url).path == f"/repos/{REPO}/issues":
+                opened.append(body["title"])
+                if len(opened) == 2:
+                    raise sentry_github.HttpError(422, url)
+            return real(method, url, headers, body)
+
+        p.http = second_create_fails
+        self.assertFalse(p.poll())
+        self.assertEqual(list(p.handled), ["WELL-DASHBOARD-7"])
+        p.http = fake
+        clock.now = p.wait_until
+        self.assertTrue(p.poll())
+        self.assertEqual(sorted(p.handled), ["WELL-DASHBOARD-7", "WELL-DASHBOARD-8"])
+        titles = [b["title"] for _, path, b in fake.writes() if path == f"/repos/{REPO}/issues"]
+        self.assertEqual(sorted(titles), [f"[Sentry] WELL-DASHBOARD-{n}: TypeError" for n in (7, 8)])
+
+    def test_the_memory_is_bounded(self):
+        handled = {f"OLD-{i}": ("1", "x") for i in range(sentry_github.MAX_HANDLED)}
+        sentry_github.remember(handled, sentry_issue())
+        self.assertEqual(handled, {"WELL-DASHBOARD-7": ("3", "2026-11-14T10:05:00Z")})
+
+    def test_the_daily_run_remembers_nothing_and_still_says_up_to_date(self):
+        env = {"SENTRY_API_TOKEN": SENTRY_TOKEN, "GITHUB_TOKEN": GITHUB_TOKEN, "GITHUB_REPOSITORY": REPO}
+        fake = Fake([sentry_issue()])
+        sentry_github.run(fake, env, log=lambda line: None)
+        lines = []
+        sentry_github.run(fake, env, log=lines.append)
+        self.assertIn("WELL-DASHBOARD-7: #100 is up to date", lines)
 
 
 class FailureTest(TestCase):

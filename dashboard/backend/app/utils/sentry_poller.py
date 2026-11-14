@@ -16,10 +16,10 @@ once at start-up:
   SENTRY_API_URL, SENTRY_JUMP_FACTOR, SENTRY_JUMP_MIN   as for the daily workflow
 
 A poll asks Sentry for one page of issues (lastSeen in the last LOOKBACK_MIN minutes, more after a gap), and GitHub
-only when Sentry returned something. A rate limit (429) or server error is retried within the poll
-(sentry_github.with_retries); a poll that still fails is logged, and the next ones wait longer and longer (up to
-MAX_BACKOFF_S), with a wider look-back so nothing seen meanwhile is missed. A poll never raises, so a failure can't
-stop the worker. The tokens are only sent in request headers, never logged.
+only about those whose count or last-seen time changed since a poll handled them. A rate limit (429) or server
+error is retried within the poll (sentry_github.with_retries); a poll that still fails is logged, and the next ones
+wait longer and longer (up to MAX_BACKOFF_S), with a wider look-back so nothing seen meanwhile is missed. A poll
+never raises, so a failure can't stop the worker. The tokens are only sent in request headers, never logged.
 """
 import math
 import os
@@ -77,6 +77,9 @@ class SentryPoller:
         self.last_success = None   # clock() when the last successful poll started
         self.failures = 0          # failed polls in a row
         self.wait_until = 0.0      # clock() before which polls are skipped, after failures
+        # {short id: (count, last seen)} of each Sentry issue already handled: an issue still in the look-back window
+        # but unchanged since is skipped, so it costs GitHub nothing (sentry_github.run)
+        self.handled = {}
 
     def describe(self):
         """The start-up line: on, with how often, or off and why."""
@@ -110,7 +113,7 @@ class SentryPoller:
         error, retry_after = None, None
         try:
             code = sentry_github.run(self.http, self.settings, seen_within_minutes=self.lookback_minutes(now),
-                                     log=self._log)
+                                     log=self._log, handled=self.handled)
             if code != 0:
                 error = "Sentry could not be read, or a setting is wrong (see the line above)"
         except sentry_github.HttpError as err:
