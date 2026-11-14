@@ -3,14 +3,41 @@
 record_vendor_result is called by the ingestion (scripts/inject_from_api.py) after each vendor call, and
 record_fetched_until once that call's readings are stored; neither raises, so a missing table (migration not applied
 yet) or a database hiccup can't break ingestion. The readers are used by scripts/check_alerts.py, GET /health/data,
-the daily digest and (fetched_until) the ingestion. Call them inside a Flask app context.
+the daily digest and (fetched_until) the ingestion. Call them inside a Flask app context. vendor_statuses and
+open_incidents, the first reads of each table there, raise MigrationPending when the table or a column they read
+doesn't exist yet.
 """
 from datetime import datetime, timezone
+
+from sqlalchemy.exc import ProgrammingError
 
 from db.database import db
 from db.models import AlertIncident, VendorStatus
 from utils.alerts import aware, describe_vendor_error
 from utils.timezone import EST_TZ
+
+# PostgreSQL's codes for a table and a column that don't exist
+UNDEFINED_TABLE, UNDEFINED_COLUMN = "42P01", "42703"
+
+
+class MigrationPending(RuntimeError):
+    """The code reads a table or column the database doesn't have yet: a migration in db/migrations/ hasn't been
+    applied (deploys hold back changes that add one until it is applied by hand). Its message says what to run, so
+    the alert check's log line and error report name the fix rather than an SQL error."""
+
+
+def _reading(table, read):
+    """read(), with a missing table or column (PostgreSQL) raised as MigrationPending. The failed statement is rolled
+    back first, so the session stays usable for the caller's other reads."""
+    try:
+        return read()
+    except ProgrammingError as e:
+        if getattr(e.orig, "pgcode", None) not in (UNDEFINED_TABLE, UNDEFINED_COLUMN):
+            raise
+        db.session.rollback()
+        raise MigrationPending(f"The {table} table is missing or lacks a column, so a database migration hasn't been "
+                               "applied: run python scripts/migrate.py --status in the backend container, then "
+                               "python scripts/migrate.py") from e
 
 
 def record_vendor_result(source, error=None, now=None, log=print, skipped=None):
@@ -71,14 +98,14 @@ def record_fetched_until(source, until, log=print):
 def vendor_statuses():
     """{source: row as a dict, times aware}."""
     table = VendorStatus.__table__
-    rows = db.session.execute(table.select()).mappings().all()
+    rows = _reading("vendor_status", lambda: db.session.execute(table.select()).mappings().all())
     return {r["source"]: {k: aware(v) if isinstance(v, datetime) else v for k, v in r.items()} for r in rows}
 
 
 def open_incidents():
     # The incidents not resolved yet, oldest first.
-    return (AlertIncident.query.filter(AlertIncident.resolved_at.is_(None))
-            .order_by(AlertIncident.opened_at, AlertIncident.id).all())
+    return _reading("alert_incidents", lambda: AlertIncident.query.filter(AlertIncident.resolved_at.is_(None))
+                    .order_by(AlertIncident.opened_at, AlertIncident.id).all())
 
 
 def pending_recoveries(since):
