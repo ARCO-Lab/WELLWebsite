@@ -1,9 +1,11 @@
 """Heartbeat pings (utils/heartbeat.py) and where the scheduler sends them.
 Run from dashboard/backend: python -m unittest discover -s tests"""
 import datetime as dt
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import types
 from unittest import TestCase, main, mock
 
@@ -15,7 +17,8 @@ sys.path.insert(0, str(APP / "scripts"))
 sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
 
 from utils.heartbeat import (  # noqa: E402
-    HEARTBEAT_TIMEOUT_S, MESSAGE_LIMIT, WORKER_HEARTBEATS, heartbeat_setting, ping_heartbeat, unset_heartbeats,
+    HEARTBEAT_TIMEOUT_S, MESSAGE_LIMIT, UNSET_REPORT_EVERY_S, WORKER_HEARTBEATS, first_report_today, heartbeat_setting,
+    ping_heartbeat, unset_heartbeats,
 )
 import scheduler_temp  # noqa: E402
 
@@ -87,6 +90,9 @@ class PingHeartbeatTests(TestCase):
         partial = {**everything, "HEALTHCHECK_URL_RESTORE": " ", "HEALTHCHECK_URL_INGESTION": ""}
         self.assertEqual(unset_heartbeats(partial), ["HEALTHCHECK_URL_INGESTION", "HEALTHCHECK_URL_RESTORE"])
         self.assertEqual(len(unset_heartbeats({})), len(WORKER_HEARTBEATS))
+        # With the Borealis upload off, its heartbeat isn't asked for
+        self.assertNotIn("HEALTHCHECK_URL_UPLOAD", unset_heartbeats({}, upload_on=False))
+        self.assertIn("HEALTHCHECK_URL_UPLOAD", unset_heartbeats({}))
         # With the restore drill off, its heartbeat isn't asked for
         self.assertNotIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": " OFF "}))
         self.assertIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": "2"}))
@@ -95,23 +101,58 @@ class PingHeartbeatTests(TestCase):
 class WorkerHeartbeatReportTests(TestCase):
     """A dead worker is only noticed through its heartbeats, so the unset ones are named, and stuck jobs fail them."""
 
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.state = os.path.join(directory.name, "unset_heartbeats_reported.json")
+
+    def report(self, logs, warnings, env):
+        return scheduler_temp.report_unset_heartbeats(logs.append, warnings.append, env=env, state_path=self.state)
+
     def test_startup_names_every_unset_heartbeat(self):
         logs, warnings = [], []
         env = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS if name != "backup"}
-        missing = scheduler_temp.report_unset_heartbeats(logs.append, warnings.append, env=env)
+        missing = self.report(logs, warnings, env)
         self.assertEqual(missing, ["HEALTHCHECK_URL_BACKUP"])
         self.assertEqual(len(logs), 1)
         self.assertTrue(logs[0].startswith("[WARN] Heartbeats not set: HEALTHCHECK_URL_BACKUP."), logs)
         self.assertEqual(len(warnings), 1)
         # SharePoint counts only once it is configured
         env["SHAREPOINT_TENANT_ID"] = "t"
-        self.assertIn("HEALTHCHECK_URL_SHAREPOINT",
-                      scheduler_temp.report_unset_heartbeats(logs.append, warnings.append, env=env))
+        self.assertIn("HEALTHCHECK_URL_SHAREPOINT", self.report(logs, warnings, env))
+        self.assertEqual(len(warnings), 2)   # a different set of names is warned about at once
         logs.clear()
         warnings.clear()
         env = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS}
-        self.assertEqual(scheduler_temp.report_unset_heartbeats(logs.append, warnings.append, env=env), [])
+        self.assertEqual(self.report(logs, warnings, env), [])
         self.assertEqual((logs, warnings), ([], []))
+
+    def test_restarts_warn_sentry_once_a_day_and_log_every_time(self):
+        # A deploy restarts the worker several times in a few minutes; each start logs, one sends the warning
+        logs, warnings = [], []
+        env = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS if name != "restore"}
+        for _ in range(6):
+            self.report(logs, warnings, env)
+        self.assertEqual((len(logs), len(warnings)), (6, 1))
+        self.assertIn("HEALTHCHECK_URL_RESTORE", warnings[0])
+
+    def test_the_daily_limit(self):
+        names = ["HEALTHCHECK_URL_RESTORE"]
+        start = 1_800_000_000
+        self.assertTrue(first_report_today(names, self.state, now=start))
+        self.assertFalse(first_report_today(names, self.state, now=start + UNSET_REPORT_EVERY_S - 1))
+        self.assertTrue(first_report_today(["HEALTHCHECK_URL_UPLOAD"] + names, self.state, now=start + 60))
+        self.assertTrue(first_report_today(names, self.state, now=start + 120))   # the set changed back
+        self.assertTrue(first_report_today(names, self.state, now=start + 120 + UNSET_REPORT_EVERY_S))
+        # A clock that went back, or a damaged record, doesn't silence it
+        self.assertTrue(first_report_today(names, self.state, now=start))
+        with open(self.state, "w") as f:
+            f.write("{not json")
+        self.assertTrue(first_report_today(names, self.state, now=start + 1))
+        # logs/ not writable: warn each time rather than never
+        missing_dir = os.path.join(os.path.dirname(self.state), "missing", "state.json")
+        self.assertTrue(first_report_today(names, missing_dir, now=start))
+        self.assertTrue(first_report_today(names, missing_dir, now=start + 1))
 
     def test_skips_are_logged_then_fail_the_check_once_stuck(self):
         pings = []
@@ -136,6 +177,7 @@ class SchedulerHeartbeatTests(TestCase):
             mock.patch.object(scheduler_temp, "print", lambda *a, **k: None, create=True),
             mock.patch.object(scheduler_temp, "timestamped_print_upload", lambda *a: None),
             mock.patch.object(scheduler_temp, "timestamped_print_digest", lambda *a: None),
+            mock.patch.object(scheduler_temp, "borealis_upload_status", lambda env=None: ("on", [])),
         ):
             patch.start()
             self.addCleanup(patch.stop)

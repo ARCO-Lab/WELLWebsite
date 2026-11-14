@@ -183,7 +183,7 @@ def to_markdown(lines):
 
 def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traffic=None, recoveries=None,
                  dashboard_url="https://welldash.mcmaster.ca/", quiet_kinds=None, missed=None, attention=None,
-                 unset_heartbeats=None, leftover_databases=None):
+                 unset_heartbeats=None, leftover_databases=None, copies_off=None):
     """(subject, body) of the digest; the body is Markdown (scripts/daily_digest.py also sends it as HTML).
 
     freshness: assess_freshness()'s report. groups: {group: {"rows", "series", "timestamps", "gaps", optional
@@ -200,6 +200,8 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     as a problem, since those jobs report nothing if they stop; None or [] to leave it out.
     leftover_databases: restore drill databases still on the server while no drill runs (utils/backup.py), each a
     full copy of the live database; listed as a problem. None or [] to leave it out.
+    copies_off: the off-VM copies turned off (e.g. "Borealis upload: off (BOREALIS_UPLOAD=off, or no BOREALIS_*
+    settings)"), listed after the heartbeats as a reminder, not a problem. None or [] to leave it out.
     """
     # Here, not at the top: utils.alerts imports this module.
     from utils.alerts import DEFAULT_QUIET_KINDS, RECOVERED_AS, Settings, is_quiet, status
@@ -219,6 +221,11 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
     if unset_heartbeats:
         lines.append("Heartbeats not set (these jobs, or the whole worker, could stop with nobody told):")
         lines += [f"  - `{name}`" for name in unset_heartbeats]
+        lines.append("")
+
+    if copies_off:
+        lines.append("Off-VM copies turned off (no copy of the data is made there):")
+        lines += [f"  - {copy}" for copy in copies_off]
         lines.append("")
 
     if leftover_databases:

@@ -208,13 +208,16 @@ def main(argv=None):
     attention = read_attention(now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
     from utils import sharepoint
+    from utils.borealis import upload_status
     from utils.heartbeat import unset_heartbeats
-    unset = unset_heartbeats(sharepoint_on=sharepoint.status()[0] != "off")
+    upload_on = upload_status()[0] != "off"
+    unset = unset_heartbeats(sharepoint_on=sharepoint.status()[0] != "off", upload_on=upload_on)
+    copies_off = [] if upload_on else ["Borealis upload: off (`BOREALIS_UPLOAD=off`, or no `BOREALIS_*` settings)"]
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
                                  incidents=incidents, traffic=traffic, recoveries=recoveries,
                                  dashboard_url=alert_settings.dashboard_url, quiet_kinds=alert_settings.quiet_kinds,
                                  missed=missed, attention=attention, unset_heartbeats=unset,
-                                 leftover_databases=leftovers)
+                                 leftover_databases=leftovers, copies_off=copies_off)
 
     def reported():   # what it listed has now been told: neither the alert emails nor the next digest repeat it
         with app.app_context():
