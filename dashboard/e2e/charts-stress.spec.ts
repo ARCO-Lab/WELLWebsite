@@ -234,13 +234,13 @@ test.describe("charts under stress", () => {
       return { a, b };
     };
     const w0 = await read();
-    await weather.getByRole("button", { name: "Show the time just before this window" }).click();
+    await weather.getByRole("button", { name: /^Show the time just before this window/ }).click();
     await page.waitForTimeout(400);
     const w1 = await read();
     expect(w1.b).toBe(w0.a); // ends where the last one started
     expect(w1.b - w1.a).toBe(w0.b - w0.a);
-    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
-    await weather.getByRole("button", { name: "Show the time just after this window" }).click();
+    await weather.getByRole("button", { name: /^Show the time just after this window/ }).click();
+    await weather.getByRole("button", { name: /^Show the time just after this window/ }).click();
     await page.waitForTimeout(400);
     const w2 = await read();
     expect(w2.a).toBe(w0.b); // starts where the first one ended
