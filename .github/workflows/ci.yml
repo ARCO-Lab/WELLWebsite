@@ -281,12 +281,11 @@ jobs:
       - name: ruff (pyflakes rules) on the backend and the CI scripts
         run: pipx run ruff==0.14.0 check --select F --target-version py311 --output-format github dashboard/backend .github/scripts
 
-      # Standard library only, with the GitHub and Sentry APIs and SMTP faked: nothing to install, no network.
-      - name: Unit tests of the daily maintainer's scripts
-        run: python3 -m unittest discover -s .github/scripts -p 'test_maintainer*.py' -v
-
-      # The daily Sentry check (.github/workflows/sentry-issues.yml), against an in-memory Sentry and GitHub.
-      - name: sentry_issues.py unit tests
+      # Every Python test in .github/scripts, once: the daily maintainer's scripts and the daily Sentry check
+      # (sentry-issues.yml, including its sparse checkout: every file the script loads is listed, and the script runs
+      # from those folders alone). Standard library only, with the GitHub and Sentry APIs and SMTP faked: nothing to
+      # install, no network. A new test_*.py there is picked up without changing this step.
+      - name: Unit tests of the .github/scripts Python scripts
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
 
       # The runner image ships shellcheck.

@@ -69,6 +69,9 @@ TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # After a "Seen again" comment, the next one waits for a sighting at least this much later, so an error that keeps
 # happening after its issue was closed gets about one comment a day rather than one a minute from the worker.
 SEEN_AGAIN_GAP = timedelta(hours=12)
+# Most Sentry issues run() remembers as handled (its `handled` argument) before it starts over; far more than this
+# organization has.
+MAX_HANDLED = 1000
 
 # Retries of one request (with_retries): a rate limit (429) or a server error (5xx, or no response) is tried again
 # after RETRY_DELAYS_S (or the Retry-After the server asked for, up to RETRY_AFTER_MAX_S), then given up.
@@ -452,10 +455,17 @@ def follow_up(issue, gh_issue, comments, jump_factor, jump_min):
     return None
 
 
-def run(http, env, dry_run=False, seen_within_minutes=None, log=print):
+def sighting(issue):
+    """What a poll compares to tell whether a Sentry issue changed since it was last handled."""
+    return (str(issue.get("count")), str(issue.get("lastSeen")))
+
+
+def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=None):
     """One pass: reads Sentry, then opens or comments on GitHub issues. Returns 0, or 1 when a setting is wrong or
     Sentry can't be read; a failed GitHub request raises HttpError. `seen_within_minutes` limits it to the Sentry
-    issues with an event in the last that many minutes (the worker's poll); `log` gets every line it reports."""
+    issues with an event in the last that many minutes (the worker's poll); `log` gets every line it reports.
+    `handled` ({short id: sighting()}, kept by the caller between runs) skips the issues whose count and last-seen
+    time haven't changed since a run handled them, so a poll asks GitHub nothing about them."""
     token = env.get("SENTRY_API_TOKEN", "").strip()
     if not token:
         log("::warning::SENTRY_API_TOKEN is not set; skipping the Sentry check. Add it as a repository secret "
@@ -479,10 +489,12 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print):
     except HttpError as err:
         log(f"::error::Sentry API: {err}. Check that SENTRY_API_TOKEN is valid and can read org {org}.")
         return 1
+    if handled is not None:
+        issues = [i for i in issues if handled.get(i.get("shortId")) != sighting(i)]
     if seen_within_minutes:
         if not issues:
             return 0   # the usual case for the worker's poll: nothing new, and nothing asked of GitHub
-        log(f"{len(issues)} unresolved Sentry issue(s) seen in the last {int(seen_within_minutes)} min")
+        log(f"{len(issues)} unresolved Sentry issue(s) changed in the last {int(seen_within_minutes)} min")
     else:
         log(f"{len(issues)} unresolved Sentry issue(s) with events in the last {period}")
 
@@ -497,6 +509,7 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print):
         done.add(short_id)
         if TEST_TITLE.search(issue.get("title") or ""):
             log(f"{short_id}: a test event, skipped")
+            remember(handled, issue)
             continue
         if existing is None:
             existing = gh.sentry_issues()
@@ -515,11 +528,22 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print):
             if created:
                 existing[short_id] = created
             log(f"{short_id}: opened " + (f"#{created['number']}" if created else "an issue (dry run)"))
+            remember(handled, issue)
             continue
         comment = follow_up(issue, gh_issue, gh.comments(gh_issue["number"]), jump_factor, jump_min)
         if comment:
             gh.comment(gh_issue["number"], comment)
             log(f"{short_id}: commented on #{gh_issue['number']}")
-        else:
-            log(f"{short_id}: #{gh_issue['number']} is up to date")
+        elif not seen_within_minutes:
+            log(f"{short_id}: #{gh_issue['number']} is up to date")   # daily only: every minute would be noise
+        remember(handled, issue)
     return 0
+
+
+def remember(handled, issue):
+    """Record in `handled` (when given) that this sighting of the issue has been dealt with."""
+    if handled is None:
+        return
+    if len(handled) >= MAX_HANDLED:
+        handled.clear()   # only an optimisation: forgetting costs one more look at GitHub per issue
+    handled[issue["shortId"]] = sighting(issue)
