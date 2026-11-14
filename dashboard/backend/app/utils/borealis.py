@@ -109,13 +109,31 @@ def collection_alias(url):
     return None
 
 
-def upload_on(env=None):
-    """Whether the monthly upload is set up: a dataset is named for it in BOREALIS_UPLOAD_PERSISTENT_ID (or the
-    older DEMO_BOREALIS_WC_PERSISTENT_ID). Without one it is off on purpose, so the scheduler skips it quietly;
-    with one, scripts/upload_data.py says which other setting is missing."""
+# The settings the monthly upload needs, each with the older name still read when it is unset.
+UPLOAD_SETTINGS = (("BOREALIS_URL", "DEMO_BOREALIS_URL"), ("BOREALIS_API_TOKEN", None),
+                   ("BOREALIS_UPLOAD_PERSISTENT_ID", "DEMO_BOREALIS_WC_PERSISTENT_ID"))
+OFF_VALUES = ("0", "off", "false", "no")
+
+
+def upload_status(env=None):
+    """Whether the monthly upload is set up, like utils/sharepoint.status():
+    ("off", []) when BOREALIS_UPLOAD is off (0, off, false or no), or when no Borealis setting is set at all (none
+    of UPLOAD_SETTINGS, nor BOREALIS_UPLOAD_DATAVERSE): the scheduler skips it quietly.
+    ("incomplete", missing names) when some are set but not all, e.g. a token without the dataset's DOI: the
+    scheduler reports it once a day, naming them.
+    ("on", []) otherwise."""
     env = os.environ if env is None else env
-    return any((env.get(name) or "").strip()
-               for name in ("BOREALIS_UPLOAD_PERSISTENT_ID", "DEMO_BOREALIS_WC_PERSISTENT_ID"))
+
+    def value(name, older=None):
+        return (env.get(name) or (env.get(older) if older else "") or "").strip()
+
+    if value("BOREALIS_UPLOAD").lower() in OFF_VALUES:
+        return "off", []
+    values = {name: value(name, older) for name, older in UPLOAD_SETTINGS}
+    if not any(values.values()) and not value("BOREALIS_UPLOAD_DATAVERSE"):
+        return "off", []
+    missing = [name for name, v in values.items() if not v]
+    return ("incomplete", missing) if missing else ("on", [])
 
 
 def is_demo(url=None, persistent_id=None):

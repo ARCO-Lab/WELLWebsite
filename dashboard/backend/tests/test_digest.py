@@ -187,6 +187,19 @@ class BuildDigestTests(TestCase):
         self.assertNotIn("Heartbeats not set", build_digest("2026-11-10", freshness, {}, [], None,
                                                             unset_heartbeats=[])[1])
 
+    def test_copies_turned_off_are_listed_but_not_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        quiet_subject = build_digest("2026-11-10", freshness, {}, [], None)[0]
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     copies_off=["Borealis upload: off (`BOREALIS_UPLOAD=off`)"])
+        self.assertEqual(subject, quiet_subject)
+        self.assertIn("Off-VM copies turned off", body)
+        self.assertIn("Borealis upload: off", body)
+        self.assertNotIn("Off-VM copies turned off", build_digest("2026-11-10", freshness, {}, [], None, copies_off=[])[1])
+
     def test_leftover_restore_databases_are_listed_as_a_problem(self):
         now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
         latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",

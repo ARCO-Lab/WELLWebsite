@@ -39,7 +39,8 @@ class MonthlyUploadCheckTests(TestCase):
         self.sharepoint_record = os.path.join(self.dir.name, "sharepoint_uploaded_months.json")
         self.logs, self.cmds, self.pings = [], [], []
         no_sharepoint = {k: v for k, v in os.environ.items() if not k.startswith(("SHAREPOINT_", "BOREALIS_", "DEMO_"))}
-        no_sharepoint["BOREALIS_UPLOAD_PERSISTENT_ID"] = "doi:10.5683/SP3/WELLUP"   # the Borealis upload is on
+        no_sharepoint.update(BOREALIS_URL="https://borealisdata.ca", BOREALIS_API_TOKEN="t",   # the Borealis upload is on
+                             BOREALIS_UPLOAD_PERSISTENT_ID="doi:10.5683/SP3/WELLUP")
         for patch in (
             mock.patch.object(scheduler_temp, "uploaded_months_path", self.record),
             mock.patch.object(scheduler_temp, "UPLOAD_FIRST_MONTH", "2026-10"),
@@ -169,17 +170,44 @@ class MonthlyUploadCheckTests(TestCase):
                        finished("ERROR: Uploading x.csv to Borealis: publish failed (HTTP 503)\n", code=1))
         self.assertIsInstance(captured.call_args.args[0], subprocess.CalledProcessError)
 
-    def test_without_an_upload_dataset_borealis_is_skipped_quietly(self):
-        # Borealis deliberately not set up: no run, no ping, nothing to Sentry; SharePoint still goes up
-        env = {"BOREALIS_UPLOAD_PERSISTENT_ID": "", "SHAREPOINT_TENANT_ID": "t", "SHAREPOINT_CLIENT_ID": "c",
-               "SHAREPOINT_CLIENT_SECRET": "s", "SHAREPOINT_SITE": "https://x/sites/W"}
-        with mock.patch.dict(os.environ, env), mock.patch.object(scheduler_temp, "capture_job_error") as captured:
-            self.check(dt.datetime(2026, 11, 1, 7, tzinfo=dt.timezone.utc),
-                       finished("Successfully uploaded x.csv to SharePoint (added)\n"))
+    def without_borealis_upload(self, borealis_env, hours_utc=(7,)):
+        """Run the hourly check at `hours_utc` of 2026-11-02 (7 is 02:00 Toronto time) with `borealis_env` as the only
+        BOREALIS_* settings, SharePoint on; returns the mock of capture_job_error."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("BOREALIS_")}
+        env.update(borealis_env, SHAREPOINT_TENANT_ID="t", SHAREPOINT_CLIENT_ID="c", SHAREPOINT_CLIENT_SECRET="s",
+                   SHAREPOINT_SITE="https://x/sites/W")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(scheduler_temp, "capture_job_error") as captured:
+            for hour in hours_utc:
+                self.check(dt.datetime(2026, 11, 2, hour, tzinfo=dt.timezone.utc),
+                           finished("Successfully uploaded x.csv to SharePoint (added)\n"))
+        return captured
+
+    def test_borealis_upload_off_is_skipped_quietly(self):
+        # Turned off on purpose: no run, no ping, nothing to Sentry; SharePoint still goes up
+        for borealis_env in ({"BOREALIS_UPLOAD": "off", "BOREALIS_URL": "https://borealisdata.ca",
+                              "BOREALIS_API_TOKEN": "t"}, {}):
+            self.scripts, self.pings, self.logs = [], [], []
+            if os.path.exists(self.sharepoint_record):   # so SharePoint has the month to upload again
+                os.remove(self.sharepoint_record)
+            captured = self.without_borealis_upload(borealis_env)
+            self.assertEqual(self.scripts, ["sharepoint_upload.py"], borealis_env)
+            self.assertEqual(self.pings, [("sharepoint", "success")])
+            captured.assert_not_called()
+            self.assertFalse(any("[ERROR]" in line for line in self.logs), self.logs)
+
+    def test_a_token_without_the_upload_doi_is_reported_once_a_day(self):
+        # The DOI forgotten: one SettingsError naming it, a /fail ping, and SharePoint still goes up
+        captured = self.without_borealis_upload({"BOREALIS_URL": "https://borealisdata.ca",
+                                                 "BOREALIS_API_TOKEN": "t"}, hours_utc=range(24))
         self.assertEqual(self.scripts, ["sharepoint_upload.py"])
-        self.assertEqual(self.pings, [("sharepoint", "success")])
-        captured.assert_not_called()
-        self.assertFalse(any("[ERROR]" in line for line in self.logs), self.logs)
+        self.assertEqual(self.pings, [("upload", "fail"), ("sharepoint", "success")])
+        captured.assert_called_once()
+        error = captured.call_args.args[0]
+        self.assertIsInstance(error, SettingsError)
+        self.assertIn("BOREALIS_UPLOAD_PERSISTENT_ID not set", str(error))
+        self.assertIn("BOREALIS_UPLOAD=off", str(error))
+        self.assertEqual(len([line for line in self.logs if "[ERROR]" in line]), 1)
 
     def test_a_borealis_settings_problem_doesnt_stop_sharepoint(self):
         def run(cmd, timeout):

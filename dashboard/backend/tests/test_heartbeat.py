@@ -90,6 +90,9 @@ class PingHeartbeatTests(TestCase):
         partial = {**everything, "HEALTHCHECK_URL_RESTORE": " ", "HEALTHCHECK_URL_INGESTION": ""}
         self.assertEqual(unset_heartbeats(partial), ["HEALTHCHECK_URL_INGESTION", "HEALTHCHECK_URL_RESTORE"])
         self.assertEqual(len(unset_heartbeats({})), len(WORKER_HEARTBEATS))
+        # With the Borealis upload off, its heartbeat isn't asked for
+        self.assertNotIn("HEALTHCHECK_URL_UPLOAD", unset_heartbeats({}, upload_on=False))
+        self.assertIn("HEALTHCHECK_URL_UPLOAD", unset_heartbeats({}))
         # With the restore drill off, its heartbeat isn't asked for
         self.assertNotIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": " OFF "}))
         self.assertIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": "2"}))
@@ -174,7 +177,7 @@ class SchedulerHeartbeatTests(TestCase):
             mock.patch.object(scheduler_temp, "print", lambda *a, **k: None, create=True),
             mock.patch.object(scheduler_temp, "timestamped_print_upload", lambda *a: None),
             mock.patch.object(scheduler_temp, "timestamped_print_digest", lambda *a: None),
-            mock.patch.object(scheduler_temp, "borealis_upload_on", lambda: True),
+            mock.patch.object(scheduler_temp, "borealis_upload_status", lambda env=None: ("on", [])),
         ):
             patch.start()
             self.addCleanup(patch.stop)

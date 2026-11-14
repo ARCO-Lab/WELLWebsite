@@ -42,12 +42,12 @@ from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
-    record_attention, SETTINGS_ERROR_EXIT, settings_error,
+    record_attention, SETTINGS_ERROR_EXIT, SettingsError, settings_error,
 )
 from utils.heartbeat import ping_heartbeat, unset_heartbeats, first_report_today  # noqa: E402
 from utils.worklog import file_logger  # noqa: E402
 from utils import sharepoint  # noqa: E402
-from utils.borealis import upload_on as borealis_upload_on  # noqa: E402
+from utils.borealis import upload_status as borealis_upload_status  # noqa: E402
 import check_alerts  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
@@ -356,19 +356,35 @@ def sharepoint_upload_check(now):
                       "SHAREPOINT_UPLOAD_FIRST_MONTH", run_sharepoint_upload, "sharepoint")
 
 
+def borealis_upload_check(now):
+    """The Borealis upload of each month (utils/borealis.upload_status). Does nothing while it is off
+    (BOREALIS_UPLOAD=off, or no Borealis setting at all); with some settings but not all (e.g. a token without the
+    dataset's DOI), logs which are missing and reports them as one SettingsError (once a day, at 02:00)."""
+    state, missing = borealis_upload_status()
+    if state == "off":
+        return
+    if state == "incomplete":
+        error = SettingsError(f"Not uploading to Borealis: {', '.join(missing)} not set (set it, or set "
+                              f"BOREALIS_UPLOAD=off to turn the monthly upload off)")
+        timestamped_print_upload(f"[ERROR] {error}")
+        capture_job_error(error)
+        ping_heartbeat("upload", "fail")
+        return
+    upload_due_months(now, "Borealis", uploaded_months_path, UPLOAD_FIRST_MONTH, "BOREALIS_UPLOAD_FIRST_MONTH",
+                      run_upload_data, "upload")
+
+
 def monthly_upload_check():
     """Runs every hour and acts only at 02:00 Toronto time. It uploads to Borealis, oldest first, each month from
     UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
-    goes up; then does the same for SharePoint (sharepoint_upload_check). So a missed slot (the worker was down) or
-    a failed upload is retried the next day, a month that went up is never sent again, and errors are logged once
-    a day, not every hour. The Borealis upload is skipped, with nothing reported, while no upload dataset is set
-    (utils/borealis.upload_on); a Borealis failure never stops the SharePoint copy (upload_due_months catches it)."""
+    goes up (borealis_upload_check); then does the same for SharePoint (sharepoint_upload_check). So a missed slot
+    (the worker was down) or a failed upload is retried the next day, a month that went up is never sent again, and
+    errors are logged once a day, not every hour. A Borealis failure never stops the SharePoint copy: both checks
+    catch their own errors."""
     now = datetime.now(SITE_TZ)
     if now.hour != UPLOAD_HOUR:
         return
-    if borealis_upload_on():
-        upload_due_months(now, "Borealis", uploaded_months_path, UPLOAD_FIRST_MONTH, "BOREALIS_UPLOAD_FIRST_MONTH",
-                          run_upload_data, "upload")
+    borealis_upload_check(now)
     sharepoint_upload_check(now)
 
 def digest_hour():
@@ -551,7 +567,8 @@ def report_unset_heartbeats(log, sentry_warning=None, env=None, state_path=None)
     (utils/heartbeat.first_report_today, remembered in `state_path`, by default in logs/), since a deploy restarts
     the worker several times; the log line is written at every start. Returns the names."""
     state, _ = sharepoint.status(env)
-    missing = unset_heartbeats(env, sharepoint_on=state != "off")   # leaves out the drill's while it is off
+    # Leaves out the drill's heartbeat while the drill is off, and the upload's while the Borealis upload is off
+    missing = unset_heartbeats(env, sharepoint_on=state != "off", upload_on=borealis_upload_status(env)[0] != "off")
     if missing:
         message = (f"Heartbeats not set: {', '.join(missing)}. Those jobs report nothing if they stop or keep "
                    f"failing (README, Monitoring).")
@@ -666,9 +683,11 @@ if __name__ == "__main__":
                              "is uploaded (so last month goes up on the 1st, and a failed month is retried daily). "
                              "Nothing runs at startup; run `python scripts/upload_data.py --year Y --month M` by hand "
                              "to upload a month.")
-    if not borealis_upload_on():
-        timestamped_print_upload("Borealis upload: off (BOREALIS_UPLOAD_PERSISTENT_ID not set); the 02:00 run "
-                                 "skips it.")
+    borealis_state, borealis_missing = borealis_upload_status()
+    timestamped_print_upload({
+        "off": "Borealis upload: off (BOREALIS_UPLOAD=off, or no BOREALIS_* settings); the 02:00 run skips it.",
+        "on": "Borealis upload: on.",
+    }.get(borealis_state, f"[ERROR] Borealis upload: settings incomplete, {', '.join(borealis_missing)} not set."))
     sharepoint_state, sharepoint_missing = sharepoint.status()
     timestamped_print_upload({
         "off": "SharePoint copy: off (no SHAREPOINT_* settings).",

@@ -433,12 +433,26 @@ class UploadScriptTests(TestCase):
         self.assertIn("BOREALIS_API_TOKEN", out.getvalue())
         self.assertEqual(caught.exception.code, SETTINGS_ERROR_EXIT)
 
-    def test_the_upload_is_on_only_with_a_dataset(self):
-        self.assertFalse(borealis.upload_on({}))
-        self.assertFalse(borealis.upload_on({"BOREALIS_URL": "https://borealisdata.ca", "BOREALIS_API_TOKEN": "t",
-                                             "BOREALIS_UPLOAD_PERSISTENT_ID": " "}))
-        self.assertTrue(borealis.upload_on({"BOREALIS_UPLOAD_PERSISTENT_ID": PID}))
-        self.assertTrue(borealis.upload_on({"DEMO_BOREALIS_WC_PERSISTENT_ID": "doi:10.80240/FK2/WHEXLR"}))
+    def test_upload_status(self):
+        everything = {"BOREALIS_URL": "https://borealisdata.ca", "BOREALIS_API_TOKEN": "t",
+                      "BOREALIS_UPLOAD_PERSISTENT_ID": PID}
+        self.assertEqual(borealis.upload_status(everything), ("on", []))
+        # Off: nothing set at all, or turned off on purpose whatever else is set
+        self.assertEqual(borealis.upload_status({}), ("off", []))
+        for off in ("off", "0", " OFF ", "false", "no"):
+            self.assertEqual(borealis.upload_status({**everything, "BOREALIS_UPLOAD": off}), ("off", []), off)
+        self.assertEqual(borealis.upload_status({**everything, "BOREALIS_UPLOAD": "on"}), ("on", []))
+        # A token set but the DOI forgotten (or blank) is incomplete, not off
+        self.assertEqual(borealis.upload_status({**everything, "BOREALIS_UPLOAD_PERSISTENT_ID": " "}),
+                         ("incomplete", ["BOREALIS_UPLOAD_PERSISTENT_ID"]))
+        self.assertEqual(borealis.upload_status({"BOREALIS_API_TOKEN": "t"}),
+                         ("incomplete", ["BOREALIS_URL", "BOREALIS_UPLOAD_PERSISTENT_ID"]))
+        self.assertEqual(borealis.upload_status({"BOREALIS_UPLOAD_DATAVERSE": "WELL-sensors"})[0], "incomplete")
+        # The older demo names still count
+        self.assertEqual(borealis.upload_status({"DEMO_BOREALIS_URL": "https://demo.borealisdata.ca",
+                                                 "BOREALIS_API_TOKEN": "t",
+                                                 "DEMO_BOREALIS_WC_PERSISTENT_ID": "doi:10.80240/FK2/WHEXLR"}),
+                         ("on", []))
 
     def test_month_file_name(self):
         import datetime as dt

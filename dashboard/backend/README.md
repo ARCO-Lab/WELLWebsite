@@ -303,6 +303,7 @@ time column the same way; its sampling download names it `recorded_at (America/T
 | `BOREALIS_SAMPLING_PERSISTENT_ID` | The sampling dataset. |
 | `BOREALIS_UPLOAD_DATAVERSE`, `BOREALIS_SAMPLING_DATAVERSE` | The aliases of the two collections. Only the preflight uses them. They don't default to the alias in `BOREALIS_URL`: the datasets sit in sub-collections of it, and the preflight already checks that one as the parent. |
 | `BOREALIS_PUBLISH` | `1` (default) publishes each month; `0` leaves a draft. |
+| `BOREALIS_UPLOAD` | `off` turns the monthly upload off on purpose (see below); unset, it is on once any Borealis setting is. |
 | `BOREALIS_UPLOAD_FIRST_MONTH` | The first month uploaded (default `2026-10`). |
 | `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET` | The Entra ID app registration (see below). |
 | `SHAREPOINT_SITE` | e.g. `https://mcmaster.sharepoint.com/sites/WELL`. |
@@ -310,9 +311,12 @@ time column the same way; its sampling download names it `recorded_at (America/T
 | `SHAREPOINT_UPLOAD_FIRST_MONTH` | The first month copied to SharePoint (default: the Borealis one). |
 | `HEALTHCHECK_URL_SHAREPOINT` | Heartbeat for the SharePoint copy (see [Monitoring](#monitoring)). |
 
-The Borealis upload is **off** while `BOREALIS_UPLOAD_PERSISTENT_ID` is unset: the 02:00 run skips it and reports
-nothing, and the SharePoint copy still runs. With it set, a missing or wrong setting, or a token Borealis rejects, fails
-the month with one message saying what to fix ([Error reporting](#error-reporting-sentry)); retried daily.
+The Borealis upload is **off** with `BOREALIS_UPLOAD=off` (or `0`, `false`, `no`), or while no Borealis setting is set
+at all: the 02:00 run skips it and reports nothing, its heartbeat isn't asked for, the daily digest lists it as off,
+and the SharePoint copy still runs. With some of `BOREALIS_URL`, `BOREALIS_API_TOKEN` and
+`BOREALIS_UPLOAD_PERSISTENT_ID` set but not all (e.g. a token without the dataset's DOI), it reports the missing ones
+once a day. A wrong setting, or a token Borealis rejects, fails the month with one message saying what to fix
+([Error reporting](#error-reporting-sentry)); retried daily.
 
 The SharePoint copy is **off** while none of the first four `SHAREPOINT_*` variables is set. If only some are set, the
 worker logs which ones are missing and reports a failure at 02:00. The older `DEMO_BOREALIS_URL`,
@@ -635,8 +639,9 @@ How backend failures are reported:
 - A setting that stops the monthly Borealis upload (a `BOREALIS_*` value missing or wrong, or Borealis rejecting the
   token, HTTP 401, or its permissions, HTTP 403) makes `upload_data.py` exit 3. The scheduler then sends the script's
   `ERROR:` line as a `SettingsError` that says what to fix (e.g. "Borealis token rejected (HTTP 401): make a new
-  token on https://borealisdata.ca ..."), once a day while it lasts, instead of a `CalledProcessError`. With no
-  `BOREALIS_UPLOAD_PERSISTENT_ID` the upload is off on purpose: it doesn't run and sends nothing.
+  token on https://borealisdata.ca ..."), once a day while it lasts, instead of a `CalledProcessError`. A setting
+  missing while others are set is sent the same way, by the scheduler. With `BOREALIS_UPLOAD=off`, or no Borealis
+  setting at all, the upload is off on purpose: it doesn't run and sends nothing.
 - While Redis can't be reached, Celery logs a retry at error level every 2 to 30 seconds until it reconnects, which
   a deploy recreating the redis container used to turn into dozens of events. In the processes that load the Celery
   app (export worker and API), those retries are logged as warnings instead (`utils/broker_outage.py`), and only an

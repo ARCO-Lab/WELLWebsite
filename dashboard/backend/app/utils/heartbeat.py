@@ -21,8 +21,8 @@ SUFFIXES = {"success": "", "fail": "/fail", "start": "/start", "log": "/log"}
 MESSAGE_LIMIT = 10_000
 
 # The checks the worker pings (scripts/scheduler_temp.py). "restore" only counts while the restore drill is on
-# (RESTORE_CHECK_DAY isn't "off"), and "sharepoint" while the SharePoint copy is configured: with them off there is
-# nothing to watch.
+# (RESTORE_CHECK_DAY isn't "off"), "upload" while the Borealis upload isn't off, and "sharepoint" while the SharePoint
+# copy is configured: with them off there is nothing to watch.
 WORKER_HEARTBEATS = ("ingestion", "alerts", "download", "upload", "digest", "backup", "restore")
 
 
@@ -37,13 +37,15 @@ def heartbeat_url(name, env=None):
     return (env.get(heartbeat_setting(name)) or "").strip()
 
 
-def unset_heartbeats(env=None, sharepoint_on=False):
+def unset_heartbeats(env=None, sharepoint_on=False, upload_on=True):
     """The HEALTHCHECK_URL_* settings of the worker's jobs that aren't set, in WORKER_HEARTBEATS order (then
     HEALTHCHECK_URL_SHAREPOINT when `sharepoint_on`), leaving out the restore drill's while RESTORE_CHECK_DAY is
-    "off". [] when every job is watched."""
+    "off", and the Borealis upload's when not `upload_on` (utils/borealis.upload_status is "off"). [] when every
+    job is watched."""
     env = os.environ if env is None else env
     restore_on = (env.get("RESTORE_CHECK_DAY") or "").strip().lower() != "off"
-    names = [name for name in WORKER_HEARTBEATS if restore_on or name != "restore"]
+    names = [name for name in WORKER_HEARTBEATS
+             if (restore_on or name != "restore") and (upload_on or name != "upload")]
     names += ["sharepoint"] if sharepoint_on else []
     return [heartbeat_setting(name) for name in names if not heartbeat_url(name, env)]
 
