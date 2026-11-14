@@ -365,6 +365,43 @@ test.describe("charts under stress", () => {
     await expect(tooltip.first()).toContainText(/°C/);
   });
 
+  test("a tiny window at either end of the range bar stays on it and can still be resized", async ({ page }) => {
+    const { net, errors } = await open(page);
+    const weather = chart(page, "weather");
+    const zoomIn = weather.getByRole("button", { name: /Zoom in/ });
+    for (let i = 0; i < 8; i++) { await zoomIn.click({ force: true }); await page.waitForTimeout(150); } // an hour: a few pixels
+    await settled(page, net);
+    const read = async () => (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
+    const track = (await weather.locator(".highcharts-navigator-outline").boundingBox())!;
+    const mask = () => weather.locator(".highcharts-navigator-mask-inside").boundingBox();
+    const drag = async (x: number, y: number, dx: number) => {
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) { await page.mouse.move(x + (dx * i) / 8, y); await page.waitForTimeout(16); }
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+    };
+    for (const [button, side] of [[/^Show the time just before this window/, "start"], [/^Show the time just after this window/, "end"]] as const) {
+      const step = weather.getByRole("button", { name: button });
+      for (let i = 0; i < 60 && !(await step.getAttribute("aria-disabled")); i++) await step.click({ force: true }); // to the end
+      await page.waitForTimeout(400);
+      const m = (await mask())!;
+      expect(m.width).toBeGreaterThanOrEqual(18);
+      expect(m.x).toBeGreaterThanOrEqual(track.x - 1); // on the bar, not past its ends
+      expect(m.x + m.width).toBeLessThanOrEqual(track.x + track.width + 1);
+      // At the start end, the end handle (just right of the window) makes it longer; at the far end, the start handle
+      const [a0, b0] = await read();
+      const y = m.y + m.height / 2;
+      if (side === "start") await drag(m.x + m.width + 7, y, 30);
+      else await drag(m.x - 7, y, -30);
+      const [a1, b1] = await read();
+      expect(b1 - a1).toBeGreaterThan(b0 - a0);
+      if (side === "start") expect(a1).toBe(a0); else expect(b1).toBe(b0);
+      for (let i = 0; i < 8; i++) { await zoomIn.click({ force: true }); await page.waitForTimeout(100); } // tiny again
+    }
+    expect(errors).toEqual([]); // no "negative width" from the masks
+  });
+
   test("switching tabs and back is quick and asks for nothing again", async ({ page }) => {
     const { net } = await open(page);
     const tab = (name: string) => page.getByRole("tab", { name, exact: true });

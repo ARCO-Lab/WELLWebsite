@@ -345,3 +345,19 @@ test("wind rose: the calm share is the slowest class's percent summed over every
   assert.equal(calmPercent({ ...data, roses: { "Wind Speed": { ...data.roses["Wind Speed"], total: 0 } } }, "Wind Speed"), null);
   assert.equal(calmPercent(null, "Wind Speed"), null);
 });
+
+test("range bar: a tiny window at either end of the bar stays on it, with both handles on it and usable", async () => {
+  const { barPart, grabSpan, handleAt, MIN_GRAB_PX, HANDLE_PX } = await import("../src/lib/rangeBar.ts");
+  const lo = 0, hi = 700;
+  for (const [a, b] of [[0, 0.3], [699.7, 700], [350, 350.3]]) {
+    const [ga, gb] = grabSpan(a, b, lo, hi);
+    assert.ok(gb - ga === MIN_GRAB_PX, `${a}: ${ga}-${gb}`); // drawn the minimum width, never negative
+    assert.ok(ga - HANDLE_PX >= lo && gb + HANDLE_PX <= hi, `${a}: handles fit`); // and both handles on the bar
+    for (const i of [0, 1]) { const h = handleAt(i, a, b, lo, hi); assert.ok(h >= lo && h <= hi); }
+    assert.equal(barPart((ga + gb) / 2, a, b, lo, hi), "window");
+    assert.equal(barPart(ga - HANDLE_PX / 2, a, b, lo, hi), "start"); // on the bar
+    assert.equal(barPart(gb + HANDLE_PX / 2, a, b, lo, hi), "end"); // on the bar
+  }
+  // A wide window at an end is left as it is
+  assert.deepEqual(grabSpan(0, 100, lo, hi), [0, 100]);
+});

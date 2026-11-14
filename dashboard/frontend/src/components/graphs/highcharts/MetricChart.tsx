@@ -31,7 +31,7 @@
 
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { guarded } from '@/lib/guarded';
-import { HANDLE_PX, MIN_GRAB_PX, barPart } from '@/lib/rangeBar';
+import { MIN_GRAB_PX, barPart, grabSpan, handleAt } from '@/lib/rangeBar';
 import Highcharts from 'highcharts';
 import 'highcharts/modules/stock'; // the navigator, which is the range bar
 import 'highcharts/highcharts-more'; // arearange, for the min-max bands
@@ -69,26 +69,21 @@ const PREVIEW = process.env.NEXT_PUBLIC_CHART_PREVIEW ?? 'canvas';
 const PREVIEW_IDLE_MS = 180; // with the bitmap preview, a gesture still for this long gets a real redraw
 // A window only a few pixels wide on the range bar is drawn MIN_GRAB_PX wide around its middle, with its handles just
 // outside that, matching where presses slide or resize it (lib/rangeBar.ts): Stock drew both handles on top of it.
-type NavigatorDraw = { left: number; zoomedMin: number; zoomedMax: number };
+// Positions here are in the navigator's own pixels, from 0 to its size (the bar's length).
+type NavigatorDraw = { size: number; zoomedMin: number; zoomedMax: number };
 const navProto = (Highcharts as unknown as { Navigator?: { prototype: Record<string, unknown> & { __wellGrab?: boolean } } }).Navigator?.prototype;
 if (navProto && !navProto.__wellGrab) {
   navProto.__wellGrab = true;
-  const widen = (min: number, max: number): [number, number] => {
-    if (max - min >= MIN_GRAB_PX) return [min, max];
-    const mid = (min + max) / 2;
-    return [mid - MIN_GRAB_PX / 2, mid + MIN_GRAB_PX / 2];
-  };
   for (const name of ['drawMasks', 'drawOutline']) {
     Highcharts.wrap(navProto, name, function (this: NavigatorDraw, proceed: (...a: unknown[]) => void, min: number, max: number, ...rest: unknown[]) {
-      const [a, b] = widen(min, max);
+      const [a, b] = grabSpan(min, max, 0, this.size); // kept on the bar at its ends
       proceed.call(this, a, b, ...rest);
     });
   }
   Highcharts.wrap(navProto, 'drawHandle', function (this: NavigatorDraw, proceed: (...a: unknown[]) => void, x: number, index: number, ...rest: unknown[]) {
     const min = Math.round(this.zoomedMin), max = Math.round(this.zoomedMax);
     if (max - min >= MIN_GRAB_PX) return proceed.call(this, x, index, ...rest);
-    const mid = (min + max) / 2, off = MIN_GRAB_PX / 2 + HANDLE_PX / 2;
-    return proceed.call(this, index === 0 ? mid - off : mid + off, index, ...rest);
+    return proceed.call(this, handleAt(index === 0 ? 0 : 1, min, max, 0, this.size), index, ...rest);
   });
 }
 
@@ -637,7 +632,9 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       const x = e.clientX - c.container.getBoundingClientRect().left;
       const w = controller.window;
       const a = axis.toPixels(w.start, false), b = axis.toPixels(w.end, false);
-      const part = barPart(x, a, b); // a tiny window still has a slide area, and handle zones outside it
+      // A tiny window still has a slide area, and handle zones outside it, all kept on the bar (its ends: the range's)
+      const ext = controller.extent;
+      const part = barPart(x, a, b, axis.toPixels(ext.start, false), axis.toPixels(ext.end, false));
       nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId, mouse: e.pointerType === 'mouse' };
       // A mouse press is captured at once, so its release is heard wherever it happens (a finger's waits for its
       // direction: up or down is the page's scroll)
