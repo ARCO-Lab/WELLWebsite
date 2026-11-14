@@ -323,7 +323,8 @@ test.describe("charts under stress", () => {
     const weather = chart(page, "weather");
     // Zoomed in to the narrowest window, an hour of the two picked days: a few pixels of the bar
     const zoomIn = weather.getByRole("button", { name: /Zoom in/ });
-    while (await zoomIn.isEnabled()) await zoomIn.click(); // off (aria-disabled) at the narrowest
+    // Eight clicks reach the narrowest; once there the button is aria-disabled and a (forced) click does nothing
+    for (let i = 0; i < 8; i++) { await zoomIn.click({ force: true }); await page.waitForTimeout(150); }
     await settled(page, net);
     const read = async () => (await label(weather))!.split(" – ").map((t) => Date.parse(`${t.replace(/^(\w+ \d+) /, "$1 2026 ")}Z`));
     const [a0, b0] = await read();
