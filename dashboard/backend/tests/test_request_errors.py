@@ -198,8 +198,8 @@ class GunicornWorkerExitTests(SentryInMemory, unittest.TestCase):
 
     def test_a_sync_worker_logging_its_own_exit_sends_nothing(self):
         # What gunicorn's sync worker did: the arbiter's SIGABRT ran handle_abort while the worker was reading a
-        # request, and the worker's handler for any exception logged it ("Error handling request"), which the
-        # logging integration turns into an error event.
+        # request, and the worker's handler for any exception (BaseException, so the exit too) logged it ("Error handling
+        # request"), which the logging integration turns into an error event. Only the exit is caught here.
         try:
             from gunicorn.workers.base import Worker
         except ImportError:
@@ -209,7 +209,7 @@ class GunicornWorkerExitTests(SentryInMemory, unittest.TestCase):
         log = logging.getLogger("gunicorn.error")
         try:
             Worker.handle_abort(worker, signal.SIGABRT, None)
-        except BaseException:
+        except SystemExit:
             log.exception("Error handling request (no URI read)")
         self.assertFalse(worker.alive)
         self.assertEqual(self.events(), [])
