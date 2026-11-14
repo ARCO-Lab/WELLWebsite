@@ -47,9 +47,10 @@ interface FilterPanelProps {
   setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
 }
 
-// A ticked metric or item: a gold box with a dark tick and a maroon border. The gold alone (with the default white
-// tick) was about 1.4:1 against white, so ticked and unticked boxes looked the same.
-const TICKED_GOLD = "data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground data-[state=checked]:border-primary";
+// A ticked metric or item: the maroon box of a ticked group with a McMaster Gold tick (about 8:1 against the maroon),
+// so metrics stay gold but read apart from their white-ticked group. A gold box was about 1.4:1 against white, so
+// ticked and unticked boxes looked the same, and a black tick on it read as black.
+const TICKED_GOLD = "data-[state=checked]:text-accent";
 
 // --- COMPONENT ---
 const FilterPanel: React.FC<FilterPanelProps> = ({
