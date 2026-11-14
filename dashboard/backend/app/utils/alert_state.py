@@ -32,12 +32,16 @@ def _reading(table, read):
     try:
         return read()
     except ProgrammingError as e:
-        if getattr(e.orig, "pgcode", None) not in (UNDEFINED_TABLE, UNDEFINED_COLUMN):
+        code = getattr(e.orig, "pgcode", None)
+        if code not in (UNDEFINED_TABLE, UNDEFINED_COLUMN):
             raise
         db.session.rollback()
-        raise MigrationPending(f"The {table} table is missing or lacks a column, so a database migration hasn't been "
-                               "applied: run python scripts/migrate.py --status in the backend container, then "
-                               "python scripts/migrate.py") from e
+        message = (f"The {table} table is missing or lacks a column, so a database migration hasn't been applied: run "
+                   "python scripts/migrate.py --status in the backend container, then python scripts/migrate.py")
+        if code == UNDEFINED_COLUMN:
+            # A column can also be missing because the code reads one no migration adds: a bug, not a pending step
+            message += "; if migrate.py --status shows none pending, the code reads a column no migration creates"
+        raise MigrationPending(message) from e
 
 
 def record_vendor_result(source, error=None, now=None, log=print, skipped=None):

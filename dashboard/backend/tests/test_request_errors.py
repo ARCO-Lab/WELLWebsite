@@ -185,10 +185,26 @@ def stopped_worker_event(module="gunicorn.workers.base", function="handle_abort"
 
 
 class GunicornWorkerExitTests(SentryInMemory, unittest.TestCase):
-    def test_a_stopped_worker_is_not_sent(self):
-        self.assertIsNone(well_sentry.before_send(stopped_worker_event()))
+    def setUp(self):
+        well_sentry._last_sent.clear()   # the abort warning's throttle
+        self.addCleanup(well_sentry._last_sent.clear)
+
+    def test_a_worker_stopped_on_request_is_not_sent(self):
+        self.assertIsNone(well_sentry.before_send(stopped_worker_event(function="handle_quit")))
         self.assertIsNone(well_sentry.before_send(stopped_worker_event(function="handle_quit"),
                                                   {"exc_info": (SystemExit, SystemExit(0), None)}))
+
+    def test_an_aborted_worker_is_one_warning_an_hour(self):
+        hint = {"exc_info": (SystemExit, SystemExit(1), None)}
+        sent = well_sentry.before_send(stopped_worker_event(), hint)
+        self.assertEqual(sent["level"], "warning")
+        self.assertEqual(sent["exception"]["values"][-1]["value"], well_sentry.WORKER_TIMEOUT_MESSAGE)
+        self.assertEqual(sent["exception"]["values"][-1]["stacktrace"]["frames"][-1]["function"], "handle_abort",
+                         "the stack trace (where the worker was stuck) is kept")
+        self.assertIsNone(well_sentry.before_send(stopped_worker_event(), hint), "throttled within the hour")
+        with unittest.mock.patch("time.monotonic", return_value=well_sentry._last_sent[("gunicorn", "handle_abort")]
+                                 + well_sentry.REPEAT_AFTER_S):
+            self.assertEqual(well_sentry.before_send(stopped_worker_event(), hint)["level"], "warning")
 
     def test_other_exits_and_errors_are_still_sent(self):
         for event in (stopped_worker_event(module="utils.guards", function="require_wipe_permission"),
@@ -197,7 +213,7 @@ class GunicornWorkerExitTests(SentryInMemory, unittest.TestCase):
         self.assertIsNotNone(well_sentry.before_send(stopped_worker_event(),
                                                      {"exc_info": (RuntimeError, RuntimeError("x"), None)}))
 
-    def test_a_sync_worker_logging_its_own_exit_sends_nothing(self):
+    def test_a_sync_worker_logging_its_own_abort_sends_one_warning(self):
         # What gunicorn's sync worker did: the arbiter's SIGABRT ran handle_abort while the worker was reading a
         # request, and the worker's handler for any exception (BaseException, so the exit too) logged it ("Error
         # handling request"), which the logging integration turns into an error event. Only the exit is caught here.
@@ -208,17 +224,22 @@ class GunicornWorkerExitTests(SentryInMemory, unittest.TestCase):
         self.start_sentry()
         worker = types.SimpleNamespace(alive=True, cfg=types.SimpleNamespace(worker_abort=lambda w: None))
         log = logging.getLogger("gunicorn.error")
-        try:
-            Worker.handle_abort(worker, signal.SIGABRT, None)
-        except SystemExit:
-            log.exception("Error handling request (no URI read)")
-        self.assertFalse(worker.alive)
-        self.assertEqual(self.events(), [])
+        for _ in range(3):   # three workers aborted within the hour
+            worker.alive = True
+            try:
+                Worker.handle_abort(worker, signal.SIGABRT, None)
+            except SystemExit:
+                log.exception("Error handling request (no URI read)")
+            self.assertFalse(worker.alive)
+        events = self.events()
+        self.assertEqual([(e["level"], e["exception"]["values"][-1]["value"]) for e in events],
+                         [("warning", well_sentry.WORKER_TIMEOUT_MESSAGE)])
         try:
             raise RuntimeError("a real failure")
         except RuntimeError:
             log.exception("Error handling request (no URI read)")
-        self.assertEqual(len(self.events()), 1, "the same log line with a real error is still sent")
+        self.assertEqual([e["level"] for e in self.events()[1:]], ["error"],
+                         "the same log line with a real error is still sent as an error")
 
     def test_the_api_runs_threaded_workers(self):
         # A sync worker reads each request in its only thread, so one slow or silent client held it until --timeout
@@ -256,6 +277,7 @@ class MigrationPendingTests(unittest.TestCase):
         return ProgrammingError("SELECT ... FROM vendor_status", {}, FakePgError(pgcode))
 
     def test_a_missing_table_or_column_says_to_run_the_migrations(self):
+        from sqlalchemy.exc import ProgrammingError
         from utils.alert_state import MigrationPending, open_incidents, vendor_statuses
         for pgcode in ("42P01", "42703"):
             for read, table in ((vendor_statuses, "vendor_status"), (open_incidents, "alert_incidents")):
@@ -264,6 +286,9 @@ class MigrationPendingTests(unittest.TestCase):
                     read()
                 self.assertIn(f"The {table} table", str(caught.exception))
                 self.assertIn("scripts/migrate.py", str(caught.exception))
+                self.assertIsInstance(caught.exception.__cause__, ProgrammingError)
+                self.assertEqual("the code reads a column no migration creates" in str(caught.exception),
+                                 pgcode == "42703")
 
     def test_other_database_errors_are_left_as_they_are(self):
         from sqlalchemy.exc import ProgrammingError
