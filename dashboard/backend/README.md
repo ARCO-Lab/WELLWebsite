@@ -310,6 +310,10 @@ time column the same way; its sampling download names it `recorded_at (America/T
 | `SHAREPOINT_UPLOAD_FIRST_MONTH` | The first month copied to SharePoint (default: the Borealis one). |
 | `HEALTHCHECK_URL_SHAREPOINT` | Heartbeat for the SharePoint copy (see [Monitoring](#monitoring)). |
 
+The Borealis upload is **off** while `BOREALIS_UPLOAD_PERSISTENT_ID` is unset: the 02:00 run skips it and reports
+nothing, and the SharePoint copy still runs. With it set, a missing or wrong setting, or a token Borealis rejects, fails
+the month with one message saying what to fix ([Error reporting](#error-reporting-sentry)); retried daily.
+
 The SharePoint copy is **off** while none of the first four `SHAREPOINT_*` variables is set. If only some are set, the
 worker logs which ones are missing and reports a failure at 02:00. The older `DEMO_BOREALIS_URL`,
 `DEMO_BOREALIS_WC_PERSISTENT_ID` (upload) and `DEMO_BOREALIS_AW_PERSISTENT_ID` (sampling) are still read when the new
@@ -425,7 +429,8 @@ The worker pings a [Healthchecks.io](https://healthchecks.io) check after each j
 owner when a check reports a failure or stops being pinged, so no SMTP is needed for these. A ping times out after 5 s
 and never stops the job. Unset variables mean no ping, so a job, or the whole worker, could stop with nobody told:
 the worker names every unset one (`HEALTHCHECK_URL_RESTORE` only while the drill is on) in a `[WARN]` line when it starts (in `logs/db_injections.log` and in `docker
-compose logs worker`) and as a Sentry warning, and the daily digest lists them first. A run skipped because the
+compose logs worker`) and as a Sentry warning (at most once a day for the same names), and the daily digest lists them
+first. A run skipped because the
 previous one is still going is recorded in the job's check with Healthchecks' `/log` (shown in its event log, no
 change of state); enough skipped in a row ping `/fail` and send a Sentry warning, since the job is then stuck rather than
 slow. For ingestion that is 3 skips (`SKIPS_BEFORE_FAIL`, half an hour); a job run under a time limit gets one more
@@ -627,6 +632,17 @@ How backend failures are reported:
   errors are sent each time.
 - A script run by hand (`docker compose exec worker python scripts/...`) reports its own uncaught errors, tagged
   with the container's `SENTRY_COMPONENT`.
+- A setting that stops the monthly Borealis upload (a `BOREALIS_*` value missing or wrong, or Borealis rejecting the
+  token, HTTP 401, or its permissions, HTTP 403) makes `upload_data.py` exit 3. The scheduler then sends the script's
+  `ERROR:` line as a `SettingsError` that says what to fix (e.g. "Borealis token rejected (HTTP 401): make a new
+  token on https://borealisdata.ca ..."), once a day while it lasts, instead of a `CalledProcessError`. With no
+  `BOREALIS_UPLOAD_PERSISTENT_ID` the upload is off on purpose: it doesn't run and sends nothing.
+- While Redis can't be reached, Celery logs a retry at error level every 2 to 30 seconds until it reconnects, which
+  a deploy recreating the redis container used to turn into dozens of events. In the processes that load the Celery
+  app (export worker and API), those retries are logged as warnings instead (`utils/broker_outage.py`), and only an
+  outage still going after 5 minutes is sent, once, as "Redis (the export queue) has been unreachable for over 5 min".
+- The worker's start-up warning about unset `HEALTHCHECK_URL_*` settings is sent at most once a day for the same
+  names (recorded in `logs/unset_heartbeats_reported.json`), since a deploy can restart the worker several times.
 
 Settings:
 - Backend, in `dashboard/backend/app/.env` (read by `backend`, `worker` and `export_worker`): `SENTRY_DSN` (unset or
