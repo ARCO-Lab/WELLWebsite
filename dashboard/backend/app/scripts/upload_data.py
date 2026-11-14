@@ -10,6 +10,8 @@
 # again for a month is safe: an identical file isn't sent twice, and a changed one replaces the old copy.
 # It prints "Successfully uploaded <file> to Borealis" only once the file is in the dataset and published (or left
 # as a draft on purpose, BOREALIS_PUBLISH=0); the scheduler records the month as done only then.
+# It exits SETTINGS_ERROR_EXIT (3) when a Borealis setting is missing or wrong, or Borealis rejects the token: the
+# scheduler then reports its ERROR: line as the problem to fix, since retrying alone won't help.
 
 import sys
 import pathlib
@@ -23,6 +25,7 @@ from zoneinfo import ZoneInfo
 from api.services.exports import TIMESTAMP_HEADER, SafeCsvWriter
 from dotenv import load_dotenv
 from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
+from utils.jobs import SETTINGS_ERROR_EXIT
 
 load_dotenv()
 
@@ -170,33 +173,44 @@ def build_csv_frontend_style(data_list, file_obj):
     print(f"Built the CSV: {len(rows)} rows, {len(headers)} columns")
 
 
+def stop_for_settings(message):
+    """Print `message` as the ERROR: line the scheduler reports and exit SETTINGS_ERROR_EXIT: a setting has to be
+    fixed before the upload can work, so retrying alone won't help."""
+    print(f"ERROR: {message}")
+    sys.exit(SETTINGS_ERROR_EXIT)
+
+
+# HTTP statuses of a Borealis call that only a settings change can fix: the token is rejected (401), or its account
+# lacks a permission on the dataset (403).
+SETTINGS_STATUSES = (401, 403)
+
+
 def borealis_settings():
-    """(server URL, token, dataset id) for the upload. Exits 1 saying what is missing or wrong."""
+    """(server URL, token, dataset id) for the upload. Exits SETTINGS_ERROR_EXIT saying what is missing or wrong."""
     url, token, pid = Config.BOREALIS_URL, Config.BOREALIS_API_TOKEN, Config.BOREALIS_UPLOAD_PERSISTENT_ID
     missing = [name for name, value in (("BOREALIS_URL", url), ("BOREALIS_API_TOKEN", token),
                                         ("BOREALIS_UPLOAD_PERSISTENT_ID", pid)) if not value]
     if missing:
-        print(f"ERROR: Not uploading to Borealis: {', '.join(missing)} not set (see utils/borealis.py)")
-        sys.exit(1)
+        stop_for_settings(f"Not uploading to Borealis: {', '.join(missing)} not set (see utils/borealis.py)")
     try:
         server = api_base(url)   # logs, once, which server the upload goes to
     except ValueError as e:
-        print(f"ERROR: Not uploading to Borealis: {e}")
-        sys.exit(1)
+        stop_for_settings(f"Not uploading to Borealis: {e}")
     if is_demo(server) != is_demo(persistent_id=pid):
-        print(f"ERROR: Not uploading to Borealis: BOREALIS_URL is {server} but the dataset {pid} is on the "
-              f"{'production' if is_demo(server) else 'demo'} server. Set BOREALIS_UPLOAD_PERSISTENT_ID to the "
-              f"dataset's id on {server}.")
-        sys.exit(1)
+        stop_for_settings(f"Not uploading to Borealis: BOREALIS_URL is {server} but the dataset {pid} is on the "
+                          f"{'production' if is_demo(server) else 'demo'} server. Set BOREALIS_UPLOAD_PERSISTENT_ID "
+                          f"to the dataset's id on {server}.")
     if is_demo(server):
         print(f"WARNING: uploading to the demo server {server}: it is for testing and is reset from time to time, "
               f"so this is not a backup")
     return server, token, pid
 
 
-def upload_to_borealis(csv_content, csv_name, year, client=None):
-    """Upload the CSV to the Borealis dataset and publish it (utils/borealis.upload_file). Exits 1 on failure."""
-    server, token, pid = borealis_settings()
+def upload_to_borealis(csv_content, csv_name, year, client=None, settings=None):
+    """Upload the CSV to the Borealis dataset and publish it (utils/borealis.upload_file). Exits SETTINGS_ERROR_EXIT
+    when Borealis rejects the token or its permissions, and 1 on any other failure. `settings`: borealis_settings()'s
+    answer, if it was already asked."""
+    server, token, pid = settings or borealis_settings()
     client = client or Dataverse(server, token)
     month = csv_name[len("WELLWestCampus_"):-len(".csv")]
     try:
@@ -204,6 +218,11 @@ def upload_to_borealis(csv_content, csv_name, year, client=None):
                                        description=f"WELL West Campus sensor data, {month} (automated monthly export)",
                                        directory=str(year), publish=Config.BOREALIS_PUBLISH)
     except DataverseError as e:
+        if e.status == 401:
+            stop_for_settings(f"Borealis token rejected (HTTP 401): make a new token on {server} (your name > API "
+                              f"Token) and put it in BOREALIS_API_TOKEN.")
+        if e.status in SETTINGS_STATUSES:
+            stop_for_settings(f"Uploading {csv_name} to Borealis: {e}")
         print(f"ERROR: Uploading {csv_name} to Borealis: {e}")
         sys.exit(1)
     state = f"published as version {version}" if version else "no new version published by this run"
@@ -293,13 +312,15 @@ def exported_month(args):
 
 def main():
     args = parse_args()
+    # Checked first, so a missing or wrong setting stops it before the month is read from the database
+    settings = None if args.dry_run else borealis_settings()
     from server import create_app
     with create_app().app_context():
         csv_name, csv_content, year = exported_month(args)
     if args.dry_run:
         print("Dry run: not uploading")
         return
-    upload_to_borealis(csv_content, csv_name, year)
+    upload_to_borealis(csv_content, csv_name, year, settings=settings)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,25 @@ import sentry_sdk
 
 from utils.sentry import capture_job_error
 
+# The exit code of a script the scheduler runs (scripts/upload_data.py) when its settings stop it: a setting is
+# missing or wrong, or the server rejected its credentials. Retrying won't help until someone changes a setting, so
+# the scheduler reports it as a SettingsError carrying the script's own message (settings_error), not as a
+# CalledProcessError.
+SETTINGS_ERROR_EXIT = 3
+
+
+class SettingsError(RuntimeError):
+    """A job can't run until a setting is fixed. The message says which, and what to do."""
+
+
+def settings_error(exc):
+    """The SettingsError for a script that exited SETTINGS_ERROR_EXIT (a CalledProcessError): its last stdout line
+    starting with ERROR:, without that prefix, or a general message if it printed none."""
+    lines = [line.strip()[len("ERROR:"):].strip() for line in (exc.output or "").splitlines()
+             if line.strip().startswith("ERROR:")]
+    script = os.path.basename(str(exc.cmd[1])) if isinstance(exc.cmd, (list, tuple)) and len(exc.cmd) > 1 else "job"
+    return SettingsError(lines[-1] if lines else f"{script} stopped: its settings need fixing (see its log)")
+
 
 def run_in_background(job, log=print, name=None, on_skip=None):
     """Wrap `job` so each call starts it in its own thread and returns at once.

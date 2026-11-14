@@ -42,11 +42,12 @@ from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
-    record_attention,
+    record_attention, SETTINGS_ERROR_EXIT, settings_error,
 )
-from utils.heartbeat import ping_heartbeat, unset_heartbeats  # noqa: E402
+from utils.heartbeat import ping_heartbeat, unset_heartbeats, first_report_today  # noqa: E402
 from utils.worklog import file_logger  # noqa: E402
 from utils import sharepoint  # noqa: E402
+from utils.borealis import upload_on as borealis_upload_on  # noqa: E402
 import check_alerts  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
@@ -261,8 +262,15 @@ def run_upload_script(script, year, month):
         capture_job_error(e)
         timestamped_print_upload(f"{script} stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
-        timestamped_print_upload(f"[ERROR] {script} failed with exit code {e.returncode}: {e}")
-        capture_job_error(e)
+        if e.returncode == SETTINGS_ERROR_EXIT:
+            # A setting or credential to fix (e.g. the token was rejected): reported as that message, which says
+            # what to do, rather than as a CalledProcessError
+            error = settings_error(e)
+            timestamped_print_upload(f"[ERROR] {script} stopped: {error}")
+            capture_job_error(error)
+        else:
+            timestamped_print_upload(f"[ERROR] {script} failed with exit code {e.returncode}: {e}")
+            capture_job_error(e)
         timestamped_print_upload(f"{script} stdout: {e.stdout}")
         timestamped_print_upload(f"{script} stderr: {e.stderr}")
     except Exception as e:
@@ -353,12 +361,14 @@ def monthly_upload_check():
     UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
     goes up; then does the same for SharePoint (sharepoint_upload_check). So a missed slot (the worker was down) or
     a failed upload is retried the next day, a month that went up is never sent again, and errors are logged once
-    a day, not every hour."""
+    a day, not every hour. The Borealis upload is skipped, with nothing reported, while no upload dataset is set
+    (utils/borealis.upload_on); a Borealis failure never stops the SharePoint copy (upload_due_months catches it)."""
     now = datetime.now(SITE_TZ)
     if now.hour != UPLOAD_HOUR:
         return
-    upload_due_months(now, "Borealis", uploaded_months_path, UPLOAD_FIRST_MONTH, "BOREALIS_UPLOAD_FIRST_MONTH",
-                      run_upload_data, "upload")
+    if borealis_upload_on():
+        upload_due_months(now, "Borealis", uploaded_months_path, UPLOAD_FIRST_MONTH, "BOREALIS_UPLOAD_FIRST_MONTH",
+                          run_upload_data, "upload")
     sharepoint_upload_check(now)
 
 def digest_hour():
@@ -534,17 +544,20 @@ def skip_reporter(heartbeat, fail_after=SKIPS_BEFORE_FAIL):
     return on_skip
 
 
-def report_unset_heartbeats(log, sentry_warning=None, env=None):
+def report_unset_heartbeats(log, sentry_warning=None, env=None, state_path=None):
     """At start-up: name every HEALTHCHECK_URL_* of the worker's jobs that isn't set, in the log (and so, with
-    WORKER_LOG_TO_STDOUT, in docker logs) and as one Sentry warning. Without them, a worker that stops, or a job
-    that stops running, reports nothing anywhere. Returns the names."""
+    WORKER_LOG_TO_STDOUT, in docker logs) and as a Sentry warning. Without them, a worker that stops, or a job
+    that stops running, reports nothing anywhere. The warning goes at most once a day for the same names
+    (utils/heartbeat.first_report_today, remembered in `state_path`, by default in logs/), since a deploy restarts
+    the worker several times; the log line is written at every start. Returns the names."""
     state, _ = sharepoint.status(env)
     missing = unset_heartbeats(env, sharepoint_on=state != "off")   # leaves out the drill's while it is off
     if missing:
         message = (f"Heartbeats not set: {', '.join(missing)}. Those jobs report nothing if they stop or keep "
                    f"failing (README, Monitoring).")
         log(f"[WARN] {message}")
-        (sentry_warning or capture_job_warning)(message)
+        if first_report_today(missing, state_path):
+            (sentry_warning or capture_job_warning)(message)
     return missing
 
 def api_injection_job():
@@ -653,6 +666,9 @@ if __name__ == "__main__":
                              "is uploaded (so last month goes up on the 1st, and a failed month is retried daily). "
                              "Nothing runs at startup; run `python scripts/upload_data.py --year Y --month M` by hand "
                              "to upload a month.")
+    if not borealis_upload_on():
+        timestamped_print_upload("Borealis upload: off (BOREALIS_UPLOAD_PERSISTENT_ID not set); the 02:00 run "
+                                 "skips it.")
     sharepoint_state, sharepoint_missing = sharepoint.status()
     timestamped_print_upload({
         "off": "SharePoint copy: off (no SHAREPOINT_* settings).",

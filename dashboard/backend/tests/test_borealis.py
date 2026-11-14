@@ -15,6 +15,7 @@ APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
 from utils import borealis  # noqa: E402
 from scripts import borealis_check, download_data, upload_data  # noqa: E402
+from utils.jobs import SETTINGS_ERROR_EXIT  # noqa: E402
 
 TOKEN = "SECRET-TOKEN-123"
 PID = "doi:10.5683/SP3/WELLUP"
@@ -390,22 +391,54 @@ class UploadScriptTests(TestCase):
 
     def test_a_failure_exits_1_without_reporting_success(self):
         server = FakeDataverse(published=[])
-        server.fail[("POST", "/add")] = 403
-        with self.settings(), self.assertRaises(SystemExit) as caught:
-            _, out = quiet(upload_data.upload_to_borealis, CSV.decode(), NAME, 2026, client=client(server))
+        server.fail[("POST", "/add")] = 503
+        with self.settings(), contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as caught:
+            upload_data.upload_to_borealis(CSV.decode(), NAME, 2026, client=client(server))
         self.assertEqual(caught.exception.code, 1)
+        self.assertNotIn("Successfully uploaded", out.getvalue())
+
+    def upload_refused(self, status):
+        """The exit code and output of an upload that Borealis answers with `status`."""
+        server = FakeDataverse(published=[])
+        server.fail[("POST", "/add")] = status
+        with self.settings(), contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as caught:
+            upload_data.upload_to_borealis(CSV.decode(), NAME, 2026, client=client(server))
+        return caught.exception.code, out.getvalue()
+
+    def test_a_rejected_token_stops_with_one_actionable_line(self):
+        code, out = self.upload_refused(401)
+        self.assertEqual(code, SETTINGS_ERROR_EXIT)
+        errors = [line for line in out.splitlines() if line.startswith("ERROR:")]
+        self.assertEqual(errors, [f"ERROR: Borealis token rejected (HTTP 401): make a new token on {SERVER} (your "
+                                  f"name > API Token) and put it in BOREALIS_API_TOKEN."])
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn("Successfully uploaded", out)
+
+    def test_a_missing_permission_is_a_settings_problem(self):
+        code, out = self.upload_refused(403)
+        self.assertEqual(code, SETTINGS_ERROR_EXIT)
+        self.assertIn("Curator role", out)
 
     def test_a_demo_dataset_on_the_production_server_is_refused(self):
         with self.settings(BOREALIS_UPLOAD_PERSISTENT_ID="doi:10.80240/FK2/WHEXLR"), \
-                contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+                contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as caught:
             upload_data.borealis_settings()
         self.assertIn("demo server", out.getvalue())
+        self.assertEqual(caught.exception.code, SETTINGS_ERROR_EXIT)
 
     def test_missing_settings_are_named(self):
         with self.settings(BOREALIS_API_TOKEN=None), contextlib.redirect_stdout(io.StringIO()) as out, \
-                self.assertRaises(SystemExit):
+                self.assertRaises(SystemExit) as caught:
             upload_data.borealis_settings()
         self.assertIn("BOREALIS_API_TOKEN", out.getvalue())
+        self.assertEqual(caught.exception.code, SETTINGS_ERROR_EXIT)
+
+    def test_the_upload_is_on_only_with_a_dataset(self):
+        self.assertFalse(borealis.upload_on({}))
+        self.assertFalse(borealis.upload_on({"BOREALIS_URL": "https://borealisdata.ca", "BOREALIS_API_TOKEN": "t",
+                                             "BOREALIS_UPLOAD_PERSISTENT_ID": " "}))
+        self.assertTrue(borealis.upload_on({"BOREALIS_UPLOAD_PERSISTENT_ID": PID}))
+        self.assertTrue(borealis.upload_on({"DEMO_BOREALIS_WC_PERSISTENT_ID": "doi:10.80240/FK2/WHEXLR"}))
 
     def test_month_file_name(self):
         import datetime as dt

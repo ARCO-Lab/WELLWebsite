@@ -27,6 +27,7 @@ Dataverse rules this module follows:
 """
 import hashlib
 import json
+import os
 import time
 from urllib.parse import urlsplit
 
@@ -106,6 +107,15 @@ def collection_alias(url):
     if len(segments) >= 2 and segments[0] == "dataverse":
         return segments[1]
     return None
+
+
+def upload_on(env=None):
+    """Whether the monthly upload is set up: a dataset is named for it in BOREALIS_UPLOAD_PERSISTENT_ID (or the
+    older DEMO_BOREALIS_WC_PERSISTENT_ID). Without one it is off on purpose, so the scheduler skips it quietly;
+    with one, scripts/upload_data.py says which other setting is missing."""
+    env = os.environ if env is None else env
+    return any((env.get(name) or "").strip()
+               for name in ("BOREALIS_UPLOAD_PERSISTENT_ID", "DEMO_BOREALIS_WC_PERSISTENT_ID"))
 
 
 def is_demo(url=None, persistent_id=None):

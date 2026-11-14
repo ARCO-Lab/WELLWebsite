@@ -3,11 +3,13 @@ keeps failing is reported by email from there, without SMTP of our own.
 
 Each job has its own check, whose ping URL is in HEALTHCHECK_URL_<NAME> (e.g. HEALTHCHECK_URL_INGESTION).
 Unset means no ping, so a job, or the whole worker, could stop with nobody told: the worker names every unset
-one in a warning when it starts, and the daily digest lists them (unset_heartbeats). A ping never raises and gives
-up after a few seconds: monitoring must not break, or hold up, the job it watches. The URL holds the check's
-secret id, so it is never logged.
+one in a warning when it starts (to Sentry at most once a day, first_report_today), and the daily digest lists
+them (unset_heartbeats). A ping never raises and gives up after a few seconds: monitoring must not break, or hold
+up, the job it watches. The URL holds the check's secret id, so it is never logged.
 """
+import json
 import os
+import time
 
 import requests
 
@@ -44,6 +46,39 @@ def unset_heartbeats(env=None, sharepoint_on=False):
     names = [name for name in WORKER_HEARTBEATS if restore_on or name != "restore"]
     names += ["sharepoint"] if sharepoint_on else []
     return [heartbeat_setting(name) for name in names if not heartbeat_url(name, env)]
+
+
+# When the warning about unset heartbeats last went to Sentry, and for which settings (first_report_today); with the
+# logs, so it survives the worker's restarts.
+UNSET_REPORT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs",
+                                 "unset_heartbeats_reported.json")
+UNSET_REPORT_EVERY_S = 24 * 60 * 60
+
+
+def first_report_today(missing, path=None, now=None):
+    """Whether the warning naming the unset settings `missing` should go to Sentry now: not if the same settings were
+    reported in the last UNSET_REPORT_EVERY_S. A deploy restarts the worker several times, and each start used to send
+    it again. If so, the time and the names are written to `path` (default UNSET_REPORT_PATH). A file that can't be
+    read or written counts as no report yet: a repeated warning is better than none."""
+    path = path or UNSET_REPORT_PATH
+    now = time.time() if now is None else now
+    names = sorted(missing)
+    try:
+        with open(path) as f:
+            last = json.load(f)
+        reported = last.get("missing") == names and 0 <= now - float(last.get("reported_at")) < UNSET_REPORT_EVERY_S
+    except (OSError, ValueError, TypeError, AttributeError):
+        reported = False   # no record yet, or a damaged one
+    if reported:
+        return False
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as f:
+            json.dump({"missing": names, "reported_at": now}, f)
+        os.replace(tmp, path)
+    except OSError:
+        return True   # logs/ isn't writable: report now, and again at the next start
+    return True
 
 
 def ping_heartbeat(name, status="success", timeout=HEARTBEAT_TIMEOUT_S, env=None, get=None, message=None,
