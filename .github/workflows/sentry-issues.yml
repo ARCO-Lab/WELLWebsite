@@ -1,3 +1,5 @@
+# The daily backup of the worker's minute-by-minute Sentry check (dashboard/backend/app/utils/sentry_poller.py),
+# with the same code (dashboard/backend/app/utils/sentry_github.py), so a day the worker missed is caught up here.
 # Once a day, opens a GitHub issue (labelled "sentry") for each unresolved Sentry error that doesn't have one yet,
 # comments when an open one's event count jumps, and adds a "Seen again" comment (without reopening) to a closed one
 # that Sentry still receives (.github/scripts/sentry_issues.py). Test events ("Sentry test") are skipped.
@@ -37,7 +39,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          # The script and the module it shares with the worker
+          sparse-checkout: |
+            .github/scripts
+            dashboard/backend/app/utils
 
       # The runner's own Python; the script uses only the standard library.
       - name: Open or update the Sentry issues
