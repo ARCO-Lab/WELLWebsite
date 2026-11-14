@@ -14,6 +14,15 @@ def check_site_years(*times: datetime) -> None:
         raise ValueError(f"Dates must be between {FIRST_YEAR} and {LAST_YEAR}")
 
 
+def iso_time(value: str) -> datetime:
+    """A request's ISO time (a trailing Z allowed) as a datetime; ValueError for anything else. Text with a control
+    character is refused first: Python's parser stops at a NUL, so it would read "2026-11-01T00:00:00" followed by a
+    NUL as that time."""
+    if not (value.isascii() and value.isprintable()):
+        raise ValueError("not an ISO time")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def est_now() -> datetime:
     # Store as naive datetime in local EST/EDT wall time to match existing DB column types.
     return datetime.now(EST_TZ).replace(tzinfo=None)
@@ -53,7 +62,7 @@ def site_range(start: str, end: str):
     Raises ValueError for text that isn't an ISO time or a year outside FIRST_YEAR to LAST_YEAR, and OverflowError
     for one with no local time (e.g. 0001-01-01T00:00+05:00).
     """
-    start_in, end_in = (datetime.fromisoformat(v.replace("Z", "+00:00")) for v in (start, end))
+    start_in, end_in = (iso_time(v) for v in (start, end))
     start_dt, end_dt = (v.astimezone(EST_TZ).replace(tzinfo=None) if v.tzinfo else v for v in (start_in, end_in))
     check_site_years(start_dt, end_dt)
     if start_in.tzinfo and end_in.tzinfo:

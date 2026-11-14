@@ -572,8 +572,10 @@ emailed 24 h after it happened is no longer retried; the next daily digest lists
 without recording or sending anything: `docker compose exec worker python scripts/check_alerts.py --dry-run`. The
 state lives in two tables, `vendor_status` (written by every ingestion run) and `alert_incidents`, created by migration
 `0003_monitoring_alerts.sql` (see [Database migrations](#database-migrations)); `0006_vendor_status_fetch_watermark.sql`
-adds where the last LI-COR fetch ended and the latest answer's unreadable records; until it is applied the alert check
-fails (logged, reported to Sentry and to `HEALTHCHECK_URL_ALERTS`) and ingestion carries on as before.
+adds where the last LI-COR fetch ended and the latest answer's unreadable records. Until a migration these tables need is
+applied, the alert check fails with `MigrationPending`, a message that says to run `scripts/migrate.py` (logged, reported
+to Sentry and to `HEALTHCHECK_URL_ALERTS`), `/health/data` shows that type under `alerts`, and ingestion carries on as
+before.
 
 | Variable | Default | Meaning |
 |---|---|---|
