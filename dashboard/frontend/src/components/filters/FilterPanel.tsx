@@ -47,9 +47,9 @@ interface FilterPanelProps {
   setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
 }
 
-// A ticked metric or item: the maroon box of a ticked group with a McMaster Gold tick (about 8:1 against the maroon),
-// so metrics stay gold but read apart from their white-ticked group. A gold box was about 1.4:1 against white, so
-// ticked and unticked boxes looked the same, and a black tick on it read as black.
+// A ticked metric or item: the group's maroon box, but with a McMaster Gold tick (about 7.8:1 against the maroon,
+// WCAG 1.4.11 asks 3:1) where a group has a white one. A gold box can't carry a gold tick, and a gold box with a white
+// tick was about 1.4:1, so ticked and unticked metrics looked the same.
 const TICKED_GOLD = "data-[state=checked]:text-accent";
 
 // --- COMPONENT ---
