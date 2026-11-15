@@ -12,6 +12,8 @@ import pathlib
 import sys
 import unittest.mock
 
+import requests
+
 mock = unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
@@ -484,6 +486,166 @@ class QualityRunTests(IngestionTestCase):
         row = self.status("WQData")
         self.assertEqual(row["consecutive_failures"], 0)
         self.assertEqual(row["last_skipped"], "1 unreadable record(s), e.g. malformed record (TypeError) at None")
+
+
+def http_error(status):
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status} error", response=response)
+
+
+class FailureReportTests(IngestionTestCase):
+    """Which failed vendor calls go to Sentry: a transient one (no answer, a timeout, HTTP 5xx or 429) only once the
+    vendor has failed ALERT_VENDOR_FAILURES runs in a row; any other at once."""
+
+    def run_failing(self, licor_error, wq_error=None):
+        """inject_all_new_data with LI-COR failing with `licor_error` (recorded in vendor_status, as inject_licor
+        does) and WQData answering, or failing the way inject_quality does. Returns the errors sent to Sentry."""
+        from utils.alert_state import record_vendor_result
+
+        def failing_licor(tz, now):
+            record_vendor_result("LI-COR", licor_error)
+            raise licor_error
+
+        def quality(tz, now):
+            record_vendor_result("WQData", wq_error)
+            if wq_error is not None:
+                raise RuntimeError("WQData request failed") from wq_error
+        with mock.patch.object(self.ingest, "app", self.app), \
+                mock.patch.object(self.ingest, "inject_licor", side_effect=failing_licor), \
+                mock.patch.object(self.ingest, "inject_quality", side_effect=quality), \
+                mock.patch.object(self.ingest, "capture_job_error") as capture, \
+                contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(RuntimeError) as failed:
+            self.ingest.inject_all_new_data()
+        self.assertTrue(failed.exception.already_reported)   # never sent again by the scheduler
+        self.output = out.getvalue()
+        return [c.args[0] for c in capture.call_args_list]
+
+    def test_a_single_network_blip_is_only_logged(self):
+        blip = requests.ConnectionError("Failed to resolve 'api.licor.cloud'")
+        with mock.patch.dict(os.environ, {"ALERT_VENDOR_FAILURES": ""}):
+            self.assertEqual(self.run_failing(blip), [])
+        self.assertIn("[WARN] LI-COR: network failure 1 of 3 in a row", self.output)
+
+    def test_an_outage_that_lasts_is_sent(self):
+        with mock.patch.dict(os.environ, {"ALERT_VENDOR_FAILURES": "3"}):
+            for error in (requests.ConnectionError("down"), requests.Timeout("slow")):
+                self.assertEqual(self.run_failing(error), [])
+            third = http_error(503)
+            self.assertEqual(self.run_failing(third), [third])   # the third failed run in a row
+            fourth = requests.ConnectionError("still down")
+            self.assertEqual(self.run_failing(fourth), [fourth])   # utils/sentry.py limits it to once an hour
+
+    def test_a_success_starts_the_count_again(self):
+        from utils.alert_state import record_vendor_result
+        with mock.patch.dict(os.environ, {"ALERT_VENDOR_FAILURES": "2"}):
+            self.assertEqual(self.run_failing(requests.ConnectionError("down")), [])
+            self.assertTrue(record_vendor_result("LI-COR"))
+            self.assertEqual(self.run_failing(requests.ConnectionError("down")), [])
+
+    def test_a_failure_that_needs_a_fix_is_sent_at_once(self):
+        for error in (http_error(401), http_error(404), BadVendorResponse("LI-COR reply has no 'data' list"),
+                      UnreadableRecords("none of LI-COR's records could be read")):
+            with self.subTest(error=error):
+                self.assertEqual(self.run_failing(error), [error])
+
+    def test_wqdata_is_judged_by_the_failure_behind_its_error(self):
+        sent = self.run_failing(BadVendorResponse("LI-COR reply has no 'data' list"), requests.Timeout("slow"))
+        self.assertEqual(len(sent), 1)   # LI-COR's; WQData's first timeout is only logged
+        self.assertIn("[WARN] WQData: timeout failure 1 of 3 in a row", self.output)
+        stall = BadVendorResponse("WQData paging didn't advance")
+        sent = self.run_failing(BadVendorResponse("LI-COR reply has no 'data' list"), stall)
+        self.assertEqual([type(e).__name__ for e in sent], ["BadVendorResponse", "RuntimeError"])
+
+    def test_a_gap_fetch_failing_run_after_run_is_sent_on_the_third(self):
+        # The run's own fetch works each time; only a returning logger's gap fetch fails. Recording the first fetch
+        # as a success would reset the count every run, so it would never be sent.
+        self.add("Weather", NOW - 20 * M, WEATHER, "Air Temperature")
+        self.add("Logger", NOW - 2 * D, LOGGER2, "Water Temperature")
+        self.mark(NOW - 10 * M)
+
+        windows = []
+
+        def fetch(get_page, lo, hi):
+            windows.append(hi)
+            if hi == NOW:
+                return [licor("22168654-3", 4.4, "2026-11-11 18:40:00Z")]
+            raise http_error(503)
+
+        def quality(tz, now):
+            from utils.alert_state import record_vendor_result
+            record_vendor_result("WQData")
+
+        class Frozen(dt.datetime):   # the runs happen at NOW
+            @classmethod
+            def now(cls, tz=None):
+                return NOW
+        sent = []
+        with mock.patch.dict(os.environ, {"ALERT_VENDOR_FAILURES": "3"}), \
+                mock.patch.object(self.ingest, "datetime", Frozen), \
+                mock.patch.object(self.ingest, "app", self.app), \
+                mock.patch.object(self.ingest, "fetch_range", side_effect=fetch), \
+                mock.patch.object(self.ingest.weather_service, "get_logger_id", return_value=WEATHER), \
+                mock.patch.object(self.ingest, "inject_quality", side_effect=quality), \
+                mock.patch.object(self.ingest, "capture_job_error",
+                                  side_effect=lambda error, **kwargs: sent.append(error)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for run in range(1, 4):
+                with self.assertRaises(RuntimeError):
+                    self.ingest.inject_all_new_data()
+                self.assertEqual(len(sent), 0 if run < 3 else 1, f"run {run}")
+        self.assertEqual(windows.count(NOW), 3)   # each run's own fetch, which worked
+        self.assertEqual(len(windows), 6)          # and its gap fetch, which failed
+        self.assertEqual(self.status("LI-COR")["consecutive_failures"], 3)
+        self.assertEqual(sent[0].response.status_code, 503)
+
+    def test_an_unreadable_count_sends_it(self):
+        from utils.alert_state import MigrationPending
+        with mock.patch.object(self.ingest, "vendor_statuses", side_effect=MigrationPending("no table")):
+            blip = requests.ConnectionError("down")
+            self.assertEqual(self.run_failing(blip), [blip])
+
+
+class LicorRetryTests(unittest.TestCase):
+    """WeatherService.get_page retries a failed connection (a DNS or network hiccup) like an HTTP 5xx."""
+
+    def get_page(self, answers):
+        from api.services import weather
+        service = weather.WeatherService("https://licor.test", "token", WEATHER)
+        calls = []
+
+        def get(url, **kwargs):
+            calls.append(url)
+            answer = answers[len(calls) - 1]
+            if isinstance(answer, Exception):
+                raise answer
+            response = requests.Response()
+            response.status_code, response._content = answer, b'{"data": []}'
+            return response
+        with mock.patch.object(weather.requests, "get", side_effect=get), \
+                mock.patch.object(weather.time, "sleep") as sleep:
+            try:
+                return service.get_page(NOW - H, NOW), len(calls), sleep.call_count
+            except Exception as e:
+                return e, len(calls), sleep.call_count
+
+    def test_a_dns_blip_is_retried(self):
+        self.assertEqual(self.get_page([requests.ConnectionError("resolve"), 200]), (([], False), 2, 1))
+
+    def test_a_connection_still_failing_raises_after_four_tries(self):
+        error, calls, sleeps = self.get_page([requests.ConnectionError("resolve")] * 4)
+        self.assertIsInstance(error, requests.ConnectionError)
+        self.assertEqual((calls, sleeps), (4, 3))
+
+    def test_a_timeout_is_not_retried(self):
+        error, calls, _ = self.get_page([requests.ConnectTimeout("connect timed out"), 200])
+        self.assertIsInstance(error, requests.ConnectTimeout)
+        self.assertEqual(calls, 1)
+
+    def test_server_errors_are_retried_without_a_wait_after_the_last(self):
+        error, calls, sleeps = self.get_page([503, 503, 503, 503])
+        self.assertIsInstance(error, requests.HTTPError)
+        self.assertEqual((calls, sleeps), (4, 3))
 
 
 if __name__ == "__main__":
