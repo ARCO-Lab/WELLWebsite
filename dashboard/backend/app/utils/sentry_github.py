@@ -516,7 +516,7 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=N
     issues with an event in the last that many minutes (the worker's poll); `log` gets every line it reports.
     `handled` ({short id: sighting()}, kept by the caller between runs) skips the issues whose count and last-seen
     time haven't changed since a run handled them, so a poll asks GitHub nothing about them.
-    With `closed_since` (an aware datetime), it first resolves in Sentry the issues whose GitHub issue was closed as
+    With `closed_since` (an aware datetime), it then resolves in Sentry the issues whose GitHub issue was closed as
     completed since then (resolve_closed); `resolving` (a Resolving, kept by the caller between runs) remembers
     which were dealt with, and that the token can't resolve, so that is said once."""
     token = env.get("SENTRY_API_TOKEN", "").strip()
@@ -538,8 +538,16 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=N
     jump_min = int(env.get("SENTRY_JUMP_MIN") or 20)
 
     gh = GitHub(http, repo, github_token, dry_run=dry_run, log=log)
-    if closed_since is not None:
+    code = sync_issues(http, gh, api, org, token, period, seen_within_minutes, handled, jump_factor, jump_min, log)
+    # After the issues above, so a closing that can't be dealt with never holds up new errors; and only when Sentry
+    # could be read, so an outage doesn't add a warning per closed issue.
+    if code == 0 and closed_since is not None:
         resolve_closed(http, gh, api, org, token, closed_since, log=log, resolving=resolving, dry_run=dry_run)
+    return code
+
+
+def sync_issues(http, gh, api, org, token, period, seen_within_minutes, handled, jump_factor, jump_min, log):
+    """run()'s Sentry-to-GitHub part: opens the missing GitHub issues and adds the follow-up comments."""
     try:
         issues = sentry_issues(http, api, org, token, period, seen_within_minutes)
     except HttpError as err:
@@ -637,8 +645,9 @@ def resolve_closed(http, gh, api, org, token, since, log=print, resolving=None, 
     opened by the check or by someone with write access (a visitor can open an issue and close it), and linked to a
     Sentry issue (linked_short_id). Skipped: issues closed as not planned or as duplicates, Sentry issues already
     resolved, and those Sentry has seen since the GitHub issue was closed (a regression stays visible, and gets the
-    "Seen again" comment). A 403 from Sentry logs FORBIDDEN_WARNING (once, given `resolving`) and returns; any other
-    failed request raises HttpError, and the next run tries again."""
+    "Seen again" comment). A 403 on the resolve itself logs FORBIDDEN_WARNING (once, given `resolving`) and stops
+    there. Any other failed Sentry request (a 403 on the lookup included) is a warning for that issue alone, which
+    the next run tries again; a failed GitHub listing raises HttpError."""
     resolving = resolving if resolving is not None else Resolving()
     if resolving.forbidden:
         return
@@ -654,6 +663,10 @@ def resolve_closed(http, gh, api, org, token, since, log=print, resolving=None, 
         number = gh_issue["number"]
         try:
             group = sentry_group(http, api, org, token, short_id)
+        except HttpError as err:
+            log(f"::warning::{short_id} (#{number}, closed): Sentry lookup failed, {err}; trying again next time")
+            continue
+        try:
             if group is None:
                 log(f"::warning::{short_id} (#{number}, closed): no such Sentry issue in {org}")
             elif group.get("status") == "resolved":
@@ -665,9 +678,10 @@ def resolve_closed(http, gh, api, org, token, since, log=print, resolving=None, 
             else:
                 resolve_group(http, api, org, token, group["id"])
                 log(f"{short_id}: resolved in Sentry (#{number} closed as completed)")
-        except HttpError as err:
+        except HttpError as err:   # only resolve_group sends a request in this block
             if err.status != 403:
-                raise
+                log(f"::warning::{short_id} (#{number}, closed): resolving it failed, {err}; trying again next time")
+                continue
             resolving.forbidden = True
             log(FORBIDDEN_WARNING)
             return

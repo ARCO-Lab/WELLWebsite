@@ -43,6 +43,8 @@ class Fake:
         # Sentry issues by short id, as the shortids lookup returns them; resolve_status: what a resolve fails with
         self.groups = {k: dict(v) for k, v in (groups or {}).items()}
         self.resolve_status = resolve_status
+        # HTTP statuses the next shortids lookups, and the next closed-issues listings, fail with (one per request)
+        self.lookup_errors, self.closed_errors = [], []
         self.calls = []
 
     def __call__(self, method, url, headers, body=None):
@@ -57,6 +59,8 @@ class Fake:
             if path.endswith("/events/latest/"):
                 return 200, {}, {"entries": []}
             if path.startswith("/api/0/organizations/well-cs/shortids/"):
+                if self.lookup_errors:
+                    raise sentry_github.HttpError(self.lookup_errors.pop(0), url)
                 group = self.groups.get(path.split("/")[-2])
                 if group is None:
                     raise sentry_github.HttpError(404, url)
@@ -75,6 +79,8 @@ class Fake:
         if method == "GET" and path == f"/repos/{REPO}/issues" and query["state"] == ["closed"]:
             # GitHub's `since` is on the last update, which closing (or a later comment) moves
             assert query["labels"] == ["sentry"], query
+            if self.closed_errors:
+                raise sentry_github.HttpError(self.closed_errors.pop(0), url)
             since = datetime.fromisoformat(query["since"][0].replace("Z", "+00:00"))
             closed = [i for i in self.gh_issues if i["state"] == "closed"
                       and datetime.fromisoformat(i.get("updated_at", i["closed_at"]).replace("Z", "+00:00")) >= since]
@@ -485,14 +491,51 @@ class ResolveTest(TestCase):
         self.assertIn("WELL-DASHBOARD-7: opened #101", lines)   # the new Sentry issue was still opened
         self.assertNotIn(SENTRY_TOKEN, " ".join(lines))
 
-    def test_a_github_failure_is_a_failed_poll_and_the_next_one_catches_up(self):
+    def test_a_failed_closed_listing_is_a_failed_poll_and_the_next_one_catches_up(self):
         clock = Clock()
-        fake = Fake(gh_issues=[closed_issue()], groups={"WELL-BACKEND-2": group()}, errors=[(500, None)] * 3)
-        p, _, _, _ = poller(fake, clock=clock)
+        fake = Fake([sentry_issue()], gh_issues=[closed_issue()], groups={"WELL-BACKEND-2": group()})
+        fake.closed_errors = [500] * 3   # a GET: tried three times, then the poll fails
+        p, lines, _, _ = poller(fake, clock=clock)
         self.assertFalse(p.poll())
+        self.assertIn("WELL-DASHBOARD-7: opened #101", lines)   # the new Sentry issue went first
         clock.now = p.wait_until
         self.assertTrue(p.poll())
         self.assertEqual(len(fake.resolves()), 1)
+
+    def test_new_sentry_issues_are_handled_before_the_closings(self):
+        fake = Fake([sentry_issue()], gh_issues=[closed_issue()], groups={"WELL-BACKEND-2": group()})
+        self.polled(fake, minutes=0)
+        paths = [urlparse(u).path for _, u, _, _ in fake.calls]
+        created = paths.index(f"/repos/{REPO}/issues", paths.index(f"/repos/{REPO}/labels"))
+        self.assertLess(created, paths.index("/api/0/organizations/well-cs/shortids/WELL-BACKEND-2/"))
+
+    def test_a_failed_lookup_or_resolve_warns_for_that_issue_and_the_next_poll_tries_again(self):
+        # 403 on the lookup is a read failing, not a token without event:write
+        for failure in ("lookup 500", "lookup 403", "resolve 500"):
+            with self.subTest(failure=failure):
+                clock = Clock()
+                second = closed_issue(number=10, short_id="WELL-BACKEND-3", closed_at="2026-11-14T12:00:40Z")
+                fake = Fake([sentry_issue()], gh_issues=[closed_issue(), second],
+                            groups={"WELL-BACKEND-2": group(), "WELL-BACKEND-3": group("556")})
+                where, status = failure.split()
+                if where == "lookup":
+                    fake.lookup_errors = [int(status)] * (3 if status == "500" else 1)   # GETs retried on a 5xx
+                else:
+                    fake.resolve_status = int(status)
+                p, lines, warnings, _ = poller(fake, clock=clock)
+                self.assertTrue(p.poll())
+                warned = [line for line in lines if line.startswith("[WARN]")]
+                self.assertEqual(len(warned), 2 if where == "resolve" else 1, lines)
+                self.assertTrue(warned[0].startswith("[WARN] WELL-BACKEND-2 (#9, closed): "), warned)
+                self.assertIn(f"HTTP {status}", warned[0])
+                self.assertNotIn("event:write", " ".join(lines))
+                self.assertIn("WELL-DASHBOARD-7: opened #102", lines)   # new errors still became issues
+                self.assertFalse(p.resolving.forbidden)
+                self.assertEqual(warnings, [])
+                fake.resolve_status = None
+                clock.now += 60
+                self.assertTrue(p.poll())
+                self.assertEqual({g["status"] for g in fake.groups.values()}, {"resolved"})
 
     def test_the_daily_run_resolves_nothing(self):
         env = {"SENTRY_API_TOKEN": SENTRY_TOKEN, "GITHUB_TOKEN": GITHUB_TOKEN, "GITHUB_REPOSITORY": REPO}
