@@ -290,7 +290,10 @@ class LayoutTests(TestCase):
         def folder(cadence, key):
             return sharepoint.period_folder(config, periods.parse(cadence, key))
         self.assertEqual(folder("daily", "2026-11-14"), "West Campus/Daily/2026/11")
-        self.assertEqual(folder("weekly", "2026-W53"), "West Campus/Weekly/2026")   # its ISO year, though it ends in 2027
+        # A week goes under its ISO year, not its Monday's: 2026-W01 starts on Monday 29 December 2025
+        self.assertEqual(periods.parse("weekly", "2026-W01").start, dt.datetime(2025, 12, 29))
+        self.assertEqual(folder("weekly", "2026-W01"), "West Campus/Weekly/2026")
+        self.assertEqual(folder("weekly", "2026-W53"), "West Campus/Weekly/2026")
         self.assertEqual(folder("monthly", "2026-10"), "West Campus/Monthly/2026")
         self.assertEqual(sharepoint.sampling_folder(config, 2026), "Ancaster Watershed/2026")
         renamed = sharepoint.settings({**ENV, **CADENCE_ENV, "SHAREPOINT_FOLDER": "/WELL/",

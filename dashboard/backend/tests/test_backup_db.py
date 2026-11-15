@@ -1024,7 +1024,7 @@ class RestoreSchedulerTests(unittest.TestCase):
         skips = self.scheduler.skips_before_fail
         self.assertEqual(skips(self.scheduler.RESTORE_TIMEOUT_S, hour), 5)   # a 4 h drill is skipped at most 4 times
         self.assertEqual(skips(self.scheduler.BACKUP_TIMEOUT_S, hour), 3)
-        self.assertEqual(skips(2 * self.scheduler.UPLOAD_TIMEOUT_S, hour), 5)
+        self.assertEqual(skips(self.scheduler.UPLOAD_RUN_MAX_S, hour), 6)   # Borealis, then a SharePoint night
         self.assertEqual(skips(self.scheduler.DIGEST_TIMEOUT_S, hour), 2)
         self.assertEqual(skips(self.scheduler.DOWNLOAD_TIMEOUT_S, 7 * 24 * hour), 2)
         # The restore drill's reporter: 4 skips (a drill near its 4 h limit) only log; the 5th fails
