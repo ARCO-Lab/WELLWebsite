@@ -164,10 +164,11 @@ def catch_up(start, rows, tz, now):
     return gap_start, back
 
 
-def read_answer(source, parse, error=None, skipped=None):
+def read_answer(source, parse, error=None, skipped=None, record_success=True):
     """Parse a vendor answer with parse(skipped) -> rows, then record the call's outcome for the alerts: `error` if
     the call failed, a failure if records came back but none could be read (the vendor changed its format, say),
-    else success, noting any records skipped. Recorded only once the answer is read, so an answer we can't read is
+    else success, noting any records skipped (unless `record_success` is False: the caller records it once its
+    other calls of the run have worked too). Recorded only once the answer is read, so an answer we can't read is
     never reported as "vendor OK, check the sensor". Logs the skipped records in one line, also sent to Sentry as a
     warning when the call otherwise succeeded (a failed one goes there as the run's error). Returns (rows, the
     error to fail the run with, or None). `skipped` (a SkippedRecords) may be passed to keep counting into it
@@ -182,7 +183,8 @@ def read_answer(source, parse, error=None, skipped=None):
     skipped.report()
     if error is None and skipped.count and not rows:
         error = UnreadableRecords(f"none of {source}'s records could be read: {skipped.summary()}")
-    record_vendor_result(source, error, skipped=skipped.summary())
+    if error is not None or record_success:
+        record_vendor_result(source, error, skipped=skipped.summary())
     if error is None and skipped.count:
         capture_job_warning(f"{source}: skipped {skipped.summary()}")   # a no-op unless Sentry is on
     return rows, error
@@ -197,8 +199,11 @@ def inject_licor(tz, now):
         record_vendor_result("LI-COR", e)
         raise
     skipped = SkippedRecords("LI-COR")
+    # Success is recorded below, once a silent station's gap (if any) is fetched too: recorded here, a gap fetch that
+    # fails run after run would reset the failure count each time, and report_failure would never send it.
     rows, error = read_answer("LI-COR", lambda counter: licor_rows(
-        records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, counter, now), skipped=skipped)
+        records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, counter, now), skipped=skipped,
+        record_success=False)
     if error is not None:
         raise error
     gap_start, back = catch_up(start, rows, tz, now)
@@ -221,13 +226,13 @@ def inject_licor(tz, now):
                                           f"{skipped.summary()}")
                 record_vendor_result("LI-COR", error)
                 raise error
-            record_vendor_result("LI-COR", skipped=skipped.summary())
         for key, row in gap_rows.items():
             rows.setdefault(key, row)
         print(f"[INFO] LI-COR: {', '.join(back)} reporting again; also fetched "
               f"{gap_start:%Y-%m-%d %H:%M} to {start:%Y-%m-%d %H:%M} UTC: {len(gap)} records")
         records = records + gap
         start = gap_start
+    record_vendor_result("LI-COR", skipped=skipped.summary())   # both fetches worked and were read
     new = store(list(rows.values()))
     # Not past an unreadable record whose time is known: the next runs read it again, so it is stored once
     # utils/parsers.py is fixed, as long as that is within about a day (LICOR_LATE + LICOR_SILENT). Records in a wrong

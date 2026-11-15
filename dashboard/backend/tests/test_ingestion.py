@@ -557,6 +557,48 @@ class FailureReportTests(IngestionTestCase):
         sent = self.run_failing(BadVendorResponse("LI-COR reply has no 'data' list"), stall)
         self.assertEqual([type(e).__name__ for e in sent], ["BadVendorResponse", "RuntimeError"])
 
+    def test_a_gap_fetch_failing_run_after_run_is_sent_on_the_third(self):
+        # The run's own fetch works each time; only a returning logger's gap fetch fails. Recording the first fetch
+        # as a success would reset the count every run, so it would never be sent.
+        self.add("Weather", NOW - 20 * M, WEATHER, "Air Temperature")
+        self.add("Logger", NOW - 2 * D, LOGGER2, "Water Temperature")
+        self.mark(NOW - 10 * M)
+
+        windows = []
+
+        def fetch(get_page, lo, hi):
+            windows.append(hi)
+            if hi == NOW:
+                return [licor("22168654-3", 4.4, "2026-11-11 18:40:00Z")]
+            raise http_error(503)
+
+        def quality(tz, now):
+            from utils.alert_state import record_vendor_result
+            record_vendor_result("WQData")
+
+        class Frozen(dt.datetime):   # the runs happen at NOW
+            @classmethod
+            def now(cls, tz=None):
+                return NOW
+        sent = []
+        with mock.patch.dict(os.environ, {"ALERT_VENDOR_FAILURES": "3"}), \
+                mock.patch.object(self.ingest, "datetime", Frozen), \
+                mock.patch.object(self.ingest, "app", self.app), \
+                mock.patch.object(self.ingest, "fetch_range", side_effect=fetch), \
+                mock.patch.object(self.ingest.weather_service, "get_logger_id", return_value=WEATHER), \
+                mock.patch.object(self.ingest, "inject_quality", side_effect=quality), \
+                mock.patch.object(self.ingest, "capture_job_error",
+                                  side_effect=lambda error, **kwargs: sent.append(error)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for run in range(1, 4):
+                with self.assertRaises(RuntimeError):
+                    self.ingest.inject_all_new_data()
+                self.assertEqual(len(sent), 0 if run < 3 else 1, f"run {run}")
+        self.assertEqual(windows.count(NOW), 3)   # each run's own fetch, which worked
+        self.assertEqual(len(windows), 6)          # and its gap fetch, which failed
+        self.assertEqual(self.status("LI-COR")["consecutive_failures"], 3)
+        self.assertEqual(sent[0].response.status_code, 503)
+
     def test_an_unreadable_count_sends_it(self):
         from utils.alert_state import MigrationPending
         with mock.patch.object(self.ingest, "vendor_statuses", side_effect=MigrationPending("no table")):
