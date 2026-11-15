@@ -129,22 +129,13 @@ but no HTTPS, signing in silently fails (the browser drops the cookie).
 ### A read-only database role (recommended)
 
 By default welldash² uses the backend's role (`BACKEND_DATABASE_URL`). A role of its own limits what it could do if it
-were ever compromised. As the PostgreSQL superuser (e.g. `sudo -u postgres psql -d <database>`):
-```sql
-CREATE ROLE well_ops LOGIN PASSWORD '<a new random password>';
-GRANT CONNECT ON DATABASE <database> TO well_ops;
-GRANT USAGE ON SCHEMA public TO well_ops;
-GRANT SELECT ON sensor_measurements, vendor_status, alert_incidents, export_jobs, schema_migrations,
-                request_metrics, uptime_probes TO well_ops;
-GRANT INSERT, DELETE ON uptime_probes TO well_ops;     -- its uptime checks, and their 90-day cleanup
-GRANT USAGE ON SEQUENCE uptime_probes_id_seq TO well_ops;
-GRANT DELETE ON request_metrics TO well_ops;           -- the 90-day cleanup
-```
-Then set `OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/<database>` in `.env` (in single
-quotes if the password has a `$`), allow `well_ops` from the Docker network in `pg_hba.conf` the same way as the
-backend's role, and recreate the container. The System page shows which role welldash² reads with. `export_jobs` is
-owned by `postgres`: without `well_ops`, check that the backend's role can read it (`\dp export_jobs` in psql); the
-Traffic page says so if it can't.
+were ever compromised. `dashboard/backend/app/db/roles.sql` creates it, `well_ops`, together with the backend's
+`well_app`: `SELECT` on every table, and as its only writes `INSERT` and `DELETE` on `uptime_probes` (its uptime
+checks and their 90-day cleanup) and `DELETE` on `request_metrics` (the cleanup). The steps (running it, a password,
+`pg_hba.conf`, `.env`, checking, rolling back) are in
+[Database roles](../../README.md#database-roles). In short, set
+`OPS_DATABASE_URL=postgresql://well_ops:<password>@host.docker.internal:5432/<database>` in `.env` and recreate the
+container. The System page shows which role welldash² reads with.
 
 ### Showing deploys
 
@@ -164,7 +155,7 @@ In `.env` at the repository root; recreate the container after changing them.
 | `OPS_BIND` | required | Address the port is published on: `127.0.0.1` for the SSH tunnel, or the VM's campus address (setup step 3). Unset or every address (`0.0.0.0`, `::`), the service refuses to start. |
 | `OPS_ALLOW_ANY_ADDRESS` | off | `1` lets `OPS_BIND` be `0.0.0.0` or `::`, for when publishing on every address is really meant. |
 | `OPS_COOKIE_SECURE` | unset | Unset, the cookie is marked Secure on requests that came over HTTPS. `1` marks it Secure always (see above). |
-| `OPS_DATABASE_URL` | `BACKEND_DATABASE_URL` | Database URL, e.g. with the `well_ops` role above. |
+| `OPS_DATABASE_URL` | `BACKEND_DATABASE_URL` | Database URL, with the read-only `well_ops` role above. |
 | `OPS_GITHUB_TOKEN` | none | Optional: GitHub allows 60 unauthenticated API requests an hour, plenty with the 5-minute cache. |
 | `OPS_SENTRY_API_TOKEN`, `OPS_SENTRY_ORG` | none | A Sentry auth token with read-only scopes (`org:read`, `project:read`, `event:read`) and the organisation's slug. `OPS_SENTRY_API_URL` if the organisation isn't on `https://sentry.io`. |
 | `OPS_HEALTHCHECKS_API_KEY` | none | The Healthchecks.io project's **read-only** API key (Project Settings, API Access). |

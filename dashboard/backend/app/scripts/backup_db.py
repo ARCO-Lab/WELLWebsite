@@ -18,8 +18,8 @@
 #                           deletes a dump younger than 24 h (one taken by hand before a risky change survives that
 #                           night's run) nor the last one recorded as good.
 #   BACKUP_EXCLUDE_TABLES   tables left out, with the sequences they own. Default "auto": every table the role can
-#                           read is dumped, and any it can't are left out and named in a WARNING: line (on the VM
-#                           the app connects as postgres, which reads everything). A comma-separated list leaves
+#                           read is dumped, and any it can't are left out and named in a WARNING: line (well_app,
+#                           the app's role in app/db/roles.sql, owns every table). A comma-separated list leaves
 #                           out exactly those; an empty value leaves out nothing.
 #   BACKUP_EXPECT_TABLES    tables the dump must hold data for (default sensor_measurements,sampling_measurements)
 #   BACKUP_MAX_SHRINK_PCT   before dumping, those tables' rows are counted (exactly when small, the planner's

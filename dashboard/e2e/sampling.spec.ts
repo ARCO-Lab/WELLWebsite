@@ -3,7 +3,8 @@
 // These checks need no data in the database: every API call the page makes is answered here (page.route), so they
 // can also run against `next dev` alone (E2E_BASE_URL). They cover what the vendor-data spec doesn't: the sampling
 // tab's charts and legend, replies that arrive out of order, a shared link's ticks, the Download button's range line
-// and what happens to a queued export when its tab is left, and axe's WCAG checks on both tabs.
+// and what happens to a queued export when its tab is left, the Filters boxes' tick colours, and axe's WCAG checks
+// on both tabs.
 
 import { test, expect, type Page, type Route } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
@@ -195,4 +196,33 @@ test("axe finds no serious WCAG problems on either tab", async ({ page }) => {
   await expect(graphsCard(page).getByText("Loading data…")).toHaveCount(0);
   await expect.poll(async () => (await sampleSeries(page)).length).toBe(2);
   await scan("Ancaster Watershed");
+});
+
+test("a ticked metric is a maroon box with a gold tick, and its group a maroon box with a white tick", async ({ page }) => {
+  await mockApis(page);
+  await page.goto("/");
+  await page.getByRole("checkbox", { name: "Weather Station", exact: true }).click(); // ticks all its metrics
+  const colours = (id: string) => page.locator(`[role=checkbox][id="${id}"]`).evaluate((box) => ({
+    state: (box as HTMLElement).dataset.state,
+    fill: getComputedStyle(box).backgroundColor,
+    tick: getComputedStyle(box.querySelector("svg")!).color,
+  }));
+  const maroon = "rgb(122, 0, 49)", gold = "rgb(252, 212, 89)", white = "rgb(255, 255, 255)";
+  await expect.poll(() => colours("weather")).toEqual({ state: "checked", fill: maroon, tick: white });
+  await expect.poll(() => colours("weather-Air Temperature")).toEqual({ state: "checked", fill: maroon, tick: gold });
+
+  // The tick must stand out from its box by at least 3:1 (WCAG 1.4.11)
+  const luminance = (rgb: string) => {
+    const [r, g, b] = rgb.match(/\d+/g)!.map((v) => Number(v) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  expect((luminance(gold) + 0.05) / (luminance(maroon) + 0.05)).toBeGreaterThan(3);
+
+  // Keyboard focus still draws the 3 px ring around a ticked metric (it grows in, so wait for it)
+  const metric = page.locator('[role=checkbox][id="weather-Air Temperature"]');
+  await metric.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(metric).toBeFocused();
+  await expect.poll(() => metric.evaluate((box) => getComputedStyle(box).boxShadow)).toContain(" 0px 0px 0px 3px");
 });

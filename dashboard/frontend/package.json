@@ -27,7 +27,7 @@
     "date-fns": "^4.4.0",
     "highcharts": "^12.6.2",
     "highcharts-react-official": "^3.2.3",
-    "lucide-react": "^0.534.0",
+    "lucide-react": "^1.70.0",
     "maplibre-gl": "^6.17.0",
     "next": "16.4.6",
     "react": "~19.3.1",
@@ -46,7 +46,7 @@
     "eslint": "^10",
     "eslint-config-next": "16.4.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^6"
   },
   "overrides": {
     "postcss": "^8.5.23",

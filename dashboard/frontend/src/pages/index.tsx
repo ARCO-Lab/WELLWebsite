@@ -39,7 +39,8 @@ import useRecentSamples from "@/hooks/useRecentSamples";
 import { SAMPLING_FILTER_CONFIG } from "@/components/config/filters";
 import { DATA_START, siteDay } from "@/utils/siteTime";
 import { format, subMonths } from "date-fns";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
+import { TabsContent, TabsList, TabsTrigger } from "@/components/animations/tabs";
+import TabsShell, { ShownOnly, type TabsShellHandle } from "@/components/TabsShell";
 import { useEmbedFrame } from "@/lib/embed";
 import useSelectionLink from "@/hooks/useSelectionLink";
 
@@ -93,11 +94,10 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
   // data as they were, instead of rebuilding them all (seconds on a phone). The hidden one keeps its width, out of the
   // flow and unrendered (content-visibility), so showing it again needs no reflow either.
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(["sensor"]));
-  // The tab bar and the shown panel switch at once (shownTab); the page's own state follows in a
-  // transition, so the click isn't held up by re-rendering the whole dashboard
-  const [shownTab, setShownTab] = useState<"sensor" | "sampling">("sensor");
+  // The tab bar and the shown panel switch at once in TabsShell, which holds the shown tab; the page's own state
+  // follows here in a transition, so the click isn't held up by re-rendering the whole dashboard
+  const tabsRef = useRef<TabsShellHandle>(null);
   const showTab = useCallback((value: string) => {
-    setShownTab(value as "sensor" | "sampling");
     startTransition(() => {
       setActiveTab(value as "sensor" | "sampling");
       setVisited((v) => (v.has(value) ? v : new Set([...v, value])));
@@ -106,6 +106,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
   // A shared link's ?tab= opens that tab like a click would
   const openTab = useCallback((v: React.SetStateAction<"sensor" | "sampling">) => {
     if (typeof v === "function") setActiveTab(v);
+    else if (tabsRef.current) tabsRef.current.show(v);
     else showTab(v);
   }, [showTab]);
   
@@ -418,7 +419,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
       {/* Embedded, the page is as tall as its content (the iframe is sized to it), never the iframe's height */}
       <main id="main-content" tabIndex={-1} ref={mainRef} className={`${embedded ? "" : "min-h-screen "}bg-background text-foreground focus:outline-none`}>
         {/* relative: a visited tab that isn't shown is kept, out of the flow, at the page's width (see TabsContent below) */}
-        <Tabs value={shownTab} onValueChange={showTab} className="relative p-6">
+        <TabsShell ref={tabsRef} onShow={showTab} className="relative p-6">
           
           {/* Title and tab triggers */}
           <div className="col-span-full mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -432,7 +433,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
           </div>
 
           {/* Sensor Tab Content (Your existing dashboard) */}
-          <TabsContent value="sensor" className="mt-0 data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sensor") || undefined}>
+          <TabsContent value="sensor" className="mt-0 data-[state=active]:animate-in data-[state=active]:fade-in-0 data-[state=active]:slide-in-from-bottom-2 data-[state=active]:duration-300 motion-reduce:animate-none data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sensor") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
               <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
@@ -472,7 +473,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                       />
                       <div className="mt-6 space-y-2">
                         {/* Only on the shown tab: leaving the tab unmounts it, which stops an export's status checks */}
-                        {shownTab === "sensor" && <Download
+                        <ShownOnly tab="sensor"><Download
                           activeGroups={activeGroups}
                           subFilters={{
                             weather: subFilters.weather || [],
@@ -482,7 +483,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                           startDate={startDate}
                           endDate={endDate}
                           isSampling={false}
-                        />}
+                        /></ShownOnly>
                       </div>
                     </div>
                   </StickyPanel>
@@ -610,7 +611,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
           {/* Sampling Tab Content (New) */}
 
 
-          <TabsContent value="sampling" className="data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sampling") || undefined}>
+          <TabsContent value="sampling" className="data-[state=active]:animate-in data-[state=active]:fade-in-0 data-[state=active]:slide-in-from-bottom-2 data-[state=active]:duration-300 motion-reduce:animate-none data-[state=inactive]:pointer-events-none data-[state=inactive]:invisible data-[state=inactive]:absolute data-[state=inactive]:inset-x-6 data-[state=inactive]:top-0 data-[state=inactive]:[content-visibility:hidden]" tabIndex={-1} forceMount={visited.has("sampling") || undefined}>
             <div className="grid-mcmaster-mobile grid-mcmaster-tablet grid-mcmaster-desktop">
               {/* Filters beside the rest while both fit (rem-based widths: with large text they stack instead of clipping) */}
               <div className="col-span-full flex flex-wrap gap-6 lg:gap-8">
@@ -645,7 +646,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         onEndChange={setSamplingEndDate}
                       />
                       <div className="mt-6 space-y-2">
-                      {shownTab === "sampling" && <Download
+                      <ShownOnly tab="sampling"><Download
                         activeGroups={{ gauges: false, weather: false, quality: false }}  // All false for sampling mode
                         subFilters={{ weather: [], quality: [], gauges: [] }}  // Empty for sampling mode
                         activeCreeks={activeCreeks}  // ✅ Correct prop name
@@ -653,7 +654,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
                         startDate={samplingStartDate}
                         endDate={samplingEndDate}
                         isSampling={true}
-                      />}
+                      /></ShownOnly>
                       {/* For researchers adding sampling files: the standard format, with example rows */}
                       <p className="pt-1 text-center text-sm text-muted">
                         Adding sampling data?{" "}
@@ -821,7 +822,7 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
               </div>
             </div>
           </TabsContent>
-        </Tabs>
+        </TabsShell>
 
 
 

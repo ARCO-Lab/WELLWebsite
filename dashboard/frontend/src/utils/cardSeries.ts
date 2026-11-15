@@ -2,7 +2,7 @@
 // sub-filters select, each with its colour, line style and unit, and one y-axis per unit. Pure data, tested with plain
 // Node in scripts/seriesLoader.test.mjs.
 
-import { QUALITY_PANELS, UNITS, WEATHER_PANELS, aggOf, displayUnit, measurementColor, seriesNote, type Agg } from "./chartStyle.ts";
+import { LOGGER_PALETTE, QUALITY_PANELS, UNITS, WEATHER_PANELS, aggOf, displayUnit, measurementColor, seriesNote, type Agg } from "./chartStyle.ts";
 
 export type Group = "Weather" | "Quality" | "Logger";
 
@@ -21,8 +21,9 @@ export interface SeriesSpec {
 
 export interface AxisSpec { unit: string; measurements: string[] }
 
-// One colour per logger, so its level and temperature read as one instrument (the temperature dashed)
-const LOGGER_COLORS = ["#0866AB", "#D62728", "#2E7D32", "#7F488D", "#E0A800", "#17BECF", "#8C564B"];
+// Measurements a card's chart doesn't draw. Wind direction (degrees, drawn as scattered dots between the lines) read
+// as noise; it is shown on the wind rose instead, and stays in the data and exports.
+const NOT_CHARTED = new Set(["Wind Direction"]);
 
 // The order measurements are listed in: the per-unit panels' order, so related ones sit together in the legend
 const ORDER: Record<Group, string[]> = {
@@ -45,7 +46,7 @@ export function cardSeries(
   const picked = [
     ...ORDER[group].filter((m) => measurements.includes(m)),
     ...measurements.filter((m) => !known.has(m) && UNITS[m] !== undefined && group !== "Logger"),
-  ];
+  ].filter((m) => !NOT_CHARTED.has(m));
   const axes: AxisSpec[] = [];
   const axisOf = (unit: string, m: string) => {
     let i = axes.findIndex((a) => a.unit === unit);
@@ -65,7 +66,9 @@ export function cardSeries(
         name: withUnit(logger ? `${st.name} · ${m}` : m, unit),
         unit,
         agg: aggOf(m),
-        color: logger ? LOGGER_COLORS[n % LOGGER_COLORS.length] : measurementColor(m),
+        color: logger
+          ? LOGGER_PALETTE[n % LOGGER_PALETTE.length][m === "Water Temperature" ? "light" : "dark"]
+          : measurementColor(m),
         ...(logger && m === "Water Temperature" ? { dash: "ShortDash" as const } : {}),
         ...(note ? { note: note.note, hidden: note.hidden } : {}),
         axis: axisOf(unit, m),

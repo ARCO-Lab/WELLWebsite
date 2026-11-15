@@ -67,7 +67,7 @@ from api.validation import bad_text
 from db.database import db
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ, check_site_years
+from utils.timezone import EST_TZ, check_site_years, iso_time
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
 LADDER = (600, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600)
@@ -301,7 +301,10 @@ def tile_answer(bucket, start, end, series, now):
 
 def parse_filters(args):
     """A request's series filters -> ({"st", "m", "k"}: a list, or None for no filter; the groups the series keys
-    name). Raises ValueError, with the message for the 400, for a malformed key or too many values."""
+    name). Raises ValueError, with the message for the 400, for a malformed key or too many values, and for control
+    characters in group_type too (unknown groups are dropped, but such text is refused as on every route)."""
+    if any(bad_text(g) for g in args.getlist("group_type")):
+        raise ValueError("group_type values may not contain control characters")
     filters = {}
     for name, param in (("st", "station_id"), ("m", "measurement_type"), ("k", "series")):
         values = [v for v in args.getlist(param) if v]
@@ -346,7 +349,7 @@ def parse_bucket(value):
 
 
 def parse_iso(value):
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return iso_time(value)
 
 
 def local_naive(parsed):

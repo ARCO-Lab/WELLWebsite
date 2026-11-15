@@ -231,7 +231,7 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Dew Point"));
   assert.notEqual(measurementColor("Air Temperature"), measurementColor("Soil Temperature"));
   assert.equal(measurementColor("Something new"), measurementColor("Something new")); // unknown: stable too
-  assert.equal(seriesType("sum"), "area"); // stepped
+  assert.equal(seriesType("sum"), "column"); // rain as bars
   assert.equal(seriesType("vector_mean"), "scatter");
   assert.equal(seriesType("mean"), "line");
   assert.equal(compassLabel(225), "225° (SW)");
@@ -251,6 +251,7 @@ test("chart style: a fixed colour per measurement, how each kind is drawn, and t
 
 // ---- one chart per card: its series and axes ----
 import { cardSeries } from "../src/utils/cardSeries.ts";
+import { LOGGER_PALETTE } from "../src/utils/chartStyle.ts";
 
 test("cardSeries: every selected measurement in one chart, one y-axis per unit, in a fixed order", () => {
   const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }],
@@ -263,15 +264,14 @@ test("cardSeries: every selected measurement in one chart, one y-axis per unit, 
   assert.equal(series.find((s) => s.measurement === "Rain").agg, "sum");
 });
 
-test("cardSeries: loggers share one chart, a colour per logger, temperature dashed, two axes", () => {
+test("cardSeries: loggers share one chart, a hue per logger (level dark, temperature light and dashed), two axes", () => {
   const { series, axes } = cardSeries("Logger", [{ id: "2577531", name: "Logger 1" }, { id: "2577534", name: "Logger 4" }],
     ["Water Temperature", "Water Surface Elevation", "All Loggers"]);
   assert.deepEqual(series.map((s) => s.name), [
     "Logger 1 · Water Surface Elevation (m asl)", "Logger 1 · Water Temperature (°C)",
     "Logger 4 · Water Surface Elevation (m asl)", "Logger 4 · Water Temperature (°C)",
   ]);
-  assert.equal(series[0].color, series[1].color);
-  assert.notEqual(series[0].color, series[2].color);
+  assert.deepEqual(series.map((s) => s.color), [LOGGER_PALETTE[0].dark, LOGGER_PALETTE[0].light, LOGGER_PALETTE[1].dark, LOGGER_PALETTE[1].light]);
   assert.deepEqual(series.map((s) => s.dash ?? ""), ["", "ShortDash", "", "ShortDash"]);
   assert.deepEqual(axes, [{ unit: "m asl", measurements: ["Water Surface Elevation"] }, { unit: "°C", measurements: ["Water Temperature"] }]);
 });
@@ -284,6 +284,22 @@ test("cardSeries: faulty sensors are noted, TSS starts hidden; nothing selected 
   assert.deepEqual(cardSeries("Logger", [{ id: "1", name: "Logger 1" }], []).series, []);
 });
 
+test("cardSeries: wind direction is not drawn on the weather chart (the wind rose shows it)", () => {
+  const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }], ["Wind Direction", "Wind Speed"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Wind Speed"]);
+  assert.deepEqual(axes.map((a) => a.unit), ["m/s"]);
+  assert.deepEqual(cardSeries("Weather", [{ id: "22051538", name: "Weather station" }], ["Wind Direction"]).series, []);
+});
+
+test("logger palette: every shade at least 3:1 on white, the five hues all different", () => {
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  for (const { dark, light } of LOGGER_PALETTE) {
+    assert.ok(1.05 / (lum(dark) + 0.05) >= 4.5, dark);
+    assert.ok(1.05 / (lum(light) + 0.05) >= 3, light);
+  }
+  assert.equal(new Set(LOGGER_PALETTE.flatMap((p) => [p.dark, p.light])).size, 10);
+});
+
 test("guarded: a callback's exception is reported, not thrown; otherwise it runs as usual", async () => {
   const { guarded } = await import("../src/lib/guarded.ts");
   const seen = [];
@@ -292,4 +308,56 @@ test("guarded: a callback's exception is reported, not thrown; otherwise it runs
   const bad = guarded(() => { throw new Error("boom"); }, (e) => seen.push(`reported ${e.message}`));
   assert.doesNotThrow(() => bad());
   assert.deepEqual(seen, [3, "reported boom"]);
+});
+
+test("range bar: a tiny window still slides from its middle and resizes from just outside it", async () => {
+  const { barPart, MIN_GRAB_PX, HANDLE_PX } = await import("../src/lib/rangeBar.ts");
+  // A two-hour window of a year on a 700 px bar: a fraction of a pixel wide
+  const a = 400, b = 400.2;
+  assert.equal(barPart(400.1, a, b), "window");
+  assert.equal(barPart(400 - MIN_GRAB_PX / 2 + 1, a, b), "window");
+  assert.equal(barPart(400 + MIN_GRAB_PX / 2 - 1, a, b), "window");
+  assert.equal(barPart(400 - MIN_GRAB_PX / 2 - HANDLE_PX / 2, a, b), "start");
+  assert.equal(barPart(400 + MIN_GRAB_PX / 2 + HANDLE_PX / 2, a, b), "end");
+  assert.equal(barPart(300, a, b), "track");
+  // Between MIN_GRAB_PX and that plus two handles: the middle slides, the handles take their outer side
+  assert.equal(barPart(430, 420, 440), "window");
+  assert.equal(barPart(415, 420, 440), "start");
+  assert.equal(barPart(445, 420, 440), "end");
+  // A wide window: as before
+  assert.equal(barPart(105, 100, 300), "start");
+  assert.equal(barPart(200, 100, 300), "window");
+  assert.equal(barPart(295, 100, 300), "end");
+  assert.equal(barPart(50, 100, 300), "track");
+  // However narrow, some middle always slides
+  for (const w of [0, 0.5, 5, 19, 20, 25, 30, 47, 48, 60]) assert.equal(barPart(500 + w / 2, 500, 500 + w), "window", `${w} px`);
+});
+
+test("wind rose: the calm share is the slowest class's percent summed over every direction", async () => {
+  const { calmPercent } = await import("../src/utils/windRose.ts");
+  const data = {
+    sectors: ["N", "E", "S", "W"],
+    speed_classes: [{ name: "<0.5 m/s", from: 0, to: 0.5 }, { name: "0.5-2 m/s", from: 0.5, to: 2 }],
+    roses: { "Wind Speed": { total: 100, counts: [[2, 3, 1, 4], [20, 30, 25, 15]], percent: [[2, 3, 1, 4], [20, 30, 25, 15]] } },
+  };
+  assert.equal(calmPercent(data, "Wind Speed"), 10);
+  assert.equal(calmPercent(data, "Gust Speed"), null); // no rose for it
+  assert.equal(calmPercent({ ...data, roses: { "Wind Speed": { ...data.roses["Wind Speed"], total: 0 } } }, "Wind Speed"), null);
+  assert.equal(calmPercent(null, "Wind Speed"), null);
+});
+
+test("range bar: a tiny window at either end of the bar stays on it, with both handles on it and usable", async () => {
+  const { barPart, grabSpan, handleAt, MIN_GRAB_PX, HANDLE_PX } = await import("../src/lib/rangeBar.ts");
+  const lo = 0, hi = 700;
+  for (const [a, b] of [[0, 0.3], [699.7, 700], [350, 350.3]]) {
+    const [ga, gb] = grabSpan(a, b, lo, hi);
+    assert.ok(gb - ga === MIN_GRAB_PX, `${a}: ${ga}-${gb}`); // drawn the minimum width, never negative
+    assert.ok(ga - HANDLE_PX >= lo && gb + HANDLE_PX <= hi, `${a}: handles fit`); // and both handles on the bar
+    for (const i of [0, 1]) { const h = handleAt(i, a, b, lo, hi); assert.ok(h >= lo && h <= hi); }
+    assert.equal(barPart((ga + gb) / 2, a, b, lo, hi), "window");
+    assert.equal(barPart(ga - HANDLE_PX / 2, a, b, lo, hi), "start"); // on the bar
+    assert.equal(barPart(gb + HANDLE_PX / 2, a, b, lo, hi), "end"); // on the bar
+  }
+  // A wide window at an end is left as it is
+  assert.deepEqual(grabSpan(0, 100, lo, hi), [0, 100]);
 });

@@ -6,10 +6,30 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime, timedelta
 
 import sentry_sdk
 
 from utils.sentry import capture_job_error
+
+# The exit code of a script the scheduler runs (scripts/upload_data.py) when its settings stop it: a setting is
+# missing or wrong, or the server rejected its credentials. Retrying won't help until someone changes a setting, so
+# the scheduler reports it as a SettingsError carrying the script's own message (settings_error), not as a
+# CalledProcessError.
+SETTINGS_ERROR_EXIT = 3
+
+
+class SettingsError(RuntimeError):
+    """A job can't run until a setting is fixed. The message says which, and what to do."""
+
+
+def settings_error(exc):
+    """The SettingsError for a script that exited SETTINGS_ERROR_EXIT (a CalledProcessError): its last stdout line
+    starting with ERROR:, without that prefix, or a general message if it printed none."""
+    lines = [line.strip()[len("ERROR:"):].strip() for line in (exc.output or "").splitlines()
+             if line.strip().startswith("ERROR:")]
+    script = os.path.basename(str(exc.cmd[1])) if isinstance(exc.cmd, (list, tuple)) and len(exc.cmd) > 1 else "job"
+    return SettingsError(lines[-1] if lines else f"{script} stopped: its settings need fixing (see its log)")
 
 
 def run_in_background(job, log=print, name=None, on_skip=None):
@@ -215,3 +235,47 @@ def record_uploaded_month(path, year, month):
     with open(tmp, "w") as f:
         json.dump({"uploaded_months": sorted(months)}, f, indent=2)
     os.replace(tmp, path)
+
+
+# download_data.py's ATTENTION: lines (sampling rows a newer file no longer has, corrections held back), kept for the
+# daily digest, which lists those of its 24 h; with the logs, so they survive a worker restart.
+ATTENTION_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs",
+                              "sampling_attention.json")
+ATTENTION_KEEP = timedelta(days=14)
+
+
+def load_attention(path=ATTENTION_PATH):
+    """The recorded ATTENTION: lines, [{"at": aware ISO time, "text": the line without "ATTENTION: "}], oldest first;
+    empty if none were recorded. A damaged file raises ValueError."""
+    try:
+        with open(path) as f:
+            entries = json.load(f)
+    except FileNotFoundError:
+        return []
+    if not isinstance(entries, list) or not all(isinstance(e, dict) and "at" in e and "text" in e for e in entries):
+        raise ValueError(f"{path} isn't a list of ATTENTION: entries")
+    return entries
+
+
+def record_attention(lines, now, path=ATTENTION_PATH):
+    """Add the ATTENTION: lines among `lines` to `path` with the time `now` (aware), dropping entries older than
+    ATTENTION_KEEP; written atomically. A damaged file is replaced (its lines were in the log and Sentry already).
+    Returns how many were added. Raises OSError if it can't be written."""
+    new = [{"at": now.isoformat(timespec="seconds"), "text": line[len("ATTENTION:"):].strip()}
+           for line in lines if line.startswith("ATTENTION:")]
+    if not new:
+        return 0
+    try:
+        kept = [e for e in load_attention(path) if datetime.fromisoformat(e["at"]) >= now - ATTENTION_KEEP]
+    except ValueError:
+        kept = []
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(kept + new, f, indent=2)
+    os.replace(tmp, path)
+    return len(new)
+
+
+def recent_attention(since, path=ATTENTION_PATH):
+    """The ATTENTION: entries recorded since `since` (aware), oldest first."""
+    return [e for e in load_attention(path) if datetime.fromisoformat(e["at"]) >= since]

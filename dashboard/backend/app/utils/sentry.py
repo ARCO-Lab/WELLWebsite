@@ -210,11 +210,58 @@ def _unhandled_request_error(event):
     return any((value.get("mechanism") or {}).get("type") == "flask" for value in values)
 
 
+# gunicorn's worker signal handlers, which end a worker with sys.exit: handle_abort when the arbiter stops a worker
+# that missed its --timeout heartbeat, handle_quit on SIGQUIT or SIGINT.
+GUNICORN_EXIT_HANDLERS = ("handle_abort", "handle_quit")
+# What a worker stopped by handle_abort is reported as (a warning, at most once per REPEAT_AFTER_S per process)
+WORKER_TIMEOUT_MESSAGE = "gunicorn worker timed out (aborted)"
+
+
+def gunicorn_worker_exit(event, exc=None):
+    """Which of GUNICORN_EXIT_HANDLERS raised the event's SystemExit, or None if it isn't a gunicorn worker's exit.
+
+    It surfaces in whatever the worker was doing. A sync worker caught it while reading a request and logged it as
+    "Error handling request", which the logging integration sent as an error (WELL-BACKEND-2). A stop on request
+    (handle_quit) is a restart, not a problem. An abort is a real worker timeout: under gthread the worker's main loop
+    stopped answering for --timeout seconds, which is worth knowing about, but as a warning, not an error per
+    worker."""
+    if exc is not None and not isinstance(exc, SystemExit):
+        return None
+    for value in (event.get("exception") or {}).get("values") or []:
+        frames = (value.get("stacktrace") or {}).get("frames") or []
+        if value.get("type") == "SystemExit" and frames:
+            innermost = frames[-1]
+            handler = innermost.get("function")
+            if str(innermost.get("module") or "").startswith("gunicorn.workers.") and handler in GUNICORN_EXIT_HANDLERS:
+                return handler
+    return None
+
+
+def _worker_timeout_warning(event):
+    """The aborted worker's event as a WORKER_TIMEOUT_MESSAGE warning, with its stack trace (where the worker was
+    stuck); None when one was already sent in the last REPEAT_AFTER_S."""
+    if not _first_in_a_while(("gunicorn", "handle_abort")):
+        return None
+    event["level"] = "warning"
+    for value in event["exception"]["values"]:
+        if value.get("type") == "SystemExit":
+            value["value"] = WORKER_TIMEOUT_MESSAGE
+    return event
+
+
 def before_send(event, hint=None):
-    """Strip what could identify a visitor or leak a credential before an event leaves the process, and drop an
-    unhandled request error already sent in the last REPEAT_AFTER_S for the same path, type and message: a client
-    repeating a request that fails would otherwise send an event per request and use up the monthly quota."""
+    """Strip what could identify a visitor or leak a credential before an event leaves the process, drop a gunicorn
+    worker's stop and turn its abort into a throttled warning (gunicorn_worker_exit), and drop an unhandled request
+    error already sent in the last REPEAT_AFTER_S for the same path, type and message: a client repeating a request
+    that fails would otherwise send an event per request and use up the monthly quota."""
     exc = ((hint or {}).get("exc_info") or (None, None))[1]
+    handler = gunicorn_worker_exit(event, exc)
+    if handler == "handle_quit":
+        return None
+    if handler == "handle_abort":
+        event = _worker_timeout_warning(event)
+        if event is None:
+            return None
     if exc is not None and _unhandled_request_error(event):
         path = str((event.get("request") or {}).get("url", "")).split("?")[0]
         if not _first_in_a_while(("request", path, type(exc).__name__, failure_signature(exc))):

@@ -16,7 +16,7 @@ from db.database import db
 from db.models import ExportJob, SamplingMeasurement, SensorMeasurement
 from db.ordering import bytewise, sampling_order
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ, check_site_years, est_now
+from utils.timezone import EST_TZ, check_site_years, est_now, iso_time
 
 ALLOWED_DOMAINS = {"sensor", "sampling"}
 SENSOR_GROUPS = ("Weather", "Quality", "Logger")
@@ -295,8 +295,8 @@ def normalize_export_payload(payload: Dict) -> Dict:
         raise ExportValidationError("start and end must be ISO datetime strings")
 
     try:
-        start_in = datetime.fromisoformat(start)
-        end_in = datetime.fromisoformat(end)
+        start_in = iso_time(start)
+        end_in = iso_time(end)
         # recorded_at is naive America/Toronto wall-clock time. Compared with an aware time, PostgreSQL reads it in
         # the session's time zone: America/New_York on the VM (the same rules, so no shift), but in any other zone
         # the export would be hours off. So aware times become site wall-clock time here, before they are compared

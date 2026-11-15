@@ -39,7 +39,7 @@ COUNTS_SUFFIX = ".counts.json"
 
 # Which tables to leave out (BACKUP_EXCLUDE_TABLES, read by exclusion_setting). "auto" (the default) leaves out
 # only those the connecting role can't read, since pg_dump locks and reads every table it dumps and would fail on
-# them; a role that can read everything (on the VM the app connects as postgres) dumps everything. A comma-separated
+# them; a role that can read everything (on the VM well_app, which owns every table) dumps everything. A comma-separated
 # list, or an empty value (exclude nothing), overrides it.
 AUTO_EXCLUDE = "auto"
 # Tables a dump must hold data for, or it counts as failed.

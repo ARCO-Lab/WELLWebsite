@@ -278,6 +278,15 @@ test("loader: least recently used tiles go first when the cache is full", async 
 
 // ---- the chart controller ----
 
+// One series at the controller's overview bucket over its extent, as drawn from the loader's tiles: what fitting and
+// the first view rely on (the chart's own points are lastData)
+function overviewOf(c, loader, key) {
+  const ovB = c.ovB();
+  const tiles = [...loader.loadedTiles(key, ovB)];
+  const pts = composeSeries(segmentsFor([{ bucketS: ovB, tiles }]), (b, i) => loader.tile(key, b, i), () => () => null);
+  return pts.filter((p) => p.x >= c.extent.start && p.x <= c.extent.end);
+}
+
 const now = Date.parse("2026-11-11T17:00:00Z");
 const extent = { start: Date.parse("2025-05-08T04:00:00Z"), end: now };
 const twoDays = { start: now - 2 * D, end: now };
@@ -558,7 +567,7 @@ test("controller: opens on where the data is, keeps the navigator's extent, and 
   assert.equal(c.window.end, to);
   assert.deepEqual(c.extent, range); // the navigator still covers both days
   assert.equal(c.ovB(), 600); // two days at 10-minute readings from the start
-  assert.equal(c.overview(A).filter((p) => p.y !== null).length, (to - from) / 600e3);
+  assert.equal(overviewOf(c, loader, A).filter((p) => p.y !== null).length, (to - from) / 600e3);
   // Reset returns to the fitted window; after the user moves, new data doesn't move it
   c.pan(-0.5, "key");
   await sleep(40);
@@ -835,7 +844,7 @@ test("a narrow chart over two days draws at once: coarser tiles reaching past th
   assert.equal(srv.calls.length, 1);
   assert.equal(c.ovB(), 1800);
   assert.notEqual(c.snapshot().shownBucket, null);
-  assert.ok(c.overview(A).some((p) => p.y !== null));
+  assert.ok(overviewOf(c, loader, A).some((p) => p.y !== null));
   assert.ok([...c.lastData.series.get(A)].some((p) => p.y !== null && p.x >= range.start && p.x <= range.end));
   c.dispose();
 });
@@ -857,9 +866,9 @@ test("widening the range replaces coarser tiles worked out from part of their fi
   await srv.settle();
   await sleep(20);
   await srv.settle();
-  // Every bucket of the navigator's line over the wide range has a value (the fake server has data everywhere)
+  // Every bucket of the overview over the wide range has a value (the fake server has data everywhere)
   const b = c.ovB();
-  const pts = c.overview(A).filter((p) => p.y !== null);
+  const pts = overviewOf(c, loader, A).filter((p) => p.y !== null);
   const from = wide.start + b * 1000, to = narrow.start + 3 * D;
   const missing = [];
   for (let t = from; t < to; t += b * 1000) if (!pts.some((p) => Math.abs(p.x - (t + b * 500)) < b * 1000)) missing.push(new Date(t).toISOString());
@@ -1000,8 +1009,107 @@ test("composeSeries: no line break across the fall-back hour, where the API labe
   assert.equal(pts.some((p) => p.y === null), false);
 });
 
+test("the arrows page by exactly one window: adjacent, as long, and stopped (still as long) at the range's edges", () => {
+  const loader = new SeriesLoader(async () => []);
+  const range = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-20T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-06T23:30:00Z"), end: Date.parse("2026-09-12T13:29:00Z") }; // Sep 6 19:30 - Sep 12 09:29
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  const span = w0.end - w0.start;
+  c.page(-1);
+  assert.deepEqual(c.window, { start: w0.start - span, end: w0.start });
+  c.page(1);
+  assert.deepEqual(c.window, w0);
+  c.page(1);
+  assert.deepEqual(c.window, { start: w0.end, end: w0.end + span }); // the next one
+  c.page(1); // past the range's end: stops at it, as long as before
+  assert.deepEqual(c.window, { start: range.end - span, end: range.end });
+  c.page(1);
+  assert.deepEqual(c.window, { start: range.end - span, end: range.end });
+  for (let i = 0; i < 6; i++) c.page(-1); // and at the start
+  assert.deepEqual(c.window, { start: range.start, end: range.start + span });
+  c.dispose();
+});
+
 test("the proxy's 429 for too many requests in flight reads as its message (the wind rose shows it)", async () => {
   const message = "Too many requests from your address. Please wait a moment and try again.";
   const res = new Response(JSON.stringify({ error: message }), { status: 429, headers: { "Retry-After": "2" } });
   assert.equal((await errorFrom(res, "the wind rose")).message, message);
+});
+
+// ---- holding ‹ › ----
+
+// A clock whose frames and timers run when told to
+function fakeClock() {
+  let t = 0, id = 0;
+  const frames = new Map(), timers = new Map();
+  return {
+    now: () => t,
+    frame: (cb) => { frames.set(++id, cb); return id; },
+    cancelFrame: (i) => frames.delete(i),
+    every: (ms, cb) => { timers.set(++id, { ms, cb, next: t + ms }); return id; },
+    stopEvery: (i) => timers.delete(i),
+    advance(ms, step = 16) { // run frames every `step` ms and due timers, for `ms`
+      for (const end = t + ms; t < end;) {
+        t += step;
+        const due = [...frames.values()]; frames.clear(); for (const cb of due) cb();
+        for (const tm of timers.values()) while (tm.next <= t) { tm.next += tm.ms; tm.cb(); }
+      }
+    },
+  };
+}
+
+test("holding ‹ ›: eases up from slow to a steady speed, one request after the release, stops at the range's edge", async () => {
+  const { holdSpeed, startSlide, START_SPEED, TOP_SPEED, EASE_MS } = await import("../src/lib/holdSlide.ts");
+  assert.equal(holdSpeed(0), START_SPEED);
+  assert.equal(holdSpeed(EASE_MS), TOP_SPEED);
+  assert.ok(holdSpeed(EASE_MS / 2) > START_SPEED && holdSpeed(EASE_MS / 2) < TOP_SPEED);
+  for (let ms = 0; ms < EASE_MS; ms += 100) assert.ok(holdSpeed(ms + 100) >= holdSpeed(ms)); // never slows down
+
+  const srv = fakeServer();
+  const loader = new SeriesLoader(srv.fetchTiles);
+  const range = { start: Date.parse("2026-08-01T04:00:00Z"), end: Date.parse("2026-11-01T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-02T04:00:00Z") };
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  c.activate();
+  await sleep(60);
+  await srv.settle();
+  const n0 = srv.calls.length;
+  const clock = fakeClock();
+  const stop = startSlide(c, 1, clock, false);
+  clock.advance(2000);
+  const day = 86_400_000;
+  // In 2 s: about 0.25-2 windows a second, eased, so between 1.5 and 4 windows later, and still a day long
+  const moved = (c.window.start - w0.start) / day;
+  assert.ok(moved > 1.5 && moved < 4, `${moved} windows`);
+  assert.equal(c.window.end - c.window.start, day);
+  assert.equal(c.inGesture, true);
+  await sleep(60);
+  assert.equal(srv.calls.length, n0); // nothing asked for while held
+  stop();
+  assert.equal(c.inGesture, false);
+  await sleep(60);
+  assert.ok(srv.calls.length - n0 <= 1);
+  await srv.settle();
+  // Held towards the start: slides there and stops by itself
+  const stop2 = startSlide(c, -1, clock, false);
+  clock.advance(60_000);
+  assert.equal(c.window.start, range.start);
+  assert.equal(c.inGesture, false);
+  stop2(); // harmless after it stopped
+  c.dispose();
+});
+
+test("holding ‹ › with reduced motion steps a window at a time", async () => {
+  const { startSlide, STEP_EVERY_MS } = await import("../src/lib/holdSlide.ts");
+  const loader = new SeriesLoader(async () => []);
+  const range = { start: Date.parse("2026-08-01T04:00:00Z"), end: Date.parse("2026-11-01T04:00:00Z") };
+  const w0 = { start: Date.parse("2026-09-01T04:00:00Z"), end: Date.parse("2026-09-02T04:00:00Z") };
+  const c = new ChartController("card", [A], w0, range, loader, syncFrame, 30);
+  const clock = fakeClock();
+  const stop = startSlide(c, 1, clock, true);
+  assert.equal(c.window.start, w0.end); // one window at once
+  clock.advance(STEP_EVERY_MS * 2 + 10);
+  assert.equal(c.window.start, w0.end + 2 * 86_400_000); // and one more per step
+  stop();
+  c.dispose();
 });

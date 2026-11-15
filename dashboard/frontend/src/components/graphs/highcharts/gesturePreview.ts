@@ -101,7 +101,7 @@ export function bitmapPreview(chart: Highcharts.Chart, host: HTMLElement): Gestu
 // ---- The canvas preview ----
 
 /** One series as the canvas preview paints it: points in time order (y null: a gap), and how it is drawn. */
-export interface PaintSeries { id: string; points: { x: number; y: number | null }[]; kind: 'line' | 'area' | 'dots' }
+export interface PaintSeries { id: string; points: { x: number; y: number | null }[]; kind: 'line' | 'bars' | 'dots' }
 
 const MAX_CANVAS_PX = 4096; // the widest a painted canvas gets (CSS px): room to pan without painting again
 const ZOOM_MARGIN = 0.6; // while zooming, windows painted on each side
@@ -147,53 +147,35 @@ export function canvasPreview(chart: Highcharts.Chart, host: HTMLElement, series
       for (let i = from; i <= to; i++) { const y = pts[i].y; if (y !== null) g.fillRect(X(pts[i].x) - 1.5, Y(y) - 1.5, 3, 3); }
       return;
     }
-    // Rain is drawn as Highcharts does with step 'center': flat across each bucket, changing halfway between two
-    const stepped = ps.kind === 'area';
-    const to_ = (i: number) => { // the path from point i-1 to point i
-      const x = X(pts[i].x), y = Y(pts[i].y as number);
-      if (stepped) {
-        const mid = (X(pts[i - 1].x) + x) / 2;
-        g.lineTo(mid, Y(pts[i - 1].y as number));
-        g.lineTo(mid, y);
+    if (ps.kind === 'bars') { // rain: a bar per bucket from 0, as wide as the space to its neighbours (as Highcharts draws columns)
+      const y0 = Y(0);
+      for (let i = from; i <= to; i++) {
+        const y = pts[i].y;
+        if (y === null || y <= 0) continue;
+        const x = X(pts[i].x);
+        const left = i > 0 ? (x - X(pts[i - 1].x)) / 2 : Infinity, right = i < pts.length - 1 ? (X(pts[i + 1].x) - x) / 2 : Infinity;
+        const half = Math.min(left, right, 40);
+        const w = Math.max(1, (Number.isFinite(half) ? half : 1.5) * 2);
+        g.fillRect(x - w / 2, Y(y), w, y0 - Y(y));
       }
-      g.lineTo(x, y);
-    };
-    g.lineWidth = stepped ? 1 : 1.5;
+      return;
+    }
+    g.lineWidth = 1.5;
     g.beginPath();
     for (let i = from; i <= to; i++) {
       const y = pts[i].y;
       if (y === null) continue;
       const prev = i > from ? pts[i - 1].y : null;
       if (prev === null) g.moveTo(X(pts[i].x), Y(y));
-      else to_(i);
+      else g.lineTo(X(pts[i].x), Y(y));
     }
     g.stroke();
     // A reading between two gaps (a line can't show it): a dot, as the chart marks it
-    if (!stepped) {
-      for (let i = from; i <= to; i++) {
-        if (pts[i].y === null) continue;
-        const before = i === 0 || pts[i - 1].y === null, after = i === pts.length - 1 || pts[i + 1].y === null;
-        if (before && after) g.fillRect(X(pts[i].x) - 1.5, Y(pts[i].y as number) - 1.5, 3, 3);
-      }
-      return;
-    }
-    // Rain: the same steps, filled down to 0
-    const y0 = Y(0);
-    g.globalAlpha = 0.35;
-    g.beginPath();
-    let open = -1;
     for (let i = from; i <= to; i++) {
-      const y = pts[i].y;
-      if (y === null) {
-        if (open >= 0) { g.lineTo(X(pts[i - 1].x), y0); g.closePath(); open = -1; }
-        continue;
-      }
-      if (open < 0) { g.moveTo(X(pts[i].x), y0); g.lineTo(X(pts[i].x), Y(y)); open = i; }
-      else to_(i);
+      if (pts[i].y === null) continue;
+      const before = i === 0 || pts[i - 1].y === null, after = i === pts.length - 1 || pts[i + 1].y === null;
+      if (before && after) g.fillRect(X(pts[i].x) - 1.5, Y(pts[i].y as number) - 1.5, 3, 3);
     }
-    if (open >= 0) { g.lineTo(X(pts[to].x), y0); g.closePath(); }
-    g.fill();
-    g.globalAlpha = 1;
   };
 
   const paint = (base: Range, zooming: boolean) => {

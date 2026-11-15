@@ -2,11 +2,13 @@
 // built-in test runner:   npm test
 // The first test is the crash Sentry reported on /api/series: a browser reading slowly while the backend finishes
 // and closes the connection (as gunicorn does when a worker restarts or an idle connection times out). With fetch
-// on Node 22 that killed the server with an uncaught `AssertionError: assert(!this.paused)`.
+// on Node 22 that killed the server with an uncaught `AssertionError: assert(!this.paused)`. The next two are the
+// same case with a chunked body and with a body that has no length.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
 import { once } from "node:events";
 import { proxyToBackend, setRateLimiter } from "../src/lib/proxyBackend.ts";
 import { DEFAULT_LIMITS, RateLimiter } from "../src/lib/rateLimit.ts";
@@ -19,9 +21,10 @@ let backendUrl;
 const backendEvents = []; // what the backend saw, per request: "finished" or "closed early"
 const backendRequests = [];
 
-// Sends SIZE bytes with Content-Length, then closes the connection (the case that crashed fetch). /break stops
-// half way, /endless sends a chunk every few milliseconds until the connection is closed, and a path with
-// ?work=<ms> works that long before it answers {} (like Flask running a query, which can't notice the browser left).
+// Sends SIZE bytes with Content-Length (or chunked, for /chunked), then closes the connection (the case that
+// crashed fetch). /break stops half way, /endless sends a chunk every few milliseconds until the connection is
+// closed, and a path with ?work=<ms> works that long before it answers {} (like Flask running a query, which can't
+// notice the browser left).
 const answered = []; // the ?work= requests the backend has answered, in order
 function backendHandler(req, res) {
   let posted = "";
@@ -47,7 +50,9 @@ function backendHandler(req, res) {
       const timer = setInterval(() => res.write(CHUNK), 5);
       return res.on("close", () => clearInterval(timer));
     }
-    res.writeHead(200, { "content-type": "application/json", "content-length": SIZE, connection: "close" });
+    // /chunked leaves out Content-Length, so the body is sent chunked, as Flask streams CSV downloads
+    const length = req.url === "/chunked" ? {} : { "content-length": SIZE };
+    res.writeHead(200, { "content-type": "application/json", ...length, connection: "close" });
     let sent = 0;
     (function write() {
       while (sent < SIZE) {
@@ -152,6 +157,55 @@ test("a slow browser gets the whole body when the backend closes the connection 
       assert.equal(result.body.length, SIZE);
     }
   });
+  assert.deepEqual(errors, []);
+});
+
+// The same case with the other two ways an HTTP/1.1 body can end (undici's fix had to handle each separately):
+// chunked, as Flask streams /api/data and CSV exports, and no length at all, where the body ends when the backend
+// closes the connection.
+test("a slow browser gets the whole chunked body when the backend closes the connection (no crash)", async (t) => {
+  const url = await startProxy(t, "/chunked");
+  const errors = await captureErrors(async () => {
+    for (let i = 0; i < 3; i++) {
+      const result = await get(url, { pauseMs: 100, slowMs: 1 });
+      assert.equal(result.status, 200);
+      assert.equal(result.headers["transfer-encoding"], "chunked");
+      assert.equal(result.body.length, SIZE);
+    }
+  });
+  assert.deepEqual(errors, []);
+});
+
+test("a slow browser gets the whole body when the backend ends it by closing the connection (no crash)", async (t) => {
+  // node:http always sends a length or chunks, so this backend writes the response by hand, then ends the socket.
+  const eof = net.createServer((socket) => {
+    socket.once("data", () => {
+      socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n");
+      let sent = 0;
+      (function write() {
+        while (sent < SIZE) {
+          sent += CHUNK.length;
+          if (!socket.write(CHUNK)) return socket.once("drain", write);
+        }
+        socket.end();
+      })();
+    });
+  });
+  eof.listen(0);
+  await once(eof, "listening");
+  t.after(() => eof.close());
+  const url = await startProxy(t, "/series");
+  process.env.FLASK_API_URL = `http://127.0.0.1:${eof.address().port}`;
+  const results = [];
+  const errors = await captureErrors(async () => {
+    for (let i = 0; i < 3; i++) results.push(await get(url, { pauseMs: 100, slowMs: 1 }));
+  });
+  process.env.FLASK_API_URL = backendUrl;
+  for (const result of results) {
+    assert.equal(result.status, 200);
+    assert.equal(result.error, undefined);
+    assert.equal(result.body.length, SIZE);
+  }
   assert.deepEqual(errors, []);
 });
 

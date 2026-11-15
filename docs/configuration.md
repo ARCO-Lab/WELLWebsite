@@ -25,7 +25,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `DEPLOYMENT` | `DEV` | `PROD` makes the WordPress theme force HTTPS URLs (`home/wp-content/themes/well/functions.php`). |
 | `WP_HOME`, `WP_SITEURL` | none | Passed into the `wordpress` container. The stock image doesn't apply them by itself; they only take effect if `home/wp-config.php` (not in the repository) reads them. |
 | `DASHBOARD_URL` | `https://welldash.mcmaster.ca` | The dashboard address the WordPress theme links to and embeds. |
-| `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see [Host firewall](hosting.md#host-firewall-required)). |
+| `BACKEND_DATABASE_URL` | required | PostgreSQL URL for `backend`, `worker` and `export_worker` (it becomes their `DATABASE_URL`). PostgreSQL runs on the VM itself, not in Docker, so this points at the host (see [Host firewall](hosting.md#host-firewall-required)). Use the `well_app` role, not `postgres` ([Database roles](../dashboard/backend/README.md#database-roles)). |
 | `BACKEND_PORT` | must be `5000` | Only feeds the backend's `expose:` line. Gunicorn always listens on 5000 (`dashboard/backend/Dockerfile`), so any other value breaks the stack. |
 | `BACKEND_INTERNAL_URL` | none (use `http://backend:5000`) | How the dashboard's API routes reach Flask. It becomes the dashboard's `FLASK_API_URL`, which is fixed when the image is built, so a change needs a dashboard rebuild. |
 | `NEXT_PUBLIC_FLASK_API_URL` | none | Passed to the dashboard build and container, but no code reads it. |
@@ -52,6 +52,7 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 | `WQ_API_KEY` | required | WQData API key. |
 | `WQ_DEVICE_ID` | required | WQData device (the water quality sonde). |
 | `DATABASE_URL` | none | PostgreSQL URL. In Docker it is set from `BACKEND_DATABASE_URL` above; set it here only to run the backend or scripts outside Docker. |
+| `RESTORE_CHECK_DATABASE_URL` | `DATABASE_URL` | The role the restore drill (`scripts/restore_check.py`, in `worker`) creates, restores into and drops its throwaway database with: the `well_restore` role's URL on the `postgres` maintenance database (`postgresql://well_restore:<password>@<the host in BACKEND_DATABASE_URL>/postgres`); it has `CREATEDB` and no access to the live tables ([Database roles](../dashboard/backend/README.md#database-roles)). `well_app` has no `CREATEDB`, so without it the drill stops. |
 
 **API and exports**
 
@@ -102,6 +103,13 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
   `ALERT_DASHBOARD_URL` (`https://welldash.mcmaster.ca/`).
 - Sentry: `SENTRY_DSN` (unset turns reporting off), `SENTRY_ENVIRONMENT` (default `production`), `GIT_SHA` (optional
   release name). `SENTRY_COMPONENT` is set by `docker-compose.yml` for `worker` and `export_worker`.
+- Sentry errors as GitHub issues, every minute from the worker (off, with one line in its log at start-up, until both
+  tokens are set; the daily workflow runs either way): `SENTRY_API_TOKEN` (a Sentry auth token with only `org:read`,
+  `project:read` and `event:read`), `GITHUB_ISSUES_TOKEN` (a fine-grained GitHub token for this repository only, with
+  the *Issues: Read and write* permission and nothing else), `SENTRY_ORG` (default `well-cs`; every project in it is
+  checked), `GITHUB_ISSUES_REPO` (default `ARCO-Lab/WELLWebsite`), `SENTRY_SYNC_INTERVAL_S` (default `60`, at least
+  `30`), and `SENTRY_JUMP_FACTOR`, `SENTRY_JUMP_MIN`, `SENTRY_API_URL` as for the workflow. It logs to
+  `logs/sentry_github.log` ([Sentry errors as GitHub issues](../.github/workflows/README.md#sentry-errors-as-github-issues)).
 
 **Set for one command only, never in a file**
 

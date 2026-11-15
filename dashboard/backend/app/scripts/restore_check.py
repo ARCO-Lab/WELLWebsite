@@ -8,9 +8,8 @@
 #   docker compose exec worker python scripts/restore_check.py --file /app/backups/welldb-20261111-0315.dump
 #   docker compose exec worker python scripts/restore_check.py --drop-leftovers   only drop databases left behind
 #
-# Creating a database needs the CREATEDB privilege. On the VM the app connects as postgres, which has it. A role
-# without it can be granted it once (as postgres: ALTER ROLE <role> CREATEDB;), or RESTORE_CHECK_DATABASE_URL can
-# point at a role that has it, such as a dedicated well_restore role with CREATEDB where the database has one; that
+# Creating a database needs the CREATEDB privilege, which the app's role well_app (db/roles.sql) doesn't have. Point
+# RESTORE_CHECK_DATABASE_URL at the well_restore role from db/roles.sql (CREATEDB, no access to the live tables); that
 # role creates, restores into and drops the throwaway database, and the live counts are still read with
 # DATABASE_URL, in a read-only session.
 #
@@ -302,8 +301,8 @@ def drill(args):
     except (RestoreCheckError, ValueError, RuntimeError, OSError, psycopg2.Error) as e:
         hint = ""
         if isinstance(e, psycopg2.Error) and getattr(e, "pgcode", None) == "42501":
-            hint = (" (permission denied: creating a database needs CREATEDB; grant it to the app role or set "
-                    "RESTORE_CHECK_DATABASE_URL to a role that has it)")
+            hint = (" (permission denied: creating a database needs CREATEDB; set RESTORE_CHECK_DATABASE_URL to a "
+                    "role that has it, the well_restore role from db/roles.sql)")
         print(f"ERROR: restore check failed: {str(e).strip()}{hint}", file=sys.stderr)
         return 1
     finally:

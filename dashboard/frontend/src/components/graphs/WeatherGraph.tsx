@@ -117,7 +117,11 @@ const WeatherGraph = ({
       {series.length === 0 ? (
         <>
           <h3 className="mb-2 text-lg font-bold">Weather Station</h3>
-          <p className="text-sm text-muted">Tick a measurement under Weather Station in Filters to see its readings.</p>
+          <p className="text-sm text-muted">
+            {mappedWeather.includes("Wind Direction")
+              ? "Wind direction is shown on the wind rose (with Wind Speed or Gust Speed ticked, in the larger view). Tick another measurement under Weather Station in Filters to chart it."
+              : "Tick a measurement under Weather Station in Filters to see its readings."}
+          </p>
         </>
       ) : (
         <ChartErrorBoundary title="Weather Station">

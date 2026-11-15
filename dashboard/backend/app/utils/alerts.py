@@ -66,7 +66,7 @@ DEFAULT_REOPEN_HOURS = 6.0
 DEFAULT_DASHBOARD_URL = "https://welldash.mcmaster.ca/"
 DEFAULT_FLAP_CLEAR_MINUTES = 180.0
 FLAP_CLEAR_CAP = timedelta(hours=12)
-RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long is dropped
+RECOVERY_WINDOW = timedelta(hours=24)   # a recovery not emailed for this long is left to the daily digest
 # Low-severity kinds: their recovery waits for the next email that goes out anyway (or the daily digest, which lists
 # every recovery of the last 24 h), rather than sending one of its own. New alerts of these kinds are still emailed.
 DEFAULT_QUIET_KINDS = frozenset({SUSPECT_VALUES})
@@ -112,6 +112,7 @@ class Plan:
     absent: list = field(default_factory=list)        # open incidents whose condition is gone, not cleared yet
     steady: list = field(default_factory=list)        # flapped before, now present ALERT_REOPEN_HOURS: undamp
     recovered: list = field(default_factory=list)     # emailed incidents that cleared, recovery not yet emailed
+    renotified: list = field(default_factory=list)    # (reopened coarser incident, newer last email of its finer ones)
 
 
 def parse_positive(text, name, unit):
@@ -453,13 +454,14 @@ def suspect_conditions(freshness, recent, settings):
 
 
 def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, now, settings,
-         muted=lambda key: False):
+         muted=lambda key: False, superseded=None):
     """Compare the conditions found now with the incidents and decide what to store and email.
 
     conditions: {key: Condition}. held: key prefixes that can't be judged this run; their open incidents are left
     exactly as they are. open_incidents: incidents with resolved_at NULL. recently_closed: {key: incident} closed
     within ALERT_REOPEN_HOURS, newest per key. pending_recoveries: cleared, emailed incidents whose recovery email
-    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES).
+    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES). superseded: {key:
+    incident} closed as superseded, newest per key (utils/alert_state.superseded_incidents).
 
     - An incident clears (and its recovery is emailed) once its condition has been gone for ALERT_CLEAR_MINUTES.
       A condition that comes back within ALERT_REOPEN_HOURS of clearing reopens the same incident; if its recovery
@@ -473,21 +475,49 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
       emailed as new. A muted series' incidents close the same way.
+    - A coarser incident replaced by finer ones reopens when its condition comes back while those finer incidents
+      are still open (at any time, not only within ALERT_REOPEN_HOURS): its problem never went away, so it isn't
+      new, and its reminders and flap damping carry on. E.g. loggers silent all winter and the weather station
+      missing uploads now and then: each miss reopens "every LI-COR station silent" rather than emailing it as new.
+      It takes the newest email time of the finer incidents it replaces again, so its next reminder is counted from
+      the last email about the problem, not from its own.
+    - A suspect-values incident whose series has gone silent is replaced by the silence alert (superseded, no
+      "recovered" email): its readings can't be judged any more, and the silence is what needs acting on. If the
+      readings then come back still wrong, it reopens (no second "new") when it closed within ALERT_REOPEN_HOURS or
+      the silence alert that replaced it is open or cleared within ALERT_REOPEN_HOURS (handed_to_silence).
     """
     result = Plan()
     open_by_key = {i.incident_key: i for i in open_incidents}
     present = set(conditions)
     reopened = set()
+    renotified = {}   # id(incident) -> the newer email time it takes from its finer incidents
+    superseded = superseded or {}
 
     def is_held(key):
         return any(is_under(key, prefix) for prefix in held)
 
     for key, condition in conditions.items():
         incident = open_by_key.get(key)
-        if incident is None and key in recently_closed:
-            incident = recently_closed[key]
-            result.reopen.append(incident)
-            reopened.add(id(incident))
+        if incident is None:
+            replaced = superseded.get(key)
+            if replaced is not None and not (carried_on(replaced, open_incidents) or handed_to_silence(
+                    replaced, open_by_key, recently_closed, now, settings)):
+                replaced = None
+            candidates = [i for i in (recently_closed.get(key), replaced) if i is not None]
+            if candidates:   # the newest, if it both cleared and was superseded lately
+                incident = max(candidates, key=lambda i: aware(i.resolved_at))
+                result.reopen.append(incident)
+                reopened.add(id(incident))
+                if incident is replaced:
+                    # Emailed about through its finer incidents meanwhile: the next reminder counts from then.
+                    latest = max((aware(i.last_notified_at) for i in open_incidents
+                                  if i.incident_key.startswith(key + ":") and i.last_notified_at is not None),
+                                 default=None)
+                    # Not if it was never emailed itself: then it is still "new".
+                    last = aware(incident.last_notified_at)
+                    if latest is not None and last is not None and latest > last:
+                        result.renotified.append((incident, latest))
+                        renotified[id(incident)] = latest
         if incident is None:
             parent = next((i for k, i in open_by_key.items() if k not in present and key.startswith(k + ":")), None)
             result.open_new.append((condition, parent))
@@ -496,18 +526,20 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
         if (incident.flaps and id(incident) not in reopened and incident.present_since is not None
                 and now - aware(incident.present_since) >= settings.reopen_within):
             result.steady.append(incident)   # steady for hours: its real recovery is reported after the usual delay
-        if incident.last_notified_at is None:
+        last_email = renotified.get(id(incident)) or aware(incident.last_notified_at)
+        if last_email is None:
             result.notify_new.append(incident)
         elif (incident.reopened_at is not None or id(incident) in reopened) and incident.recovery_notified_at is not None:
             # Back after an emailed recovery: the next email about it is "back again", never a reminder.
             if incident.reopened_at is not None and now - aware(incident.reopened_at) >= settings.clear_after:
                 result.back_again.append(incident)
-        elif now - aware(incident.last_notified_at) >= settings.reminder:
+        elif now - last_email >= settings.reminder:
             result.remind.append(incident)
     for key, incident in open_by_key.items():
-        if key in present or is_held(key):
+        silenced = silence_covers(key, present)
+        if key in present or (is_held(key) and not silenced):
             continue
-        if muted(key) or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
+        if muted(key) or silenced or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
             result.supersede.append(incident)
         elif now - aware(incident.last_seen_at) >= clear_window(incident, settings):
             result.resolve.append(incident)
@@ -518,6 +550,41 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
     result.recovered += [i for i in pending_recoveries
                          if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
+
+
+def carried_on(incident, open_incidents):
+    """Whether a superseded incident's problem has been carried on by finer incidents ever since: one of them, keyed
+    under it, is open and was opened no later than the incident was closed (when the finer ones took over)."""
+    return any(i.incident_key.startswith(incident.incident_key + ":")
+               and aware(i.opened_at) <= aware(incident.resolved_at) for i in open_incidents)
+
+
+def handed_to_silence(incident, open_by_key, recently_closed, now, settings):
+    """Whether a superseded suspect-values incident should reopen when its condition is back: it closed within
+    ALERT_REOPEN_HOURS, or a silence incident covering its series, opened no later than it closed (the one that
+    replaced it), is open or cleared within ALERT_REOPEN_HOURS (recently_closed)."""
+    if incident.kind != SUSPECT_VALUES:
+        return False
+    if now - aware(incident.resolved_at) <= settings.reopen_within:
+        return True
+    covering = [open_by_key.get(k) or recently_closed.get(k) for k in silence_keys(incident.incident_key)]
+    return any(i is not None and aware(i.opened_at) <= aware(incident.resolved_at) for i in covering)
+
+
+def silence_keys(key):
+    """The silence keys covering a suspect-values key's series ("suspect:<vendor>:<station>:<measurement>"): the
+    series, its station and the vendor's whole site; empty for any other key."""
+    parts = key.split(":", 3)
+    if parts[0] != "suspect" or len(parts) < 4:
+        return []
+    vendor, station, measurement = parts[1:]
+    return [f"stale:{vendor}", f"stale:{vendor}:{station}", f"stale:{vendor}:{station}:{measurement}"]
+
+
+def silence_covers(key, present):
+    """Whether a suspect-values key ("suspect:<vendor>:<station>:<measurement>") is about a series that a silence
+    alert found now covers: the series itself, its station or the vendor's whole site."""
+    return any(k in present for k in silence_keys(key))
 
 
 def clear_window(incident, settings):

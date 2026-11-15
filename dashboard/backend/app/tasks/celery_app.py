@@ -2,12 +2,16 @@
 # Redis broker, the time and memory limits for exports, and the hourly cleanup schedule. The API imports it too,
 # to queue export jobs (api/routes/exports.py).
 from config import Config  # loads .env, so SENTRY_DSN is set before init_sentry reads it
+from utils import broker_outage
 from utils.sentry import init_sentry
 
 # Report errors to Sentry when SENTRY_DSN is set (utils/sentry.py). The export worker (`celery -A
 # tasks.celery_app...`) imports this module first, so its errors are tagged export_worker; in the API, which
 # also imports it, server.py has already started reporting and this call does nothing.
 init_sentry("export_worker")
+# Celery's retries while Redis is briefly down (a deploy recreating it) are logged as warnings, and only an outage
+# that lasts goes to Sentry, once (utils/broker_outage.py).
+broker_outage.install()
 
 from celery import Celery  # noqa: E402
 
@@ -19,6 +23,10 @@ def create_celery_app() -> Celery:
         backend=Config.CELERY_RESULT_BACKEND,
     )
     celery.conf.update(
+        # Keep retrying to reach Redis when the worker starts before it is up, as after a connection loss. Celery 5
+        # does this when it is unset too, by falling back to broker_connection_retry; set, it doesn't depend on that
+        # fallback, which Celery 6 drops.
+        broker_connection_retry_on_startup=True,
         task_track_started=True,
         worker_prefetch_multiplier=1,
         task_acks_late=True,
