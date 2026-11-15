@@ -636,6 +636,10 @@ How backend failures are reported:
   stdout line). So an outage that fails every 10-minute run sends about 24 events a day per vendor instead of 144,
   while a different error is still sent at once. This limit covers only these scheduler failures; Flask and Celery
   errors are sent each time.
+- A vendor failure that usually clears by itself (no answer, e.g. a DNS hiccup; a timeout; HTTP 5xx or 429) is only
+  logged until that vendor has failed `ALERT_VENDOR_FAILURES` ingestion runs in a row (default 3, half an hour, when
+  the email alerts report it down too), and sent from then on. Other vendor failures (HTTP 401, a reply we can't
+  read) are sent at once. LI-COR requests whose connection fails are also retried up to 3 times within the run.
 - A script run by hand (`docker compose exec worker python scripts/...`) reports its own uncaught errors, tagged
   with the container's `SENTRY_COMPONENT`.
 - A setting that stops the monthly Borealis upload (a `BOREALIS_*` value missing or wrong, or Borealis rejecting the

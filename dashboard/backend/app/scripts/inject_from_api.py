@@ -26,6 +26,10 @@
 #    doesn't move past the earliest unreadable record whose time is known, so it is read again by the next runs
 #    (not past one in a wrong unit: a swapped sensor would pin it; licor_backfill.py refills those). A
 #    WQData request that fails, or whose paging stalls, fails the run, like LI-COR's.
+#  - A failed vendor call goes to Sentry (report_failure), except one that may clear by itself (no answer, a
+#    timeout, an HTTP 5xx or a rate limit): that is only logged until the vendor has failed ALERT_VENDOR_FAILURES
+#    runs in a row (default 3, half an hour), when the email alerts also report it down. So one DNS or network blip
+#    sends nothing, and an outage that lasts is still sent (at most once an hour, utils/sentry.py).
 
 import sys
 import pathlib
@@ -45,8 +49,8 @@ from api.services.quality import QualityService
 from config import Config
 from utils.fetching import FMT, OVERLAP, RUN_LOOKBACK, UnreadableRecords, fetch_range, start_from_newest
 from utils.sentry import capture_job_error, capture_job_warning
-from utils.alerts import describe_vendor_error
-from utils.alert_state import fetched_until, record_fetched_until, record_vendor_result
+from utils.alerts import DEFAULT_VENDOR_FAILURES, describe_vendor_error, settings_from_env
+from utils.alert_state import fetched_until, record_fetched_until, record_vendor_result, vendor_statuses
 from utils.parsers import (LOGGER_CONFIG, QUALITY_PARAM_ID_MAP, SkippedRecords, licor_rows,  # noqa: F401 (re-exported)
                            parse_logger_entry, parse_quality_entry, parse_weather_entry, quality_rows)
 
@@ -246,8 +250,37 @@ def inject_quality(tz, now):
     print(f"[INFO] WQData: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(entries)} points, "
           f"{len(rows)} readings, {new} new")
     if error is not None:
-        # What was read is stored above; the run still fails, so the heartbeat and Sentry see the outage.
-        raise RuntimeError(f"WQData request failed: {describe_vendor_error(error)[2]}")
+        # What was read is stored above; the run still fails, so the heartbeat and Sentry see the outage. Chained,
+        # so report_failure can tell a transient failure (a timeout, say) from one that needs a fix.
+        raise RuntimeError(f"WQData request failed: {describe_vendor_error(error)[2]}") from error
+
+
+# Kinds of failed vendor call (utils/alerts.describe_vendor_error) that usually clear by themselves within minutes
+TRANSIENT_KINDS = ("network", "timeout", "server", "quota")
+
+
+def report_failure(source, error, log=print):
+    """Send a vendor's failed ingestion to Sentry, unless it may be transient (TRANSIENT_KINDS) and the vendor hasn't
+    yet failed ALERT_VENDOR_FAILURES runs in a row (as recorded in vendor_status); that is only logged. When the count
+    can't be read, it is sent: a database problem mustn't hide an outage. Returns whether it was sent."""
+    cause = error.__cause__ if error.__cause__ is not None else error
+    kind = describe_vendor_error(cause)[0]
+    if kind in TRANSIENT_KINDS:
+        try:
+            threshold = settings_from_env().vendor_failures
+        except ValueError:   # a bad ALERT_* value; check_alerts.py reports it
+            threshold = DEFAULT_VENDOR_FAILURES
+        try:
+            failures = (vendor_statuses().get(source) or {}).get("consecutive_failures") or 0
+        except Exception:
+            db.session.rollback()
+            failures = threshold
+        if failures < threshold:
+            log(f"[WARN] {source}: {kind} failure {failures} of {threshold} in a row; sent to Sentry only if it "
+                f"lasts {threshold} runs")
+            return False
+    capture_job_error(error, source=source)   # a no-op unless the scheduler turned Sentry on
+    return True
 
 
 def inject_all_new_data():
@@ -264,10 +297,10 @@ def inject_all_new_data():
                 db.session.rollback()
                 failed.append(name)
                 print(f"[ERROR] {name} ingestion failed: {e!r}")
-                capture_job_error(e, source=name)   # a no-op unless the scheduler turned Sentry on
+                report_failure(name, e)
         if failed:
             error = RuntimeError(f"ingestion failed for: {', '.join(failed)}")
-            error.already_reported = True   # each failure above went to Sentry with its own traceback
+            error.already_reported = True   # each failure above went to Sentry with its own traceback, or waits
             raise error
 
 

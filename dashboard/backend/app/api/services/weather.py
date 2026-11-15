@@ -42,8 +42,9 @@ class WeatherService:
         """One request for [start, end) (aware datetimes): (all records, whether LI-COR capped the response).
 
         It returns every sensor (weather and loggers), reports the cap
-        ("max_results": true at 100,000 records) instead of hiding it, retries briefly on rate limits and
-        server errors, and raises on any other HTTP error, or a reply without a "data" list (BadVendorResponse), so a
+        ("max_results": true at 100,000 records) instead of hiding it, retries briefly on rate limits, server errors
+        and failed connections (a DNS or network hiccup; not timeouts, which already took 2 minutes), and raises on
+        any other HTTP error, a connection still failing, or a reply without a "data" list (BadVendorResponse), so a
         failed fetch can't look like "no data".
         Use utils.fetching.fetch_range to read longer periods.
         """
@@ -53,10 +54,17 @@ class WeatherService:
             "start_date_time": start.astimezone(timezone.utc).strftime(fmt),
             "end_date_time": (end - timedelta(seconds=1)).astimezone(timezone.utc).strftime(fmt),
         }
-        for attempt in range(4):
-            response = requests.get(self.api_url, headers=self.get_headers(), params=params, timeout=120)
-            if response.status_code not in (429, 500, 502, 503, 504):
-                break
-            time.sleep(10 * (attempt + 1))
+        attempts = 4
+        for attempt in range(attempts):
+            try:
+                response = requests.get(self.api_url, headers=self.get_headers(), params=params, timeout=120)
+            except requests.exceptions.ConnectionError as e:
+                if isinstance(e, requests.exceptions.Timeout) or attempt == attempts - 1:
+                    raise
+            else:
+                if response.status_code not in (429, 500, 502, 503, 504):
+                    break
+            if attempt < attempts - 1:
+                time.sleep(10 * (attempt + 1))
         response.raise_for_status()
         return page_records(response.json())
