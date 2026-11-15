@@ -28,6 +28,7 @@ Dataverse rules this module follows:
 import hashlib
 import json
 import os
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -388,10 +389,22 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
     return ("unchanged" if outcome == "pending" else outcome), version
 
 
+class NoPublishedVersion(DataverseError):
+    """The dataset was published once but has no published version now (it was deaccessioned): unlike a dataset
+    never published yet, waiting won't help."""
+
+    def __init__(self, persistent_id):
+        self.action, self.status, self.server_message = f"Reading the published version of {persistent_id}", None, ""
+        Exception.__init__(self, f"{persistent_id} was published but has no published version now (deaccessioned): "
+                                 f"publish a new version, or point BOREALIS_SAMPLING_PERSISTENT_ID at the current "
+                                 f"dataset")
+
+
 def published_files(client, persistent_id, log=print):
-    """The files of the dataset's latest published version, or None if it was never published (so it has no files
-    anyone can import yet). Logs it when there is also an unpublished draft (files there are imported once it is
-    published)."""
+    """The files of the dataset's latest published version, or None if it was never published (no publicationDate
+    and only a draft), so it has no files anyone can import yet. Raises NoPublishedVersion for a dataset published
+    once whose versions are all deaccessioned (Dataverse then answers :latest-published with 404 too). Logs it when
+    there is also an unpublished draft (files there are imported once it is published)."""
     dataset = client.dataset(persistent_id)
     latest = dataset.get("latestVersion") or {}
     if latest.get("versionState") == "RELEASED":
@@ -402,6 +415,26 @@ def published_files(client, persistent_id, log=print):
             f"the dataset is published: publish the draft on Borealis.")
     published = client.published_version(persistent_id)
     if published is None:
+        if dataset.get("publicationDate") or latest.get("versionState") != "DRAFT":
+            raise NoPublishedVersion(persistent_id)
         log(f"WARNING: {persistent_id} has never been published, so there is nothing to import yet")
         return None
     return published.get("files") or []
+
+
+def is_sampling_file(datafile):
+    """Whether a dataset file is one the sampling download imports: an unrestricted WELLAncasterWatershed_*.xlsx,
+    .tab (how Dataverse lists an ingested table) or .csv, other than the template (WELLAncasterWatershed_SAMPLE)."""
+    filename = datafile.get("filename") or ""
+    return (filename.lower().startswith("wellancasterwatershed_") and not datafile.get("restricted", False)
+            and not re.match(r"WELLAncasterWatershed_SAMPLE\.(xlsx|tab|csv)", filename, re.IGNORECASE)
+            and filename.lower().endswith((".xlsx", ".tab", ".csv")))
+
+
+def draft_sampling_files(client, persistent_id):
+    """The names of the sampling files (is_sampling_file) in the dataset's draft, [] if it has no draft."""
+    latest = client.dataset(persistent_id).get("latestVersion") or {}
+    if latest.get("versionState") != "DRAFT":
+        return []
+    return [f["dataFile"]["filename"] for f in latest.get("files") or []
+            if is_sampling_file(f.get("dataFile") or {})]

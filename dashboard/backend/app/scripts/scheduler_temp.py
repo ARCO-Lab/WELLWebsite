@@ -198,6 +198,18 @@ NOT_PUBLISHED_NOTE = ("The sampling dataset has no published version yet, so the
                       "imported on the first run after a curator publishes it.")
 
 
+def report_pending(stdout):
+    """Record download_data.py's PENDING: lines (sampling files waiting in an unpublished draft) for the daily digest,
+    which lists them with the ATTENTION: lines. Not sent to Sentry: nothing is broken, a curator has to publish. The
+    download runs weekly, so the digest shows it once a week while the draft waits."""
+    lines = ["ATTENTION: " + line[len("PENDING:"):].strip() for line in (stdout or "").splitlines()
+             if line.startswith("PENDING:")]
+    try:
+        record_attention(lines, datetime.now(SITE_TZ))
+    except OSError as e:   # still in this log
+        timestamped_print_download(f"[WARN] Couldn't record the PENDING: lines for the daily digest: {e}")
+
+
 def run_download_data():
     """Run download_data.py. It downloads every new Borealis file and imports each one itself
     (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES, NO_NEW_FILES or NOT_PUBLISHED."""
@@ -213,6 +225,7 @@ def run_download_data():
         timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
         if status == "NOT_PUBLISHED":
             timestamped_print_download(f"[WARN] {NOT_PUBLISHED_NOTE}")
+            report_pending(result.stdout)
         return status
     except subprocess.TimeoutExpired as e:
         timestamped_print_download(f"[ERROR] download_data.py was stopped after {DOWNLOAD_TIMEOUT_S // 60} min without finishing")

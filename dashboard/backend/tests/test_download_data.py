@@ -159,7 +159,8 @@ class MainTests(TestCase):
                 mock.patch.object(download_data, "load_state", return_value=state), \
                 mock.patch.object(download_data, "save_state", side_effect=lambda s: saved.append(s)), \
                 mock.patch.object(download_data, "get_files_from_dataset",
-                                  return_value=None if files is None else list(files)), \
+                                  **({"side_effect": files} if isinstance(files, Exception)
+                                     else {"return_value": list(files)})), \
                 mock.patch.object(download_data, "process_single_file", side_effect=lambda f: f"/tmp/{f['id']}.xlsx"), \
                 mock.patch.object(download_data.os, "unlink"), \
                 mock.patch.object(download_data.subprocess, "run", side_effect=importer) as run, \
@@ -266,11 +267,18 @@ class MainTests(TestCase):
 
     def test_a_never_published_dataset_is_a_warning_not_a_failure(self):
         for argv in ((), ("--list-files",)):
-            with self.subTest(argv=argv):
-                code, out, saved, run = self.run_main(empty_state(), {}, *argv, files=None)
-                self.assertEqual((code, run.call_count, saved), (0, 0, []))
-                self.assertIn("WARNING: ", out)
-                self.assertIn("OUTPUT: NOT_PUBLISHED", out)
+            for waiting in ([], ["WELLAncasterWatershed_May2026.csv"]):
+                with self.subTest(argv=argv, waiting=waiting):
+                    code, out, saved, run = self.run_main(empty_state(), {}, *argv,
+                                                          files=download_data.NotPublished(waiting))
+                    self.assertEqual((code, run.call_count, saved), (0, 0, []))
+                    self.assertIn("WARNING: ", out)
+                    self.assertIn("OUTPUT: NOT_PUBLISHED", out)
+                    pending = [line for line in out.splitlines() if line.startswith("PENDING:")]
+                    self.assertEqual(len(pending), len(waiting))
+                    if waiting:
+                        self.assertIn("1 sampling files wait in the unpublished draft", pending[0])
+                        self.assertIn("WELLAncasterWatershed_May2026.csv", pending[0])
 
     def test_a_setting_to_fix_exits_with_the_settings_code(self):
         out = io.StringIO()
@@ -336,6 +344,17 @@ class SchedulerTests(TestCase):
         error.assert_not_called()
         warn.assert_not_called()
         self.assertIn("[WARN] The sampling dataset has no published version yet", logs)
+        self.assertEqual(pings, [("download", "success", scheduler_temp.NOT_PUBLISHED_NOTE)])
+
+    def test_files_waiting_in_an_unpublished_draft_go_to_the_digest_not_sentry(self):
+        pending = "PENDING: 2 sampling files wait in the unpublished draft of doi:x (a.csv, b.csv); ..."
+        with mock.patch.object(scheduler_temp, "capture_job_warning") as warn, \
+                mock.patch.object(scheduler_temp, "record_attention") as record:
+            _, pings = self.run_job(f"{pending}\nOUTPUT: NOT_PUBLISHED\n", 0)
+        warn.assert_not_called()
+        # record_attention keeps only the ATTENTION: lines of what it is given (report_attention passes all)
+        lines = [line for call in record.call_args_list for line in call.args[0] if line.startswith("ATTENTION:")]
+        self.assertEqual(lines, ["ATTENTION: " + pending[len("PENDING: "):]])
         self.assertEqual(pings, [("download", "success", scheduler_temp.NOT_PUBLISHED_NOTE)])
 
     def test_a_setting_to_fix_is_reported_as_its_message(self):

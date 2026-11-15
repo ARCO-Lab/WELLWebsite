@@ -9,9 +9,11 @@
 # A logs/processed.json that exists but can't be read stops the run before anything is downloaded (exit 1, so the
 # download heartbeat gets /fail), and a copy is kept in logs/processed.json.bad; it is never read as empty.
 # A dataset that has never been published has nothing to import yet: the run logs a WARNING, reports
-# OUTPUT: NOT_PUBLISHED and exits 0, so the weekly check stays green until a curator publishes it. A setting to fix
-# (BOREALIS_URL or BOREALIS_SAMPLING_PERSISTENT_ID missing, or on different servers, or the token rejected or not
-# allowed to read the dataset) exits SETTINGS_ERROR_EXIT after an ERROR: line saying what to change.
+# OUTPUT: NOT_PUBLISHED and exits 0, so the weekly check stays green until a curator publishes it. Sampling files
+# already waiting in its draft are named on a PENDING: line, which the scheduler records for the daily digest (not
+# Sentry). A setting to fix (BOREALIS_URL or BOREALIS_SAMPLING_PERSISTENT_ID missing, or on different servers, the
+# dataset not found, deaccessioned, or the token rejected or not allowed to read it) exits SETTINGS_ERROR_EXIT after
+# an ERROR: line saying what to change.
 # Files are imported oldest first (by upload date, then Dataverse file id, which only grows, so same-day uploads keep
 # their upload order), so when a newer file has a different value for a stored reading, the newer value is the one
 # kept (inject_sampling.py applies it and logs a [CORRECTED] line). A file imported after a newer one (an older file
@@ -45,7 +47,8 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 from utils.sampling_csv import INVALID_FILE_EXIT
 from utils.jobs import SETTINGS_ERROR_EXIT
-from utils.borealis import Dataverse, DataverseError, api_base, base_url, is_demo, published_files
+from utils.borealis import (Dataverse, DataverseError, NoPublishedVersion, api_base, base_url, draft_sampling_files,
+                            is_demo, is_sampling_file, published_files)
 
 load_dotenv()
 
@@ -67,9 +70,19 @@ class DownloadSettingsError(ValueError):
     """A Borealis setting has to be changed before the download can work; the message says which."""
 
 
-# HTTP statuses of a Borealis read that only a settings change can fix: the token is rejected (401), or it (or a
-# guest, without one) may not read the dataset (403; 401 for a guest and an unpublished dataset)
-SETTINGS_STATUSES = (401, 403)
+class NotPublished(Exception):
+    """The sampling dataset has never been published, so nothing can be imported yet. `waiting`: the names of the
+    sampling files in its draft."""
+
+    def __init__(self, waiting):
+        super().__init__(f"never published ({len(waiting)} sampling files in the draft)")
+        self.waiting = waiting
+
+
+# HTTP statuses of a dataset read (not a file download) that only a settings change can fix: the token is rejected
+# (401), it (or a guest, without one) may not read the dataset (403; 401 for a guest and an unpublished dataset), or
+# there is no dataset with that id on the server (404)
+SETTINGS_STATUSES = (401, 403, 404)
 
 
 def keep_bad_copy(path):
@@ -161,7 +174,8 @@ def parse_filename_date(filename):
 
 def get_files_from_dataset(list_files=False, client=None):
     """Fetch all files from the dataset's published version matching WELLAncasterWatershed_, excluding SAMPLE.
-    None if the dataset has never been published. Raises DownloadSettingsError for a setting to fix."""
+    Raises NotPublished if the dataset has never been published, and DownloadSettingsError for a setting to fix.
+    Only dataset reads happen here (file downloads are in download_file_to_memory)."""
     print(f"DEBUG: Fetching dataset with persistent ID: {BOREALIS_AW_PERSISTENT_ID}")
 
     missing = [k for k, v in {"BOREALIS_URL": BOREALIS_URL,
@@ -181,7 +195,7 @@ def get_files_from_dataset(list_files=False, client=None):
         client = client or Dataverse(BOREALIS_URL, BOREALIS_API_TOKEN)
         files = published_files(client, BOREALIS_AW_PERSISTENT_ID)
         if files is None:
-            return None
+            raise NotPublished(draft_sampling_files(client, BOREALIS_AW_PERSISTENT_ID))
         if not files:
             print("DEBUG: No files in the dataset's published version.")
             return []
@@ -193,14 +207,9 @@ def get_files_from_dataset(list_files=False, client=None):
             filename = datafile["filename"]
             file_id = datafile["id"]
             create_date = datafile.get("createDate", datafile.get("creationDate"))
-            restricted = datafile.get("restricted", False)
-            
-            # Check if file matches criteria
-            if (filename.lower().startswith("wellancasterwatershed_") and
-                not restricted and
-                not re.match(r'WELLAncasterWatershed_SAMPLE\.(xlsx|tab|csv)', filename, re.IGNORECASE) and
-                filename.lower().endswith((".xlsx", ".tab", ".csv"))):
-                
+
+            if is_sampling_file(datafile):
+
                 # Parse create_date
                 if create_date:
                     create_date_parsed = date_parser.parse(create_date)
@@ -223,7 +232,7 @@ def get_files_from_dataset(list_files=False, client=None):
         return target_files
         
     except DataverseError as e:
-        if e.status in SETTINGS_STATUSES:
+        if isinstance(e, NoPublishedVersion) or e.status in SETTINGS_STATUSES:
             raise DownloadSettingsError(str(e)) from None
         print(f"ERROR: {e}")
         raise
@@ -420,11 +429,17 @@ def main():
         state = load_state()
 
         # Get all files from dataset
-        all_files = get_files_from_dataset(list_files=args.list_files)
-        if all_files is None:
+        try:
+            all_files = get_files_from_dataset(list_files=args.list_files)
+        except NotPublished as e:
             # Not an error: uploads wait in the draft until a curator publishes it (the scheduler logs a warning)
             print(f"WARNING: {BOREALIS_AW_PERSISTENT_ID} has no published version yet, so there is nothing to "
                   f"import. Files are imported on the first run after a curator publishes the dataset.")
+            if e.waiting:
+                # The scheduler puts this line in the daily digest: someone has to publish the dataset
+                print(f"PENDING: {len(e.waiting)} sampling files wait in the unpublished draft of "
+                      f"{BOREALIS_AW_PERSISTENT_ID} ({', '.join(e.waiting[:5])}{', ...' if len(e.waiting) > 5 else ''}"
+                      f"); they are imported once a curator publishes the dataset on Borealis.")
             print("OUTPUT: NOT_PUBLISHED")   # the scheduler reads this line (utils/jobs.download_status)
             sys.exit(0)
         # A --file that names no file of the dataset is a typo; importing nothing would hide it
