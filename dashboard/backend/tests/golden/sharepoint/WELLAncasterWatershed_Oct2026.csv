@@ -1,0 +1,6 @@
+date,time,site,creek,parameter,value,unit
+2026-10-31,09:40,Falkirk Forest,Tiffany Creek,Ammonia nitrogen,0.01,mg/L
+2026-10-31,09:40,Falkirk Forest,Tiffany Creek,E. coli,48,CFU/100 mL
+2026-10-31,09:40,Falkirk Forest,Tiffany Creek,pH,8.06,pH units
+2026-10-31,10:15,Maple Lane Pk,Ancaster Creek,Conductivity,1295,µS/cm
+2026-10-31,10:15,Maple Lane Pk,Ancaster Creek,Turbidity,3.5,NTU

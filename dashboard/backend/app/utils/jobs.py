@@ -17,6 +17,8 @@ from utils.sentry import capture_job_error
 # the scheduler reports it as a SettingsError carrying the script's own message (settings_error), not as a
 # CalledProcessError.
 SETTINGS_ERROR_EXIT = 3
+# The exit code of an upload script when its period has no readings at all, so nothing was sent.
+NO_DATA_EXIT = 2
 
 
 class SettingsError(RuntimeError):
@@ -215,26 +217,43 @@ def parse_month_key(text):
     return int(match.group(1)), int(match.group(2))
 
 
-def load_uploaded_months(path):
-    """The months recorded in `path` as uploaded; empty if the file doesn't exist yet.
+def load_record(path, field):
+    """The keys listed under `field` in the JSON record `path` (e.g. "uploaded_months"); empty if the file doesn't
+    exist yet.
 
     A file that can't be read raises instead of counting as empty, so a damaged record can't cause every
-    month to be uploaded again.
+    period to be uploaded again.
     """
     try:
         with open(path) as f:
-            return set(json.load(f).get("uploaded_months", []))
+            return set(json.load(f).get(field, []))
     except FileNotFoundError:
         return set()
 
 
-def record_uploaded_month(path, year, month):
-    """Add (year, month) to the record in `path`, written atomically so a crash can't leave half a file."""
-    months = load_uploaded_months(path) | {month_key(year, month)}
+def add_to_record(path, field, key):
+    """Add `key` to the list `field` of the record in `path`, keeping its other lists; written atomically so a crash
+    can't leave half a file."""
+    try:
+        with open(path) as f:
+            record = json.load(f)
+    except FileNotFoundError:
+        record = {}
+    record[field] = sorted(set(record.get(field, [])) | {key})
     tmp = f"{path}.tmp"
     with open(tmp, "w") as f:
-        json.dump({"uploaded_months": sorted(months)}, f, indent=2)
+        json.dump(record, f, indent=2)
     os.replace(tmp, path)
+
+
+def load_uploaded_months(path):
+    """The months recorded in `path` as uploaded, e.g. {"2026-10"}; empty if the file doesn't exist yet."""
+    return load_record(path, "uploaded_months")
+
+
+def record_uploaded_month(path, year, month):
+    """Add (year, month) to the record in `path`."""
+    add_to_record(path, "uploaded_months", month_key(year, month))
 
 
 # download_data.py's ATTENTION: lines (sampling rows a newer file no longer has, corrections held back), kept for the

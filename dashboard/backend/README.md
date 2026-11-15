@@ -155,7 +155,7 @@ answers 504. How this holds up with many visitors at once is measured by the
 | WQData Live API | Automated ingestion & scheduled updates |
 | OpenAI API | AI analysis, currently disabled (see [AI analysis](#ai-analysis-disabled)) |
 | Borealis | Monthly sensor CSV upload; weekly sampling download ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
-| SharePoint | Monthly sensor CSV upload, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
+| SharePoint | Sensor CSVs (monthly, or daily, weekly and monthly) and monthly sampling CSVs, when configured ([Off-VM copies](#off-vm-copies-borealis-and-sharepoint)) |
 
 A daily GitHub Actions job checks that each vendor API still answers in the shape ingestion reads: see the
 [API canary](../../.github/workflows/README.md#api-canary).
@@ -172,7 +172,8 @@ still going:
   Borealis (see [Off-VM copies](#off-vm-copies-borealis-and-sharepoint)).
 - **Monthly upload** at 02:00 Toronto time: each month that has ended and isn't uploaded yet goes to Borealis (so last
   month goes up on the 1st, and a failed month is retried the next day), then the same file to SharePoint, which stays
-  off until its settings are filled in.
+  off until its settings are filled in. In SharePoint's cadence layout the 02:00 run copies each ended day, ISO week
+  and month instead, and the sampling readings of each month.
 - **Daily digest** at `DIGEST_HOUR` (default 07:00 Toronto time).
 - **Database backup** at 03:15 Toronto time: a checked `pg_dump` of the database, 7 daily and 8 weekly dumps kept (see
   [Database backups](#database-backups)).
@@ -228,11 +229,35 @@ The database lives on one VM, so each month's sensor data is also copied off it,
   On the 1st of each month at 02:00 Toronto time the worker runs `scripts/upload_data.py`. It exports the month that
   just ended as `WELLWestCampus_<Mon><YYYY>.csv` (the dashboard's CSV layout), adds it to the upload dataset in a
   folder for the year, and publishes a new major version of the dataset.
-- **SharePoint**, a McMaster document library. Right after Borealis, `scripts/sharepoint_upload.py` uploads the same
-  file to `<SHAREPOINT_FOLDER>/<year>/` through Microsoft Graph. The two copies are kept apart: each has its own record
-  of uploaded months (`logs/uploaded_months.json` and `logs/sharepoint_uploaded_months.json`) and its own heartbeat
-  (`HEALTHCHECK_URL_UPLOAD` and `HEALTHCHECK_URL_SHAREPOINT`). If one of them fails, it is retried every day at 02:00
-  and the other isn't held up.
+- **SharePoint**, a McMaster document library. Right after Borealis, `scripts/sharepoint_upload.py` uploads files
+  through Microsoft Graph, in one of two layouts (below). The two copies are kept apart: each has its own record of
+  what went up and its own heartbeat (`HEALTHCHECK_URL_UPLOAD` and `HEALTHCHECK_URL_SHAREPOINT`). If one of them
+  fails, it is retried every day at 02:00 and the other isn't held up.
+
+**SharePoint layouts.** `SHAREPOINT_LAYOUT` unset (the *year* layout) sends the Borealis file of each month to
+`<SHAREPOINT_FOLDER>/<year>/`, recorded in `logs/sharepoint_uploaded_months.json`. `SHAREPOINT_LAYOUT=cadence`
+fills a library of its own (with `SHAREPOINT_FOLDER` unset, from its root):
+
+```text
+West Campus/
+  Daily/<year>/<MM>/WELLWestCampus_2026-11-14.csv     each day, midnight to midnight
+  Weekly/<ISO year>/WELLWestCampus_2026-W46.csv       each ISO week, Monday 00:00 to Monday 00:00
+  Monthly/<year>/WELLWestCampus_Oct2026.csv           each month (the Borealis file)
+Ancaster Watershed/
+  <year>/WELLAncasterWatershed_Oct2026.csv            the creek sampling readings of each month that has any
+```
+
+All times are Toronto time. The sensor files have the monthly file's layout, built by the same code; the sampling
+files are in the [standard sampling format](../../docs/sampling-csv-format.md) (`date, time, site, creek, parameter,
+value, unit`), so they can be checked and imported as they are. Every night at 02:00 the worker uploads each day,
+week and month that has ended and isn't in its record (`logs/sharepoint_daily.json`, `_weekly.json`,
+`_monthly.json`, separate from the year layout's), oldest first and at most `SHAREPOINT_FILES_PER_RUN` (40) per
+cadence, so a new library gets the whole history from `SHAREPOINT_UPLOAD_FIRST_MONTH` in about two weeks; Monday's
+run covers the week before. A cadence stops for the night after 3 failed files. A day, week or month with no
+readings is tried again each night, and a week after its end is recorded as empty and skipped (upload it by hand if
+it is filled in later). The sampling files aren't recorded: every month with readings is rebuilt each night, so
+late or corrected samples reach SharePoint the next night, and a file that hasn't changed isn't sent again.
+`SHAREPOINT_CADENCES` picks what to upload (e.g. `daily,weekly,monthly` leaves the Ancaster Watershed part off).
 
 Borealis also carries data the other way. Creek **sampling** results are uploaded by people to a second dataset
 ([how to upload](app/scripts/README.md)), and the weekly download (`scripts/download_data.py`, Sundays 00:00 by the
@@ -307,8 +332,13 @@ time column the same way; its sampling download names it `recorded_at (America/T
 | `BOREALIS_UPLOAD_FIRST_MONTH` | The first month uploaded (default `2026-10`). |
 | `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET` | The Entra ID app registration (see below). |
 | `SHAREPOINT_SITE` | e.g. `https://mcmaster.sharepoint.com/sites/WELL`. |
-| `SHAREPOINT_LIBRARY`, `SHAREPOINT_FOLDER` | The document library (default `Documents`) and the folder in it (default `WELL sensor data`). |
+| `SHAREPOINT_LIBRARY`, `SHAREPOINT_FOLDER` | The document library (default `Documents`) and the folder in it (default `WELL sensor data`; with the cadence layout, the library root). |
 | `SHAREPOINT_UPLOAD_FIRST_MONTH` | The first month copied to SharePoint (default: the Borealis one). |
+| `SHAREPOINT_LAYOUT` | Unset for the monthly files only; `cadence` for the daily, weekly, monthly and sampling files (see above). |
+| `SHAREPOINT_CADENCES` | With the cadence layout, what to upload: any of `daily`, `weekly`, `monthly`, `sampling` (default all four). |
+| `SHAREPOINT_SENSOR_FOLDER`, `SHAREPOINT_SAMPLING_FOLDER` | With the cadence layout, the two top folders (default `West Campus` and `Ancaster Watershed`). |
+| `SHAREPOINT_DAILY_FIRST_DAY`, `SHAREPOINT_WEEKLY_FIRST_WEEK` | The first day (`YYYY-MM-DD`) and ISO week (`YYYY-Www`) uploaded (default: those of the first month's 1st). |
+| `SHAREPOINT_FILES_PER_RUN` | The most files per cadence a night (default `40`). |
 | `HEALTHCHECK_URL_SHAREPOINT` | Heartbeat for the SharePoint copy (see [Monitoring](#monitoring)). |
 
 The Borealis upload is **off** with `BOREALIS_UPLOAD=off` (or `0`, `false`, `no`), or while no Borealis setting is set
@@ -318,8 +348,9 @@ and the SharePoint copy still runs. With some of `BOREALIS_URL`, `BOREALIS_API_T
 once a day. A wrong setting, or a token Borealis rejects, fails the month with one message saying what to fix
 ([Error reporting](#error-reporting-sentry)); retried daily.
 
-The SharePoint copy is **off** while none of the first four `SHAREPOINT_*` variables is set. If only some are set, the
-worker logs which ones are missing and reports a failure at 02:00. The older `DEMO_BOREALIS_URL`,
+The SharePoint copy is **off** while none of the first four `SHAREPOINT_*` variables is set. If only some are set, or
+`SHAREPOINT_LAYOUT` or `SHAREPOINT_CADENCES` has a value it doesn't know, the worker logs the problem and reports a
+failure at 02:00. The older `DEMO_BOREALIS_URL`,
 `DEMO_BOREALIS_WC_PERSISTENT_ID` (upload) and `DEMO_BOREALIS_AW_PERSISTENT_ID` (sampling) are still read when the new
 names are unset. They point at `demo.borealisdata.ca`, a test server that is reset from time to time and is not a
 backup, and the upload refuses to mix a production URL with a demo dataset id.
@@ -328,7 +359,7 @@ backup, and the upload refuses to mix a production URL with a demo dataset id.
 
 ```sh
 docker compose exec worker python scripts/borealis_check.py --check      # read-only: GET requests only
-docker compose exec worker python scripts/sharepoint_upload.py --check   # read-only: sign-in, site, library, folder
+docker compose exec worker python scripts/sharepoint_upload.py --check   # read-only: sign-in, site, library, folders
 docker compose exec worker python scripts/upload_data.py --year 2026 --month 10 --dry-run   # build the CSV only
 ```
 
@@ -348,7 +379,15 @@ docker compose exec worker python scripts/upload_data.py --year 2026 --month 10 
 ```
 
 A month uploaded by hand isn't recorded in `logs/uploaded_months.json`, so the scheduler may run it again; that is
-safe, since an identical file isn't sent twice.
+safe, since an identical file isn't sent twice. The same goes for SharePoint:
+
+```bash
+docker compose exec worker python scripts/sharepoint_upload.py --year 2026 --month 10   # a month
+docker compose exec worker python scripts/sharepoint_upload.py --week 2026-W46          # an ISO week (cadence layout)
+docker compose exec worker python scripts/sharepoint_upload.py --day 2026-11-14         # a day (cadence layout)
+docker compose exec worker python scripts/sharepoint_upload.py --sampling all           # every sampling month (cadence layout)
+docker compose exec worker python scripts/sharepoint_upload.py --sampling 2026-10       # one sampling month
+```
 
 ### What each service needs
 
@@ -388,8 +427,10 @@ safe, since an identical file isn't sent twice.
 
 **SharePoint**
 
-8. **A destination:** a SharePoint site the lab owns, its document library (usually *Documents*), and a folder
-   (default `WELL sensor data`; the job creates it and one subfolder per year).
+8. **A destination:** a SharePoint site the lab owns and a document library on it: for the cadence layout a library
+   of its own (e.g. *Data Uploads*, linked from the site's navigation), whose folders the job creates; for the year
+   layout usually *Documents*, with a folder (default `WELL sensor data`; the job creates it and one subfolder per
+   year).
 9. **An app-only identity limited to that site**, registered by McMaster IT in the McMaster Entra ID tenant: a single
    tenant app registration with no redirect URI; the Microsoft Graph **application** permission `Sites.Selected`
    (not `Sites.ReadWrite.All`) with admin consent; a site-specific grant with the `write` role on the site (with
@@ -399,10 +440,12 @@ safe, since an identical file isn't sent twice.
    -Permissions Write`); and a client secret, whose expiry date is worth noting. The app signs in with the OAuth 2.0
    client-credentials flow, never as a user, and only creates and replaces files in its folder.
 10. **On the VM**, set `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`, `SHAREPOINT_SITE`
-    (and `SHAREPOINT_LIBRARY` / `SHAREPOINT_FOLDER` if they differ from the defaults) in `dashboard/backend/app/.env`.
-    Add a Healthchecks.io check, "WELL SharePoint copy" (cron `0 2 1 * *`, America/Toronto, grace 4 h), and set its
-    ping URL as `HEALTHCHECK_URL_SHAREPOINT`. Then recreate the worker. Run `sharepoint_upload.py --check`, then
-    `sharepoint_upload.py --year <year> --month <month>` once by hand to prove write access.
+    (and `SHAREPOINT_LIBRARY` / `SHAREPOINT_FOLDER` if they differ from the defaults) in `dashboard/backend/app/.env`;
+    for the cadence layout also `SHAREPOINT_LAYOUT=cadence` and `SHAREPOINT_LIBRARY=Data Uploads`, with
+    `SHAREPOINT_FOLDER` left out. Add a Healthchecks.io check, "WELL SharePoint copy" (see
+    [Monitoring](#monitoring)), and set its ping URL as `HEALTHCHECK_URL_SHAREPOINT`. Then recreate the worker. Run
+    `sharepoint_upload.py --check`, then `sharepoint_upload.py --year <year> --month <month>` once by hand to prove
+    write access.
 
 ## Monitoring
 
@@ -446,7 +489,7 @@ slow run within its limit is never reported as stuck.
 | `HEALTHCHECK_URL_INGESTION` | After every 10-minute ingestion run; `/fail` when LI-COR or WQData raised an error. |
 | `HEALTHCHECK_URL_UPLOAD` | After the monthly Borealis upload (02:00 on the 1st, and daily retries); `/fail` if a month didn't go up. Days with nothing to upload don't ping. |
 | `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
-| `HEALTHCHECK_URL_SHAREPOINT` | After the monthly SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a month didn't go up or the settings are incomplete. |
+| `HEALTHCHECK_URL_SHAREPOINT` | After the SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a file didn't go up or the settings are incomplete or invalid. The year layout pings only when a month was due; the cadence layout every night at 02:00, with a line per cadence (how many files went up, how many are still to do). |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent (including the checks that wait to retry it). |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
 | `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check, or the row counts couldn't be checked ([Database backups](#database-backups)). |
@@ -456,7 +499,8 @@ To set them up, sign in to Healthchecks.io with the address that should get the 
 create one check per job, and copy each check's ping URL into the matching variable:
 - **WELL ingestion**: Simple schedule, period 10 minutes, grace 30 minutes.
 - **WELL monthly upload**: Cron `0 2 1 * *`, time zone America/Toronto, grace 4 hours (an upload may take up to 2 h).
-- **WELL SharePoint copy**, when SharePoint is configured: the same schedule and grace.
+- **WELL SharePoint copy**, when SharePoint is configured: the same schedule and grace for the year layout; for the
+  cadence layout cron `0 2 * * *`, America/Toronto, grace 4 hours.
 - **WELL daily digest**: Cron `0 7 * * *` (or your `DIGEST_HOUR`), time zone America/Toronto, grace 1 hour.
 - **WELL alerts**: Simple schedule, period 10 minutes, grace 30 minutes.
 - **WELL backup**: Cron `15 3 * * *`, time zone America/Toronto, grace 2 hours (the job is stopped after 2 h).

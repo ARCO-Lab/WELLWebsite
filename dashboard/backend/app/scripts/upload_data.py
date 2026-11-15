@@ -1,7 +1,7 @@
 # This script exports one month of WELL sensor data to CSV and uploads it to Borealis Dataverse, as the off-VM
 # copy that anyone can cite. The CSV has the dashboard's export layout (one row per timestamp: Weather, Quality and
 # one block per logger). The scheduler runs it for each month that has ended (scripts/scheduler_temp.py);
-# scripts/sharepoint_upload.py sends the same file to SharePoint.
+# scripts/sharepoint_upload.py sends the same file to SharePoint, and day and week files built by the same code.
 #   python scripts/upload_data.py --year 2026 --month 10             that month
 #   python scripts/upload_data.py                                    last month
 #   python scripts/upload_data.py --year 2026 --month 10 --dry-run   build the CSV and print its size only
@@ -25,7 +25,9 @@ from zoneinfo import ZoneInfo
 from api.services.exports import TIMESTAMP_HEADER, SafeCsvWriter
 from dotenv import load_dotenv
 from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
-from utils.jobs import SETTINGS_ERROR_EXIT
+from utils.jobs import NO_DATA_EXIT, SETTINGS_ERROR_EXIT
+from utils.periods import containing
+from utils.periods import file_name as period_file_name
 
 load_dotenv()
 
@@ -229,9 +231,9 @@ def upload_to_borealis(csv_content, csv_name, year, client=None, settings=None):
     print(f"Successfully uploaded {csv_name} to Borealis ({outcome}, {state})")
 
 
-def export_month_csv(start, end):
-    """(file name, CSV text) for the readings from `start` up to, not including, `end`, or None if there are none.
-    Needs the app context (the database)."""
+def export_csv(start, end):
+    """The CSV text for the readings from `start` up to, not including, `end` (any range: a day, a week, a month),
+    or None if there are none. Needs the app context (the database)."""
     from db.database import db
     from db.models import SensorMeasurement
     from db.ordering import bytewise
@@ -262,13 +264,18 @@ def export_month_csv(start, end):
         return None
     csv_buffer = io.StringIO()
     build_csv_frontend_style(data, csv_buffer)
-    return month_file_name(start), csv_buffer.getvalue()
+    return csv_buffer.getvalue()
+
+
+def export_month_csv(start, end):
+    """(file name, CSV text) for the month that starts at `start`, or None if it has no readings. Needs the app."""
+    content = export_csv(start, end)
+    return None if content is None else (month_file_name(start), content)
 
 
 def month_file_name(start):
     """WELLWestCampus_Oct2026.csv for October 2026 (English month names, whatever the locale)."""
-    months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
-    return f"WELLWestCampus_{months[start.month - 1]}{start.year}.csv"
+    return period_file_name(containing("monthly", start.date()))
 
 
 def get_month_range(year: int, month: int):
@@ -298,16 +305,22 @@ def exported_month(args):
         start, end = get_month_range(args.year, args.month)
     else:
         start, end = get_last_month_range()
-    print(f"Exporting sensor data from {start} up to {end}")
-    exported = export_month_csv(start, end)
-    if exported is None:
-        # Exit non-zero: nothing was sent, so the scheduler must not record this month as uploaded
-        # (it tries again the next day, e.g. once a backfill has filled the month in).
-        print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
-        sys.exit(2)
-    csv_name, csv_content = exported
-    print(f"{csv_name}: {len(csv_content.encode('utf-8')):,} bytes")
+    csv_name, csv_content = exported_range(start, end, month_file_name(start))
     return csv_name, csv_content, start.year
+
+
+def exported_range(start, end, csv_name):
+    """(file name, CSV text) for the readings from `start` up to `end`, named `csv_name`. Exits NO_DATA_EXIT (2) when
+    there are none. Needs the app."""
+    print(f"Exporting sensor data from {start} up to {end}")
+    csv_content = export_csv(start, end)
+    if csv_content is None:
+        # Exit non-zero: nothing was sent, so the scheduler must not record this period as uploaded
+        # (it tries again the next day, e.g. once a backfill has filled it in).
+        print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
+        sys.exit(NO_DATA_EXIT)
+    print(f"{csv_name}: {len(csv_content.encode('utf-8')):,} bytes")
+    return csv_name, csv_content
 
 
 def main():
