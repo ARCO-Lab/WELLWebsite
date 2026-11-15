@@ -291,6 +291,23 @@ class UploadFileTests(TestCase):
             self.upload(server)
 
 
+class DatasetAs(FakeDataverse):
+    """A dataset whose latest version is in `state` (e.g. DEACCESSIONED), with `publication_date` (None: never
+    published), and no published version (:latest-published is 404)."""
+
+    def __init__(self, state, publication_date, files=()):
+        super().__init__(published=None, draft=list(files) if state == "DRAFT" else None)
+        self.state, self.publication_date, self.files = state, publication_date, list(files)
+
+    def route(self, method, path, params, files, data, token):
+        if path == "datasets/:persistentId":
+            body = {"latestVersion": self.version_json(self.state, self.files)}
+            if self.publication_date:
+                body["publicationDate"] = self.publication_date
+            return Response(200, {"status": "OK", "data": body})
+        return super().route(method, path, params, files, data, token)
+
+
 class PublishedFilesTests(TestCase):
     def test_reads_only_the_published_version_and_mentions_a_waiting_draft(self):
         published = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a")]
@@ -300,10 +317,20 @@ class PublishedFilesTests(TestCase):
         self.assertEqual([f["dataFile"]["id"] for f in files], [1])
         self.assertIn("unpublished draft", logs[0])
 
-    def test_never_published_is_empty(self):
+    def test_never_published_is_none(self):
+        # Told apart from a published dataset without files: the download reports NOT_PUBLISHED for it
         logs = []
-        self.assertEqual(borealis.published_files(client(FakeDataverse(published=None, draft=[])), PID, log=logs.append), [])
+        never = client(FakeDataverse(published=None, draft=[]))
+        self.assertIsNone(borealis.published_files(never, PID, log=logs.append))
         self.assertIn("never been published", logs[-1])
+        self.assertEqual(borealis.published_files(client(FakeDataverse(published=[])), PID, log=logs.append), [])
+
+    def test_a_deaccessioned_dataset_is_not_taken_for_a_new_one(self):
+        # Dataverse 6.1+ answers :latest-published with 404 for these too, so the dataset itself tells them apart
+        for state, date in (("DEACCESSIONED", "2026-01-05"), ("DEACCESSIONED", None), ("DRAFT", "2026-01-05")):
+            with self.subTest(state=state, date=date):
+                with self.assertRaisesRegex(borealis.NoPublishedVersion, "deaccessioned.*publish a new version"):
+                    borealis.published_files(client(DatasetAs(state, date)), PID, log=lambda *a: None)
 
     def test_a_guest_can_read_a_published_dataset_and_gets_a_useful_401_otherwise(self):
         guest = borealis.Dataverse(SERVER, None, session=FakeDataverse(published=[file_entry(1, "x.csv", b"a")]))
@@ -328,15 +355,44 @@ class DownloadTests(TestCase):
     def test_a_demo_dataset_with_the_production_server_is_refused(self):
         with mock.patch.multiple(download_data, BOREALIS_URL="https://borealisdata.ca/dataverse/WELL",
                                  BOREALIS_API_TOKEN=None, BOREALIS_AW_PERSISTENT_ID="doi:10.80240/FK2/JER05H"), \
-                self.assertRaisesRegex(ValueError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
+                self.assertRaisesRegex(download_data.DownloadSettingsError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
             quiet(download_data.get_files_from_dataset, client=client(FakeDataverse(published=[])))
 
-    def test_a_rejected_token_fails_the_download_with_the_reason(self):
+    def test_a_rejected_token_is_a_setting_to_fix(self):
         server = FakeDataverse(published=[])
         with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN="old",
-                                 BOREALIS_AW_PERSISTENT_ID=PID), self.assertRaises(borealis.DataverseError):
-            _, out = quiet(download_data.get_files_from_dataset,
-                           client=borealis.Dataverse(SERVER, "old", session=server))
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                self.assertRaisesRegex(download_data.DownloadSettingsError, "HTTP 401.*BOREALIS_API_TOKEN"):
+            quiet(download_data.get_files_from_dataset, client=borealis.Dataverse(SERVER, "old", session=server))
+
+    def settings_problem(self, dataverse, pattern):
+        with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN=dataverse.token,
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                self.assertRaisesRegex(download_data.DownloadSettingsError, pattern):
+            quiet(download_data.get_files_from_dataset, client=dataverse)
+
+    def test_a_forbidden_or_unknown_dataset_is_a_setting_to_fix(self):
+        forbidden = FakeDataverse(published=[])
+        forbidden.fail[("GET", "datasets/:persistentId")] = 403
+        self.settings_problem(client(forbidden), "HTTP 403.*Curator")
+        # A guest can't read an unpublished dataset: Borealis answers 401
+        self.settings_problem(borealis.Dataverse(SERVER, None, session=FakeDataverse(published=None)),
+                              "HTTP 401.*only published datasets")
+        # No such dataset on this server (the right server, a wrong id)
+        self.settings_problem(client(FakeDataverse(published=None)), "HTTP 404.*persistent id")
+
+    def test_a_deaccessioned_dataset_is_a_setting_to_fix(self):
+        self.settings_problem(client(DatasetAs("DEACCESSIONED", "2026-01-05")),
+                              "deaccessioned.*BOREALIS_SAMPLING_PERSISTENT_ID")
+
+    def test_a_never_published_dataset_names_its_waiting_sampling_files(self):
+        draft = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a"),
+                 file_entry(2, "WELLAncasterWatershed_SAMPLE.csv", b"t"), file_entry(3, "README.md", b"r")]
+        with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN=TOKEN,
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                self.assertRaises(download_data.NotPublished) as caught:
+            quiet(download_data.get_files_from_dataset, client=client(FakeDataverse(published=None, draft=draft)))
+        self.assertEqual(caught.exception.waiting, ["WELLAncasterWatershed_May2026.csv"])
 
 
 class SettingsTests(TestCase):

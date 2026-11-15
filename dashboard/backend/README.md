@@ -292,6 +292,11 @@ time column the same way; its sampling download names it `recorded_at (America/T
 - **The download reads only the published version.** A file someone uploaded but nobody has published yet is skipped,
   and the log says that a draft is waiting. It is imported on the first run after the dataset is published.
   Restricted files are skipped, so the download needs no token: a published sampling dataset works without one.
+  A dataset that has never been published has nothing to import: the run logs a warning, reports `NOT_PUBLISHED`
+  and pings its check as a success (the ping's text says why), so nothing is sent to Sentry. Sampling files already
+  waiting in its draft are listed in the next daily digest, once a week while it stays unpublished. Reading an
+  unpublished dataset needs a token whose account may see it. A dataset that was published but whose versions are
+  all deaccessioned is a setting to fix (below), not "not published yet".
 
 ### Settings (`dashboard/backend/app/.env`, read by the worker)
 
@@ -644,7 +649,10 @@ How backend failures are reported:
   `ERROR:` line as a `SettingsError` that says what to fix (e.g. "Borealis token rejected (HTTP 401): make a new
   token on https://borealisdata.ca ..."), once a day while it lasts, instead of a `CalledProcessError`. A setting
   missing while others are set is sent the same way, by the scheduler. With `BOREALIS_UPLOAD=off`, or no Borealis
-  setting at all, the upload is off on purpose: it doesn't run and sends nothing.
+  setting at all, the upload is off on purpose: it doesn't run and sends nothing. The weekly sampling download does
+  the same (`download_data.py` exits 3 when `BOREALIS_URL` or `BOREALIS_SAMPLING_PERSISTENT_ID` is missing or they
+  are on different servers, the dataset is deaccessioned, or reading it gets 401, 403 or 404), and then skips its
+  `--list-files` rerun.
 - While Redis can't be reached, Celery logs a retry at error level every 2 to 30 seconds until it reconnects, which
   a deploy recreating the redis container used to turn into dozens of events. In the processes that load the Celery
   app (export worker and API), those retries are logged as warnings instead (`utils/broker_outage.py`), and only an

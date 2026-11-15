@@ -17,6 +17,7 @@ sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "scripts"))
 from scripts import download_data  # noqa: E402
 from utils.sampling_csv import INVALID_FILE_EXIT  # noqa: E402
+from utils.jobs import SETTINGS_ERROR_EXIT  # noqa: E402
 sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
 import scheduler_temp  # noqa: E402
 
@@ -157,7 +158,9 @@ class MainTests(TestCase):
         with mock.patch.object(sys, "argv", ["download_data.py", *argv]), \
                 mock.patch.object(download_data, "load_state", return_value=state), \
                 mock.patch.object(download_data, "save_state", side_effect=lambda s: saved.append(s)), \
-                mock.patch.object(download_data, "get_files_from_dataset", return_value=list(files)), \
+                mock.patch.object(download_data, "get_files_from_dataset",
+                                  **({"side_effect": files} if isinstance(files, Exception)
+                                     else {"return_value": list(files)})), \
                 mock.patch.object(download_data, "process_single_file", side_effect=lambda f: f"/tmp/{f['id']}.xlsx"), \
                 mock.patch.object(download_data.os, "unlink"), \
                 mock.patch.object(download_data.subprocess, "run", side_effect=importer) as run, \
@@ -262,6 +265,32 @@ class MainTests(TestCase):
         self.assertEqual((code, run.call_count), (0, 0))
         self.assertIn("OUTPUT: NO_NEW_FILES", out)
 
+    def test_a_never_published_dataset_is_a_warning_not_a_failure(self):
+        for argv in ((), ("--list-files",)):
+            for waiting in ([], ["WELLAncasterWatershed_May2026.csv"]):
+                with self.subTest(argv=argv, waiting=waiting):
+                    code, out, saved, run = self.run_main(empty_state(), {}, *argv,
+                                                          files=download_data.NotPublished(waiting))
+                    self.assertEqual((code, run.call_count, saved), (0, 0, []))
+                    self.assertIn("WARNING: ", out)
+                    self.assertIn("OUTPUT: NOT_PUBLISHED", out)
+                    pending = [line for line in out.splitlines() if line.startswith("PENDING:")]
+                    self.assertEqual(len(pending), len(waiting))
+                    if waiting:
+                        self.assertIn("1 sampling files wait in the unpublished draft", pending[0])
+                        self.assertIn("WELLAncasterWatershed_May2026.csv", pending[0])
+
+    def test_a_setting_to_fix_exits_with_the_settings_code(self):
+        out = io.StringIO()
+        problem = download_data.DownloadSettingsError("BOREALIS_URL is https://borealisdata.ca but the dataset ...")
+        with mock.patch.object(sys, "argv", ["download_data.py"]), \
+                mock.patch.object(download_data, "load_state", return_value=empty_state()), \
+                mock.patch.object(download_data, "get_files_from_dataset", side_effect=problem), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exited:
+            download_data.main()
+        self.assertEqual(exited.exception.code, SETTINGS_ERROR_EXIT)
+        self.assertEqual(out.getvalue().splitlines()[-1], f"ERROR: {problem}")
+
     def test_a_file_name_matching_nothing_is_an_error(self):
         code, out, _, run = self.run_main(empty_state(), {}, "--force", "--file", "99", "--file", "2")
         self.assertNotEqual(code, 0)
@@ -276,14 +305,15 @@ class SchedulerTests(TestCase):
 
         def run(cmd, timeout):
             if "--list-files" in cmd:
-                raise AssertionError("listed the dataset for a run that only refused a file")
+                raise AssertionError("listed the dataset for a run that only refused a file or needs a setting")
             if code:
                 raise subprocess.CalledProcessError(code, cmd, output=stdout, stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
         with mock.patch.object(scheduler_temp, "run_bounded", side_effect=run), \
                 mock.patch.object(scheduler_temp, "timestamped_print_download", lambda *a: logs.append(" ".join(map(str, a)))), \
-                mock.patch.object(scheduler_temp, "ping_heartbeat", side_effect=lambda *a: pings.append(a)):
+                mock.patch.object(scheduler_temp, "ping_heartbeat",
+                                  side_effect=lambda *a, **k: pings.append(a + tuple(k.values()))):
             scheduler_temp.download_job()
         return "\n".join(logs), pings
 
@@ -306,6 +336,36 @@ class SchedulerTests(TestCase):
     def test_success_and_nothing_new(self):
         self.assertEqual(self.run_job("OUTPUT: PROCESSED_2_FILES\n", 0)[1], [("download", "success")])
         self.assertEqual(self.run_job("OUTPUT: NO_NEW_FILES\n", 0)[1], [("download", "success")])
+
+    def test_a_never_published_dataset_is_a_logged_success(self):
+        with mock.patch.object(scheduler_temp, "capture_job_error") as error, \
+                mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+            logs, pings = self.run_job("WARNING: doi:x has no published version yet\nOUTPUT: NOT_PUBLISHED\n", 0)
+        error.assert_not_called()
+        warn.assert_not_called()
+        self.assertIn("[WARN] The sampling dataset has no published version yet", logs)
+        self.assertEqual(pings, [("download", "success", scheduler_temp.NOT_PUBLISHED_NOTE)])
+
+    def test_files_waiting_in_an_unpublished_draft_go_to_the_digest_not_sentry(self):
+        pending = "PENDING: 2 sampling files wait in the unpublished draft of doi:x (a.csv, b.csv); ..."
+        with mock.patch.object(scheduler_temp, "capture_job_warning") as warn, \
+                mock.patch.object(scheduler_temp, "record_attention") as record:
+            _, pings = self.run_job(f"{pending}\nOUTPUT: NOT_PUBLISHED\n", 0)
+        warn.assert_not_called()
+        # record_attention keeps only the ATTENTION: lines of what it is given (report_attention passes all)
+        lines = [line for call in record.call_args_list for line in call.args[0] if line.startswith("ATTENTION:")]
+        self.assertEqual(lines, ["ATTENTION: " + pending[len("PENDING: "):]])
+        self.assertEqual(pings, [("download", "success", scheduler_temp.NOT_PUBLISHED_NOTE)])
+
+    def test_a_setting_to_fix_is_reported_as_its_message(self):
+        message = "BOREALIS_URL is https://borealisdata.ca but the dataset doi:10.80240/FK2/X is on the demo server"
+        with mock.patch.object(scheduler_temp, "capture_job_error") as error:
+            logs, pings = self.run_job(f"DEBUG: Starting process...\nERROR: {message}\n", SETTINGS_ERROR_EXIT)
+        reported = error.call_args.args[0]
+        self.assertIsInstance(reported, scheduler_temp.SettingsError)
+        self.assertEqual(str(reported), message)
+        self.assertIn(f"[ERROR] download_data.py stopped: {message}", logs)
+        self.assertEqual(pings, [("download", "fail")])
 
 
 if __name__ == "__main__":
