@@ -299,7 +299,7 @@ class CadenceUploadTests(TestCase):
         # A week later they have settled: uploaded once more, recorded, and not sent again
         self.cmds = []
         self.check(UPLOADED, when_utc=MONDAY_2AM + dt.timedelta(days=7))
-        self.assertTrue({"2026-11-13", "2026-11-14", "2026-11-15"} <= self.recorded("daily"))
+        self.assertLessEqual({"2026-11-13", "2026-11-14", "2026-11-15"}, self.recorded("daily"))
         self.assertIn("2026-W46", self.recorded("weekly"))
         self.cmds = []
         self.check(UPLOADED, when_utc=MONDAY_2AM + dt.timedelta(days=8))
