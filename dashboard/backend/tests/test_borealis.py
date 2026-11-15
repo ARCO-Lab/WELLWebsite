@@ -390,9 +390,12 @@ class DownloadTests(TestCase):
                  file_entry(2, "WELLAncasterWatershed_SAMPLE.csv", b"t"), file_entry(3, "README.md", b"r")]
         with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN=TOKEN,
                                  BOREALIS_AW_PERSISTENT_ID=PID), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
                 self.assertRaises(download_data.NotPublished) as caught:
-            quiet(download_data.get_files_from_dataset, client=client(FakeDataverse(published=None, draft=draft)))
+            download_data.get_files_from_dataset(client=client(FakeDataverse(published=None, draft=draft)))
         self.assertEqual(caught.exception.waiting, ["WELLAncasterWatershed_May2026.csv"])
+        # Expected every week until the first publish, so it logs no ERROR: line
+        self.assertNotIn("ERROR:", out.getvalue())
 
 
 class SettingsTests(TestCase):

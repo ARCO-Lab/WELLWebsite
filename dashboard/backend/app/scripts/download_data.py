@@ -236,6 +236,8 @@ def get_files_from_dataset(list_files=False, client=None):
             raise DownloadSettingsError(str(e)) from None
         print(f"ERROR: {e}")
         raise
+    except NotPublished:
+        raise   # not an error: main() reports it as a warning
     except Exception as e:
         print(f"ERROR: Error fetching dataset: {e}")
         raise
