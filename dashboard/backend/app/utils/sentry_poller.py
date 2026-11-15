@@ -5,10 +5,13 @@ code as the daily workflow (utils/sentry_github.py) for the unresolved Sentry is
 it opens the missing GitHub issues and comments on count jumps and on closed issues seen again, with the same
 markers, label, text and redaction. Before opening an issue it looks for its <!-- sentry:ID --> marker among the
 open and closed issues labelled "sentry", so it and the daily workflow (kept as a backup) never open one twice.
+The other way round (the worker only): a GitHub issue closed as completed since the last poll resolves its Sentry
+issue (sentry_github.resolve_closed), unless Sentry has seen it since it was closed.
 
 Settings (dashboard/backend/app/.env), all optional; without both tokens the check is off and the worker says so
 once at start-up:
-  SENTRY_API_TOKEN        Sentry auth token, read-only: org:read, project:read, event:read
+  SENTRY_API_TOKEN        Sentry auth token: org:read, project:read, event:read, and event:write to resolve issues
+                          (without it, one warning, and everything else still works)
   GITHUB_ISSUES_TOKEN     fine-grained GitHub token for this repository only, Issues: read and write, nothing else
   SENTRY_ORG              Sentry organization (default well-cs); every project in it is checked
   GITHUB_ISSUES_REPO      owner/name (default ARCO-Lab/WELLWebsite)
@@ -16,7 +19,8 @@ once at start-up:
   SENTRY_API_URL, SENTRY_JUMP_FACTOR, SENTRY_JUMP_MIN   as for the daily workflow
 
 A poll asks Sentry for one page of issues (lastSeen in the last LOOKBACK_MIN minutes, more after a gap), and GitHub
-only about those whose count or last-seen time changed since a poll handled them. A rate limit (429) or server
+only about those whose count or last-seen time changed since a poll handled them, plus one GitHub request for the
+issues labelled "sentry" closed over the same look-back (Sentry is asked only about those). A rate limit (429) or server
 error is retried within the poll (sentry_github.with_retries); a poll that still fails is logged, and the next ones
 wait longer and longer (up to MAX_BACKOFF_S), with a wider look-back so nothing seen meanwhile is missed. A poll
 never raises, so a failure can't stop the worker. The tokens are only sent in request headers, never logged.
@@ -24,6 +28,7 @@ never raises, so a failure can't stop the worker. The tokens are only sent in re
 import math
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 from utils import sentry_github
 
@@ -52,7 +57,8 @@ def interval_setting(value):
 
 
 class SentryPoller:
-    def __init__(self, env=None, http=None, log=print, warn=None, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, env=None, http=None, log=print, warn=None, clock=time.monotonic, sleep=time.sleep,
+                 utc_now=lambda: datetime.now(timezone.utc)):
         env = os.environ if env is None else env
 
         def setting(name):
@@ -72,7 +78,7 @@ class SentryPoller:
             "GITHUB_TOKEN": setting("GITHUB_ISSUES_TOKEN"),
             "GITHUB_REPOSITORY": setting("GITHUB_ISSUES_REPO") or DEFAULT_REPO,
         }
-        self.log, self.warn, self.clock = log, warn, clock
+        self.log, self.warn, self.clock, self.utc_now = log, warn, clock, utc_now
         self.http = sentry_github.with_retries(http or sentry_github.http_request, sleep=sleep, log=self._log)
         self.last_success = None   # clock() when the last successful poll started
         self.failures = 0          # failed polls in a row
@@ -80,6 +86,8 @@ class SentryPoller:
         # {short id: (count, last seen)} of each Sentry issue already handled: an issue still in the look-back window
         # but unchanged since is skipped, so it costs GitHub nothing (sentry_github.run)
         self.handled = {}
+        # The GitHub issues closed as completed already looked up in Sentry, and whether the token may resolve
+        self.resolving = sentry_github.Resolving()
 
     def describe(self):
         """The start-up line: on, with how often, or off and why."""
@@ -112,8 +120,12 @@ class SentryPoller:
             return None
         error, retry_after = None, None
         try:
-            code = sentry_github.run(self.http, self.settings, seen_within_minutes=self.lookback_minutes(now),
-                                     log=self._log, handled=self.handled)
+            # GitHub issues closed over the same look-back as the Sentry issues: the gap since the last good poll,
+            # with a margin; a day after a restart (closings already resolved are skipped quietly).
+            lookback = self.lookback_minutes(now)
+            code = sentry_github.run(self.http, self.settings, seen_within_minutes=lookback, log=self._log,
+                                     handled=self.handled, closed_since=self.utc_now() - timedelta(minutes=lookback),
+                                     resolving=self.resolving)
             if code != 0:
                 error = "Sentry could not be read, or a setting is wrong (see the line above)"
         except sentry_github.HttpError as err:

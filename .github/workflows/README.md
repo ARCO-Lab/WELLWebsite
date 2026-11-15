@@ -109,8 +109,8 @@ every 5 minutes at most, often late), and Sentry's webhooks would need a public 
 
 The workflow lists the unresolved issues in the `well-cs` Sentry organization (every project) that had events in the
 last 14 days. The worker asks only for those whose last event was in the last 10 minutes, with counts over the same
-14 days, so most polls are a single request to Sentry and none to GitHub. After a gap (a restart, or polls that
-failed), it looks back over the whole gap, up to a day. For each Sentry issue:
+14 days, so most polls are one request to Sentry and one to GitHub (for closed issues, below). After a gap (a
+restart, or polls that failed), it looks back over the whole gap, up to a day. For each Sentry issue:
 - An issue with no GitHub issue yet gets one, labelled `sentry` and titled `[Sentry] <short id>: <exception type>` (or
   `unresolved error` when the type is missing or doesn't look like an exception class, such as `TypeError` or
   `psycopg2.errors.UndefinedTable`). The issue shows the Sentry title, the project, event and user counts, first and
@@ -121,6 +121,17 @@ failed), it looks back over the whole gap, up to a day. For each Sentry issue:
   only for a sighting at least 12 hours after the last one reported, so an error that keeps happening gets about one
   comment a day. It is never reopened automatically: reopen it if the fix didn't hold, or resolve the issue in Sentry.
 - Test events (titles containing "Sentry test") are skipped.
+
+The other way round, the worker (not the daily workflow) resolves a Sentry issue when its GitHub issue is closed as
+completed, so close it once the fix is deployed. Each poll asks GitHub for the issues labelled `sentry` closed over
+the same look-back (one request), and Sentry only about those. An issue counts when it was opened by the check or by
+an account with write access, and names its Sentry issue by the hidden line below or at the start of its title
+(`[Sentry] WELL-BACKEND-2: ...` or `WELL-BACKEND-2: ...`; a short id elsewhere is only a mention). Closed as *not
+planned* (or as a duplicate), Sentry is left as it is. If Sentry has received the error since the issue was closed,
+it is left unresolved too, so the regression shows: it gets the "Seen again" comment above. Nothing is kept on disk;
+resolving an issue that is already resolved does nothing. This needs `event:write` on the worker's Sentry token;
+without it the log gets one `[WARN]` line and everything else carries on. To resolve issues by hand, run
+`docker compose exec worker python -m utils.sentry_github --resolve WELL-BACKEND-2 [...]` on the VM.
 
 GitHub issues are matched to Sentry issues by a hidden `<!-- sentry:<short id> -->` line in the issue body, among open
 and closed issues labelled `sentry`, so don't remove that line. The list is read again just before an issue is opened,
@@ -140,7 +151,7 @@ are never logged.
 
 To set it up:
 - **Sentry token**: an auth token with only `org:read`, `project:read` and `event:read` (*User settings > Personal
-  Tokens*, or an internal integration's token).
+  Tokens*, or an internal integration's token), plus `event:write` for the worker's token so it can resolve issues.
 - **The workflow**: save the Sentry token as the repository secret `SENTRY_API_TOKEN` (*Settings > Secrets and
   variables > Actions*). Without the secret, the run passes with a warning. The workflow writes issues with the
   built-in `GITHUB_TOKEN` and does nothing on forks. To run it by hand, open *Actions > Sentry issues > Run workflow*.

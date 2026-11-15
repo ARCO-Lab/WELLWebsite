@@ -14,6 +14,15 @@ For every unresolved issue in the Sentry organization that had events in the las
     at least SEEN_AGAIN_GAP after the last one reported. It is never reopened automatically.
 Issues titled like a test event ("Sentry test") are skipped.
 
+The other way round (resolve_closed, given run(closed_since=...); the worker's poll only): a GitHub issue labelled
+"sentry", opened by the check or by someone with write access, linked by its marker (or a title starting with the
+short id, e.g. "[Sentry] WELL-BACKEND-2: ..."), and closed as completed since `closed_since` resolves its Sentry
+issue. Closed as "not planned" (or as a duplicate) leaves Sentry as it is. An issue Sentry has seen since the GitHub
+issue was closed is left unresolved, so a regression isn't hidden; it gets the "Seen again" comment above instead.
+This needs event:write on SENTRY_API_TOKEN; without it (HTTP 403) a warning is logged once and the rest carries on.
+Nothing is kept on disk: the closed issues are found again by GitHub's `since`, and resolving twice does no harm.
+From the worker container, `python -m utils.sentry_github --resolve WELL-BACKEND-2 ...` resolves issues by hand.
+
 GitHub issues are matched by a hidden marker in the body (<!-- sentry:WELL-DASHBOARD-2 -->), among open and closed
 issues labelled "sentry", and that list is read again just before an issue is opened, so the two callers don't open
 one twice. The last reported count and last-seen time are kept in a hidden marker in the issue body and in each
@@ -25,20 +34,23 @@ removes e-mail and IP addresses, query strings, invisible characters and anythin
 Event text can come from site visitors, so in the issue it stays inside code spans or a code block, under a line
 saying it is data; the issue title holds only the short id and the exception type.
 
-Environment (read by run()): SENTRY_API_TOKEN (read-only: org:read, project:read, event:read), SENTRY_ORG,
+Environment (read by run()): SENTRY_API_TOKEN (org:read, project:read, event:read; event:write to resolve), SENTRY_ORG,
 GITHUB_TOKEN, GITHUB_REPOSITORY (owner/name), and optionally SENTRY_STATS_PERIOD (default 14d), SENTRY_JUMP_FACTOR
 (2), SENTRY_JUMP_MIN (20) and SENTRY_API_URL. With no SENTRY_API_TOKEN it logs a warning and returns 0.
 Only the standard library is used, so the workflow needs no install step: it loads this file by its path.
 """
 
+import argparse
 import json
+import os
 import re
+import sys
 import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 LABEL = "sentry"
 LABEL_COLOR = "362D59"
@@ -61,6 +73,11 @@ MARKER = "<!-- sentry:{} -->"
 MARKER_RE = re.compile(r"<!-- sentry:([A-Za-z0-9_-]+) -->")
 STATE = "<!-- sentry-state count={count} last_seen={last_seen} -->"
 STATE_RE = re.compile(r"<!-- sentry-state count=(\d+) last_seen=(\S+) -->")
+SHORT_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+# A GitHub issue's title that names its Sentry issue: the short id first, after an optional "[Sentry]" (the check's
+# own titles), e.g. "[Sentry] WELL-BACKEND-2: TypeError" or "WELL-BACKEND-2 slow export". A short id elsewhere in a
+# title or body is only a mention, so it doesn't count.
+TITLE_ID_RE = re.compile(r"\s*(?:\[Sentry\]\s*)?([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z0-9]+)(?=[\s:]|$)")
 # Comments are trusted for the state marker only when the workflow's own token wrote them, or someone with write
 # access to the repository: the worker's token (GITHUB_ISSUES_TOKEN) belongs to a maintainer. Anyone else's comment
 # could carry a forged marker.
@@ -219,6 +236,29 @@ def latest_event(http, api, org, token, issue_id, log=print):
         return {}
 
 
+def sentry_group(http, api, org, token, short_id):
+    """The Sentry issue with this short id (its id, status and last-seen time), or None when the organization has
+    none. A failed request raises HttpError."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    url = f"{api}/organizations/{urllib.parse.quote(org)}/shortids/{urllib.parse.quote(short_id)}/"
+    try:
+        found = http("GET", url, headers)[2] or {}
+    except HttpError as err:
+        if err.status == 404:
+            return None
+        raise
+    group = dict(found.get("group") or {})
+    group.setdefault("id", found.get("groupId"))
+    return group if group.get("id") else None
+
+
+def resolve_group(http, api, org, token, group_id):
+    """Marks a Sentry issue resolved (needs event:write). Resolving a resolved issue changes nothing."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    url = f"{api}/organizations/{urllib.parse.quote(org)}/issues/{urllib.parse.quote(str(group_id))}/"
+    http("PUT", url, headers, {"status": "resolved"})
+
+
 def stack_summary(event):
     """The latest event's exceptions with their top (innermost) frames; file, function and line only."""
     lines = []
@@ -279,6 +319,13 @@ class GitHub:
             if match:
                 found.setdefault(match.group(1), issue)  # the oldest, if two ever carry one marker
         return found
+
+    def closed_issues(self, since):
+        """Closed issues labelled "sentry" updated since `since` (an aware datetime), which includes every one closed
+        since then."""
+        stamp = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        issues = self._get_all(f"/repos/{self.repo}/issues", {"labels": LABEL, "state": "closed", "since": stamp})
+        return [issue for issue in issues if "pull_request" not in issue]
 
     def comments(self, number):
         return self._get_all(f"/repos/{self.repo}/issues/{number}/comments", {})
@@ -406,23 +453,25 @@ def issue_body(issue, event):
     lines += [
         "Opened by the Sentry check (the dashboard worker, with `.github/workflows/sentry-issues.yml` as a daily "
         "backup). Request data, cookies, IP addresses and user details are left out on purpose; the full event is "
-        "in Sentry. Close this issue once the error is fixed, and resolve it in Sentry too. If Sentry keeps "
-        "receiving it, this issue gets a \"Seen again\" comment; it isn't reopened automatically.",
+        "in Sentry. Close this issue as completed once the fix is deployed: the check then resolves it in Sentry "
+        "(closing it as not planned leaves Sentry as it is). If Sentry keeps receiving it, this issue gets a "
+        "\"Seen again\" comment; it isn't reopened automatically.",
         state_marker(issue),
     ]
     return "\n".join(lines)
 
 
-def trusted_comment(comment):
-    """Whether a comment's state marker counts: written by the workflow's token or by someone with write access."""
-    return ((comment.get("user") or {}).get("login") == BOT_LOGIN
-            or comment.get("author_association") in TRUSTED_ASSOCIATIONS)
+def trusted_author(item):
+    """Whether a comment's state marker, or an issue's link to Sentry, counts: written by the workflow's token or by
+    someone with write access."""
+    return ((item.get("user") or {}).get("login") == BOT_LOGIN
+            or item.get("author_association") in TRUSTED_ASSOCIATIONS)
 
 
 def last_state(gh_issue, comments):
     """(count, last seen) from the newest state marker in the issue body or in the check's own comments."""
     state = None
-    for text in [gh_issue.get("body") or ""] + [c.get("body") or "" for c in comments if trusted_comment(c)]:
+    for text in [gh_issue.get("body") or ""] + [c.get("body") or "" for c in comments if trusted_author(c)]:
         for match in STATE_RE.finditer(text):
             state = (int(match.group(1)), match.group(2))
     return state or (0, "unknown")
@@ -460,12 +509,16 @@ def sighting(issue):
     return (str(issue.get("count")), str(issue.get("lastSeen")))
 
 
-def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=None):
+def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=None, closed_since=None,
+        resolving=None):
     """One pass: reads Sentry, then opens or comments on GitHub issues. Returns 0, or 1 when a setting is wrong or
     Sentry can't be read; a failed GitHub request raises HttpError. `seen_within_minutes` limits it to the Sentry
     issues with an event in the last that many minutes (the worker's poll); `log` gets every line it reports.
     `handled` ({short id: sighting()}, kept by the caller between runs) skips the issues whose count and last-seen
-    time haven't changed since a run handled them, so a poll asks GitHub nothing about them."""
+    time haven't changed since a run handled them, so a poll asks GitHub nothing about them.
+    With `closed_since` (an aware datetime), it first resolves in Sentry the issues whose GitHub issue was closed as
+    completed since then (resolve_closed); `resolving` (a Resolving, kept by the caller between runs) remembers
+    which were dealt with, and that the token can't resolve, so that is said once."""
     token = env.get("SENTRY_API_TOKEN", "").strip()
     if not token:
         log("::warning::SENTRY_API_TOKEN is not set; skipping the Sentry check. Add it as a repository secret "
@@ -484,6 +537,9 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=N
     jump_factor = float(env.get("SENTRY_JUMP_FACTOR") or 2)
     jump_min = int(env.get("SENTRY_JUMP_MIN") or 20)
 
+    gh = GitHub(http, repo, github_token, dry_run=dry_run, log=log)
+    if closed_since is not None:
+        resolve_closed(http, gh, api, org, token, closed_since, log=log, resolving=resolving, dry_run=dry_run)
     try:
         issues = sentry_issues(http, api, org, token, period, seen_within_minutes)
     except HttpError as err:
@@ -498,13 +554,12 @@ def run(http, env, dry_run=False, seen_within_minutes=None, log=print, handled=N
     else:
         log(f"{len(issues)} unresolved Sentry issue(s) with events in the last {period}")
 
-    gh = GitHub(http, repo, github_token, dry_run=dry_run, log=log)
     existing = None
     label_ready = False
     done = set()  # short ids handled this run: an issue that moves between Sentry pages can appear twice
     for issue in issues:
         short_id = issue.get("shortId")
-        if not isinstance(short_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", short_id) or short_id in done:
+        if not isinstance(short_id, str) or not SHORT_ID_RE.fullmatch(short_id) or short_id in done:
             continue
         done.add(short_id)
         if TEST_TITLE.search(issue.get("title") or ""):
@@ -547,3 +602,113 @@ def remember(handled, issue):
     if len(handled) >= MAX_HANDLED:
         handled.clear()   # only an optimisation: forgetting costs one more look at GitHub per issue
     handled[issue["shortId"]] = sighting(issue)
+
+
+# --- closed on GitHub, resolved in Sentry -----------------------------------------------------------------------
+
+FORBIDDEN_WARNING = ("::warning::SENTRY_API_TOKEN may not resolve Sentry issues (HTTP 403), so GitHub issues closed "
+                     "as completed are not resolved in Sentry. Give the token event:write to turn this on; the rest "
+                     "of the check carries on.")
+
+
+class Resolving:
+    """What the worker keeps between polls for resolve_closed, in memory only: the GitHub issues already dealt with,
+    by (number, closed_at), so each closing is looked up in Sentry once; and whether the token turned out unable to
+    resolve issues, so that is logged once and not tried again until the worker restarts."""
+
+    def __init__(self):
+        self.done = set()
+        self.forbidden = False
+
+    def remember(self, gh_issue):
+        if len(self.done) >= MAX_HANDLED:
+            self.done.clear()   # only an optimisation, as for `handled`
+        self.done.add((gh_issue.get("number"), gh_issue.get("closed_at")))
+
+
+def linked_short_id(gh_issue):
+    """The Sentry short id a GitHub issue is about: its marker, or failing that the start of its title."""
+    match = MARKER_RE.search(gh_issue.get("body") or "") or TITLE_ID_RE.match(gh_issue.get("title") or "")
+    return match.group(1) if match else None
+
+
+def resolve_closed(http, gh, api, org, token, since, log=print, resolving=None, dry_run=False):
+    """Resolves the Sentry issue of each GitHub issue labelled "sentry" that was closed as completed since `since`,
+    opened by the check or by someone with write access (a visitor can open an issue and close it), and linked to a
+    Sentry issue (linked_short_id). Skipped: issues closed as not planned or as duplicates, Sentry issues already
+    resolved, and those Sentry has seen since the GitHub issue was closed (a regression stays visible, and gets the
+    "Seen again" comment). A 403 from Sentry logs FORBIDDEN_WARNING (once, given `resolving`) and returns; any other
+    failed request raises HttpError, and the next run tries again."""
+    resolving = resolving if resolving is not None else Resolving()
+    if resolving.forbidden:
+        return
+    for gh_issue in gh.closed_issues(since):
+        closed = parse_time(gh_issue.get("closed_at"))
+        # GitHub's `since` is about the last update; one closed long ago and commented on since is left alone.
+        if not closed or closed < since or (gh_issue.get("number"), gh_issue.get("closed_at")) in resolving.done:
+            continue
+        short_id = linked_short_id(gh_issue)
+        if gh_issue.get("state_reason") != "completed" or not short_id or not trusted_author(gh_issue):
+            resolving.remember(gh_issue)
+            continue
+        number = gh_issue["number"]
+        try:
+            group = sentry_group(http, api, org, token, short_id)
+            if group is None:
+                log(f"::warning::{short_id} (#{number}, closed): no such Sentry issue in {org}")
+            elif group.get("status") == "resolved":
+                pass   # resolved in Sentry already (by hand, or by an earlier run)
+            elif (parse_time(group.get("lastSeen")) or closed) > closed:
+                log(f"{short_id}: seen again after #{number} was closed, so left unresolved in Sentry")
+            elif dry_run:
+                log(f"[dry run] would resolve {short_id} in Sentry (#{number} closed as completed)")
+            else:
+                resolve_group(http, api, org, token, group["id"])
+                log(f"{short_id}: resolved in Sentry (#{number} closed as completed)")
+        except HttpError as err:
+            if err.status != 403:
+                raise
+            resolving.forbidden = True
+            log(FORBIDDEN_WARNING)
+            return
+        resolving.remember(gh_issue)
+
+
+def resolve_short_ids(http, env, short_ids, log=print):
+    """Resolves the given Sentry issues by short id, whatever their GitHub issues say. Returns 0, or 1 when the
+    token is missing, an id is unknown or a request failed."""
+    token = env.get("SENTRY_API_TOKEN", "").strip()
+    if not token:
+        log("SENTRY_API_TOKEN is not set")
+        return 1
+    org = env.get("SENTRY_ORG", "").strip() or "well-cs"
+    api = (env.get("SENTRY_API_URL", "").strip() or "https://sentry.io/api/0").rstrip("/")
+    code = 0
+    for short_id in short_ids:
+        if not SHORT_ID_RE.fullmatch(short_id):
+            log(f"{short_id!r} is not a Sentry short id")
+            code = 1
+            continue
+        try:
+            group = sentry_group(http, api, org, token, short_id)
+            if group is None:
+                log(f"{short_id}: no such Sentry issue in {org}")
+                code = 1
+            elif group.get("status") == "resolved":
+                log(f"{short_id}: already resolved")
+            else:
+                resolve_group(http, api, org, token, group["id"])
+                log(f"{short_id}: resolved")
+        except HttpError as err:
+            hint = " (the token needs event:write)" if err.status == 403 else ""
+            log(f"{short_id}: {err}{hint}")
+            code = 1
+    return code
+
+
+if __name__ == "__main__":
+    # By hand, from the worker container (which has SENTRY_API_TOKEN and SENTRY_ORG):
+    #   python -m utils.sentry_github --resolve WELL-BACKEND-2 WELL-DASHBOARD-7
+    parser = argparse.ArgumentParser(description="Resolve Sentry issues by short id.")
+    parser.add_argument("--resolve", nargs="+", required=True, metavar="SHORT_ID", help="e.g. WELL-BACKEND-2")
+    sys.exit(resolve_short_ids(with_retries(http_request), os.environ, parser.parse_args().resolve))
