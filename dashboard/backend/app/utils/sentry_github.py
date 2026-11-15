@@ -619,19 +619,41 @@ FORBIDDEN_WARNING = ("::warning::SENTRY_API_TOKEN may not resolve Sentry issues 
                      "of the check carries on.")
 
 
+# A closing whose Sentry lookup or resolve fails is tried again on every poll, even once it is outside the look-back,
+# this many times in all (about an hour of polls), then given up with a warning naming the command to run by hand.
+MAX_RESOLVE_ATTEMPTS = 60
+
+
 class Resolving:
     """What the worker keeps between polls for resolve_closed, in memory only: the GitHub issues already dealt with,
-    by (number, closed_at), so each closing is looked up in Sentry once; and whether the token turned out unable to
-    resolve issues, so that is logged once and not tried again until the worker restarts."""
+    by (number, closed_at), so each closing is looked up in Sentry once; the closings whose Sentry request failed,
+    with how many times, to try again on the next polls; and whether the token turned out unable to resolve issues,
+    so that is logged once and not tried again until the worker restarts."""
 
     def __init__(self):
         self.done = set()
+        self.pending = {}   # (number, closed_at): [GitHub issue, failed attempts]
         self.forbidden = False
 
     def remember(self, gh_issue):
+        key = (gh_issue.get("number"), gh_issue.get("closed_at"))
+        self.pending.pop(key, None)
         if len(self.done) >= MAX_HANDLED:
             self.done.clear()   # only an optimisation, as for `handled`
-        self.done.add((gh_issue.get("number"), gh_issue.get("closed_at")))
+        self.done.add(key)
+
+    def failed(self, gh_issue, short_id, what, err, log):
+        """Counts a failed attempt: a warning the first time, and the last, when it is given up and remembered."""
+        key = (gh_issue.get("number"), gh_issue.get("closed_at"))
+        entry = self.pending.setdefault(key, [gh_issue, 0])
+        entry[1] += 1
+        where = f"{short_id} (#{gh_issue.get('number')}, closed)"
+        if entry[1] >= MAX_RESOLVE_ATTEMPTS:
+            log(f"::warning::{where}: {what} failed {entry[1]} times, last {err}; giving up. Resolve it by hand: "
+                f"python -m utils.sentry_github --resolve {short_id}")
+            self.remember(gh_issue)
+        elif entry[1] == 1:
+            log(f"::warning::{where}: {what} failed, {err}; trying again on each poll")
 
 
 def linked_short_id(gh_issue):
@@ -646,46 +668,60 @@ def resolve_closed(http, gh, api, org, token, since, log=print, resolving=None, 
     Sentry issue (linked_short_id). Skipped: issues closed as not planned or as duplicates, Sentry issues already
     resolved, and those Sentry has seen since the GitHub issue was closed (a regression stays visible, and gets the
     "Seen again" comment). A 403 on the resolve itself logs FORBIDDEN_WARNING (once, given `resolving`) and stops
-    there. Any other failed Sentry request (a 403 on the lookup included) is a warning for that issue alone, which
-    the next run tries again; a failed GitHub listing raises HttpError."""
+    there. Any other failed Sentry request (a 403 on the lookup included) is a warning for that issue alone; given
+    `resolving`, it is tried again on later runs, up to MAX_RESOLVE_ATTEMPTS in all (Resolving.failed). A failed
+    GitHub listing raises HttpError."""
     resolving = resolving if resolving is not None else Resolving()
     if resolving.forbidden:
         return
+    listed = []
     for gh_issue in gh.closed_issues(since):
         closed = parse_time(gh_issue.get("closed_at"))
+        key = (gh_issue.get("number"), gh_issue.get("closed_at"))
         # GitHub's `since` is about the last update; one closed long ago and commented on since is left alone.
-        if not closed or closed < since or (gh_issue.get("number"), gh_issue.get("closed_at")) in resolving.done:
+        if not closed or closed < since or key in resolving.done or key in resolving.pending:
             continue
-        short_id = linked_short_id(gh_issue)
-        if gh_issue.get("state_reason") != "completed" or not short_id or not trusted_author(gh_issue):
+        if (gh_issue.get("state_reason") != "completed" or not linked_short_id(gh_issue)
+                or not trusted_author(gh_issue)):
             resolving.remember(gh_issue)
             continue
-        number = gh_issue["number"]
-        try:
-            group = sentry_group(http, api, org, token, short_id)
-        except HttpError as err:
-            log(f"::warning::{short_id} (#{number}, closed): Sentry lookup failed, {err}; trying again next time")
-            continue
-        try:
-            if group is None:
-                log(f"::warning::{short_id} (#{number}, closed): no such Sentry issue in {org}")
-            elif group.get("status") == "resolved":
-                pass   # resolved in Sentry already (by hand, or by an earlier run)
-            elif (parse_time(group.get("lastSeen")) or closed) > closed:
-                log(f"{short_id}: seen again after #{number} was closed, so left unresolved in Sentry")
-            elif dry_run:
-                log(f"[dry run] would resolve {short_id} in Sentry (#{number} closed as completed)")
-            else:
-                resolve_group(http, api, org, token, group["id"])
-                log(f"{short_id}: resolved in Sentry (#{number} closed as completed)")
-        except HttpError as err:   # only resolve_group sends a request in this block
-            if err.status != 403:
-                log(f"::warning::{short_id} (#{number}, closed): resolving it failed, {err}; trying again next time")
-                continue
-            resolving.forbidden = True
-            log(FORBIDDEN_WARNING)
+        listed.append(gh_issue)
+    # The closings that failed before come first, whether or not they are still in the look-back.
+    for gh_issue in [entry[0] for entry in list(resolving.pending.values())] + listed:
+        if not resolve_one(http, api, org, token, gh_issue, log, resolving, dry_run):
             return
-        resolving.remember(gh_issue)
+
+
+def resolve_one(http, api, org, token, gh_issue, log, resolving, dry_run):
+    """resolve_closed for one GitHub issue it has chosen. Returns False when the token may not resolve issues."""
+    short_id, number = linked_short_id(gh_issue), gh_issue["number"]
+    closed = parse_time(gh_issue.get("closed_at"))
+    try:
+        group = sentry_group(http, api, org, token, short_id)
+    except HttpError as err:
+        resolving.failed(gh_issue, short_id, "the Sentry lookup", err, log)
+        return True
+    try:
+        if group is None:
+            log(f"::warning::{short_id} (#{number}, closed): no such Sentry issue in {org}")
+        elif group.get("status") == "resolved":
+            pass   # resolved in Sentry already (by hand, or by an earlier run)
+        elif (parse_time(group.get("lastSeen")) or closed) > closed:
+            log(f"{short_id}: seen again after #{number} was closed, so left unresolved in Sentry")
+        elif dry_run:
+            log(f"[dry run] would resolve {short_id} in Sentry (#{number} closed as completed)")
+        else:
+            resolve_group(http, api, org, token, group["id"])
+            log(f"{short_id}: resolved in Sentry (#{number} closed as completed)")
+    except HttpError as err:   # only resolve_group sends a request in this block
+        if err.status != 403:
+            resolving.failed(gh_issue, short_id, "resolving it", err, log)
+            return True
+        resolving.forbidden = True
+        log(FORBIDDEN_WARNING)
+        return False
+    resolving.remember(gh_issue)
+    return True
 
 
 def resolve_short_ids(http, env, short_ids, log=print):

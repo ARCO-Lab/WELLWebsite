@@ -129,11 +129,13 @@ an account with write access, and names its Sentry issue by the hidden line belo
 (`[Sentry] WELL-BACKEND-2: ...` or `WELL-BACKEND-2: ...`; a short id elsewhere is only a mention). Closed as *not
 planned* (or as a duplicate), Sentry is left as it is. If Sentry has received the error since the issue was closed,
 it is left unresolved too, so the regression shows: it gets the "Seen again" comment above. Nothing is kept on disk;
-resolving an issue that is already resolved does nothing. This runs after the new Sentry errors are handled, and a
-lookup or resolve that fails is a `[WARN]` line for that issue, tried again on the next poll, so it never holds up
-new issues. This needs `event:write` on the worker's Sentry token; without it the log gets one `[WARN]` line and
-everything else carries on. Closings made while the worker was down for more than a day aren't picked up; resolve
-them by hand on the VM with `docker compose exec worker python -m utils.sentry_github --resolve WELL-BACKEND-2 [...]`.
+resolving an issue that is already resolved does nothing. This runs after the new Sentry errors are handled, so it
+never holds up new issues. A lookup or resolve that fails gets a `[WARN]` line for that issue and is tried again on
+every poll, even after it leaves the look-back, up to 60 times (about an hour); then a last `[WARN]` gives up and
+names the command below. This needs `event:write` on the worker's Sentry token; without it the log gets one `[WARN]`
+line and everything else carries on. Closings made while the worker was down for more than a day, or given up as
+above, aren't resolved; resolve them by hand on the VM with
+`docker compose exec worker python -m utils.sentry_github --resolve WELL-BACKEND-2 [...]`.
 
 GitHub issues are matched to Sentry issues by a hidden `<!-- sentry:<short id> -->` line in the issue body, among open
 and closed issues labelled `sentry`, so don't remove that line. The list is read again just before an issue is opened,

@@ -537,6 +537,36 @@ class ResolveTest(TestCase):
                 self.assertTrue(p.poll())
                 self.assertEqual({g["status"] for g in fake.groups.values()}, {"resolved"})
 
+    def test_a_failed_closing_is_retried_after_the_look_back_moves_on(self):
+        fake = Fake(gh_issues=[closed_issue()], groups={"WELL-BACKEND-2": group()})
+        fake.lookup_errors = [403] * 21   # Sentry refuses the lookup for 21 polls (a 403 isn't retried within one)
+        p, lines, _ = self.polled(fake, minutes=20)
+        self.assertEqual(fake.resolves(), [])
+        last_since = [parse_qs(urlparse(u).query)["since"][0] for _, u, _, _ in fake.calls
+                      if parse_qs(urlparse(u).query).get("state") == ["closed"]][-1]
+        self.assertGreater(last_since, "2026-11-14T12:00:30Z")   # closed before the look-back: no longer listed
+        clock = Clock()
+        clock.now += 21 * 60
+        p.clock = clock
+        self.assertTrue(p.poll())
+        self.assertEqual(fake.resolves(), ["/api/0/organizations/well-cs/issues/555/"])
+        self.assertEqual(p.resolving.pending, {})
+        warned = [line for line in lines if line.startswith("[WARN]")]
+        self.assertEqual(len(warned), 1)   # the first failure only, not one per poll
+        self.assertIn("trying again on each poll", warned[0])
+
+    def test_a_closing_that_keeps_failing_is_given_up_with_the_command_to_run(self):
+        fake = Fake(gh_issues=[closed_issue()], groups={"WELL-BACKEND-2": group()})
+        fake.lookup_errors = [403] * 1000
+        p, lines, _ = self.polled(fake, minutes=sentry_github.MAX_RESOLVE_ATTEMPTS + 5)
+        self.assertEqual(len(fake.lookups()), sentry_github.MAX_RESOLVE_ATTEMPTS)
+        warned = [line for line in lines if line.startswith("[WARN]")]
+        self.assertEqual(len(warned), 2)
+        self.assertIn(f"failed {sentry_github.MAX_RESOLVE_ATTEMPTS} times", warned[1])
+        self.assertIn("python -m utils.sentry_github --resolve WELL-BACKEND-2", warned[1])
+        self.assertEqual(p.resolving.pending, {})
+        self.assertFalse(p.resolving.forbidden)
+
     def test_the_daily_run_resolves_nothing(self):
         env = {"SENTRY_API_TOKEN": SENTRY_TOKEN, "GITHUB_TOKEN": GITHUB_TOKEN, "GITHUB_REPOSITORY": REPO}
         fake = Fake([sentry_issue()], gh_issues=[closed_issue()], groups={"WELL-BACKEND-2": group()})
