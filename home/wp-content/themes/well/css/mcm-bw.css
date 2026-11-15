@@ -1683,7 +1683,6 @@ p a:hover {
 }
 
 .social-share .ss-icons {
-    background-image: none !important;
     float: none;
     display: inline-flex;
     align-items: center;
