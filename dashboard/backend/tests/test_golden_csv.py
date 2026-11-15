@@ -361,6 +361,29 @@ class MonthlyFile:
             self.month(2026, 9)
         self.assertEqual(raised.exception.code, 2)
 
+    def period(self, cadence, key):
+        # The day and week files scripts/sharepoint_upload.py sends, built by the same code as the monthly file
+        from scripts import upload_data
+        from utils import periods
+        period = periods.parse(cadence, key)
+        with contextlib.redirect_stdout(io.StringIO()):
+            name, content = upload_data.exported_range(period.start, period.end, periods.file_name(period))
+        return name, content
+
+    def test_day_and_week_files_are_cut_from_the_same_layout(self):
+        def stamps(text):
+            return [row[1] for row in csv.reader(io.StringIO(text, newline=""))][1:]
+        name, day = self.period("daily", "2026-11-01")   # the DST change: 01:00-02:00 happens twice
+        self.assertEqual(name, "WELLWestCampus_2026-11-01.csv")
+        self.assertEqual(stamps(day), ["2026-11-01T00:00:00", "2026-11-01T01:30:00", "2026-11-01T02:00:00"])
+        name, week = self.period("weekly", "2026-W44")   # Monday 26 October to Monday 2 November
+        self.assertEqual(name, "WELLWestCampus_2026-W44.csv")
+        self.assertEqual(stamps(week), ["2026-10-31T01:00:00", "2026-10-31T23:45:00", "2026-11-01T00:00:00",
+                                        "2026-11-01T01:30:00", "2026-11-01T02:00:00"])
+        self.assertEqual(day.splitlines()[0].split(",")[:2], ["ID", "Timestamp (America/Toronto)"])
+        # A month built this way is byte for byte the monthly file
+        self.assertEqual(self.period("monthly", "2026-11")[1].encode("utf-8"), self.month(2026, 11)[1])
+
 
 class Sampling:
     """An uploaded sampling file, stored as the import stores it, and read back through the sampling Download CSV,
@@ -375,6 +398,24 @@ class Sampling:
         from db.models import SamplingMeasurement
         cls.db.session.add_all(SamplingMeasurement(**r) for r in rows)
         cls.db.session.commit()
+
+    def test_the_sharepoint_month_files_are_standard_sampling_files(self):
+        # scripts/sharepoint_upload.py --sampling: one file per month with readings, in the upload format
+        from scripts import sharepoint_upload
+        self.assertEqual([m.key for m in sharepoint_upload.sampling_months("all")], ["2026-10", "2026-11"])
+        october = sharepoint_upload.sampling_months("2026-10")[0]
+        self.assertEqual(sharepoint_upload.sampling_file_name(october), "WELLAncasterWatershed_Oct2026.csv")
+        content = sharepoint_upload.export_sampling_csv(october.start, october.end).encode("utf-8")
+        check_golden(self, "sharepoint/WELLAncasterWatershed_Oct2026.csv", content)
+        # It reads back as the very readings stored, so the file can be checked and imported again as it is
+        result = validate_csv(content)
+        self.assertTrue(result.ok, [str(e) for e in result.errors])
+        stored = [r for r in sampling_rows() if r["recorded_at"] < dt.datetime(2026, 11, 1)]
+        self.assertEqual(sorted(result.records, key=str), sorted(stored, key=str))
+        # A formula-like value stored some other way gets the download's apostrophe
+        november = sharepoint_upload.sampling_months("2026-11")[0]
+        self.assertIn("'=HYPERLINK", sharepoint_upload.export_sampling_csv(november.start, november.end))
+        self.assertIsNone(sharepoint_upload.export_sampling_csv(dt.datetime(2026, 9, 1), dt.datetime(2026, 10, 1)))
 
     def test_the_upload_is_read_as_documented(self):
         result = validate_csv(GOLDEN / "sampling_upload.csv")

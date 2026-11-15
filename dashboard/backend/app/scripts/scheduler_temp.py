@@ -2,7 +2,9 @@
 # Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
 # month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily),
 # followed by the same month's upload to SharePoint when SHAREPOINT_* is set (scripts/sharepoint_upload.py), with
-# its own record of months, so either copy can fail and be retried without the other.
+# its own record of months, so either copy can fail and be retried without the other. With SHAREPOINT_LAYOUT=cadence
+# that SharePoint run copies each ended day, ISO week and month instead, and the creek sampling readings of each
+# month (sharepoint_cadence_check).
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
 # pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload (Borealis and
 # SharePoint each have their own) and digest (utils/heartbeat.py). Every night at 03:15 Toronto time it backs up
@@ -27,7 +29,7 @@ import math
 import os
 import pathlib
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -42,11 +44,11 @@ from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
     run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
-    record_attention, SETTINGS_ERROR_EXIT, SettingsError, settings_error,
+    record_attention, SETTINGS_ERROR_EXIT, SettingsError, settings_error, load_record, add_to_record, NO_DATA_EXIT,
 )
 from utils.heartbeat import ping_heartbeat, unset_heartbeats, first_report_today  # noqa: E402
 from utils.worklog import file_logger  # noqa: E402
-from utils import sharepoint  # noqa: E402
+from utils import periods, sharepoint  # noqa: E402
 from utils.borealis import upload_status as borealis_upload_status  # noqa: E402
 from utils.sentry_poller import SentryPoller  # noqa: E402
 import check_alerts  # noqa: E402
@@ -67,6 +69,26 @@ UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
 # The same for the SharePoint copy, which has its own record. Override with SHAREPOINT_UPLOAD_FIRST_MONTH=YYYY-MM.
 sharepoint_uploaded_months_path = "logs/sharepoint_uploaded_months.json"
 SHAREPOINT_FIRST_MONTH = os.getenv("SHAREPOINT_UPLOAD_FIRST_MONTH", UPLOAD_FIRST_MONTH)
+# The cadence layout (SHAREPOINT_LAYOUT=cadence) keeps one record per cadence, e.g. {"uploaded": ["2026-11-14"],
+# "empty": ["2025-05-03"]}, apart from the year layout's, since its files go to other folders. Each cadence starts at
+# SHAREPOINT_DAILY_FIRST_DAY (YYYY-MM-DD) / SHAREPOINT_WEEKLY_FIRST_WEEK (YYYY-Www), by default the day and the week
+# of the 1st of SHAREPOINT_FIRST_MONTH, so a new library gets the whole history.
+sharepoint_period_records = {cadence: f"logs/sharepoint_{cadence}.json" for cadence in periods.CADENCES}
+SHAREPOINT_FIRST_PERIODS = {"daily": os.getenv("SHAREPOINT_DAILY_FIRST_DAY", ""),
+                            "weekly": os.getenv("SHAREPOINT_WEEKLY_FIRST_WEEK", ""), "monthly": ""}
+# At most this many files per cadence each night, oldest first, so a backfill of a year and a half of days is
+# spread over about two weeks instead of holding the 02:00 run for hours (SHAREPOINT_FILES_PER_RUN).
+SHAREPOINT_FILES_PER_RUN = os.getenv("SHAREPOINT_FILES_PER_RUN", "40").strip()
+# A cadence stops for the night after this many failed files: the cause is then likely a setting or SharePoint
+# itself, and trying the rest would only repeat it.
+SHAREPOINT_FAILURES_PER_RUN = 3
+# A day or week file is small; a run that takes longer than this is stuck. A month keeps UPLOAD_TIMEOUT_S.
+PERIOD_TIMEOUT_S = 15 * 60
+# The sampling files are small too, but one run sends all of them (sharepoint_upload.py --sampling all)
+SAMPLING_TIMEOUT_S = 30 * 60
+# A period with no readings at all is tried again each night (the data may still come, e.g. from a backfill) until
+# it ended this long ago; then it is recorded as empty and skipped.
+EMPTY_AFTER = timedelta(days=7)
 
 # Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
 # (the container's clock).
@@ -275,23 +297,33 @@ def run_download_data():
 def run_upload_script(script, year, month):
     """Run an upload script (scripts/<script>) for one month. True only if it exited 0 and reported the file as
     uploaded."""
+    return run_script(script, ["--year", str(year), "--month", str(month)]) == "uploaded"
+
+
+def run_script(script, args, timeout=UPLOAD_TIMEOUT_S, no_data_ok=False):
+    """Run an upload script (scripts/<script> with `args`) under `timeout`. "uploaded" only if it exited 0 and
+    reported the file as uploaded; with `no_data_ok`, "empty" when it exited NO_DATA_EXIT (the period has no readings,
+    which is logged but not reported to Sentry); else "failed"."""
     try:
-        cmd = [sys.executable, f"scripts/{script}", "--year", str(year), "--month", str(month)]
+        cmd = [sys.executable, f"scripts/{script}", *args]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
-        result = run_bounded(cmd, UPLOAD_TIMEOUT_S)
+        result = run_bounded(cmd, timeout)
         timestamped_print_upload(f"{script} stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_upload(f"{script} stderr: {result.stderr}")
         if "Successfully uploaded" not in result.stdout:
             timestamped_print_upload(f"[ERROR] {script} finished but didn't report an upload")
-            return False
+            return "failed"
         timestamped_print_upload(f"Success: {script} completed")
-        return True
+        return "uploaded"
     except subprocess.TimeoutExpired as e:
-        timestamped_print_upload(f"[ERROR] {script} was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_upload(f"[ERROR] {script} was stopped after {timeout // 60} min without finishing")
         capture_job_error(e)
         timestamped_print_upload(f"{script} stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
+        if no_data_ok and e.returncode == NO_DATA_EXIT:
+            timestamped_print_upload(f"{script} found no readings: {e.stdout}")
+            return "empty"
         if e.returncode == SETTINGS_ERROR_EXIT:
             # A setting or credential to fix (e.g. the token was rejected): reported as that message, which says
             # what to do, rather than as a CalledProcessError
@@ -306,7 +338,7 @@ def run_upload_script(script, year, month):
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Unexpected error running {script}: {e}")
         capture_job_error(e)
-    return False
+    return "failed"
 
 
 def run_upload_data(year, month):
@@ -373,9 +405,114 @@ def upload_due_months(now, target, record_path, first_month_text, first_month_se
         ping_heartbeat(heartbeat, "fail" if failed else "success")
 
 
+def files_per_run():
+    """SHAREPOINT_FILES_PER_RUN as a whole number of at least 1. ValueError otherwise."""
+    if not SHAREPOINT_FILES_PER_RUN.isdigit() or int(SHAREPOINT_FILES_PER_RUN) < 1:
+        raise ValueError(f"SHAREPOINT_FILES_PER_RUN must be a whole number of at least 1, got "
+                         f"{SHAREPOINT_FILES_PER_RUN!r}")
+    return int(SHAREPOINT_FILES_PER_RUN)
+
+
+def upload_due_periods(now, cadence, limit):
+    """Upload to SharePoint, oldest first, up to `limit` periods of `cadence` that have ended since its first period
+    and aren't in its record, and record each one that goes up (or, EMPTY_AFTER after its end, that has no readings).
+    Stops after SHAREPOINT_FAILURES_PER_RUN failures. Returns (True if nothing failed, a one-line summary)."""
+    record_path = sharepoint_period_records[cadence]
+    try:
+        first = periods.first_period(cadence, SHAREPOINT_FIRST_PERIODS[cadence], SHAREPOINT_FIRST_MONTH)
+        done = load_record(record_path, "uploaded") | load_record(record_path, "empty")
+    except Exception as e:
+        setting = {"daily": "SHAREPOINT_DAILY_FIRST_DAY, ", "weekly": "SHAREPOINT_WEEKLY_FIRST_WEEK, "}.get(cadence, "")
+        timestamped_print_upload(f"[ERROR] Not uploading {cadence} files to SharePoint: {type(e).__name__}: {e} "
+                                 f"(check {setting}SHAREPOINT_UPLOAD_FIRST_MONTH and {record_path})")
+        capture_job_error(e)
+        return False, f"{cadence}: not run ({e})"
+    due = [period for period in periods.ended(cadence, now, first) if period.key not in done]
+    recorded = uploaded = failed = 0
+    site_now = now.replace(tzinfo=None)   # periods are in naive Toronto wall-clock time
+    for period in due[:limit]:
+        if cadence == "monthly":
+            args = ["--year", str(period.start.year), "--month", str(period.start.month)]
+        else:
+            args = ["--day" if cadence == "daily" else "--week", period.key]
+        timestamped_print_upload(f"========== SHAREPOINT {cadence.upper()} UPLOAD STARTED ({period.key}) ==========")
+        outcome = run_script("sharepoint_upload.py", args,
+                             UPLOAD_TIMEOUT_S if cadence == "monthly" else PERIOD_TIMEOUT_S, no_data_ok=True)
+        timestamped_print_upload(f"========== SHAREPOINT {cadence.upper()} UPLOAD {outcome.upper()} ==========")
+        if outcome == "failed":
+            failed += 1
+            timestamped_print_upload(f"{period.key} was not uploaded to SharePoint; trying again tomorrow at 02:00")
+            if failed >= SHAREPOINT_FAILURES_PER_RUN:
+                timestamped_print_upload(f"[ERROR] Stopping the {cadence} SharePoint files for tonight after "
+                                         f"{failed} failures")
+                break
+            continue
+        if outcome == "empty" and site_now - period.end < EMPTY_AFTER:
+            timestamped_print_upload(f"{period.key} has no readings yet; trying again tomorrow at 02:00")
+            continue
+        field = "uploaded" if outcome == "uploaded" else "empty"
+        try:
+            add_to_record(record_path, field, period.key)
+        except Exception as e:
+            # Unrecorded, it is tried again tomorrow (an identical file isn't sent again), but a full or read-only
+            # logs/ still has to reach someone
+            failed += 1
+            timestamped_print_upload(f"[ERROR] Recording {period.key} as {field} in {record_path} failed: "
+                                     f"{type(e).__name__}: {e}")
+            capture_job_error(e)
+            continue
+        recorded += 1
+        if field == "uploaded":
+            uploaded += 1
+            timestamped_print_upload(f"Recorded {period.key} as uploaded in {record_path}")
+        else:
+            timestamped_print_upload(f"[WARN] {period.key} has no readings, {EMPTY_AFTER.days} days or more after it "
+                                     f"ended: recorded as empty in {record_path} and skipped from now on. Upload it "
+                                     f"by hand with sharepoint_upload.py if its data is filled in later.")
+    left = len(due) - recorded
+    summary = (f"{cadence}: {uploaded} uploaded" + (f", {failed} failed" if failed else "")
+               + (f", {left} still to do" if left else ""))
+    timestamped_print_upload(f"SharePoint {summary}")
+    return not failed, summary
+
+
+def upload_sampling_files():
+    """The cadence layout's sampling copy: the file of every month with sampling readings, rebuilt each night
+    (sharepoint_upload.py --sampling all). Samples arrive late and are sometimes corrected, so nothing is recorded:
+    a month whose readings changed is replaced, and an unchanged one isn't sent again. Returns (True unless it
+    failed, a one-line summary)."""
+    timestamped_print_upload("========== SHAREPOINT SAMPLING UPLOAD STARTED ==========")
+    outcome = run_script("sharepoint_upload.py", ["--sampling", "all"], SAMPLING_TIMEOUT_S, no_data_ok=True)
+    timestamped_print_upload(f"========== SHAREPOINT SAMPLING UPLOAD {outcome.upper()} ==========")
+    summary = {"uploaded": "sampling: every month with readings is up to date",
+               "empty": "sampling: no readings yet"}.get(outcome, "sampling: failed")
+    timestamped_print_upload(f"SharePoint {summary}")
+    return outcome != "failed", summary
+
+
+def sharepoint_cadence_check(now, cadences):
+    """The cadence layout's SharePoint copy (SHAREPOINT_LAYOUT=cadence): for each of `cadences`, the sensor periods
+    that have ended and aren't uploaded yet (upload_due_periods), then the sampling months (upload_sampling_files).
+    Pings the SharePoint heartbeat every night, with /fail if any file failed, and a line per cadence saying how many
+    went up and how many are still to do."""
+    try:
+        limit = files_per_run()
+    except ValueError as e:
+        timestamped_print_upload(f"[ERROR] Not uploading to SharePoint: {e}")
+        capture_job_error(e)
+        ping_heartbeat("sharepoint", "fail", message=str(e))
+        return
+    results = [upload_sampling_files() if cadence == "sampling" else upload_due_periods(now, cadence, limit)
+               for cadence in cadences]
+    ok = all(result[0] for result in results)
+    ping_heartbeat("sharepoint", "success" if ok else "fail", message="; ".join(result[1] for result in results))
+
+
 def sharepoint_upload_check(now):
-    """The SharePoint copy of each month, after the Borealis one. Does nothing while no SHAREPOINT_* setting is
-    set; with some but not all, logs which are missing and reports a failure (once a day, at 02:00)."""
+    """The SharePoint copy, after the Borealis upload. Does nothing while no SHAREPOINT_* setting is set; with some
+    but not all, or an invalid SHAREPOINT_LAYOUT or SHAREPOINT_CADENCES, logs the problem and reports a failure (once
+    a day, at 02:00). The year layout copies each month (upload_due_months); the cadence layout each day, week and
+    month (sharepoint_cadence_check)."""
     state, missing = sharepoint.status()
     if state == "off":
         return
@@ -384,6 +521,17 @@ def sharepoint_upload_check(now):
         timestamped_print_upload(f"[ERROR] Not uploading to SharePoint: {error}")
         capture_job_error(error)
         ping_heartbeat("sharepoint", "fail")
+        return
+    config = sharepoint.settings()
+    try:
+        cadences = sharepoint.cadences(config)
+    except ValueError as e:
+        timestamped_print_upload(f"[ERROR] Not uploading to SharePoint: {e}")
+        capture_job_error(e)
+        ping_heartbeat("sharepoint", "fail")
+        return
+    if config["layout"] == "cadence":
+        sharepoint_cadence_check(now, cadences)
         return
     upload_due_months(now, "SharePoint", sharepoint_uploaded_months_path, SHAREPOINT_FIRST_MONTH,
                       "SHAREPOINT_UPLOAD_FIRST_MONTH", run_sharepoint_upload, "sharepoint")
@@ -736,6 +884,10 @@ if __name__ == "__main__":
         "on": f"SharePoint copy: on, after Borealis, each month from {SHAREPOINT_FIRST_MONTH} not recorded in "
               f"{sharepoint_uploaded_months_path}.",
     }.get(sharepoint_state, f"[ERROR] SharePoint copy: settings incomplete, {', '.join(sharepoint_missing)} not set."))
+    if sharepoint_state == "on" and sharepoint.settings()["layout"] == "cadence":
+        timestamped_print_upload(f"SharePoint layout: cadence, instead of the months above: each ended day, week "
+                                 f"and month not in logs/sharepoint_<cadence>.json (at most {SHAREPOINT_FILES_PER_RUN} "
+                                 f"files per cadence a night), and every month of sampling readings.")
 
     # Catch up on vendor data right away after a restart; the Borealis jobs wait for their slots.
     api_run()

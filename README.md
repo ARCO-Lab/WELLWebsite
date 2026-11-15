@@ -42,7 +42,7 @@ flowchart LR
 1. **Ingestion.** The `worker` container runs one scheduler loop: every 10 minutes it fetches new readings from LI-COR
    (the weather station and water-level loggers) and WQData (the water quality sonde), stores them and checks for
    alerts. It also moves CSV files to and from Borealis (a monthly upload of the sensor data, a weekly download of
-   creek sampling results), copies the monthly file to SharePoint when that is configured, backs up the database
+   creek sampling results), copies the data to SharePoint when that is configured, backs up the database
    nightly and sends a daily digest.
 2. **Storage.** PostgreSQL 13 runs on the VM itself, not in Docker; the containers reach it on the host's IP.
 3. **API.** The `backend` container is a Flask app on gunicorn with no public port. Chart data is aggregated in SQL

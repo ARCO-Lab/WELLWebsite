@@ -82,8 +82,12 @@ dashboard, so they need a rebuild (`docker compose up -d --build --no-deps dashb
 `BOREALIS_UPLOAD_FIRST_MONTH` (default `2026-10`); the older `DEMO_BOREALIS_URL`, `DEMO_BOREALIS_WC_PERSISTENT_ID` and
 `DEMO_BOREALIS_AW_PERSISTENT_ID` are read when the new names are unset. `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`,
 `SHAREPOINT_CLIENT_SECRET`, `SHAREPOINT_SITE` (the SharePoint copy is off while none of these four is set),
-`SHAREPOINT_LIBRARY` (default `Documents`), `SHAREPOINT_FOLDER` (default `WELL sensor data`),
-`SHAREPOINT_UPLOAD_FIRST_MONTH` (default: the Borealis one).
+`SHAREPOINT_LIBRARY` (default `Documents`), `SHAREPOINT_FOLDER` (default `WELL sensor data`, or the library root
+with the cadence layout), `SHAREPOINT_UPLOAD_FIRST_MONTH` (default: the Borealis one), `SHAREPOINT_LAYOUT` (`cadence`
+for the daily, weekly, monthly and sampling files; unset keeps the monthly files only), `SHAREPOINT_CADENCES` (default
+`daily,weekly,monthly,sampling`), `SHAREPOINT_SENSOR_FOLDER` (default `West Campus`), `SHAREPOINT_SAMPLING_FOLDER`
+(default `Ancaster Watershed`), `SHAREPOINT_DAILY_FIRST_DAY`, `SHAREPOINT_WEEKLY_FIRST_WEEK` (default: the first
+month's), `SHAREPOINT_FILES_PER_RUN` (default `40`).
 
 **Monitoring** (details in [the backend README](../dashboard/backend/README.md#monitoring); all off until set)
 
