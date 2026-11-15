@@ -408,7 +408,8 @@ safe, since an identical file isn't sent twice.
 
 A few simple pieces, all optional and all off until configured. On the VM their settings go in
 `dashboard/backend/app/.env` (the backend and worker read it); recreate the containers after changing it
-(`docker compose up -d --no-deps backend worker`). Unresolved Sentry errors also become GitHub issues every day (see
+(`docker compose up -d --no-deps backend worker`). Unresolved Sentry errors also become GitHub issues within about a
+minute, and closing one as completed resolves it in Sentry (see
 [Sentry issues](../../.github/workflows/README.md#sentry-errors-as-github-issues)).
 
 ### Data freshness check
