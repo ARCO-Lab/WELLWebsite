@@ -8,6 +8,10 @@
 # reports OUTPUT: REJECTED_<n>_FILES or FAILED_<n>_FILES and exits 1, so the scheduler reports it as a failure.
 # A logs/processed.json that exists but can't be read stops the run before anything is downloaded (exit 1, so the
 # download heartbeat gets /fail), and a copy is kept in logs/processed.json.bad; it is never read as empty.
+# A dataset that has never been published has nothing to import yet: the run logs a WARNING, reports
+# OUTPUT: NOT_PUBLISHED and exits 0, so the weekly check stays green until a curator publishes it. A setting to fix
+# (BOREALIS_URL or BOREALIS_SAMPLING_PERSISTENT_ID missing, or on different servers, or the token rejected or not
+# allowed to read the dataset) exits SETTINGS_ERROR_EXIT after an ERROR: line saying what to change.
 # Files are imported oldest first (by upload date, then Dataverse file id, which only grows, so same-day uploads keep
 # their upload order), so when a newer file has a different value for a stored reading, the newer value is the one
 # kept (inject_sampling.py applies it and logs a [CORRECTED] line). A file imported after a newer one (an older file
@@ -40,6 +44,7 @@ import subprocess
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 from utils.sampling_csv import INVALID_FILE_EXIT
+from utils.jobs import SETTINGS_ERROR_EXIT
 from utils.borealis import Dataverse, DataverseError, api_base, base_url, is_demo, published_files
 
 load_dotenv()
@@ -56,6 +61,15 @@ STATE_FILE = os.path.abspath(STATE_FILE)
 
 class StateFileError(Exception):
     """logs/processed.json exists but can't be read as the state file."""
+
+
+class DownloadSettingsError(ValueError):
+    """A Borealis setting has to be changed before the download can work; the message says which."""
+
+
+# HTTP statuses of a Borealis read that only a settings change can fix: the token is rejected (401), or it (or a
+# guest, without one) may not read the dataset (403; 401 for a guest and an unpublished dataset)
+SETTINGS_STATUSES = (401, 403)
 
 
 def keep_bad_copy(path):
@@ -146,27 +160,28 @@ def parse_filename_date(filename):
         return None
 
 def get_files_from_dataset(list_files=False, client=None):
-    """Fetch all files from the dataset's published version matching WELLAncasterWatershed_, excluding SAMPLE."""
+    """Fetch all files from the dataset's published version matching WELLAncasterWatershed_, excluding SAMPLE.
+    None if the dataset has never been published. Raises DownloadSettingsError for a setting to fix."""
     print(f"DEBUG: Fetching dataset with persistent ID: {BOREALIS_AW_PERSISTENT_ID}")
 
     missing = [k for k, v in {"BOREALIS_URL": BOREALIS_URL,
                               "BOREALIS_SAMPLING_PERSISTENT_ID": BOREALIS_AW_PERSISTENT_ID}.items() if not v]
     if missing:
-        print(f"ERROR: Missing environment variables: {', '.join(missing)}")
-        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+        raise DownloadSettingsError(f"Missing environment variables: {', '.join(missing)}")
     server = api_base(BOREALIS_URL)   # logs, once, which server the download reads from
     if is_demo(server) != is_demo(persistent_id=BOREALIS_AW_PERSISTENT_ID):
         message = (f"BOREALIS_URL is {server} but the dataset {BOREALIS_AW_PERSISTENT_ID} is on the "
                    f"{'production' if is_demo(server) else 'demo'} server: set "
                    f"BOREALIS_SAMPLING_PERSISTENT_ID to the sampling dataset's id on {server}")
-        print(f"ERROR: {message}")
-        raise ValueError(message)
+        raise DownloadSettingsError(message)
     if not BOREALIS_API_TOKEN:
         print("DEBUG: BOREALIS_API_TOKEN is not set; reading the dataset as a guest (public files only)")
 
     try:
         client = client or Dataverse(BOREALIS_URL, BOREALIS_API_TOKEN)
         files = published_files(client, BOREALIS_AW_PERSISTENT_ID)
+        if files is None:
+            return None
         if not files:
             print("DEBUG: No files in the dataset's published version.")
             return []
@@ -208,6 +223,8 @@ def get_files_from_dataset(list_files=False, client=None):
         return target_files
         
     except DataverseError as e:
+        if e.status in SETTINGS_STATUSES:
+            raise DownloadSettingsError(str(e)) from None
         print(f"ERROR: {e}")
         raise
     except Exception as e:
@@ -404,6 +421,12 @@ def main():
 
         # Get all files from dataset
         all_files = get_files_from_dataset(list_files=args.list_files)
+        if all_files is None:
+            # Not an error: uploads wait in the draft until a curator publishes it (the scheduler logs a warning)
+            print(f"WARNING: {BOREALIS_AW_PERSISTENT_ID} has no published version yet, so there is nothing to "
+                  f"import. Files are imported on the first run after a curator publishes the dataset.")
+            print("OUTPUT: NOT_PUBLISHED")   # the scheduler reads this line (utils/jobs.download_status)
+            sys.exit(0)
         # A --file that names no file of the dataset is a typo; importing nothing would hide it
         unmatched = [name for name in args.file if not any(is_named(f, [name]) for f in all_files)]
         if unmatched:
@@ -483,6 +506,10 @@ def main():
 
     except SystemExit:
         raise
+    except DownloadSettingsError as e:
+        # The scheduler reports this line as a SettingsError, without the --list-files rerun
+        print(f"ERROR: {e}")
+        sys.exit(SETTINGS_ERROR_EXIT)
     except Exception as e:
         print(f"ERROR: Process failed: {e}")
         sys.exit(1)

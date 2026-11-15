@@ -193,9 +193,14 @@ def report_attention(stdout):
     except OSError as e:   # they are in this log and in Sentry still
         timestamped_print_download(f"[WARN] Couldn't record the ATTENTION: lines for the daily digest: {e}")
 
+# What the download check's ping says when the sampling dataset has never been published (a success: nothing to do)
+NOT_PUBLISHED_NOTE = ("The sampling dataset has no published version yet, so there was nothing to import. Files are "
+                      "imported on the first run after a curator publishes it.")
+
+
 def run_download_data():
     """Run download_data.py. It downloads every new Borealis file and imports each one itself
-    (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES or NO_NEW_FILES."""
+    (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES, NO_NEW_FILES or NOT_PUBLISHED."""
     cmd = [sys.executable, "scripts/download_data.py"]
     timestamped_print_download(f"Running command: {' '.join(cmd)}")
     try:
@@ -206,6 +211,8 @@ def run_download_data():
         report_attention(result.stdout)
         status = download_status(result.stdout)
         timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
+        if status == "NOT_PUBLISHED":
+            timestamped_print_download(f"[WARN] {NOT_PUBLISHED_NOTE}")
         return status
     except subprocess.TimeoutExpired as e:
         timestamped_print_download(f"[ERROR] download_data.py was stopped after {DOWNLOAD_TIMEOUT_S // 60} min without finishing")
@@ -224,6 +231,13 @@ def run_download_data():
                                        f"listed above. A refused file is imported once a corrected file is uploaded.")
             capture_job_error(e)
             return status
+        if e.returncode == SETTINGS_ERROR_EXIT:
+            # A setting to fix, named in its ERROR: line: reported as that message rather than as a
+            # CalledProcessError, and without --list-files, which would stop on the same setting
+            error = settings_error(e)
+            timestamped_print_download(f"[ERROR] download_data.py stopped: {error}")
+            capture_job_error(error)
+            return None
         timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
         capture_job_error(e)
         # Run --list-files to debug dataset issues
@@ -296,7 +310,10 @@ def download_job():
     timestamped_print_download("========== DOWNLOAD JOB STARTED ==========")
     status = run_download_data()
     ok = status is not None and not status.startswith(("REJECTED_", "FAILED_"))
-    ping_heartbeat("download", "success" if ok else "fail")
+    if status == "NOT_PUBLISHED":
+        ping_heartbeat("download", "success", message=NOT_PUBLISHED_NOTE)
+    else:
+        ping_heartbeat("download", "success" if ok else "fail")
     timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
 def upload_job(year, month, target="Borealis", run=None):

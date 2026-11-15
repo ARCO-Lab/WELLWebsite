@@ -300,10 +300,13 @@ class PublishedFilesTests(TestCase):
         self.assertEqual([f["dataFile"]["id"] for f in files], [1])
         self.assertIn("unpublished draft", logs[0])
 
-    def test_never_published_is_empty(self):
+    def test_never_published_is_none(self):
+        # Told apart from a published dataset without files: the download reports NOT_PUBLISHED for it
         logs = []
-        self.assertEqual(borealis.published_files(client(FakeDataverse(published=None, draft=[])), PID, log=logs.append), [])
+        never = client(FakeDataverse(published=None, draft=[]))
+        self.assertIsNone(borealis.published_files(never, PID, log=logs.append))
         self.assertIn("never been published", logs[-1])
+        self.assertEqual(borealis.published_files(client(FakeDataverse(published=[])), PID, log=logs.append), [])
 
     def test_a_guest_can_read_a_published_dataset_and_gets_a_useful_401_otherwise(self):
         guest = borealis.Dataverse(SERVER, None, session=FakeDataverse(published=[file_entry(1, "x.csv", b"a")]))
@@ -328,15 +331,23 @@ class DownloadTests(TestCase):
     def test_a_demo_dataset_with_the_production_server_is_refused(self):
         with mock.patch.multiple(download_data, BOREALIS_URL="https://borealisdata.ca/dataverse/WELL",
                                  BOREALIS_API_TOKEN=None, BOREALIS_AW_PERSISTENT_ID="doi:10.80240/FK2/JER05H"), \
-                self.assertRaisesRegex(ValueError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
+                self.assertRaisesRegex(download_data.DownloadSettingsError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
             quiet(download_data.get_files_from_dataset, client=client(FakeDataverse(published=[])))
 
-    def test_a_rejected_token_fails_the_download_with_the_reason(self):
+    def test_a_rejected_token_is_a_setting_to_fix(self):
         server = FakeDataverse(published=[])
         with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN="old",
-                                 BOREALIS_AW_PERSISTENT_ID=PID), self.assertRaises(borealis.DataverseError):
-            _, out = quiet(download_data.get_files_from_dataset,
-                           client=borealis.Dataverse(SERVER, "old", session=server))
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                self.assertRaisesRegex(download_data.DownloadSettingsError, "HTTP 401.*BOREALIS_API_TOKEN"):
+            quiet(download_data.get_files_from_dataset, client=borealis.Dataverse(SERVER, "old", session=server))
+
+    def test_a_never_published_dataset_lists_as_none(self):
+        server = FakeDataverse(published=None, draft=[file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a")])
+        with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN=TOKEN,
+                                 BOREALIS_AW_PERSISTENT_ID=PID):
+            files, out = quiet(download_data.get_files_from_dataset, client=client(server))
+        self.assertIsNone(files)
+        self.assertIn("never been published", out)
 
 
 class SettingsTests(TestCase):

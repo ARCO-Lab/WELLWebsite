@@ -389,8 +389,9 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
 
 
 def published_files(client, persistent_id, log=print):
-    """The files of the dataset's latest published version, or [] if it was never published. Logs it when there is
-    also an unpublished draft (files there are imported once it is published)."""
+    """The files of the dataset's latest published version, or None if it was never published (so it has no files
+    anyone can import yet). Logs it when there is also an unpublished draft (files there are imported once it is
+    published)."""
     dataset = client.dataset(persistent_id)
     latest = dataset.get("latestVersion") or {}
     if latest.get("versionState") == "RELEASED":
@@ -402,5 +403,5 @@ def published_files(client, persistent_id, log=print):
     published = client.published_version(persistent_id)
     if published is None:
         log(f"WARNING: {persistent_id} has never been published, so there is nothing to import yet")
-        return []
+        return None
     return published.get("files") or []
