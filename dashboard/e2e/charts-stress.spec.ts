@@ -654,6 +654,45 @@ test.describe("chart performance budgets", () => {
       expect(net.requests.length - n0).toBe(0);
     });
 
+    test("a swipe up that starts on the plot scrolls the page without Highcharts hearing of it; a tap there shows the tooltip", async ({ page }) => {
+      await open(page);
+      const logger = chart(page, "logger");
+      // Every time Highcharts looks up the points under a pointer (and then draws its tooltip)
+      await page.evaluate(() => {
+        type Actions = (...a: unknown[]) => unknown;
+        const w = window as unknown as { __pointActions: number; _Highcharts: { Pointer: { prototype: { runPointActions: Actions } } } };
+        const proto = w._Highcharts.Pointer.prototype;
+        const original = proto.runPointActions;
+        w.__pointActions = 0;
+        proto.runPointActions = function (this: unknown, ...a: unknown[]) { w.__pointActions++; return original.apply(this, a); };
+      });
+      const pointActions = () => page.evaluate(() => (window as unknown as { __pointActions: number }).__pointActions);
+      const tooltipShown = () => page.evaluate(() => [...document.querySelectorAll(".highcharts-tooltip")].some((t) => {
+        const style = getComputedStyle(t);
+        return style.visibility !== "hidden" && Number(style.opacity) > 0.5 && (t.textContent ?? "").trim().length > 5;
+      }));
+      const cdp = await page.context().newCDPSession(page);
+      let p = await at(logger, 0.5);
+      const scrollY = await page.evaluate(() => window.scrollY);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, id: 1 }] });
+      for (let i = 1; i <= 12; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: p.x, y: p.y - i * 15, id: 1 }] });
+        await page.waitForTimeout(16);
+      }
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await page.waitForTimeout(600);
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollY + 50);
+      expect(await pointActions()).toBe(0); // the scroll didn't wait for a tooltip
+      expect(await tooltipShown()).toBe(false);
+      // A tap: Highcharts gets the touch when the finger lifts
+      p = await at(logger, 0.5);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, id: 1 }] });
+      expect(await pointActions()).toBe(0);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await expect.poll(tooltipShown).toBe(true);
+      expect(await pointActions()).toBeGreaterThan(0);
+    });
+
     test("one finger moving sideways pans the chart; a tap on the navigator's track centres the window there", async ({ page }) => {
       const { net } = await open(page);
       const logger = chart(page, "logger");

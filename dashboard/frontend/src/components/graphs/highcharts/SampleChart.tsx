@@ -11,6 +11,7 @@ import HighchartsReact from 'highcharts-react-official';
 import 'highcharts/modules/accessibility';
 import { displayUnit } from '@/utils/chartStyle';
 import { samplingStyle } from '@/utils/samplingStyle';
+import { quietTouch } from '@/lib/chartTouch';
 
 interface SensorData {
   measurement_type: string;
@@ -50,6 +51,15 @@ const SampleChart: React.FC<SampleChartProps> = ({
   showErrorBanner = true,
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // A finger that scrolls the page over the chart doesn't make Highcharts look up points and draw its tooltip; a tap
+  // still shows it, and a finger moving sideways still moves it along (lib/chartTouch.ts)
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    return quietTouch(el, () => chartRef.current?.chart, { scrub: true });
+  }, []);
   // Until the first data arrives: no Highcharts placeholder title ("Chart title") or credits link.
   const [chartOptions, setChartOptions] = useState<Highcharts.Options>({ title: { text: undefined }, credits: { enabled: false } });
   const [resolvedHeight, setResolvedHeight] = useState(height);
@@ -191,7 +201,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
     && chartOptions.series.every((s) => !('data' in s && Array.isArray(s.data) && s.data.length));
 
   return (
-    <div className="relative">
+    <div ref={boxRef} className="relative">
       <HighchartsReact
         highcharts={Highcharts}
         options={chartOptions}
