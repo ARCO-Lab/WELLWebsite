@@ -667,10 +667,8 @@ test.describe("chart performance budgets", () => {
         proto.runPointActions = function (this: unknown, ...a: unknown[]) { w.__pointActions++; return original.apply(this, a); };
       });
       const pointActions = () => page.evaluate(() => (window as unknown as { __pointActions: number }).__pointActions);
-      const tooltipShown = () => page.evaluate(() => [...document.querySelectorAll(".highcharts-tooltip")].some((t) => {
-        const style = getComputedStyle(t);
-        return style.visibility !== "hidden" && Number(style.opacity) > 0.5 && (t.textContent ?? "").trim().length > 5;
-      }));
+      // As in data.spec.ts: visible, not its opacity (Highcharts fades it in by the clock, which is frozen here)
+      const tooltip = page.locator(".highcharts-tooltip", { hasText: "Logger" });
       const cdp = await page.context().newCDPSession(page);
       const touch = (type: string, x: number, y: number) =>
         cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y, id: 1 }] });
@@ -683,7 +681,7 @@ test.describe("chart performance budgets", () => {
       await page.waitForTimeout(600);
       expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollY + 50);
       expect(await pointActions()).toBe(0); // the scroll didn't wait for a tooltip
-      expect(await tooltipShown()).toBe(false);
+      await expect(tooltip).toHaveCount(0);
       // A tap on a reading (Highcharts says where it drew one): Highcharts gets the touch when the finger lifts
       const reading = await page.evaluate(() => {
         type HPoint = { plotX?: number; plotY?: number; y: number | null };
@@ -705,7 +703,7 @@ test.describe("chart performance budgets", () => {
       expect(await pointActions()).toBe(0);
       await touch("touchEnd", 0, 0);
       await expect.poll(pointActions).toBeGreaterThan(0);
-      await expect.poll(tooltipShown).toBe(true);
+      await expect(tooltip.first()).toBeVisible();
     });
 
     test("one finger moving sideways pans the chart; a tap on the navigator's track centres the window there", async ({ page }) => {

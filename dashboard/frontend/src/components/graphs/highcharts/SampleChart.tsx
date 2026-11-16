@@ -4,7 +4,7 @@
 // takes no room from the plots and can show or hide a measurement in all of them at once. (The West Campus sensor charts
 // use MetricChart, which draws aggregated series from /api/series and zooms.)
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
 // Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
@@ -196,6 +196,17 @@ const SampleChart: React.FC<SampleChartProps> = ({
       series,
     });
   }, [data, loading, siteName, subFilters, hiddenMetrics, resolvedHeight, modalOpen]);
+
+  // Highcharts lines up the ticks of the y-axes (one per unit), and with several axes that takes it two passes: the
+  // first leaves some axes with another maximum than the one they settle on. One more pass after each change, before
+  // the browser paints, so a chart always shows its settled scales. (The page's re-renders used to redraw every chart
+  // over and over, which hid this; now a chart is only redrawn when what it shows changes.)
+  useLayoutEffect(() => {
+    const chart = chartRef.current?.chart;
+    if (!chart || chart.yAxis.length < 2) return;
+    for (const axis of chart.yAxis) (axis as Highcharts.Axis & { isDirty?: boolean }).isDirty = true;
+    chart.redraw(false);
+  }, [chartOptions]);
 
   const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
     && chartOptions.series.every((s) => !('data' in s && Array.isArray(s.data) && s.data.length));
