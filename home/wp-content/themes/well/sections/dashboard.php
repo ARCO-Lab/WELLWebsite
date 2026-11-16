@@ -12,9 +12,9 @@ defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct req
           <div class="card-main border-top h-100">
             <div class="card border-0 no-shadow card-hover flex-lg-row">
               <div class="card-img-mask card-img-mask-full card-img-mh min-w-50 order-sm-1">
-                <?php well_media_img('dashboard-preview', array(414, 720, 1080, 1600), array(1600, 838), array(
-                  // From 992 px the card scales the image to 105% of its height (css/mcm-bw.css .card-img-mask-full),
-                  // which draws it about 1160 px wide even though the visible half is narrower.
+                <?php well_media_img('dashboard-preview', array(414, 720, 1080, 1600), array(1600, 1209), array(
+                  // From 992 px the card scales the image to 105% of its height (css/mcm-bw.css .card-img-mask-full)
+                  // and crops it to the card, so mainly the centre of the shot shows; the image is framed for that.
                   'sizes'   => '(max-width: 576px) 100vw, (max-width: 991.98px) 90vw, 1200px',
                   'loading' => 'lazy',
                   'class'   => 'img-fluid',
