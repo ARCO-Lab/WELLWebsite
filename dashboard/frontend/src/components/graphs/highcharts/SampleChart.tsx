@@ -224,4 +224,6 @@ const SampleChart: React.FC<SampleChartProps> = ({
   );
 };
 
-export default SampleChart;
+// Memoized: HighchartsReact updates its chart (a full redraw) every time this component renders, so without it every
+// re-render of the page (a tab switch, a filter group opening, a tick on the other tab) redrew every sampling chart.
+export default React.memo(SampleChart);

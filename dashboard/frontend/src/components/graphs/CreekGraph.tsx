@@ -3,7 +3,7 @@
 // that shows each measurement's colour, line and marker and can show or hide it in every chart.
 
 import dynamic from 'next/dynamic';
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { SAMPLING_METRICS, SAMPLING_FILTER_CONFIG } from '@/components/config/filters';
 import type { SampledData } from '@/hooks/useSampledData';
 import { displayUnit } from '@/utils/chartStyle';
@@ -12,6 +12,9 @@ import { SVG_DASH, samplingStyle, type SamplingStyle } from '@/utils/samplingSty
 const SampleChart = dynamic(() => import("@/components/graphs/highcharts/SampleChart"), {
   ssr: false,
 });
+
+// A site without rows: the same array every time, so its chart (memoized on its props) isn't redrawn for nothing
+const NO_ROWS: SampledData[] = [];
 
 interface Props {
   creekKey: keyof typeof SAMPLING_FILTER_CONFIG;
@@ -137,7 +140,7 @@ const CreekGraph = ({
       {sites.map((siteId, index) => {
         const siteConfig = SAMPLING_FILTER_CONFIG[creekKey].sites;
         const siteName = siteConfig[siteId as keyof typeof siteConfig] || `Site ${siteId}`;
-        const siteData = dataBySite[siteId] || [];
+        const siteData = dataBySite[siteId] || NO_ROWS;
 
 
         return (
@@ -161,4 +164,5 @@ const CreekGraph = ({
   );
 };
 
-export default CreekGraph;
+// Memoized, like the charts inside it (SampleChart): the page re-renders for many things that don't concern a creek
+export default memo(CreekGraph);
