@@ -109,7 +109,7 @@ are in [docs/deploying.md](docs/deploying.md).
 | Layer | Technologies |
 |---|---|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS, Highcharts, MapLibre GL |
-| Backend | Python 3.11, Flask, Gunicorn (WSGI), SQLAlchemy |
+| Backend | Python 3.11, Flask 3, Flask-SQLAlchemy, Gunicorn (WSGI) |
 | Jobs and queue | `schedule` loop in the worker; Celery with Redis for large exports |
 | Database | PostgreSQL 13 (VM host); MySQL 5.7 for WordPress |
 | Infrastructure | Docker Compose on a Linux VM, behind McMaster's reverse proxy |
