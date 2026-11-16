@@ -51,6 +51,17 @@ add_filter('wp_sitemaps_add_provider', function ($provider, $name) {
     return $name === 'users' ? false : $provider;
 }, 10, 2);
 
+// Removing the provider drops the users part from the index and robots.txt, but the generic sitemap rewrite still
+// matches /wp-sitemap-users-*.xml, and on WordPress 6.8 core answers that URL 200 (an empty document) instead of
+// 404. Reject the users sitemap outright so no users sitemap is ever reachable, on any core version.
+add_action('template_redirect', function () {
+    if (get_query_var('sitemap') === 'users') {
+        status_header(404);
+        nocache_headers();
+        exit;
+    }
+}, 0);
+
 // Post bylines and feeds (<dc:creator>) print the author's display name, which WordPress sets to the login name
 // until someone changes it. Show "WELL team" instead whenever the two are the same; a display name set in the
 // profile (Users > Profile > "Display name publicly as") is shown as it is. Not in wp-admin, where it is useful.
