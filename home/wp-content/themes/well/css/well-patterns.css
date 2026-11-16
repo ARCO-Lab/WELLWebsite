@@ -1,0 +1,114 @@
+/*
+ * Styling for the WELL editor block patterns (see patterns/).
+ *
+ * The patterns reuse the site's existing classes wherever possible (card, card-shadow,
+ * banner-title, btn, lead, maroon, section-padding ...), so most of their look comes from
+ * theme.css / mcm-bw.css / new-cards.css. This file adds only the few extra pieces the
+ * patterns need that the site did not already have as reusable classes. It is loaded on the
+ * front end AND in the block editor, so patterns look the same in both.
+ */
+
+/* Section heading with the brand gold underline accent (for use on white backgrounds,
+   unlike .banner-title-line which is tuned for dark hero banners). */
+.well-section-heading {
+    position: relative;
+    margin-bottom: 36px;
+    padding-bottom: 18px;
+}
+
+.well-section-heading::after {
+    content: "";
+    display: block;
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 60px;
+    height: 6px;
+    background-color: var(--secondary-colour, #fdbf57);
+}
+
+.well-section-heading.has-text-align-center::after {
+    left: 50%;
+    margin-left: -30px;
+}
+
+/* Pull-quote / featured news quote with a maroon side rule. */
+.well-quote {
+    border-left: 6px solid var(--primary-colour, #7a003c);
+    padding: 12px 0 12px 24px;
+    margin: 0 0 24px;
+    font-family: "Poppins", sans-serif;
+}
+
+.well-quote p {
+    font-size: 24px;
+    line-height: 1.375;
+    font-weight: 600;
+    color: #222;
+    margin-bottom: 12px;
+}
+
+.well-quote cite {
+    font-size: 16px;
+    font-style: normal;
+    font-weight: 400;
+    color: var(--grey, #495965);
+}
+
+/* Team member card: a photo above a name, role and short bio, styled to match the site's
+   card look. Reuses .card/.card-shadow; this block only sizes the photo and text. */
+.well-team-member {
+    text-align: center;
+    height: 100%;
+}
+
+.well-team-member .well-team-member__photo img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+}
+
+.well-team-member .well-team-member__name {
+    margin: 18px 0 2px;
+    font-size: 21px;
+}
+
+.well-team-member .well-team-member__role {
+    color: var(--primary-colour-on-white, #7a003c);
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+.well-team-member .well-team-member__bio {
+    padding: 0 18px 18px;
+    color: var(--grey, #495965);
+}
+
+/* Core block buttons (wp-block-button) are <a> elements, so the site's `a:link`/`a:visited`
+   maroon link colour (mcm-bw.css) would otherwise win over theme.json's white button text and
+   leave the label maroon-on-maroon. These :link/:visited rules are specific enough to keep the
+   label the right colour on filled and outline buttons, in content and in patterns. */
+.wp-block-button__link:link,
+.wp-block-button__link:visited {
+    color: #fff;
+}
+
+.wp-block-button.is-style-outline .wp-block-button__link:link,
+.wp-block-button.is-style-outline .wp-block-button__link:visited {
+    color: var(--primary-colour-on-white, #7a003c);
+}
+
+/* On a maroon CTA banner, keep the outline button readable: white outline that fills gold
+   on hover, matching the site's reverse buttons. */
+.well-cta-banner .wp-block-button.is-style-outline .wp-block-button__link:link,
+.well-cta-banner .wp-block-button.is-style-outline .wp-block-button__link:visited {
+    border-color: #fff;
+    color: #fff;
+}
+
+.well-cta-banner .wp-block-button.is-style-outline .wp-block-button__link:hover,
+.well-cta-banner .wp-block-button.is-style-outline .wp-block-button__link:focus {
+    background-color: var(--secondary-colour, #fdbf57);
+    border-color: var(--secondary-colour, #fdbf57);
+    color: #222;
+}
