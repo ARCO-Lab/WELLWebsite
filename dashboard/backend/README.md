@@ -253,10 +253,14 @@ value, unit`), so they can be checked and imported as they are. Every night at 0
 week and month that has ended and isn't in its record (`logs/sharepoint_daily.json`, `_weekly.json`,
 `_monthly.json`, separate from the year layout's), oldest first and at most `SHAREPOINT_FILES_PER_RUN` (40) per
 cadence, so a new library gets the whole history from `SHAREPOINT_UPLOAD_FIRST_MONTH` in about two weeks; Monday's
-run covers the week before. A cadence stops for the night after 3 failed files. A day, week or month with no
-readings is tried again each night, and a week after its end is recorded as empty and skipped (upload it by hand if
-it is filled in later). The sampling files aren't recorded: every month with readings is rebuilt each night, so
-late or corrected samples reach SharePoint the next night, and a file that hasn't changed isn't sent again.
+run covers the week before. Readings can arrive late (a logger that uploads late, a backfill after an outage), so a
+day or week is uploaded again every night until 7 days after its end, and only then recorded; those recent files
+don't count against the limit, and one that hasn't changed isn't sent again. A month is recorded once it goes up. A
+period with no readings is tried again each night, and a week after its end is recorded as empty and skipped
+(upload it by hand if it is filled in later). A cadence stops for the night after 3 failed files, and the night
+starts no new file after 2.5 hours (what's left goes up the next night). The sampling files aren't recorded: every
+month with readings is rebuilt each night, so late or corrected samples reach SharePoint the next night. On the night
+clocks spring forward, when 02:00 doesn't happen, the run is at 03:00.
 `SHAREPOINT_CADENCES` picks what to upload (e.g. `daily,weekly,monthly` leaves the Ancaster Watershed part off).
 
 Borealis also carries data the other way. Creek **sampling** results are uploaded by people to a second dataset
@@ -487,7 +491,7 @@ first. A run skipped because the
 previous one is still going is recorded in the job's check with Healthchecks' `/log` (shown in its event log, no
 change of state); enough skipped in a row ping `/fail` and send a Sentry warning, since the job is then stuck rather than
 slow. For ingestion that is 3 skips (`SKIPS_BEFORE_FAIL`, half an hour); a job run under a time limit gets one more
-skip than a run can last (the backup 3, the restore drill 5, the upload 5, the digest 2, the weekly download 2), so a
+skip than a run can last (the backup 3, the restore drill 5, the upload 6, the digest 2, the weekly download 2), so a
 slow run within its limit is never reported as stuck.
 
 | Variable | Pinged |
@@ -495,7 +499,7 @@ slow run within its limit is never reported as stuck.
 | `HEALTHCHECK_URL_INGESTION` | After every 10-minute ingestion run; `/fail` when LI-COR or WQData raised an error. |
 | `HEALTHCHECK_URL_UPLOAD` | After the monthly Borealis upload (02:00 on the 1st, and daily retries); `/fail` if a month didn't go up. Days with nothing to upload don't ping. |
 | `HEALTHCHECK_URL_DIGEST` | After the daily digest; `/fail` if it crashed or couldn't send. |
-| `HEALTHCHECK_URL_SHAREPOINT` | After the SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a file didn't go up or the settings are incomplete or invalid. The year layout pings only when a month was due; the cadence layout every night at 02:00, with a line per cadence (how many files went up, how many are still to do). |
+| `HEALTHCHECK_URL_SHAREPOINT` | After the SharePoint copy (right after the Borealis upload), only when `SHAREPOINT_*` is set; `/fail` if a file didn't go up or the settings are incomplete or invalid. The year layout pings only when a month was due; the cadence layout every night at 02:00, with a line per cadence (how many files were recorded as uploaded or empty, how many recent ones were refreshed, how many are still to do). |
 | `HEALTHCHECK_URL_ALERTS` | After every alert check (every 10 minutes, see below); `/fail` if it crashed or its email couldn't be sent (including the checks that wait to retry it). |
 | `HEALTHCHECK_URL_DOWNLOAD` | After the weekly Borealis sampling download (Sundays 00:00 by the container clock, UTC); `/fail` if it failed, or if a file was refused as invalid (`REJECTED_<n>_FILES`, problems listed in `logs/download_injections.log`) or couldn't be imported. A refused file isn't retried, so the next run is a success unless something else fails: act on the first `/fail`. |
 | `HEALTHCHECK_URL_BACKUP` | `/start` when the nightly database backup begins (03:15 Toronto time), then success, or `/fail` if the dump failed or didn't pass its check, or the row counts couldn't be checked ([Database backups](#database-backups)). |

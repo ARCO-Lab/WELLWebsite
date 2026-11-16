@@ -274,34 +274,74 @@ class CadenceUploadTests(TestCase):
     def recorded(self, cadence, field="uploaded"):
         return scheduler_temp.load_record(self.records[cadence], field)
 
-    def test_each_ended_period_goes_up_once_with_its_own_record(self):
+    def test_each_ended_period_goes_up_with_its_own_record(self):
         self.check(UPLOADED)
         self.assertEqual(self.cmds, ["--day 2026-11-13", "--day 2026-11-14", "--day 2026-11-15",
                                      "--week 2026-W45", "--week 2026-W46", "--year 2026 --month 10",
                                      "--sampling all"])
         self.assertEqual(self.timeouts[:5], [scheduler_temp.PERIOD_TIMEOUT_S] * 5)
         self.assertEqual(self.timeouts[5], scheduler_temp.UPLOAD_TIMEOUT_S)
-        self.assertEqual(self.recorded("daily"), {"2026-11-13", "2026-11-14", "2026-11-15"})
-        self.assertEqual(self.recorded("weekly"), {"2026-W45", "2026-W46"})
+        # Days and weeks that ended less than 7 days ago go up but aren't recorded: more readings may come in
+        self.assertEqual(self.recorded("daily"), set())
+        self.assertEqual(self.recorded("weekly"), {"2026-W45"})
         self.assertEqual(self.recorded("monthly"), {"2026-10"})
         self.assertEqual(self.pings, [("sharepoint", "success",
-                                       "daily: 3 uploaded; weekly: 2 uploaded; monthly: 1 uploaded; "
-                                       "sampling: every month with readings is up to date")])
-        # The next night has no new sensor period, but the sampling months are rebuilt (samples come late and are
-        # corrected; an unchanged file isn't sent again), and it still pings: the check expects one a day
+                                       "daily: 0 uploaded, 3 recent refreshed; weekly: 1 uploaded, 1 recent "
+                                       "refreshed; monthly: 1 uploaded; sampling: every month with readings is up to "
+                                       "date")])
+        # The next night uploads the recent ones again (an unchanged file isn't sent again) and the sampling months,
+        # and it still pings: the check expects one a day
         self.cmds, self.pings = [], []
         self.check(UPLOADED)
-        self.assertEqual(self.cmds, ["--sampling all"])
+        self.assertEqual(self.cmds, ["--day 2026-11-13", "--day 2026-11-14", "--day 2026-11-15", "--week 2026-W46",
+                                     "--sampling all"])
         self.assertEqual(self.pings[0][:2], ("sharepoint", "success"))
-        self.assertTrue(self.pings[0][2].startswith("daily: 0 uploaded; weekly: 0 uploaded; monthly: 0 uploaded"))
+        # A week later they have settled: uploaded once more, recorded, and not sent again
+        self.cmds = []
+        self.check(UPLOADED, when_utc=MONDAY_2AM + dt.timedelta(days=7))
+        self.assertLessEqual({"2026-11-13", "2026-11-14", "2026-11-15"}, self.recorded("daily"))
+        self.assertIn("2026-W46", self.recorded("weekly"))
+        self.cmds = []
+        self.check(UPLOADED, when_utc=MONDAY_2AM + dt.timedelta(days=8))
+        self.assertNotIn("--day 2026-11-13", self.cmds)
+
+    def test_a_day_whose_readings_change_is_replaced_the_next_night(self):
+        # The script against a fake Graph: the day's file has more readings on the second night (late data)
+        from tests.test_sharepoint import FakeGraph, make_client
+        from utils import periods, sharepoint
+        graph, outcomes, night = FakeGraph(library="Data Uploads"), [], {"rows": 1}
+        client, _ = make_client(graph, SHAREPOINT_LAYOUT="cadence", SHAREPOINT_LIBRARY="Data Uploads")
+
+        def run(cmd, timeout):
+            day = periods.parse("daily", cmd[3])
+            graph.received = b""   # the fake keeps one upload's bytes at a time
+            content = "ID,Timestamp\n" + "".join(f"{i},{cmd[3]}T00:{i:02d}:00\n" for i in range(night["rows"]))
+            outcome, _ = sharepoint.put_file(client, sharepoint.period_folder(client.config, day),
+                                             periods.file_name(day), content, log=lambda *a: None)
+            outcomes.append((cmd[3], outcome))
+            return subprocess.CompletedProcess(cmd, 0, f"Successfully uploaded x.csv to SharePoint ({outcome})\n", "")
+        self.firsts["daily"] = "2026-11-15"
+        with mock.patch.dict(os.environ, {"SHAREPOINT_CADENCES": "daily"}):
+            self.check(run)
+            self.check(run, when_utc=MONDAY_2AM + dt.timedelta(days=1))   # nothing new: left as it is
+            night["rows"] = 3
+            self.check(run, when_utc=MONDAY_2AM + dt.timedelta(days=2))   # late readings: replaced
+        self.assertEqual([outcome for day, outcome in outcomes if day == "2026-11-15"],
+                         ["added", "unchanged", "replaced"])
+        stored = graph.items["West Campus/Daily/2026/11/WELLWestCampus_2026-11-15.csv"]
+        self.assertEqual(stored["size"], len("ID,Timestamp\n") + 3 * len("0,2026-11-15T00:00:00\n"))
+        self.assertEqual(self.recorded("daily"), set())
 
     def test_a_backfill_goes_up_a_few_files_a_night_oldest_first(self):
         self.firsts["daily"] = "2026-11-01"
         with mock.patch.object(scheduler_temp, "SHAREPOINT_FILES_PER_RUN", "4"), \
                 mock.patch.dict(os.environ, {"SHAREPOINT_CADENCES": "daily"}):
             self.check(UPLOADED)
-            self.assertEqual(self.cmds, ["--day 2026-11-01", "--day 2026-11-02", "--day 2026-11-03", "--day 2026-11-04"])
-            self.assertEqual(self.pings, [("sharepoint", "success", "daily: 4 uploaded, 11 still to do")])
+            # Four of the settled days (1st to 8th), then the recent ones, which the limit doesn't count
+            self.assertEqual(self.cmds, ["--day 2026-11-01", "--day 2026-11-02", "--day 2026-11-03", "--day 2026-11-04"]
+                             + [f"--day 2026-11-{d:02d}" for d in range(9, 16)])
+            self.assertEqual(self.pings, [("sharepoint", "success",
+                                           "daily: 4 uploaded, 7 recent refreshed, 4 still to do")])
             self.cmds = []
             self.check(UPLOADED)
             self.assertEqual(self.cmds[0], "--day 2026-11-05")
@@ -313,7 +353,7 @@ class CadenceUploadTests(TestCase):
         # The 7th and 8th ended 7 days or more ago; the 9th to the 15th may still be filled in
         self.assertEqual(self.recorded("daily", "empty"), {"2026-11-07", "2026-11-08"})
         self.assertEqual(self.recorded("daily"), set())
-        self.assertEqual(self.pings, [("sharepoint", "success", "daily: 0 uploaded, 7 still to do")])
+        self.assertEqual(self.pings, [("sharepoint", "success", "daily: 0 uploaded, 2 recorded empty")])
         scheduler_temp.capture_job_error.assert_not_called()
 
     def test_failures_stop_a_cadence_for_the_night_but_not_the_others(self):
@@ -326,9 +366,54 @@ class CadenceUploadTests(TestCase):
         self.assertIn("--sampling all", self.cmds)
         self.assertEqual([c for c in self.cmds if c.startswith("--day")], ["--day 2026-11-01", "--day 2026-11-02",
                                                                            "--day 2026-11-03"])
-        self.assertEqual(self.recorded("weekly"), {"2026-W45", "2026-W46"})
+        self.assertEqual(self.recorded("weekly"), {"2026-W45"})
         self.assertEqual(self.pings[0][:2], ("sharepoint", "fail"))
-        self.assertIn("daily: 0 uploaded, 3 failed, 15 still to do", self.pings[0][2])
+        self.assertIn("daily: 0 uploaded, 3 failed, 8 still to do", self.pings[0][2])
+
+    def test_a_night_stops_starting_files_at_its_time_limit(self):
+        # Each file takes an hour on this clock: the 2.5 h budget fits three, and the third may only run until
+        # PERIOD_TIMEOUT_S past the limit
+        now = {"t": 0.0}
+
+        def run(cmd, timeout):
+            now["t"] += 3600
+            return UPLOADED(cmd, timeout)
+        self.firsts["daily"] = "2026-11-01"
+        with mock.patch.object(scheduler_temp, "run_bounded", lambda cmd, timeout: (self.cmds.append(" ".join(cmd[2:])),
+                                                                                    self.timeouts.append(timeout),
+                                                                                    run(cmd, timeout))[2]), \
+                mock.patch.object(scheduler_temp, "ping_heartbeat",
+                                  lambda *a, **k: self.pings.append((*a, k.get("message")))):
+            scheduler_temp.sharepoint_cadence_check(MONDAY_2AM.astimezone(scheduler_temp.SITE_TZ),
+                                                    ["daily", "monthly", "sampling"], clock=lambda: now["t"])
+        self.assertEqual(self.cmds, ["--day 2026-11-01", "--day 2026-11-02", "--day 2026-11-03"])
+        budget, period = scheduler_temp.SHAREPOINT_NIGHT_BUDGET_S, scheduler_temp.PERIOD_TIMEOUT_S
+        self.assertEqual(self.timeouts, [period, period, period])
+        self.assertLessEqual(2 * 3600 + self.timeouts[-1], budget + period)
+        self.assertEqual(self.pings, [("sharepoint", "success",
+                                       "daily: 3 uploaded, 5 still to do, stopped at the time limit; "
+                                       "monthly: 0 uploaded, 1 still to do, stopped at the time limit; "
+                                       "sampling: not run tonight (time limit)")])
+        # A month started near the limit gets only what is left of it, plus PERIOD_TIMEOUT_S
+        self.assertEqual(scheduler_temp.budget_timeout(scheduler_temp.UPLOAD_TIMEOUT_S, 100.0, lambda: 40.0),
+                         60 + period)
+        # The upload run's stuck detection allows for Borealis and then a whole SharePoint night
+        self.assertGreaterEqual(scheduler_temp.UPLOAD_RUN_MAX_S, scheduler_temp.UPLOAD_TIMEOUT_S + budget + period)
+
+    def test_the_spring_forward_night_runs_at_three(self):
+        # 14 March 2027: clocks go from 02:00 to 03:00 EDT, so there is no 02:00 run; 03:00 EDT is 07:00 UTC
+        with mock.patch.dict(os.environ, {"SHAREPOINT_CADENCES": "daily"}):
+            self.firsts["daily"] = "2027-03-13"
+            self.check(UPLOADED, when_utc=dt.datetime(2027, 3, 14, 7, tzinfo=dt.timezone.utc))
+            self.assertEqual(self.cmds, ["--day 2027-03-13"])
+            self.assertEqual(self.pings[0][:2], ("sharepoint", "success"))
+            # On other days 03:00 is not the upload hour
+            self.cmds = []
+            self.check(UPLOADED, when_utc=dt.datetime(2027, 3, 15, 7, tzinfo=dt.timezone.utc))
+            self.assertEqual(self.cmds, [])
+        at_three = dt.datetime(2027, 3, 14, 3, tzinfo=scheduler_temp.SITE_TZ)
+        self.assertTrue(scheduler_temp.upload_slot(at_three))
+        self.assertFalse(scheduler_temp.upload_slot(at_three.replace(day=21)))
 
     def test_only_the_chosen_cadences_run(self):
         with mock.patch.dict(os.environ, {"SHAREPOINT_CADENCES": "weekly"}):

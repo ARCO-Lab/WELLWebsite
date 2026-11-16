@@ -29,7 +29,7 @@ import math
 import os
 import pathlib
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -86,9 +86,15 @@ SHAREPOINT_FAILURES_PER_RUN = 3
 PERIOD_TIMEOUT_S = 15 * 60
 # The sampling files are small too, but one run sends all of them (sharepoint_upload.py --sampling all)
 SAMPLING_TIMEOUT_S = 30 * 60
-# A period with no readings at all is tried again each night (the data may still come, e.g. from a backfill) until
-# it ended this long ago; then it is recorded as empty and skipped.
-EMPTY_AFTER = timedelta(days=7)
+# Readings can arrive after their day has ended (a logger that uploads late, a backfill after an outage), so a day
+# or week is uploaded again every night until it ended this long ago (an unchanged file isn't sent again), and only
+# then recorded. A period with no readings at all is tried again each night the same way, then recorded as empty and
+# skipped; a month is recorded once it goes up, like the Borealis one.
+SETTLE_AFTER = timedelta(days=7)
+# A cadence-layout night starts no new SharePoint file after this long, and a file started before then is stopped
+# PERIOD_TIMEOUT_S after it at the latest (budget_timeout), so the whole SharePoint part ends within
+# SHAREPOINT_NIGHT_BUDGET_S + PERIOD_TIMEOUT_S. What's left goes up the next night.
+SHAREPOINT_NIGHT_BUDGET_S = int(2.5 * 60 * 60)
 
 # Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
 # (the container's clock).
@@ -98,6 +104,9 @@ SITE_TZ = ZoneInfo("America/Toronto")
 # job's lock (see utils.jobs.run_in_background) and block every later run.
 DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
 UPLOAD_TIMEOUT_S = 2 * 60 * 60
+# The longest an upload run (Borealis, then SharePoint) can take: a month to Borealis under UPLOAD_TIMEOUT_S, then
+# either one SharePoint month under UPLOAD_TIMEOUT_S (year layout) or a cadence night. Its stuck detection uses this.
+UPLOAD_RUN_MAX_S = UPLOAD_TIMEOUT_S + max(UPLOAD_TIMEOUT_S, SHAREPOINT_NIGHT_BUDGET_S + PERIOD_TIMEOUT_S)
 LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
 BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds its own steps to 80 + 10 + 15 min (DUMP_TIMEOUT_S etc.)
@@ -413,10 +422,18 @@ def files_per_run():
     return int(SHAREPOINT_FILES_PER_RUN)
 
 
-def upload_due_periods(now, cadence, limit):
-    """Upload to SharePoint, oldest first, up to `limit` periods of `cadence` that have ended since its first period
-    and aren't in its record, and record each one that goes up (or, EMPTY_AFTER after its end, that has no readings).
-    Stops after SHAREPOINT_FAILURES_PER_RUN failures. Returns (True if nothing failed, a one-line summary)."""
+def budget_timeout(timeout, deadline, clock):
+    """`timeout`, cut so that a file started before `deadline` (a `clock` time) is stopped PERIOD_TIMEOUT_S after it
+    at the latest."""
+    return int(min(timeout, max(0, deadline - clock()) + PERIOD_TIMEOUT_S))
+
+
+def upload_due_periods(now, cadence, limit, deadline, clock=time.monotonic):
+    """Upload to SharePoint the periods of `cadence` that have ended since its first period and aren't in its record:
+    up to `limit` of those that ended SETTLE_AFTER ago or more, oldest first, recording each (as uploaded, or as empty
+    when it has no readings), then, for days and weeks, the more recent ones, which are refreshed every night and not
+    recorded yet, nor counted in `limit`. Starts no file after `deadline` (a `clock` time), and stops after
+    SHAREPOINT_FAILURES_PER_RUN failures. Returns (True if nothing failed, a one-line summary)."""
     record_path = sharepoint_period_records[cadence]
     try:
         first = periods.first_period(cadence, SHAREPOINT_FIRST_PERIODS[cadence], SHAREPOINT_FIRST_MONTH)
@@ -427,17 +444,25 @@ def upload_due_periods(now, cadence, limit):
                                  f"(check {setting}SHAREPOINT_UPLOAD_FIRST_MONTH and {record_path})")
         capture_job_error(e)
         return False, f"{cadence}: not run ({e})"
-    due = [period for period in periods.ended(cadence, now, first) if period.key not in done]
-    recorded = uploaded = failed = 0
     site_now = now.replace(tzinfo=None)   # periods are in naive Toronto wall-clock time
-    for period in due[:limit]:
+    due = [period for period in periods.ended(cadence, now, first) if period.key not in done]
+    recent = {period.key for period in due if cadence != "monthly" and site_now - period.end < SETTLE_AFTER}
+    settled = [period for period in due if period.key not in recent]
+    uploaded = empty = refreshed = failed = 0
+    out_of_time = False
+    for period in settled[:limit] + [period for period in due if period.key in recent]:
+        if clock() >= deadline:
+            out_of_time = True
+            timestamped_print_upload(f"The SharePoint time limit for tonight is reached; the other {cadence} files "
+                                     f"go up tomorrow")
+            break
         if cadence == "monthly":
             args = ["--year", str(period.start.year), "--month", str(period.start.month)]
         else:
             args = ["--day" if cadence == "daily" else "--week", period.key]
         timestamped_print_upload(f"========== SHAREPOINT {cadence.upper()} UPLOAD STARTED ({period.key}) ==========")
-        outcome = run_script("sharepoint_upload.py", args,
-                             UPLOAD_TIMEOUT_S if cadence == "monthly" else PERIOD_TIMEOUT_S, no_data_ok=True)
+        timeout = budget_timeout(UPLOAD_TIMEOUT_S if cadence == "monthly" else PERIOD_TIMEOUT_S, deadline, clock)
+        outcome = run_script("sharepoint_upload.py", args, timeout, no_data_ok=True)
         timestamped_print_upload(f"========== SHAREPOINT {cadence.upper()} UPLOAD {outcome.upper()} ==========")
         if outcome == "failed":
             failed += 1
@@ -447,8 +472,11 @@ def upload_due_periods(now, cadence, limit):
                                          f"{failed} failures")
                 break
             continue
-        if outcome == "empty" and site_now - period.end < EMPTY_AFTER:
-            timestamped_print_upload(f"{period.key} has no readings yet; trying again tomorrow at 02:00")
+        if period.key in recent or (outcome == "empty" and site_now - period.end < SETTLE_AFTER):
+            refreshed += outcome == "uploaded"
+            timestamped_print_upload(f"{period.key} {'is up to date' if outcome == 'uploaded' else 'has no readings yet'}"
+                                     f"; it is uploaded again each night until {SETTLE_AFTER.days} days after it ended, "
+                                     f"in case more readings come in")
             continue
         field = "uploaded" if outcome == "uploaded" else "empty"
         try:
@@ -461,28 +489,33 @@ def upload_due_periods(now, cadence, limit):
                                      f"{type(e).__name__}: {e}")
             capture_job_error(e)
             continue
-        recorded += 1
         if field == "uploaded":
             uploaded += 1
             timestamped_print_upload(f"Recorded {period.key} as uploaded in {record_path}")
         else:
-            timestamped_print_upload(f"[WARN] {period.key} has no readings, {EMPTY_AFTER.days} days or more after it "
+            empty += 1
+            timestamped_print_upload(f"[WARN] {period.key} has no readings, {SETTLE_AFTER.days} days or more after it "
                                      f"ended: recorded as empty in {record_path} and skipped from now on. Upload it "
                                      f"by hand with sharepoint_upload.py if its data is filled in later.")
-    left = len(due) - recorded
-    summary = (f"{cadence}: {uploaded} uploaded" + (f", {failed} failed" if failed else "")
-               + (f", {left} still to do" if left else ""))
+    left = len(settled) - uploaded - empty
+    summary = "".join([f"{cadence}: {uploaded} uploaded", f", {empty} recorded empty" if empty else "",
+                       f", {refreshed} recent refreshed" if refreshed else "", f", {failed} failed" if failed else "",
+                       f", {left} still to do" if left else "", ", stopped at the time limit" if out_of_time else ""])
     timestamped_print_upload(f"SharePoint {summary}")
     return not failed, summary
 
 
-def upload_sampling_files():
+def upload_sampling_files(deadline, clock=time.monotonic):
     """The cadence layout's sampling copy: the file of every month with sampling readings, rebuilt each night
     (sharepoint_upload.py --sampling all). Samples arrive late and are sometimes corrected, so nothing is recorded:
-    a month whose readings changed is replaced, and an unchanged one isn't sent again. Returns (True unless it
-    failed, a one-line summary)."""
+    a month whose readings changed is replaced, and an unchanged one isn't sent again. Not started after `deadline`.
+    Returns (True unless it failed, a one-line summary)."""
+    if clock() >= deadline:
+        timestamped_print_upload("The SharePoint time limit for tonight is reached; the sampling files go up tomorrow")
+        return True, "sampling: not run tonight (time limit)"
     timestamped_print_upload("========== SHAREPOINT SAMPLING UPLOAD STARTED ==========")
-    outcome = run_script("sharepoint_upload.py", ["--sampling", "all"], SAMPLING_TIMEOUT_S, no_data_ok=True)
+    outcome = run_script("sharepoint_upload.py", ["--sampling", "all"],
+                         budget_timeout(SAMPLING_TIMEOUT_S, deadline, clock), no_data_ok=True)
     timestamped_print_upload(f"========== SHAREPOINT SAMPLING UPLOAD {outcome.upper()} ==========")
     summary = {"uploaded": "sampling: every month with readings is up to date",
                "empty": "sampling: no readings yet"}.get(outcome, "sampling: failed")
@@ -490,11 +523,11 @@ def upload_sampling_files():
     return outcome != "failed", summary
 
 
-def sharepoint_cadence_check(now, cadences):
+def sharepoint_cadence_check(now, cadences, clock=time.monotonic):
     """The cadence layout's SharePoint copy (SHAREPOINT_LAYOUT=cadence): for each of `cadences`, the sensor periods
-    that have ended and aren't uploaded yet (upload_due_periods), then the sampling months (upload_sampling_files).
-    Pings the SharePoint heartbeat every night, with /fail if any file failed, and a line per cadence saying how many
-    went up and how many are still to do."""
+    that have ended and aren't uploaded yet (upload_due_periods), then the sampling months (upload_sampling_files),
+    within SHAREPOINT_NIGHT_BUDGET_S. Pings the SharePoint heartbeat every night, with /fail if any file failed, and a
+    line per cadence saying how many went up and how many are still to do."""
     try:
         limit = files_per_run()
     except ValueError as e:
@@ -502,8 +535,9 @@ def sharepoint_cadence_check(now, cadences):
         capture_job_error(e)
         ping_heartbeat("sharepoint", "fail", message=str(e))
         return
-    results = [upload_sampling_files() if cadence == "sampling" else upload_due_periods(now, cadence, limit)
-               for cadence in cadences]
+    deadline = clock() + SHAREPOINT_NIGHT_BUDGET_S
+    results = [upload_sampling_files(deadline, clock) if cadence == "sampling" else
+               upload_due_periods(now, cadence, limit, deadline, clock) for cadence in cadences]
     ok = all(result[0] for result in results)
     ping_heartbeat("sharepoint", "success" if ok else "fail", message="; ".join(result[1] for result in results))
 
@@ -555,16 +589,30 @@ def borealis_upload_check(now):
                       run_upload_data, "upload")
 
 
+def upload_slot(now):
+    """Whether `now` (site time) is in the nightly upload's hour: UPLOAD_HOUR, or the hour after it on the night
+    clocks spring forward, when UPLOAD_HOUR never happens (02:00 becomes 03:00)."""
+    if now.hour == UPLOAD_HOUR:
+        return True
+    # UPLOAD_HOUR:30 today, there and back through UTC: on the spring-forward day it comes back an hour later
+    slot = datetime(now.year, now.month, now.day, UPLOAD_HOUR, 30, tzinfo=SITE_TZ)
+    missing = slot.astimezone(timezone.utc).astimezone(SITE_TZ).hour != UPLOAD_HOUR
+    return missing and now.hour == UPLOAD_HOUR + 1
+
+
 def monthly_upload_check():
-    """Runs every hour and acts only at 02:00 Toronto time. It uploads to Borealis, oldest first, each month from
+    """Runs every hour and acts only at 02:00 Toronto time (03:00 on the night clocks spring forward, upload_slot).
+    It uploads to Borealis, oldest first, each month from
     UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
     goes up (borealis_upload_check); then does the same for SharePoint (sharepoint_upload_check). So a missed slot
     (the worker was down) or a failed upload is retried the next day, a month that went up is never sent again, and
     errors are logged once a day, not every hour. A Borealis failure never stops the SharePoint copy: both checks
     catch their own errors."""
     now = datetime.now(SITE_TZ)
-    if now.hour != UPLOAD_HOUR:
+    if not upload_slot(now):
         return
+    # As the slot's time, so the checks that look at the hour (months_due_for_upload) count it as the 02:00 run
+    now = now.replace(hour=UPLOAD_HOUR)
     borealis_upload_check(now)
     sharepoint_upload_check(now)
 
@@ -831,9 +879,9 @@ if __name__ == "__main__":
     api_run = run_in_background(api_injection_job, log=print, on_skip=skip_reporter("ingestion"))
     download_run = run_in_background(download_job, log=timestamped_print_download,
                                      on_skip=skip_reporter("download", skips_before_fail(DOWNLOAD_TIMEOUT_S, week)))
-    # An upload run sends a month to Borealis, then to SharePoint, each under UPLOAD_TIMEOUT_S
+    # An upload run sends a month to Borealis, then to SharePoint; it can last up to UPLOAD_RUN_MAX_S
     upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload,
-                                   on_skip=skip_reporter("upload", skips_before_fail(2 * UPLOAD_TIMEOUT_S, hour)))
+                                   on_skip=skip_reporter("upload", skips_before_fail(UPLOAD_RUN_MAX_S, hour)))
     digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest,
                                    on_skip=skip_reporter("digest", skips_before_fail(DIGEST_TIMEOUT_S, hour)))
     backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup,
