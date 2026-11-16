@@ -122,6 +122,21 @@
   margin-top: 0.5rem;
 }
 
+/* "Clear" button: dark text on a light background so it reads against the panel
+   (the theme's .btn-outline-secondary default is too light to see here). */
+.sampling-checker__actions #sampling-clear-btn {
+  color: #1a1a1a;
+  border-color: #6c757d;
+  background-color: #fff;
+}
+
+.sampling-checker__actions #sampling-clear-btn:hover,
+.sampling-checker__actions #sampling-clear-btn:focus {
+  color: #000;
+  background-color: #f1f1f1;
+  border-color: #495965;
+}
+
 .sampling-result {
   margin-top: 1.25rem;
 }
