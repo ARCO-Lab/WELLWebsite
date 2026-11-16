@@ -146,6 +146,12 @@ HTML** and change their structure. If one needs a content change, ask a develope
   front-end CSS (and a small `css/editor.css` shim) into the block editor, which is why the editor
   canvas looks like the live site. The patterns live in the theme's `patterns/` folder and are
   registered automatically; their shared styles are in `css/well-patterns.css`.
-- **Republished news canonicals:** when a News post is republished from another site, its original
-  URL is stored in the `_canonical_url` custom field, and the theme automatically points that post's
-  `rel="canonical"` at the original. Editors never need to touch this; it's handled in `functions.php`.
+- **Single News posts** show their **featured image** at the top automatically — just set one with
+  "Set featured image" in the editor sidebar.
+- **Republished news posts** (brought over from another site) use three custom fields, all handled by
+  the theme automatically — **editors don't touch these**:
+  - `_original_author` (+ optional `_original_source`, `_original_author_url`) is shown as the byline
+    ("By Jane Doe, McMaster Daily News", the name linked if a URL is given) instead of the WordPress
+    account name; it falls back to the account for original posts.
+  - `_canonical_url` points that post's `rel="canonical"` at the original article, so search engines
+    credit the source (it replaces the default self-canonical — there is only ever one).
