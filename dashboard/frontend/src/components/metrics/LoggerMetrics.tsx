@@ -59,4 +59,5 @@ const LoggerMetrics = ({
   );
 };
 
-export default LoggerMetrics;
+// Memoized: its tiles are only worked out again when the readings or the ticked metrics change
+export default React.memo(LoggerMetrics);

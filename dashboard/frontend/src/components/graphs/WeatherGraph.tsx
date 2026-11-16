@@ -4,7 +4,7 @@
 // (/api/windrose, see hooks/useWindRose) only while it is shown.
 
 import dynamic from 'next/dynamic';
-import { useContext, useMemo } from 'react';
+import { memo, useContext, useMemo } from 'react';
 import { Tabs, TabsList, TabsTrigger } from "@/components/animations/tabs";
 import { SENSOR_STATIONS } from '@/components/config/filters';
 import { ChartPageContext } from '@/hooks/useChartWindow';
@@ -132,4 +132,5 @@ const WeatherGraph = ({
   );
 };
 
-export default WeatherGraph;
+// Memoized: the page re-renders for many things that don't concern this card (see pages/index.tsx)
+export default memo(WeatherGraph);

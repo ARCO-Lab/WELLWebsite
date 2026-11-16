@@ -10,7 +10,7 @@
 // Until the base map has drawn (MapLibre's code, the style and the first tiles can take a while on a slow
 // connection), a "Loading map…" note shows over it.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapGL, { Marker, Popup, NavigationControl, FullscreenControl, type MapRef } from "@vis.gl/react-maplibre";
 import type { StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -516,4 +516,5 @@ function Map<G extends { [key: string]: boolean }>({
   );
 }
 
-export default Map;
+// Memoized (keeping its generic props): the page re-renders for many things that don't concern the map
+export default memo(Map) as typeof Map;

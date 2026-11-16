@@ -3,7 +3,7 @@
 // ODO is marked as suspect since June 2026 (see utils/chartStyle SERIES_NOTES).
 
 import dynamic from 'next/dynamic';
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { SENSOR_STATIONS } from '@/components/config/filters';
 import { cardSeries } from '@/utils/cardSeries';
 import ChartErrorBoundary from './ChartErrorBoundary';
@@ -53,4 +53,5 @@ const QualityGraph = ({ subFilters, modalOpen }: Props) => {
   );
 };
 
-export default QualityGraph;
+// Memoized: the page re-renders for many things that don't concern this card (see pages/index.tsx)
+export default memo(QualityGraph);

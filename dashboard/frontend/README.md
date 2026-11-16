@@ -65,6 +65,14 @@ still filling with new readings after a minute. Each series says what its `avg` 
 chart times are Toronto (site) time whatever the visitor's time zone (`src/utils/siteTime.ts` and
 `src/utils/chartWindow.ts`, tested by `scripts/*.test.mjs`).
 
+On phones, three things keep the page moving while charts are on it. A one-finger touch reaches Highcharts only once
+it is a tap, so a page scroll that starts on a chart doesn't wait for a tooltip (`src/lib/chartTouch.ts`). A card's
+charts are built just after the tap or page load that added the card has been painted, one card at a time
+(`src/lib/mountTurn.ts`), and charts that get new data in the same reply are redrawn one per frame
+(`src/lib/chartController.ts`). The graph, metric and map components are memoized, so a tick, a tab switch or the
+larger view re-renders only what it changes; a sampling chart in particular is redrawn in full whenever its component
+renders (`SampleChart.tsx`).
+
 ## Development
 
 ```bash

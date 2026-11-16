@@ -65,4 +65,5 @@ const CreekMetrics: React.FC<CreekMetricsProps> = ({ creekKey, subFilters, metri
   );
 };
 
-export default CreekMetrics;
+// Memoized: its tiles are only worked out again when the readings or the ticked metrics change
+export default React.memo(CreekMetrics);

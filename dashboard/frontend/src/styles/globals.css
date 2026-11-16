@@ -320,7 +320,10 @@ All colors MUST be HSL for proper shadcn/ui integration.
     border-radius: 0.5rem;
     box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
     border-width: 1px;
-    transition: all 0.3s ease;
+    /* Only what a card animates: its shadow and border on hover. "all" also started a transition for every other
+       property that changes, the inherited ones included: when a tab is shown again (visibility), each card ran one
+       and the browser worked out the styles of everything inside the cards again, frame after frame. */
+    transition: box-shadow 0.3s ease, border-color 0.3s ease;
   }
 
   /* Only cards that open something react to the pointer (ExpandableCard). Panels stay put: scaling them on
@@ -485,8 +488,19 @@ All colors MUST be HSL for proper shadcn/ui integration.
     transform: none !important;
   }
 
-  .mcmaster-card {
+  .mcmaster-card,
+  .mcmaster-input,
+  .btn-mcmaster-primary,
+  .btn-mcmaster-secondary {
     transition: none;
+  }
+
+  /* The larger view and its backdrop appear and go at once, and so does a filter group's list */
+  .dialog-content,
+  .dialog-overlay,
+  .animate-accordion-down,
+  .animate-accordion-up {
+    animation: none !important;
   }
 }
 

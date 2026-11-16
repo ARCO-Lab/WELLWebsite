@@ -58,12 +58,21 @@ function wallClockMs(value: string): number | null {
   return Date.UTC(y, mo - 1, d, h, mi, s || 0);
 }
 
+// Formatters are made once and kept: making an Intl.DateTimeFormat is slow, and these run for every tile each time
+// the panel renders (a new one per call was a tenth of the time the whole page took to re-render on a phone).
+const siteClock = new Intl.DateTimeFormat("en-CA", {
+  timeZone: SITE_TIME_ZONE, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
+const TIME_FORMATS = {
+  date: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }),
+  time: new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }),
+  dayTime: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }),
+};
+
 // The site's current wall-clock time, on the same UTC clock as wallClockMs().
 function siteNowMs(): number {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: SITE_TIME_ZONE, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  }).formatToParts(new Date());
+  const parts = siteClock.formatToParts(new Date());
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
 }
@@ -77,14 +86,10 @@ export function formatSiteTime(value: string | null | undefined, dateOnly = fals
   const at = new Date(ms);
   const sameDay = at.getUTCFullYear() === now.getUTCFullYear() && at.getUTCMonth() === now.getUTCMonth()
     && at.getUTCDate() === now.getUTCDate();
-  const options: Intl.DateTimeFormatOptions = dateOnly
-    ? { month: "short", day: "numeric", year: "numeric" }
-    : sameDay
-      ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
-      : at.getUTCFullYear() === now.getUTCFullYear()
-        ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
-        : { month: "short", day: "numeric", year: "numeric" };
-  return new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" }).format(at);
+  const format = dateOnly ? TIME_FORMATS.date
+    : sameDay ? TIME_FORMATS.time
+      : at.getUTCFullYear() === now.getUTCFullYear() ? TIME_FORMATS.dayTime : TIME_FORMATS.date;
+  return format.format(at);
 }
 
 // How many hours ago a reading was taken, by the site's clock; null if there is no usable time.
@@ -321,6 +326,9 @@ function Ticker({ title, stopped, onCanScroll, children }: {
   const [tileHeight, setTileHeight] = useState<number | null>(null); // a rendered tile's height, in px
   const [stripWidth, setStripWidth] = useState(0);
   const [atStart, setAtStart] = useState(true);
+  // Where the second copy starts, measured when a size changes (not on every frame: reading it there made the
+  // browser work out styles and layout 60 times a second per strip)
+  const wrapAt = useRef(0);
   const tileCount = React.Children.count(children);
   const reduceMotion = usePrefersReducedMotion();
   const canScroll = overflowing && !reduceMotion;
@@ -343,6 +351,7 @@ function Ticker({ title, stopped, onCanScroll, children }: {
       }
       setStripWidth(el.clientWidth);
       setOverflowing(copy.offsetWidth > el.clientWidth + 1);
+      wrapAt.current = copyWidth(copy);
     };
     check();
     const observer = new ResizeObserver(check);
@@ -366,8 +375,8 @@ function Ticker({ title, stopped, onCanScroll, children }: {
       const elapsed = last ? Math.min(now - last, 100) : 0;
       last = now;
       position += (SPEED_PX_PER_S * elapsed) / 1000;
-      const wrapAt = copyWidth(copy);
-      if (wrapAt > 0 && position >= wrapAt) position -= wrapAt; // seamless wrap
+      const wrap = wrapAt.current;
+      if (wrap > 0 && position >= wrap) position -= wrap; // seamless wrap
       if (Math.abs(el.scrollLeft - position) >= 0.5) el.scrollLeft = position;
       frame = requestAnimationFrame(step);
     };
@@ -407,10 +416,9 @@ function Ticker({ title, stopped, onCanScroll, children }: {
   // Scrolling by hand (or while the strip stands still for reduced motion) wraps the same way.
   const onScroll = (el: HTMLDivElement) => {
     setAtStart(el.scrollLeft < 1);
-    const copy = firstCopy.current;
-    if (!overflowing || !copy) return;
-    const wrapAt = copyWidth(copy);
-    if (wrapAt > 0 && el.scrollLeft >= wrapAt) el.scrollLeft -= wrapAt;
+    if (!overflowing) return;
+    const wrap = wrapAt.current;
+    if (wrap > 0 && el.scrollLeft >= wrap) el.scrollLeft -= wrap;
   };
 
   // Columns as wide as their widest tile, sharing out any spare width when everything fits; rows of equal height,

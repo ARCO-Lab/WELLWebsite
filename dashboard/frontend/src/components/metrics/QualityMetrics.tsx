@@ -43,4 +43,5 @@ const QualityMetrics = ({
   return <MetricGroup title="Water Quality Metrics" sections={[{ key: "quality", rows }]} loading={loading} layout={inModal ? "wrap" : "ticker"} />;
 };
 
-export default QualityMetrics;
+// Memoized: its tiles are only worked out again when the readings or the ticked metrics change
+export default React.memo(QualityMetrics);

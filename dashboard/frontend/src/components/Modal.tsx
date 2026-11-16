@@ -13,6 +13,7 @@ import {
 import type { Metric } from "@/hooks/useLatestMetrics";
 import type { RecentSample } from "@/hooks/useRecentSamples";
 import type { SampledData } from "@/hooks/useSampledData";
+import { AfterPaint } from "@/components/LoadingOverlay";
 
 // Props the modal passes to its content (the metric and graph components accept some or all of them).
 interface ModalContentProps {
@@ -81,9 +82,13 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, header, type, 
           {/* Main content: inject modal props if children is a valid React element. modalOpen is always true here,
               not isOpen: this copy only exists inside the dialog, so if it is still shown while the dialog fades out
               (isOpen already false) it keeps its modal layout rather than switching to the card's (hidden axes). */}
-          {React.isValidElement(children)
-            ? React.cloneElement(children as React.ReactElement<ModalContentProps>, { modalOpen: true, inModal: true, weatherTab, setWeatherTab, })
-            : children}
+          {(() => {
+            const content = React.isValidElement(children)
+              ? React.cloneElement(children as React.ReactElement<ModalContentProps>, { modalOpen: true, inModal: true, weatherTab, setWeatherTab, })
+              : children;
+            // Graphs are built just after the dialog has opened, so the tap that opens it isn't held up by them
+            return analysisType === "alltime" ? <AfterPaint>{content}</AfterPaint> : content;
+          })()}
 
           {/* AI ANALYSIS DISABLED: AI panel in the chart modal. Uncomment to restore.
           {type !== 'sampling' && (

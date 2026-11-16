@@ -1,7 +1,7 @@
 // This file defines the LoggerGraph component: the selected water loggers' readings, all in one chart: water level
 // and water temperature on their own y-axes, a colour per logger, the temperature dashed (see MetricChart).
 
-import React, { useMemo } from 'react';
+import React, { memo, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SENSOR_FILTER_CONFIG } from '@/components/config/filters';
 import { cardSeries } from '@/utils/cardSeries';
@@ -42,4 +42,5 @@ const LoggerGraph = ({ subFilters, modalOpen = false }: Props) => {
   );
 };
 
-export default LoggerGraph;
+// Memoized: the page re-renders for many things that don't concern this card (see pages/index.tsx)
+export default memo(LoggerGraph);

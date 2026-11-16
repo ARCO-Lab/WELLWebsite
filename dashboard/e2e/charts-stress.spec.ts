@@ -654,6 +654,38 @@ test.describe("chart performance budgets", () => {
       expect(net.requests.length - n0).toBe(0);
     });
 
+    test("a swipe up that starts on the plot scrolls the page without Highcharts hearing of it", async ({ page }) => {
+      await open(page);
+      const logger = chart(page, "logger");
+      // Counted inside Highcharts: every time it looks up the points under a pointer, and every time it draws a tooltip
+      await page.evaluate(() => {
+        type Fn = (...a: unknown[]) => unknown;
+        const w = window as unknown as { __pointActions: number; __tooltips: number;
+          _Highcharts: { Pointer: { prototype: { runPointActions: Fn } }; Tooltip: { prototype: { refresh: Fn } } } };
+        const pointer = w._Highcharts.Pointer.prototype, tooltip = w._Highcharts.Tooltip.prototype;
+        const actions = pointer.runPointActions, refresh = tooltip.refresh;
+        w.__pointActions = 0;
+        w.__tooltips = 0;
+        pointer.runPointActions = function (this: unknown, ...a: unknown[]) { w.__pointActions++; return actions.apply(this, a); };
+        tooltip.refresh = function (this: unknown, ...a: unknown[]) { w.__tooltips++; return refresh.apply(this, a); };
+      });
+      const pointActions = () => page.evaluate(() => (window as unknown as { __pointActions: number }).__pointActions);
+      const tooltips = () => page.evaluate(() => (window as unknown as { __tooltips: number }).__tooltips);
+      const cdp = await page.context().newCDPSession(page);
+      const touch = (type: string, x: number, y: number) =>
+        cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y, id: 1 }] });
+      const p = await at(logger, 0.5);
+      const scrollY = await page.evaluate(() => window.scrollY);
+      await touch("touchStart", p.x, p.y);
+      for (let i = 1; i <= 12; i++) { await touch("touchMove", p.x, p.y - i * 15); await page.waitForTimeout(16); }
+      for (let i = 0; i < 3; i++) { await touch("touchMove", p.x, p.y - 180); await page.waitForTimeout(30); } // held still: no fling
+      await touch("touchEnd", 0, 0);
+      await page.waitForTimeout(600);
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollY + 50);
+      expect(await pointActions()).toBe(0); // the scroll didn't wait for a tooltip
+      expect(await tooltips()).toBe(0);
+    });
+
     test("one finger moving sideways pans the chart; a tap on the navigator's track centres the window there", async ({ page }) => {
       const { net } = await open(page);
       const logger = chart(page, "logger");

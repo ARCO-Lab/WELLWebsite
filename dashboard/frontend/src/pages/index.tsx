@@ -343,11 +343,12 @@ export default function Dashboard({ embedded = false }: { embedded?: boolean }) 
     gauges: <LoggerMetrics key="gauges" activeKeys={subFilters.gauges} activeGroups={activeGroups} metrics={latestMetrics} loading={latestLoading} />,
   };
 
-  const normalizedSubFilters = {
+  // The same object until the ticks change, so the memoized graph cards skip the page's other re-renders
+  const normalizedSubFilters = useMemo(() => ({
     weather: subFilters.weather || [],
     quality: subFilters.quality || [],
     gauges: subFilters.gauges || [],
-  };
+  }), [subFilters]);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
 

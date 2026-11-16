@@ -4,13 +4,14 @@
 // takes no room from the plots and can show or hide a measurement in all of them at once. (The West Campus sensor charts
 // use MetricChart, which draws aggregated series from /api/series and zooms.)
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
 // Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
 import 'highcharts/modules/accessibility';
 import { displayUnit } from '@/utils/chartStyle';
 import { samplingStyle } from '@/utils/samplingStyle';
+import { quietTouch } from '@/lib/chartTouch';
 
 interface SensorData {
   measurement_type: string;
@@ -36,6 +37,13 @@ interface SampleChartProps {
 
 const NONE: string[] = [];
 
+/** One more pass over a chart's y-axes (see where it is called). */
+function settleAxes(chart: Highcharts.Chart | undefined): void {
+  if (!chart || chart.yAxis.length < 2) return;
+  for (const axis of chart.yAxis) (axis as Highcharts.Axis & { isDirty?: boolean }).isDirty = true;
+  chart.redraw(false);
+}
+
 const SampleChart: React.FC<SampleChartProps> = ({
   siteName,
   subFilters,
@@ -50,6 +58,15 @@ const SampleChart: React.FC<SampleChartProps> = ({
   showErrorBanner = true,
 }) => {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // A finger that scrolls the page over the chart doesn't make Highcharts look up points and draw its tooltip; a tap
+  // still shows it, and a finger moving sideways still moves it along (lib/chartTouch.ts)
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    return quietTouch(el, () => chartRef.current?.chart, { scrub: true });
+  }, []);
   // Until the first data arrives: no Highcharts placeholder title ("Chart title") or credits link.
   const [chartOptions, setChartOptions] = useState<Highcharts.Options>({ title: { text: undefined }, credits: { enabled: false } });
   const [resolvedHeight, setResolvedHeight] = useState(height);
@@ -187,11 +204,19 @@ const SampleChart: React.FC<SampleChartProps> = ({
     });
   }, [data, loading, siteName, subFilters, hiddenMetrics, resolvedHeight, modalOpen]);
 
+  // Highcharts lines up the ticks of the y-axes (one per unit), and with several axes that takes it two passes: the
+  // first leaves some axes with another maximum than the one they settle on. One more pass after each change, before
+  // the browser paints, so a chart always shows its settled scales. (The page's re-renders used to redraw every chart
+  // over and over, which hid this; now a chart is only redrawn when what it shows changes.)
+  useLayoutEffect(() => {
+    settleAxes(chartRef.current?.chart);
+  }, [chartOptions]);
+
   const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
     && chartOptions.series.every((s) => !('data' in s && Array.isArray(s.data) && s.data.length));
 
   return (
-    <div className="relative">
+    <div ref={boxRef} className="relative">
       <HighchartsReact
         highcharts={Highcharts}
         options={chartOptions}
@@ -224,4 +249,6 @@ const SampleChart: React.FC<SampleChartProps> = ({
   );
 };
 
-export default SampleChart;
+// Memoized: HighchartsReact updates its chart (a full redraw) every time this component renders, so without it every
+// re-render of the page (a tab switch, a filter group opening, a tick on the other tab) redrew every sampling chart.
+export default React.memo(SampleChart);

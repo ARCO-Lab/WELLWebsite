@@ -23,7 +23,8 @@
 // - drag in the plot pans; Shift + drag selects a span to zoom to; the range bar's ends resize the window, its middle
 //   slides it.
 // - touch: one finger moving up or down scrolls the page (the plot is touch-action: pan-y), sideways pans the chart, a
-//   tap shows the tooltip; two fingers pinch to zoom and move to pan.
+//   tap shows the tooltip (on release: Highcharts only hears of a touch once it is a tap, lib/chartTouch.ts, so a
+//   scroll that starts on the chart isn't held up by a tooltip); two fingers pinch to zoom and move to pan.
 // - keyboard, once the chart has focus: ← → pan, + − zoom, 0 resets.
 // The chart redraws at a pace its own redraw cost allows, once per turn for new data and the window together. During a
 // gesture the bands and the accessibility layer are off and requests wait for its end. Screen readers get the chart's
@@ -31,6 +32,7 @@
 
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { guarded } from '@/lib/guarded';
+import { quietTouch } from '@/lib/chartTouch';
 import { MIN_GRAB_PX, barPart, grabSpan, handleAt } from '@/lib/rangeBar';
 import Highcharts from 'highcharts';
 import 'highcharts/modules/stock'; // the navigator, which is the range bar
@@ -873,6 +875,8 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
       }
     };
 
+    // One-finger touches reach Highcharts only as taps (its tooltip); never from the range bar, which is driven here
+    const offQuiet = quietTouch(el, chart, { ignore: (t) => belowPlot(t.clientY) });
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('pointerdown', onDown);
     el.addEventListener('pointermove', onMove);
@@ -886,6 +890,7 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     el.addEventListener('keydown', onKey);
     el.addEventListener('mousedown', onNavPress, { capture: true });
     return () => {
+      offQuiet();
       el.removeEventListener('mousedown', onNavPress, { capture: true });
       window.clearTimeout(hintTimer);
       window.clearTimeout(wheelEnd);
