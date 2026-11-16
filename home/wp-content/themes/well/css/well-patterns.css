@@ -6,24 +6,7 @@
  * theme.css / mcm-bw.css / new-cards.css. This file adds only the few extra pieces the
  * patterns need that the site did not already have as reusable classes. It is loaded on the
  * front end AND in the block editor, so patterns look the same in both.
- *
- * It also carries one small, related single-post style: the News featured image.
  */
-
-/* Featured image at the top of a single News post. Full content width with the brand gold
-   underline, echoing the hero carousel's gold bottom border. */
-.news-featured-image {
-    margin-top: 0;
-    width: 100%;
-}
-
-.news-featured-image img {
-    display: block;
-    width: 100%;
-    max-height: 520px;
-    object-fit: cover;
-    border-bottom: 6px solid var(--secondary-colour, #fdbf57);
-}
 
 /* Section heading with the brand gold underline accent (for use on white backgrounds,
    unlike .banner-title-line which is tuned for dark hero banners). */

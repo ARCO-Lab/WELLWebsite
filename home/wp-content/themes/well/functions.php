@@ -398,30 +398,6 @@ function well_meta_tags() {
 add_action('wp_head', 'well_meta_tags', 5);
 
 /**
- * Cross-domain canonical for republished News posts. A post brought over from another site
- * (e.g. McMaster Daily News) keeps the original article's address in the `_canonical_url`
- * custom field. When that is set on a single post, rel=canonical points at the original, so
- * search engines credit the source rather than treating this copy as the original.
- *
- * WordPress's own rel_canonical() reads the canonical URL through this same filter, so the
- * external URL replaces the default self-referential one — there is never a second canonical
- * tag. Posts and pages without `_canonical_url` are unchanged (self-canonical, as before).
- */
-function well_cross_domain_canonical($canonical_url) {
-    if (is_singular('post')) {
-        $external = get_post_meta(get_queried_object_id(), '_canonical_url', true);
-        if (is_string($external) && trim($external) !== '') {
-            $external = esc_url(trim($external));
-            if ($external !== '') {
-                return $external;
-            }
-        }
-    }
-    return $canonical_url;
-}
-add_filter('get_canonical_url', 'well_cross_domain_canonical');
-
-/**
  * Open the connections to Google Fonts early. The Poppins stylesheet comes from fonts.googleapis.com
  * and its font files from fonts.gstatic.com; without this the browser finds the second host only
  * after the first stylesheet has downloaded.
