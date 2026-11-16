@@ -46,7 +46,7 @@ class WP_Users_List_Table extends WP_List_Table {
 			array(
 				'singular' => 'user',
 				'plural'   => 'users',
-				'screen'   => $args['screen'] ?? null,
+				'screen'   => isset( $args['screen'] ) ? $args['screen'] : null,
 			)
 		);
 
@@ -85,7 +85,7 @@ class WP_Users_List_Table extends WP_List_Table {
 
 		$usersearch = isset( $_REQUEST['s'] ) ? wp_unslash( trim( $_REQUEST['s'] ) ) : '';
 
-		$role = $_REQUEST['role'] ?? '';
+		$role = isset( $_REQUEST['role'] ) ? $_REQUEST['role'] : '';
 
 		$per_page       = ( $this->is_site_users ) ? 'site_users_network_per_page' : 'users_per_page';
 		$users_per_page = $this->get_items_per_page( $per_page );
@@ -563,16 +563,9 @@ class WP_Users_List_Table extends WP_List_Table {
 			$attributes = "class='$classes' $data";
 
 			if ( 'cb' === $column_name ) {
-				$row .= "<td class='check-column'>$checkbox</td>";
+				$row .= "<th scope='row' class='check-column'>$checkbox</th>";
 			} else {
-				$is_primary = ( $primary === $column_name );
-				$tag        = $is_primary ? 'th' : 'td';
-				$scope      = $is_primary ? ' scope="row"' : '';
-				$aria_label = '';
-				if ( $is_primary ) {
-					$aria_label = ' aria-label="' . esc_attr( $user_object->user_login ) . '"';
-				}
-				$row .= "<$tag $attributes$scope$aria_label>";
+				$row .= "<td $attributes>";
 				switch ( $column_name ) {
 					case 'username':
 						$row .= "$avatar $edit";
@@ -635,8 +628,7 @@ class WP_Users_List_Table extends WP_List_Table {
 				if ( $primary === $column_name ) {
 					$row .= $this->row_actions( $actions );
 				}
-				$tag  = ( $primary === $column_name ) ? 'th' : 'td';
-				$row .= "</$tag>";
+				$row .= '</td>';
 			}
 		}
 		$row .= '</tr>';

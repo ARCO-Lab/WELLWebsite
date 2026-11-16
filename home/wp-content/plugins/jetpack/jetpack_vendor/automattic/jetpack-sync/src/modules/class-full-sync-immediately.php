@@ -70,7 +70,7 @@ class Full_Sync_Immediately extends Module {
 	 */
 	public function start( $full_sync_config = null, $context = null ) {
 		// Check if there was a full sync in progress already before resetting the data.
-		$should_process_cancelled_action = $this->get_status()['start_action_processed'] && ! $this->is_finished();
+		$should_process_cancelled_action = $this->get_status()['start_action_processed'] && ! $this->is_finished() ? true : false;
 		// Remove all evidence of previous full sync items and status.
 		$this->reset_data();
 
@@ -281,7 +281,7 @@ class Full_Sync_Immediately extends Module {
 			if ( ! $module ) {
 				continue;
 			}
-			if ( $config ) {
+			if ( true === isset( $config ) && $config ) {
 				$range[ $module_name ] = $this->get_range( $module_name );
 			}
 		}

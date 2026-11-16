@@ -1,5 +1,5 @@
 /*!
- * jQuery UI Effects Explode 1.14.2
+ * jQuery UI Effects Explode 1.13.3
  * https://jqueryui.com
  *
  * Copyright OpenJS Foundation and other contributors
@@ -9,7 +9,9 @@
 
 //>>label: Explode Effect
 //>>group: Effects
+/* eslint-disable max-len */
 //>>description: Explodes an element in all directions into n pieces. Implodes an element to its original wholeness.
+/* eslint-enable max-len */
 //>>docs: https://api.jqueryui.com/explode-effect/
 //>>demos: https://jqueryui.com/effect/
 

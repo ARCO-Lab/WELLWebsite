@@ -1,14 +1,13 @@
 <?php
 /**
  * WP_Importer base class
- *
- * @package WordPress
- * @subpackage Importer
- * @since 3.0.0
  */
-
 #[AllowDynamicProperties]
 class WP_Importer {
+	/**
+	 * Class Constructor
+	 */
+	public function __construct() {}
 
 	/**
 	 * Returns array with imported permalinks from WordPress database.
@@ -30,14 +29,8 @@ class WP_Importer {
 		// Grab all posts in chunks.
 		do {
 			$meta_key = $importer_name . '_' . $blog_id . '_permalink';
-			$results  = $wpdb->get_results(
-				$wpdb->prepare(
-					"SELECT post_id, meta_value FROM $wpdb->postmeta WHERE meta_key = %s LIMIT %d,%d",
-					$meta_key,
-					$offset,
-					$limit
-				)
-			);
+			$sql      = $wpdb->prepare( "SELECT post_id, meta_value FROM $wpdb->postmeta WHERE meta_key = %s LIMIT %d,%d", $meta_key, $offset, $limit );
+			$results  = $wpdb->get_results( $sql );
 
 			// Increment offset.
 			$offset = ( $limit + $offset );
@@ -69,12 +62,9 @@ class WP_Importer {
 
 		// Get count of permalinks.
 		$meta_key = $importer_name . '_' . $blog_id . '_permalink';
-		$result   = $wpdb->get_results(
-			$wpdb->prepare(
-				"SELECT COUNT( post_id ) AS cnt FROM $wpdb->postmeta WHERE meta_key = %s",
-				$meta_key
-			)
-		);
+		$sql      = $wpdb->prepare( "SELECT COUNT( post_id ) AS cnt FROM $wpdb->postmeta WHERE meta_key = %s", $meta_key );
+
+		$result = $wpdb->get_results( $sql );
 
 		if ( ! empty( $result ) ) {
 			$count = (int) $result[0]->cnt;
@@ -101,13 +91,8 @@ class WP_Importer {
 
 		// Grab all comments in chunks.
 		do {
-			$results = $wpdb->get_results(
-				$wpdb->prepare(
-					"SELECT comment_ID, comment_agent FROM $wpdb->comments LIMIT %d,%d",
-					$offset,
-					$limit
-				)
-			);
+			$sql     = $wpdb->prepare( "SELECT comment_ID, comment_agent FROM $wpdb->comments LIMIT %d,%d", $offset, $limit );
+			$results = $wpdb->get_results( $sql );
 
 			// Increment offset.
 			$offset = ( $limit + $offset );
@@ -131,14 +116,8 @@ class WP_Importer {
 	}
 
 	/**
-	 * Sets the blog to import to.
-	 *
-	 * Accepts a numeric blog ID or a URL string. When given a URL,
-	 * the blog is looked up by domain and path. On multisite, switches
-	 * to the resolved blog. Exits with an error if the blog cannot be found.
-	 *
-	 * @param int|string $blog_id Blog ID or URL.
-	 * @return int Blog ID on success. Exits on failure.
+	 * @param int $blog_id
+	 * @return int|void
 	 */
 	public function set_blog( $blog_id ) {
 		if ( is_numeric( $blog_id ) ) {
@@ -179,7 +158,7 @@ class WP_Importer {
 
 	/**
 	 * @param int $user_id
-	 * @return int
+	 * @return int|void
 	 */
 	public function set_user( $user_id ) {
 		if ( is_numeric( $user_id ) ) {
@@ -281,7 +260,7 @@ class WP_Importer {
 	 * @since 3.0.0
 	 *
 	 * @global wpdb  $wpdb       WordPress database abstraction object.
-	 * @global int[] $wp_actions Stores the number of times each action was triggered.
+	 * @global int[] $wp_actions
 	 */
 	public function stop_the_insanity() {
 		global $wpdb, $wp_actions;
@@ -296,13 +275,9 @@ class WP_Importer {
  * Returns value of command line params.
  * Exits when a required param is not set.
  *
- * @param string $param    The parameter name to retrieve.
- * @param bool   $required Optional. Whether the parameter is required. Default false.
- * @return string|true|null The parameter value, or true if the parameter was supplied
- *                          without a value, or null if it was not supplied at all.
- *                          Never returns when `$required` is true and the parameter
- *                          is missing, as the function exits instead.
- * @phpstan-return ( $required is true ? string|true : string|true|null )
+ * @param string $param
+ * @param bool   $required
+ * @return mixed
  */
 function get_cli_args( $param, $required = false ) {
 	$args = $_SERVER['argv'];
@@ -322,7 +297,11 @@ function get_cli_args( $param, $required = false ) {
 			$parts = explode( '=', $match[1] );
 			$key   = preg_replace( '/[^a-z0-9]+/', '', $parts[0] );
 
-			$out[ $key ] = $parts[1] ?? true;
+			if ( isset( $parts[1] ) ) {
+				$out[ $key ] = $parts[1];
+			} else {
+				$out[ $key ] = true;
+			}
 
 			$last_arg = $key;
 		} elseif ( (bool) preg_match( '/^-([a-zA-Z0-9]+)/', $args[ $i ], $match ) ) {

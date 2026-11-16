@@ -10,23 +10,6 @@
  * Base WordPress Filesystem class which Filesystem implementations extend.
  *
  * @since 2.5.0
- *
- * @phpstan-type FileListing array{
- *     name: string,
- *     perms?: string,
- *     permsn?: string,
- *     number?: int|string|false,
- *     owner?: string|int<1, max>|false,
- *     group?: string|int<1, max>|false,
- *     size: int|string|false,
- *     lastmodunix?: int|string|false,
- *     lastmod?: string|false,
- *     time: int|string|false,
- *     type: 'd'|'f'|'l',
- *     islink?: bool,
- *     isdir?: bool,
- *     files?: mixed[]|false, // The mixed[] is actually FileListing[] but PHPStan does not support recursive or self-referencing array shapes.
- * }
  */
 #[AllowDynamicProperties]
 class WP_Filesystem_Base {
@@ -43,7 +26,7 @@ class WP_Filesystem_Base {
 	 * Cached list of local filepaths to mapped remote filepaths.
 	 *
 	 * @since 2.7.0
-	 * @var array<string, string>
+	 * @var array
 	 */
 	public $cache = array();
 
@@ -61,7 +44,6 @@ class WP_Filesystem_Base {
 	public $errors = null;
 
 	/**
-	 * @var array<string, mixed>
 	 */
 	public $options = array();
 
@@ -70,7 +52,7 @@ class WP_Filesystem_Base {
 	 *
 	 * @since 2.7.0
 	 *
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function abspath() {
 		$folder = $this->find_folder( ABSPATH );
@@ -91,7 +73,7 @@ class WP_Filesystem_Base {
 	 *
 	 * @since 2.7.0
 	 *
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function wp_content_dir() {
 		return $this->find_folder( WP_CONTENT_DIR );
@@ -102,7 +84,7 @@ class WP_Filesystem_Base {
 	 *
 	 * @since 2.7.0
 	 *
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function wp_plugins_dir() {
 		return $this->find_folder( WP_PLUGIN_DIR );
@@ -115,10 +97,10 @@ class WP_Filesystem_Base {
 	 *
 	 * @param string|false $theme Optional. The theme stylesheet or template for the directory.
 	 *                            Default false.
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function wp_themes_dir( $theme = false ) {
-		$theme_root = get_theme_root( is_string( $theme ) ? $theme : '' );
+		$theme_root = get_theme_root( $theme );
 
 		// Account for relative theme roots.
 		if ( '/themes' === $theme_root || ! is_dir( $theme_root ) ) {
@@ -133,7 +115,7 @@ class WP_Filesystem_Base {
 	 *
 	 * @since 3.2.0
 	 *
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function wp_lang_dir() {
 		return $this->find_folder( WP_LANG_DIR );
@@ -152,7 +134,7 @@ class WP_Filesystem_Base {
 	 *
 	 * @param string $base    Optional. The folder to start searching from. Default '.'.
 	 * @param bool   $verbose Optional. True to display debug information. Default false.
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function find_base_dir( $base = '.', $verbose = false ) {
 		_deprecated_function( __FUNCTION__, '2.7.0', 'WP_Filesystem_Base::abspath() or WP_Filesystem_Base::wp_*_dir()' );
@@ -173,7 +155,7 @@ class WP_Filesystem_Base {
 	 *
 	 * @param string $base    Optional. The folder to start searching from. Default '.'.
 	 * @param bool   $verbose Optional. True to display debug information. Default false.
-	 * @return string|false The location of the remote path, or false on failure.
+	 * @return string The location of the remote path.
 	 */
 	public function get_base_dir( $base = '.', $verbose = false ) {
 		_deprecated_function( __FUNCTION__, '2.7.0', 'WP_Filesystem_Base::abspath() or WP_Filesystem_Base::wp_*_dir()' );
@@ -212,9 +194,7 @@ class WP_Filesystem_Base {
 				}
 
 				if ( $folder === $dir ) {
-					/** @var string $constant_value */
-					$constant_value = constant( $constant );
-					return trailingslashit( $constant_value );
+					return trailingslashit( constant( $constant ) );
 				}
 			}
 
@@ -225,9 +205,7 @@ class WP_Filesystem_Base {
 				}
 
 				if ( 0 === stripos( $folder, $dir ) ) { // $folder starts with $dir.
-					/** @var string $constant_value */
-					$constant_value   = constant( $constant );
-					$potential_folder = (string) preg_replace( '#^' . preg_quote( $dir, '#' ) . '/#i', trailingslashit( $constant_value ), $folder );
+					$potential_folder = preg_replace( '#^' . preg_quote( $dir, '#' ) . '/#i', trailingslashit( constant( $constant ) ), $folder );
 					$potential_folder = trailingslashit( $potential_folder );
 
 					if ( $this->is_dir( $potential_folder ) ) {
@@ -243,7 +221,7 @@ class WP_Filesystem_Base {
 			return trailingslashit( $folder );
 		}
 
-		$folder = (string) preg_replace( '|^([a-z]{1}):|i', '', $folder ); // Strip out Windows drive letter if it's there.
+		$folder = preg_replace( '|^([a-z]{1}):|i', '', $folder ); // Strip out Windows drive letter if it's there.
 		$folder = str_replace( '\\', '/', $folder ); // Windows path sanitization.
 
 		if ( isset( $this->cache[ $folder ] ) ) {
@@ -280,8 +258,7 @@ class WP_Filesystem_Base {
 	 */
 	public function search_for_folder( $folder, $base = '.', $loop = false ) {
 		if ( empty( $base ) || '.' === $base ) {
-			$cwd  = $this->cwd();
-			$base = is_string( $cwd ) ? trailingslashit( $cwd ) : '/';
+			$base = trailingslashit( $this->cwd() );
 		}
 
 		$folder = untrailingslashit( $folder );
@@ -443,7 +420,7 @@ class WP_Filesystem_Base {
 	public function getnumchmodfromh( $mode ) {
 		$realmode = '';
 		$legal    = array( '', 'w', 'r', 'x', '-' );
-		$attarray = (array) preg_split( '//', $mode );
+		$attarray = preg_split( '//', $mode );
 
 		for ( $i = 0, $c = count( $attarray ); $i < $c; $i++ ) {
 			$key = array_search( $attarray[ $i ], $legal, true );
@@ -463,9 +440,9 @@ class WP_Filesystem_Base {
 		$mode  = strtr( $mode, $trans );
 
 		$newmode  = $mode[0];
-		$newmode .= (int) $mode[1] + (int) $mode[2] + (int) $mode[3];
-		$newmode .= (int) $mode[4] + (int) $mode[5] + (int) $mode[6];
-		$newmode .= (int) $mode[7] + (int) $mode[8] + (int) $mode[9];
+		$newmode .= $mode[1] + $mode[2] + $mode[3];
+		$newmode .= $mode[4] + $mode[5] + $mode[6];
+		$newmode .= $mode[7] + $mode[8] + $mode[9];
 
 		return $newmode;
 	}
@@ -531,7 +508,7 @@ class WP_Filesystem_Base {
 	 * @abstract
 	 *
 	 * @param string $file Path to the file.
-	 * @return string[]|false File contents in an array on success, false on failure.
+	 * @return array|false File contents in an array on success, false on failure.
 	 */
 	public function get_contents_array( $file ) {
 		return false;
@@ -874,13 +851,12 @@ class WP_Filesystem_Base {
 	 *                                             False if not available.
 	 *         @type string|false     $lastmod     Last modified month (3 letters) and day (without leading 0), or
 	 *                                             false if not available.
-	 *         @type int|string|false $time        Last modified time. A Unix timestamp on FTP transports, or false if not available.
+	 *         @type string|false     $time        Last modified time, or false if not available.
 	 *         @type string           $type        Type of resource. 'f' for file, 'd' for directory, 'l' for link.
 	 *         @type array|false      $files       If a directory and `$recursive` is true, contains another array of
 	 *                                             files. False if unable to list directory contents.
 	 *     }
 	 * }
-	 * @phpstan-return array<string, FileListing>|false
 	 */
 	public function dirlist( $path, $include_hidden = true, $recursive = false ) {
 		return false;

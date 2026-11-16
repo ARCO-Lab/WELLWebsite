@@ -10,19 +10,20 @@
 		"term": {
 			"type": "string"
 		},
+		"textAlign": {
+			"type": "string"
+		},
 		"separator": {
 			"type": "string",
 			"default": ", "
 		},
 		"prefix": {
 			"type": "string",
-			"default": "",
-			"role": "content"
+			"default": ""
 		},
 		"suffix": {
 			"type": "string",
-			"default": "",
-			"role": "content"
+			"default": ""
 		}
 	},
 	"usesContext": [ "postId", "postType" ],
@@ -30,7 +31,6 @@
 		"viewportWidth": 350
 	},
 	"supports": {
-		"anchor": true,
 		"html": false,
 		"color": {
 			"gradients": true,
@@ -48,7 +48,6 @@
 		"typography": {
 			"fontSize": true,
 			"lineHeight": true,
-			"textAlign": true,
 			"__experimentalFontFamily": true,
 			"__experimentalFontWeight": true,
 			"__experimentalFontStyle": true,

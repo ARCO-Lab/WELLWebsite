@@ -120,9 +120,21 @@ class Hostinger_Reach_Integration {
 	 * @return array Associative array with at least 'email', optionally 'first_name', 'last_name'. Empty array if no email found.
 	 */
 	protected static function get_subscriber_data_from_fields( $fields ) {
+		// Try and get the form from any of the fields
+		$form = null;
+		foreach ( $fields as $field ) {
+			if ( ! empty( $field->form ) ) {
+				$form = $field->form;
+				break;
+			}
+		}
+		if ( ! $form || ! is_a( $form, 'Automattic\\Jetpack\\Forms\\ContactForm\\Contact_Form' ) ) {
+			return array();
+		}
+
 		$subscriber_data = array();
 
-		foreach ( $fields as $field ) {
+		foreach ( $form->fields as $field ) {
 			$id    = strtolower( str_replace( array( ' ', '_' ), '', $field->get_attribute( 'id' ) ) );
 			$label = strtolower( str_replace( array( ' ', '_' ), '', $field->get_attribute( 'label' ) ) );
 
@@ -152,12 +164,12 @@ class Hostinger_Reach_Integration {
 	 * Check if submission has consent when required.
 	 *
 	 * @param Feedback $feedback Feedback object for the submission.
-	 * @param array    $fields   Visible submitted fields.
-	 * @param bool     $uses_feedback_api Whether the data uses structured feedback storage.
+	 * @param mixed    $form     Contact form instance.
+	 * @param bool     $is_v2    Whether the data comes from v2 storage.
 	 * @return bool True if consent is present or not required; false otherwise.
 	 */
-	protected static function has_consent( $feedback, $fields, $uses_feedback_api ) {
-		if ( $uses_feedback_api ) {
+	protected static function has_consent( $feedback, $form, $is_v2 ) {
+		if ( $is_v2 ) {
 			if ( $feedback->has_field_type( 'consent' ) && ! $feedback->has_consent() ) {
 				return false;
 			}
@@ -165,8 +177,8 @@ class Hostinger_Reach_Integration {
 		}
 
 		$consent_field = null;
-		if ( is_array( $fields ) ) {
-			foreach ( $fields as $form_field ) {
+		if ( is_object( $form ) && is_array( $form->fields ) ) {
+			foreach ( $form->fields as $form_field ) {
 				if ( 'consent' === $form_field->get_attribute( 'type' ) ) {
 					$consent_field = $form_field;
 					break;
@@ -225,12 +237,13 @@ class Hostinger_Reach_Integration {
 		}
 
 		// Respect consent if a consent field exists.
-		$uses_feedback_api = $feedback->uses_structured_fields();
-		if ( ! self::has_consent( $feedback, $fields, $uses_feedback_api ) ) {
+		$post       = get_post( $post_id );
+		$is_v2_data = ( $post && $post->post_mime_type === 'v2' );
+		if ( ! self::has_consent( $feedback, $form, $is_v2_data ) ) {
 			return;
 		}
 
-		$subscriber_data = $uses_feedback_api ? self::get_subscriber_data( $feedback ) : self::get_subscriber_data_from_fields( $fields );
+		$subscriber_data = $is_v2_data ? self::get_subscriber_data( $feedback ) : self::get_subscriber_data_from_fields( $fields );
 		if ( empty( $subscriber_data ) ) {
 			return;
 		}

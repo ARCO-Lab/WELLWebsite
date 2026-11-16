@@ -9,10 +9,6 @@ namespace Automattic\Jetpack\Forms\ContactForm;
 
 use Automattic\Jetpack\Forms\Jetpack_Forms;
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
-
 /**
  * Feedback field class.
  *
@@ -20,16 +16,6 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class Feedback_Field {
 	use Country_Code_Utils;
-
-	/**
-	 * Maximum number of rating icons to render.
-	 *
-	 * The scale is visitor input, so every renderer that loops over it needs this bound.
-	 * Mirrors `MAX_RATING_ICONS` in `blocks/field-rating/rating-icons.js`.
-	 *
-	 * @var int
-	 */
-	const MAX_RATING_ICONS = 10;
 
 	/**
 	 * Cached admin theme color.
@@ -143,36 +129,6 @@ class Feedback_Field {
 	}
 
 	/**
-	 * Whether a submitted checkbox/consent value means the box was ticked.
-	 *
-	 * An unticked box submits an empty value, and some stored responses use an
-	 * explicit "No". The ticked value is a translated string ( "Yes" ), so this
-	 * tests for emptiness and the "no" sentinel rather than matching "yes".
-	 *
-	 * Mirrored by `isCheckedValue()` in src/modules/form/helpers.js and in the
-	 * dashboard's field-icons.tsx, which must agree with this.
-	 *
-	 * @param mixed $value The submitted value.
-	 *
-	 * @return bool True when the box was ticked.
-	 */
-	public static function is_checked_value( $value ) {
-		if ( is_array( $value ) ) {
-			return ! empty( $value );
-		}
-
-		if ( ! is_scalar( $value ) ) {
-			return false;
-		}
-
-		// Normalize before testing so a whitespace-only value counts as unticked —
-		// `empty( '   ' )` is false, so trimming has to happen first.
-		$normalized = strtolower( trim( (string) $value ) );
-
-		return '' !== $normalized && '0' !== $normalized && 'no' !== $normalized;
-	}
-
-	/**
 	 * Get the original form field ID.
 	 *
 	 * @since 5.5.0
@@ -218,16 +174,6 @@ class Feedback_Field {
 	 * @return string
 	 */
 	private function get_render_csv_value() {
-		// A CSV cell is plain text, so it can hold the text as typed.
-		return Feedback::decode_special_chars( $this->get_render_csv_text() );
-	}
-
-	/**
-	 * Get the stored text of the field for the CSV.
-	 *
-	 * @return string
-	 */
-	private function get_render_csv_text() {
 		if ( $this->is_of_type( 'image-select' ) ) {
 			return implode(
 				', ',
@@ -404,10 +350,6 @@ class Feedback_Field {
 		if ( $rating > $max ) {
 			return $this->value;
 		}
-
-		$max    = min( $max, self::MAX_RATING_ICONS );
-		$rating = min( $rating, $max );
-
 		// Get icon style from meta data (defaults to 'stars').
 		$icon_style = $this->get_meta_key_value( 'iconStyle' );
 		if ( empty( $icon_style ) ) {
@@ -577,7 +519,7 @@ class Feedback_Field {
 	 * @return string HTML with a colored chip.
 	 */
 	private function render_email_consent() {
-		$is_yes = self::is_checked_value( $this->value );
+		$is_yes = ! empty( $this->value ) && strtolower( trim( (string) $this->value ) ) !== 'no';
 		$label  = $is_yes ? __( 'Yes', 'jetpack-forms' ) : __( 'No', 'jetpack-forms' );
 
 		return sprintf(
@@ -624,7 +566,7 @@ class Feedback_Field {
 	 * @return string HTML with clickable link.
 	 */
 	private function render_email_url() {
-		if ( ! is_string( $this->value ) || empty( $this->value ) ) {
+		if ( empty( $this->value ) ) {
 			return $this->render_empty_value_html();
 		}
 
@@ -664,9 +606,6 @@ class Feedback_Field {
 		if ( $max <= 0 ) {
 			return $this->render_email_default();
 		}
-
-		$max    = min( $max, self::MAX_RATING_ICONS );
-		$rating = min( $rating, $max );
 
 		$stars = '';
 		for ( $i = 1; $i <= $max; $i++ ) {
@@ -937,25 +876,6 @@ class Feedback_Field {
 	}
 
 	/**
-	 * Get the uploaded files of a file field.
-	 *
-	 * The stored value of a file field is normally an array with a `files` key,
-	 * but a feedback can carry a malformed value — an empty string, for
-	 * instance — so callers must never assume that shape.
-	 *
-	 * @since 7.26.0
-	 *
-	 * @return array The list of files, empty when the value holds none.
-	 */
-	private function get_file_list() {
-		if ( ! is_array( $this->value ) || ! isset( $this->value['files'] ) || ! is_array( $this->value['files'] ) ) {
-			return array();
-		}
-
-		return $this->value['files'];
-	}
-
-	/**
 	 * Get the default value of the field for rendering.
 	 *
 	 * @return string
@@ -963,7 +883,7 @@ class Feedback_Field {
 	private function get_render_default_value() {
 		if ( $this->is_of_type( 'file' ) ) {
 			$files = array();
-			foreach ( $this->get_file_list() as $file ) {
+			foreach ( $this->value['files'] as &$file ) {
 				if ( ! isset( $file['size'] ) || ! isset( $file['file_id'] ) ) {
 					// this shouldn't happen, todo: log this
 					continue;
@@ -990,16 +910,13 @@ class Feedback_Field {
 	/**
 	 * Get the value of the field for the API.
 	 *
-	 * File, image-select and checkbox-multiple fields answer with the structured
-	 * value the dashboard expects; everything else answers with a string.
-	 *
-	 * @return array|string The value for the API context.
+	 * @return string
 	 */
 	private function get_render_api_value() {
 		if ( $this->is_of_type( 'file' ) ) {
 			$files = array();
-			$value = is_array( $this->value ) ? $this->value : array();
-			foreach ( $this->get_file_list() as $file ) {
+			$value = $this->value;
+			foreach ( $value['files'] as $file ) {
 				if ( ! isset( $file['size'] ) || ! isset( $file['file_id'] ) ) {
 					// this shouldn't happen, todo: log this
 					continue;
@@ -1042,7 +959,7 @@ class Feedback_Field {
 	private function get_render_submit_value() {
 		if ( $this->is_of_type( 'file' ) ) {
 			$files = array();
-			foreach ( $this->get_file_list() as $file ) {
+			foreach ( $this->value['files'] as $file ) {
 				if ( ! isset( $file['size'] ) || ! isset( $file['file_id'] ) ) {
 					// this shouldn't happen, todo: log this
 					continue;

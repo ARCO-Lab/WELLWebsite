@@ -8,13 +8,11 @@
  * @since 1.0.0
  */
 
+// @phan-file-suppress PhanUndeclaredFunction, PhanUndeclaredClassMethod @phan-suppress-current-line UnusedSuppression -- Ability API added in WP 6.9, but then we need a suppression for the WP 6.8 compat run. @todo Remove this line when we drop WP <6.9.
+
 namespace Automattic\Jetpack\Forms\Abilities;
 
 use Automattic\Jetpack\WP_Abilities\Registrar;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
 
 /**
  * Class Forms_Abilities
@@ -165,10 +163,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -200,10 +194,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -245,10 +235,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => false,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -280,10 +266,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -357,10 +339,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -401,10 +379,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -443,10 +417,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -496,10 +466,6 @@ class Forms_Abilities extends Registrar {
 					'idempotent'  => true,
 				),
 				'show_in_rest' => true,
-				'mcp'          => array(
-					'public' => true,
-					'type'   => 'tool', // default is already "tool", but can be explicit.
-				),
 			),
 		);
 	}
@@ -842,7 +808,7 @@ class Forms_Abilities extends Registrar {
 	 * Extract field definitions from raw block content.
 	 *
 	 * Walks `jetpack/field-*` blocks and projects each into a compact
-	 * `{ label, type, required, options?, placeholder?, help_text? }` shape. Modern
+	 * `{ label, type, required, options?, placeholder? }` shape. Modern
 	 * field blocks store the label/placeholder in `jetpack/label` and
 	 * `jetpack/input` sub-blocks; legacy fixtures keep them inline as
 	 * top-level attrs. Both layouts are supported.
@@ -918,11 +884,6 @@ class Forms_Abilities extends Registrar {
 		$placeholder = $input_attrs['placeholder'] ?? $attrs['placeholder'] ?? '';
 		if ( '' !== $placeholder ) {
 			$field['placeholder'] = $placeholder;
-		}
-
-		$help_text = trim( (string) ( $attrs['helpText'] ?? '' ) );
-		if ( '' !== $help_text ) {
-			$field['help_text'] = $help_text;
 		}
 
 		return $field;

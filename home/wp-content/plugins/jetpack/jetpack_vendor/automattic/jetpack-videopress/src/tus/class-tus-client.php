@@ -6,6 +6,7 @@
  **/
 
 // phpcs:disable Generic.Commenting.DocComment.MissingShort
+// phpcs:disable Squiz.Commenting.VariableComment.Missing
 // phpcs:disable Squiz.Commenting.FunctionComment.EmptyThrows
 // phpcs:disable Generic.Commenting.DocComment.MissingShort
 // phpcs:disable Squiz.Commenting.FunctionComment.MissingParamComment

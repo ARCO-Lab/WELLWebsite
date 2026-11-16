@@ -154,7 +154,7 @@ class Plugins extends Module {
 			return;
 		}
 
-		$plugins = ( $details['plugins'] ?? null );
+		$plugins = ( isset( $details['plugins'] ) ? $details['plugins'] : null );
 		if ( empty( $plugins ) ) {
 			$plugins = ( isset( $details['plugin'] ) ? array( $details['plugin'] ) : null );
 		}

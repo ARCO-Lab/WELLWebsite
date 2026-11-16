@@ -110,19 +110,21 @@ class Jetpack_Twitter_Cards {
 	/**
 	 * Adds settings section and field.
 	 *
-	 * @deprecated 15.6 Use Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::render() instead.
+	 * @deprecated 15.6 Use Automattic\Jetpack\Post_Media\Twitter_Cards::settings_init() instead.
 	 */
 	public static function settings_init() {
-		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::render' );
+		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Post_Media\Twitter_Cards::settings_init' );
+		Twitter_Cards::settings_init();
 	}
 
 	/**
 	 * Add global sharing options.
 	 *
-	 * @deprecated 15.6 Use Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::render() instead.
+	 * @deprecated 15.6 Use Automattic\Jetpack\Post_Media\Twitter_Cards::sharing_global_options() instead.
 	 */
 	public static function sharing_global_options() {
-		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::render' );
+		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Post_Media\Twitter_Cards::sharing_global_options' );
+		Twitter_Cards::sharing_global_options();
 	}
 
 	/**
@@ -140,19 +142,21 @@ class Jetpack_Twitter_Cards {
 	/**
 	 * Output the settings field.
 	 *
-	 * @deprecated 15.6 Use Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::render() instead.
+	 * @deprecated 15.6 Use Automattic\Jetpack\Post_Media\Twitter_Cards::settings_field() instead.
 	 */
 	public static function settings_field() {
-		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::render' );
+		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Post_Media\Twitter_Cards::settings_field' );
+		Twitter_Cards::settings_field();
 	}
 
 	/**
 	 * Validate the settings submission.
 	 *
-	 * @deprecated 15.6 Use Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::save() instead.
+	 * @deprecated 15.6 Use Automattic\Jetpack\Post_Media\Twitter_Cards::settings_validate() instead.
 	 */
 	public static function settings_validate() {
-		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Sharing_Likes\Settings\Twitter_Site_Tag::save' );
+		_deprecated_function( __METHOD__, '15.6', 'Automattic\Jetpack\Post_Media\Twitter_Cards::settings_validate' );
+		Twitter_Cards::settings_validate();
 	}
 
 	/**

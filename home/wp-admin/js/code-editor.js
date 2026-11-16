@@ -2,10 +2,6 @@
  * @output wp-admin/js/code-editor.js
  */
 
-/* global console */
-
-/* eslint-env es2020 */
-
 if ( 'undefined' === typeof window.wp ) {
 	/**
 	 * @namespace wp
@@ -19,133 +15,6 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 	window.wp.codeEditor = {};
 }
 
-/**
- * @typedef {object} CodeMirrorState
- * @property {boolean} [completionActive] - Whether completion is active.
- * @property {boolean} [focused] - Whether the editor is focused.
- */
-
-/**
- * @typedef {import('codemirror').EditorFromTextArea & {
- *   options: import('codemirror').EditorConfiguration,
- *   performLint?: () => void,
- *   showHint?: (options: import('codemirror').ShowHintOptions) => void,
- *   state: CodeMirrorState
- * }} CodeMirrorEditor
- */
-
-/**
- * @typedef {object} LintAnnotation
- * @property {string} message - Message.
- * @property {'error'|'warning'} severity - Severity.
- * @property {import('codemirror').Position} from - From position.
- * @property {import('codemirror').Position} to - To position.
- */
-
-/**
- * @typedef {object} CodeMirrorTokenState
- * @property {object} [htmlState] - HTML state.
- * @property {string} [htmlState.tagName] - Tag name.
- * @property {CodeMirrorTokenState} [curState] - Current state.
- */
-
-/**
- * @typedef {import('codemirror').EditorConfiguration & {
- *   lint?: boolean | CombinedLintOptions,
- *   autoCloseBrackets?: boolean,
- *   matchBrackets?: boolean,
- *   continueComments?: boolean,
- *   styleActiveLine?: boolean
- * }} CodeMirrorSettings
- */
-
-/**
- * @typedef {object} CSSLintRules
- * @property {boolean} [errors] - Errors.
- * @property {boolean} [box-model] - Box model rules.
- * @property {boolean} [display-property-grouping] - Display property grouping rules.
- * @property {boolean} [duplicate-properties] - Duplicate properties rules.
- * @property {boolean} [known-properties] - Known properties rules.
- * @property {boolean} [outline-none] - Outline none rules.
- */
-
-/**
- * @typedef {object} JSHintRules
- * @property {number} [esversion] - ECMAScript version.
- * @property {boolean} [module] - Whether to use modules.
- * @property {boolean} [boss] - Whether to allow assignments in control expressions.
- * @property {boolean} [curly] - Whether to require curly braces.
- * @property {boolean} [eqeqeq] - Whether to require === and !==.
- * @property {boolean} [eqnull] - Whether to allow == null.
- * @property {boolean} [expr] - Whether to allow expressions.
- * @property {boolean} [immed] - Whether to require immediate function invocation.
- * @property {boolean} [noarg] - Whether to prohibit arguments.caller/callee.
- * @property {boolean} [nonbsp] - Whether to prohibit non-breaking spaces.
- * @property {string} [quotmark] - Quote mark preference.
- * @property {boolean} [undef] - Whether to prohibit undefined variables.
- * @property {boolean} [unused] - Whether to prohibit unused variables.
- * @property {boolean} [browser] - Whether to enable browser globals.
- * @property {Record<string, boolean>} [globals] - Global variables.
- */
-
-/**
- * @typedef {object} HTMLHintRules
- * @property {boolean} [tagname-lowercase] - Tag name lowercase rules.
- * @property {boolean} [attr-lowercase] - Attribute lowercase rules.
- * @property {boolean} [attr-value-double-quotes] - Attribute value double quotes rules.
- * @property {boolean} [doctype-first] - Doctype first rules.
- * @property {boolean} [tag-pair] - Tag pair rules.
- * @property {boolean} [spec-char-escape] - Spec char escape rules.
- * @property {boolean} [id-unique] - ID unique rules.
- * @property {boolean} [src-not-empty] - Src not empty rules.
- * @property {boolean} [attr-no-duplication] - Attribute no duplication rules.
- * @property {boolean} [alt-require] - Alt require rules.
- * @property {string} [space-tab-mixed-disabled] - Space tab mixed disabled rules.
- * @property {boolean} [attr-unsafe-chars] - Attribute unsafe chars rules.
- * @property {JSHintRules} [jshint] - JSHint rules.
- * @property {CSSLintRules} [csslint] - CSSLint rules.
- */
-
-/**
- * Settings for the code editor.
- *
- * @typedef {object} CodeEditorSettings
- *
- * @property {CodeMirrorSettings} [codemirror] - CodeMirror settings.
- * @property {CSSLintRules} [csslint] - CSSLint rules.
- * @property {JSHintRules} [jshint] - JSHint rules.
- * @property {HTMLHintRules} [htmlhint] - HTMLHint rules.
- *
- * @property {(codemirror: CodeMirrorEditor, event: KeyboardEvent|JQuery.KeyDownEvent) => void} [onTabNext] - Callback to handle tabbing to the next tabbable element.
- * @property {(codemirror: CodeMirrorEditor, event: KeyboardEvent|JQuery.KeyDownEvent) => void} [onTabPrevious] - Callback to handle tabbing to the previous tabbable element.
- * @property {(errorAnnotations: LintAnnotation[], annotations: LintAnnotation[], annotationsSorted: LintAnnotation[], cm: CodeMirrorEditor) => void} [onChangeLintingErrors] - Callback for when the linting errors have changed.
- * @property {(errorAnnotations: LintAnnotation[], editor: CodeMirrorEditor) => void} [onUpdateErrorNotice] - Callback for when error notice should be displayed.
- */
-
-/**
- * @typedef {import('codemirror/addon/lint/lint').LintStateOptions<Record<string, unknown>> & JSHintRules & CSSLintRules & { rules?: HTMLHintRules }} CombinedLintOptions
- */
-
-/**
- * @typedef {object} CodeEditorInstance
- * @property {CodeEditorSettings} settings - The code editor settings.
- * @property {CodeMirrorEditor} codemirror - The CodeMirror instance.
- * @property {() => void} updateErrorNotice - Force update the error notice.
- */
-
-/**
- * @typedef {object} WpCodeEditor
- * @property {CodeEditorSettings} defaultSettings - Default settings.
- * @property {(textarea: string|JQuery|Element, settings?: CodeEditorSettings) => CodeEditorInstance} initialize - Initialize.
- */
-
-/**
- * @param {JQueryStatic} $ - jQuery.
- * @param {Object & {
- *   codeEditor: WpCodeEditor,
- *   CodeMirror: typeof import('codemirror'),
- * }} wp - WordPress namespace.
- */
 ( function( $, wp ) {
 	'use strict';
 
@@ -153,7 +22,7 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 	 * Default settings for code editor.
 	 *
 	 * @since 4.9.0
-	 * @type {CodeEditorSettings}
+	 * @type {object}
 	 */
 	wp.codeEditor.defaultSettings = {
 		codemirror: {},
@@ -163,32 +32,31 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 		onTabNext: function() {},
 		onTabPrevious: function() {},
 		onChangeLintingErrors: function() {},
-		onUpdateErrorNotice: function() {},
+		onUpdateErrorNotice: function() {}
 	};
 
 	/**
 	 * Configure linting.
 	 *
-	 * @param {CodeEditorSettings} settings - Code editor settings.
+	 * @param {CodeMirror} editor - Editor.
+	 * @param {Object}     settings - Code editor settings.
+	 * @param {Object}     settings.codeMirror - Settings for CodeMirror.
+	 * @param {Function}   settings.onChangeLintingErrors - Callback for when there are changes to linting errors.
+	 * @param {Function}   settings.onUpdateErrorNotice - Callback to update error notice.
 	 *
-	 * @return {LintingController} Linting controller.
+	 * @return {void}
 	 */
-	function configureLinting( settings ) { // eslint-disable-line complexity
-		/** @type {LintAnnotation[]} */
-		let currentErrorAnnotations = [];
-
-		/** @type {LintAnnotation[]} */
-		let previouslyShownErrorAnnotations = [];
+	function configureLinting( editor, settings ) { // eslint-disable-line complexity
+		var currentErrorAnnotations = [], previouslyShownErrorAnnotations = [];
 
 		/**
 		 * Call the onUpdateErrorNotice if there are new errors to show.
 		 *
-		 * @param {import('codemirror').Editor} editor - Editor.
 		 * @return {void}
 		 */
-		function updateErrorNotice( editor ) {
+		function updateErrorNotice() {
 			if ( settings.onUpdateErrorNotice && ! _.isEqual( currentErrorAnnotations, previouslyShownErrorAnnotations ) ) {
-				settings.onUpdateErrorNotice( currentErrorAnnotations, /** @type {CodeMirrorEditor} */ ( editor ) );
+				settings.onUpdateErrorNotice( currentErrorAnnotations, editor );
 				previouslyShownErrorAnnotations = currentErrorAnnotations;
 			}
 		}
@@ -196,11 +64,10 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 		/**
 		 * Get lint options.
 		 *
-		 * @return {CombinedLintOptions|false} Lint options.
+		 * @return {Object} Lint options.
 		 */
 		function getLintOptions() { // eslint-disable-line complexity
-			/** @type {CombinedLintOptions | boolean} */
-			let options = settings.codemirror?.lint ?? false;
+			var options = editor.getOption( 'lint' );
 
 			if ( ! options ) {
 				return false;
@@ -211,44 +78,47 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 			} else if ( _.isObject( options ) ) {
 				options = $.extend( {}, options );
 			}
-			const linterOptions = /** @type {CombinedLintOptions} */ ( options );
+
+			/*
+			 * Note that rules must be sent in the "deprecated" lint.options property 
+			 * to prevent linter from complaining about unrecognized options.
+			 * See <https://github.com/codemirror/CodeMirror/pull/4944>.
+			 */
+			if ( ! options.options ) {
+				options.options = {};
+			}
 
 			// Configure JSHint.
-			if ( 'javascript' === settings.codemirror?.mode && settings.jshint ) {
-				$.extend( linterOptions, settings.jshint );
+			if ( 'javascript' === settings.codemirror.mode && settings.jshint ) {
+				$.extend( options.options, settings.jshint );
 			}
 
 			// Configure CSSLint.
-			if ( 'css' === settings.codemirror?.mode && settings.csslint ) {
-				$.extend( linterOptions, settings.csslint );
+			if ( 'css' === settings.codemirror.mode && settings.csslint ) {
+				$.extend( options.options, settings.csslint );
 			}
 
 			// Configure HTMLHint.
-			if ( 'htmlmixed' === settings.codemirror?.mode && settings.htmlhint ) {
-				linterOptions.rules = $.extend( {}, settings.htmlhint );
+			if ( 'htmlmixed' === settings.codemirror.mode && settings.htmlhint ) {
+				options.options.rules = $.extend( {}, settings.htmlhint );
 
-				if ( settings.jshint && linterOptions.rules ) {
-					linterOptions.rules.jshint = settings.jshint;
+				if ( settings.jshint ) {
+					options.options.rules.jshint = settings.jshint;
 				}
-				if ( settings.csslint && linterOptions.rules ) {
-					linterOptions.rules.csslint = settings.csslint;
+				if ( settings.csslint ) {
+					options.options.rules.csslint = settings.csslint;
 				}
 			}
 
 			// Wrap the onUpdateLinting CodeMirror event to route to onChangeLintingErrors and onUpdateErrorNotice.
-			linterOptions.onUpdateLinting = (function( onUpdateLintingOverridden ) {
-				/**
-				 * @param {LintAnnotation[]} annotations - Annotations.
-				 * @param {LintAnnotation[]} annotationsSorted - Sorted annotations.
-				 * @param {CodeMirrorEditor} cm - Editor.
-				 */
+			options.onUpdateLinting = (function( onUpdateLintingOverridden ) {
 				return function( annotations, annotationsSorted, cm ) {
-					const errorAnnotations = annotations.filter( function( annotation ) {
+					var errorAnnotations = _.filter( annotations, function( annotation ) {
 						return 'error' === annotation.severity;
 					} );
 
 					if ( onUpdateLintingOverridden ) {
-						onUpdateLintingOverridden( annotations, annotationsSorted, cm );
+						onUpdateLintingOverridden.apply( annotations, annotationsSorted, cm );
 					}
 
 					// Skip if there are no changes to the errors.
@@ -268,123 +138,112 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 					 * were previously errors shown. In these cases, update immediately so they can know
 					 * that they fixed the errors.
 					 */
-					if ( ! cm.state.focused || 0 === currentErrorAnnotations.length || previouslyShownErrorAnnotations.length > 0 ) {
-						updateErrorNotice( cm );
+					if ( ! editor.state.focused || 0 === currentErrorAnnotations.length || previouslyShownErrorAnnotations.length > 0 ) {
+						updateErrorNotice();
 					}
 				};
-			})( linterOptions.onUpdateLinting );
+			})( options.onUpdateLinting );
 
-			return linterOptions;
+			return options;
 		}
 
-		return {
-			getLintOptions,
-			/**
-			 * @param {CodeMirrorEditor} editor - Editor instance.
-			 * @return {void}
-			 */
-			init: function( editor ) {
-				// Keep lint options populated.
-				editor.on( 'optionChange', function( _cm, option ) {
-					const gutterName = 'CodeMirror-lint-markers';
-					if ( 'lint' !== ( /** @type {string} */ ( option ) ) ) {
-						return;
-					}
-					const gutters = ( /** @type {string[]} */ ( editor.getOption( 'gutters' ) ) ) || [];
-					const options = editor.getOption( 'lint' );
-					if ( true === options ) {
-						if ( ! _.contains( gutters, gutterName ) ) {
-							editor.setOption( 'gutters', [ gutterName ].concat( gutters ) );
-						}
-						editor.setOption( 'lint', getLintOptions() ); // Expand to include linting options.
-					} else if ( ! options ) {
-						editor.setOption( 'gutters', _.without( gutters, gutterName ) );
-					}
+		editor.setOption( 'lint', getLintOptions() );
 
-					// Force update on error notice to show or hide.
-					if ( editor.getOption( 'lint' ) && editor.performLint ) {
-						editor.performLint();
-					} else {
-						currentErrorAnnotations = [];
-						updateErrorNotice( editor );
-					}
-				} );
+		// Keep lint options populated.
+		editor.on( 'optionChange', function( cm, option ) {
+			var options, gutters, gutterName = 'CodeMirror-lint-markers';
+			if ( 'lint' !== option ) {
+				return;
+			}
+			gutters = editor.getOption( 'gutters' ) || [];
+			options = editor.getOption( 'lint' );
+			if ( true === options ) {
+				if ( ! _.contains( gutters, gutterName ) ) {
+					editor.setOption( 'gutters', [ gutterName ].concat( gutters ) );
+				}
+				editor.setOption( 'lint', getLintOptions() ); // Expand to include linting options.
+			} else if ( ! options ) {
+				editor.setOption( 'gutters', _.without( gutters, gutterName ) );
+			}
 
-				// Update error notice when leaving the editor.
-				editor.on( 'blur', updateErrorNotice );
+			// Force update on error notice to show or hide.
+			if ( editor.getOption( 'lint' ) ) {
+				editor.performLint();
+			} else {
+				currentErrorAnnotations = [];
+				updateErrorNotice();
+			}
+		} );
 
-				// Work around hint selection with mouse causing focus to leave editor.
-				editor.on( 'startCompletion', function() {
-					editor.off( 'blur', updateErrorNotice );
-				} );
-				editor.on( 'endCompletion', function() {
-					const editorRefocusWait = 500;
-					editor.on( 'blur', updateErrorNotice );
+		// Update error notice when leaving the editor.
+		editor.on( 'blur', updateErrorNotice );
 
-					// Wait for editor to possibly get re-focused after selection.
-					_.delay( function() {
-						if ( ! editor.state.focused ) {
-							updateErrorNotice( editor );
-						}
-					}, editorRefocusWait );
-				} );
+		// Work around hint selection with mouse causing focus to leave editor.
+		editor.on( 'startCompletion', function() {
+			editor.off( 'blur', updateErrorNotice );
+		} );
+		editor.on( 'endCompletion', function() {
+			var editorRefocusWait = 500;
+			editor.on( 'blur', updateErrorNotice );
 
-				/*
-				 * Make sure setting validities are set if the user tries to click Publish
-				 * while an autocomplete dropdown is still open. The Customizer will block
-				 * saving when a setting has an error notifications on it. This is only
-				 * necessary for mouse interactions because keyboards will have already
-				 * blurred the field and cause onUpdateErrorNotice to have already been
-				 * called.
-				 */
-				$( document.body ).on( 'mousedown', function( /** @type {JQuery.MouseDownEvent} */ event ) {
-					if (
-						editor.state.focused &&
-						! editor.getWrapperElement().contains( event.target ) &&
-						! event.target.classList.contains( 'CodeMirror-hint' )
-					) {
-						updateErrorNotice( editor );
-					}
-				} );
-			},
-			/**
-			 * @param {CodeMirrorEditor} editor - Editor instance.
-			 * @return {void}
-			 */
-			updateErrorNotice,
-		};
+			// Wait for editor to possibly get re-focused after selection.
+			_.delay( function() {
+				if ( ! editor.state.focused ) {
+					updateErrorNotice();
+				}
+			}, editorRefocusWait );
+		});
+
+		/*
+		 * Make sure setting validities are set if the user tries to click Publish
+		 * while an autocomplete dropdown is still open. The Customizer will block
+		 * saving when a setting has an error notifications on it. This is only
+		 * necessary for mouse interactions because keyboards will have already
+		 * blurred the field and cause onUpdateErrorNotice to have already been
+		 * called.
+		 */
+		$( document.body ).on( 'mousedown', function( event ) {
+			if ( editor.state.focused && ! $.contains( editor.display.wrapper, event.target ) && ! $( event.target ).hasClass( 'CodeMirror-hint' ) ) {
+				updateErrorNotice();
+			}
+		});
 	}
 
 	/**
 	 * Configure tabbing.
 	 *
-	 * @param {CodeMirrorEditor} codemirror - Editor.
-	 * @param {CodeEditorSettings} settings - Code editor settings.
+	 * @param {CodeMirror} codemirror - Editor.
+	 * @param {Object}     settings - Code editor settings.
+	 * @param {Object}     settings.codeMirror - Settings for CodeMirror.
+	 * @param {Function}   settings.onTabNext - Callback to handle tabbing to the next tabbable element.
+	 * @param {Function}   settings.onTabPrevious - Callback to handle tabbing to the previous tabbable element.
 	 *
 	 * @return {void}
 	 */
 	function configureTabbing( codemirror, settings ) {
-		const $textarea = $( codemirror.getTextArea() );
+		var $textarea = $( codemirror.getTextArea() );
 
 		codemirror.on( 'blur', function() {
 			$textarea.data( 'next-tab-blurs', false );
 		});
-		codemirror.on( 'keydown', function onKeydown( _editor, event ) {
+		codemirror.on( 'keydown', function onKeydown( editor, event ) {
+			var tabKeyCode = 9, escKeyCode = 27;
+
 			// Take note of the ESC keypress so that the next TAB can focus outside the editor.
-			if ( 'Escape' === event.key ) {
+			if ( escKeyCode === event.keyCode ) {
 				$textarea.data( 'next-tab-blurs', true );
 				return;
 			}
 
 			// Short-circuit if tab key is not being pressed or the tab key press should move focus.
-			if ( 'Tab' !== event.key || ! $textarea.data( 'next-tab-blurs' ) ) {
+			if ( tabKeyCode !== event.keyCode || ! $textarea.data( 'next-tab-blurs' ) ) {
 				return;
 			}
 
 			// Focus on previous or next focusable item.
-			if ( event.shiftKey && settings.onTabPrevious ) {
+			if ( event.shiftKey ) {
 				settings.onTabPrevious( codemirror, event );
-			} else if ( ! event.shiftKey && settings.onTabNext ) {
+			} else {
 				settings.onTabNext( codemirror, event );
 			}
 
@@ -397,10 +256,9 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 	}
 
 	/**
-	 * @typedef {object} LintingController
-	 * @property {() => CombinedLintOptions|false} getLintOptions - Get lint options.
-	 * @property {(editor: CodeMirrorEditor) => void} init - Initialize.
-	 * @property {(editor: import('codemirror').Editor) => void} updateErrorNotice - Update error notice.
+	 * @typedef {object} wp.codeEditor~CodeEditorInstance
+	 * @property {object} settings - The code editor settings.
+	 * @property {CodeMirror} codemirror - The CodeMirror instance.
 	 */
 
 	/**
@@ -408,105 +266,81 @@ if ( 'undefined' === typeof window.wp.codeEditor ) {
 	 *
 	 * @since 4.9.0
 	 *
-	 * @param {string|JQuery<HTMLElement>|HTMLElement} textarea - The HTML id, jQuery object, or DOM Element for the textarea that is used for the editor.
-	 * @param {CodeEditorSettings}    [settings] - Settings to override defaults.
+	 * @param {string|jQuery|Element} textarea - The HTML id, jQuery object, or DOM Element for the textarea that is used for the editor.
+	 * @param {Object}                [settings] - Settings to override defaults.
+	 * @param {Function}              [settings.onChangeLintingErrors] - Callback for when the linting errors have changed.
+	 * @param {Function}              [settings.onUpdateErrorNotice] - Callback for when error notice should be displayed.
+	 * @param {Function}              [settings.onTabPrevious] - Callback to handle tabbing to the previous tabbable element.
+	 * @param {Function}              [settings.onTabNext] - Callback to handle tabbing to the next tabbable element.
+	 * @param {Object}                [settings.codemirror] - Options for CodeMirror.
+	 * @param {Object}                [settings.csslint] - Rules for CSSLint.
+	 * @param {Object}                [settings.htmlhint] - Rules for HTMLHint.
+	 * @param {Object}                [settings.jshint] - Rules for JSHint.
 	 *
 	 * @return {CodeEditorInstance} Instance.
 	 */
 	wp.codeEditor.initialize = function initialize( textarea, settings ) {
-		if ( document.readyState === 'loading' ) {
-			console.warn( 'wp.codeEditor.initialize() ran too early. Invoke this function in a `DOMContentLoaded` event listener.' );
-		}
-
-		let $textarea;
+		var $textarea, codemirror, instanceSettings, instance;
 		if ( 'string' === typeof textarea ) {
 			$textarea = $( '#' + textarea );
 		} else {
 			$textarea = $( textarea );
 		}
 
-		/** @type {CodeEditorSettings} */
-		const instanceSettings = $.extend( true, {}, wp.codeEditor.defaultSettings, settings );
+		instanceSettings = $.extend( {}, wp.codeEditor.defaultSettings, settings );
+		instanceSettings.codemirror = $.extend( {}, instanceSettings.codemirror );
 
-		const lintingController = configureLinting( instanceSettings );
-		if ( instanceSettings.codemirror ) {
-			instanceSettings.codemirror.lint = lintingController.getLintOptions();
-		}
+		codemirror = wp.CodeMirror.fromTextArea( $textarea[0], instanceSettings.codemirror );
 
-		const codemirror = /** @type {CodeMirrorEditor} */ ( wp.CodeMirror.fromTextArea( $textarea[0], instanceSettings.codemirror ) );
+		configureLinting( codemirror, instanceSettings );
 
-		lintingController.init( codemirror );
-
-		/** @type {CodeEditorInstance} */
-		const instance = {
+		instance = {
 			settings: instanceSettings,
-			codemirror,
-			updateErrorNotice: function() {
-				lintingController.updateErrorNotice( codemirror );
-			},
+			codemirror: codemirror
 		};
 
 		if ( codemirror.showHint ) {
-			codemirror.on( 'inputRead', function( _editor, change ) {
-				// Only trigger autocompletion for typed input or IME composition.
-				if ( ! change.origin || ( '+input' !== change.origin && ! change.origin.startsWith( '*compose' ) ) ) {
-					return;
-				}
-
-				// Only trigger autocompletion for single-character inputs.
-				// The text property is an array of strings, one for each line.
-				// We check that there is only one line and that line has only one character.
-				if ( 1 !== change.text.length || 1 !== change.text[0].length ) {
-					return;
-				}
-
-				const char = change.text[0];
-				const isAlphaKey = /^[a-zA-Z]$/.test( char );
+			codemirror.on( 'keyup', function( editor, event ) { // eslint-disable-line complexity
+				var shouldAutocomplete, isAlphaKey = /^[a-zA-Z]$/.test( event.key ), lineBeforeCursor, innerMode, token;
 				if ( codemirror.state.completionActive && isAlphaKey ) {
 					return;
 				}
 
 				// Prevent autocompletion in string literals or comments.
-				const token = /** @type {import('codemirror').Token & { state: CodeMirrorTokenState }} */ ( codemirror.getTokenAt( codemirror.getCursor() ) );
+				token = codemirror.getTokenAt( codemirror.getCursor() );
 				if ( 'string' === token.type || 'comment' === token.type ) {
 					return;
 				}
 
-				const innerMode = wp.CodeMirror.innerMode( codemirror.getMode(), token.state ).mode.name;
-				const doc = codemirror.getDoc();
-				const lineBeforeCursor = doc.getLine( doc.getCursor().line ).slice( 0, doc.getCursor().ch );
-				let shouldAutocomplete = false;
+				innerMode = wp.CodeMirror.innerMode( codemirror.getMode(), token.state ).mode.name;
+				lineBeforeCursor = codemirror.doc.getLine( codemirror.doc.getCursor().line ).substr( 0, codemirror.doc.getCursor().ch );
 				if ( 'html' === innerMode || 'xml' === innerMode ) {
-					shouldAutocomplete = (
-						'<' === char ||
-						( '/' === char && 'tag' === token.type ) ||
-						( isAlphaKey && 'tag' === token.type ) ||
-						( isAlphaKey && 'attribute' === token.type ) ||
-						( '=' === char && !! (
-							token.state.htmlState?.tagName ||
-							token.state.curState?.htmlState?.tagName
-						) )
-					);
+					shouldAutocomplete =
+						'<' === event.key ||
+						'/' === event.key && 'tag' === token.type ||
+						isAlphaKey && 'tag' === token.type ||
+						isAlphaKey && 'attribute' === token.type ||
+						'=' === token.string && token.state.htmlState && token.state.htmlState.tagName;
 				} else if ( 'css' === innerMode ) {
 					shouldAutocomplete =
 						isAlphaKey ||
-						':' === char ||
-						( ' ' === char && /:\s+$/.test( lineBeforeCursor ) );
+						':' === event.key ||
+						' ' === event.key && /:\s+$/.test( lineBeforeCursor );
 				} else if ( 'javascript' === innerMode ) {
-					shouldAutocomplete = isAlphaKey || '.' === char;
+					shouldAutocomplete = isAlphaKey || '.' === event.key;
 				} else if ( 'clike' === innerMode && 'php' === codemirror.options.mode ) {
-					shouldAutocomplete = isAlphaKey && ( 'keyword' === token.type || 'variable' === token.type );
+					shouldAutocomplete = 'keyword' === token.type || 'variable' === token.type;
 				}
 				if ( shouldAutocomplete ) {
 					codemirror.showHint( { completeSingle: false } );
 				}
-			} );
+			});
 		}
 
 		// Facilitate tabbing out of the editor.
-		configureTabbing( codemirror, instanceSettings );
+		configureTabbing( codemirror, settings );
 
 		return instance;
 	};
 
-})( jQuery, window.wp );
+})( window.jQuery, window.wp );

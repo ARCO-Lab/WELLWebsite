@@ -21,7 +21,6 @@
 		"viewportWidth": 350
 	},
 	"supports": {
-		"anchor": true,
 		"className": true,
 		"color": {
 			"background": true,

@@ -9,16 +9,13 @@
 	"attributes": {
 		"text": {
 			"type": "string",
-			"source": "raw",
-			"role": "content"
+			"source": "raw"
 		}
 	},
 	"supports": {
 		"className": false,
 		"customClassName": false,
-		"html": false,
-		"customCSS": false,
-		"visibility": false
+		"html": false
 	},
 	"editorStyle": "wp-block-shortcode-editor"
 }

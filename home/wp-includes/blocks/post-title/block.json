@@ -8,6 +8,9 @@
 	"textdomain": "default",
 	"usesContext": [ "postId", "postType", "queryId" ],
 	"attributes": {
+		"textAlign": {
+			"type": "string"
+		},
 		"level": {
 			"type": "number",
 			"default": 2
@@ -30,16 +33,12 @@
 			"type": "string",
 			"default": "_self",
 			"role": "content"
-		},
-		"placeholder": {
-			"type": "string"
 		}
 	},
 	"example": {
 		"viewportWidth": 350
 	},
 	"supports": {
-		"anchor": true,
 		"align": [ "wide", "full" ],
 		"html": false,
 		"color": {
@@ -58,7 +57,6 @@
 		"typography": {
 			"fontSize": true,
 			"lineHeight": true,
-			"textAlign": true,
 			"__experimentalFontFamily": true,
 			"__experimentalFontWeight": true,
 			"__experimentalFontStyle": true,

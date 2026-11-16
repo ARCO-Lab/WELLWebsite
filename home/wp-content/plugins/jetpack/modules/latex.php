@@ -97,7 +97,7 @@ function latex_src( $matches ) {
  */
 function latex_get_default_color( $color, $default_color = 'ffffff' ) {
 	global $themecolors;
-	return $themecolors[ $color ] ?? $default_color;
+	return isset( $themecolors[ $color ] ) ? $themecolors[ $color ] : $default_color;
 }
 
 /**

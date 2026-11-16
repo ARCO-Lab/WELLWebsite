@@ -1,4 +1,4 @@
-<?php
+<?php // phpcs:ignore WordPress.Files.FileName.InvalidClassFileName
 /**
  * Theme Tools: functions for Featured Content enhancements.
  *
@@ -200,7 +200,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Featured_Content' ) ) {
 			$featured_posts = get_posts(
 				array(
 					'include'          => $post_ids,
-					'posts_per_page'   => count( $post_ids ),
+					'posts_per_page'   => count( $post_ids ), // phpcs:ignore WordPress.WP.PostsPerPage.posts_per_page_posts_per_page
 					'post_type'        => self::$post_types,
 					'suppress_filters' => false,
 				)

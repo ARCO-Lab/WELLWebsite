@@ -296,10 +296,8 @@ jQuery( function( $ ) {
 					range = document.createRange();
 					$parent.addClass( 'hide-privacy-policy-tutorial' );
 
-					// Copy action. Select only the dedicated copy-content wrapper
-					// so the actions toolbar (which contains the "Copied!" notice
-					// and button label) is never part of the selection - see #58969.
-					range.selectNodeContents( $parent.find( '.privacy-text-copy-content' )[0] );
+					// Copy action.
+					range.selectNodeContents( $parent[0] );
 					window.getSelection().addRange( range );
 					document.execCommand( 'copy' );
 

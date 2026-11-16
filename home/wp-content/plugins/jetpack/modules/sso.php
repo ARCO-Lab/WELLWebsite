@@ -1,4 +1,4 @@
-<?php
+<?php // phpcs:ignore WordPress.Files.FileName.InvalidClassFileName
 /**
  * Module Name: Secure Sign On
  * Module Description: Let users log in with their WordPress.com account for quick, secure access.

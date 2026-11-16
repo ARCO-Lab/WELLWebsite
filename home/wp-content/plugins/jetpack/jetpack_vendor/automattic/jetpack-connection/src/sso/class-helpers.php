@@ -8,7 +8,6 @@
 namespace Automattic\Jetpack\Connection\SSO;
 
 use Automattic\Jetpack\Connection\SSO;
-use Automattic\Jetpack\Connection\Utils;
 use Automattic\Jetpack\Constants;
 use Jetpack_IXR_Client;
 
@@ -373,7 +372,7 @@ class Helpers {
 	 * @param int $user_id The local user id.
 	 */
 	public static function delete_connection_for_user( $user_id ) {
-		$wpcom_user_id = Utils::get_wpcom_user_id( $user_id );
+		$wpcom_user_id = get_user_meta( $user_id, 'wpcom_user_id', true );
 		if ( ! $wpcom_user_id ) {
 			return;
 		}
@@ -390,7 +389,7 @@ class Helpers {
 		}
 
 		// Clean up local data stored for SSO.
-		Utils::delete_wpcom_user_id( $user_id );
+		delete_user_meta( $user_id, 'wpcom_user_id' );
 		delete_user_meta( $user_id, 'wpcom_user_data' );
 		self::clear_wpcom_profile_cookies();
 

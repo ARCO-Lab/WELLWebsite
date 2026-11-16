@@ -400,15 +400,13 @@ class Sharing_Service {
 			$options = array();
 		}
 
-		$placement_saved = isset( $options['global']['show'] );
-
 		// Defaults.
 		$options['global'] = array(
 			'button_style'  => 'icon-text',
 			'sharing_label' => $this->default_sharing_label,
 			'open_links'    => 'same',
-			'show'          => $placement_saved ? array() : array( 'post', 'page' ),
-			'custom'        => $options['global']['custom'] ?? array(),
+			'show'          => ! isset( $options['global'] ) ? array( 'post', 'page' ) : array(),
+			'custom'        => isset( $options['global']['custom'] ) ? $options['global']['custom'] : array(),
 		);
 
 		/**
@@ -462,13 +460,10 @@ class Sharing_Service {
 				}
 			}
 
-			$options['global']['show'] = array_intersect( $data['show'], $shows );
-			$placement_saved           = true;
-		}
-
-		// Store no placement until one is chosen, so Likes keeps its own default; get_global_options() falls back to posts and pages.
-		if ( ! $placement_saved && array( 'post', 'page' ) === ( $options['global']['show'] ?? null ) ) {
-			unset( $options['global']['show'] );
+			$data['show'] = array_intersect( $data['show'], $shows );
+			if ( $data['show'] ) {
+				$options['global']['show'] = $data['show'];
+			}
 		}
 
 		update_option( 'sharing-options', $options );
@@ -517,7 +512,7 @@ class Sharing_Service {
 	/**
 	 * Save a sharing service for use.
 	 *
-	 * @param string                  $id Sharing unique ID.
+	 * @param int                     $id Sharing unique ID.
 	 * @param Sharing_Advanced_Source $service Sharing service.
 	 *
 	 * @return void
@@ -929,7 +924,7 @@ function sharing_process_requests() {
 	global $post;
 
 	// Only process if: single post and share=X defined
-	if ( $post instanceof WP_Post && ( is_page() || is_single() ) && isset( $_GET['share'] ) && is_string( $_GET['share'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+	if ( ( is_page() || is_single() ) && isset( $_GET['share'] ) && is_string( $_GET['share'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$sharer = new Sharing_Service();
 
 		$service = $sharer->get_service( sanitize_text_field( wp_unslash( $_GET['share'] ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -1018,7 +1013,7 @@ function sharing_display( $text = '', $echo = false ) {
 	$display_options = null;
 
 	if ( is_array( $options ) ) {
-		$display_options = $options['global']['show'] ?? array( 'post', 'page' );
+		$display_options = $options['global']['show'];
 	}
 
 	if ( is_front_page() && ( is_array( $display_options ) && ! in_array( 'index', $display_options, true ) ) ) {
@@ -1111,7 +1106,7 @@ function sharing_display( $text = '', $echo = false ) {
 		 */
 		$enabled = apply_filters( 'sharing_enabled', $sharer->get_blog_services() );
 
-		if ( ! empty( $enabled['all'] ) ) {
+		if ( is_countable( $enabled['all'] ) && ( count( $enabled['all'] ) > 0 ) ) {
 			$dir = get_option( 'text_direction' );
 
 			// Wrapper.

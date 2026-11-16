@@ -14,7 +14,7 @@ var getCount, updateCount, updateCountText, updatePending, updateApproved,
 	updateHtmlTitle, updateDashboardText, updateInModerationText, adminTitle = document.title,
 	isDashboard = $('#dashboard_right_now').length,
 	titleDiv, titleRegEx,
-	__ = wp.i18n.__, _x = wp.i18n._x;
+	__ = wp.i18n.__;
 
 	/**
 	 * Extracts a number from the content of a jQuery element.
@@ -370,8 +370,7 @@ window.setCommentsList = function() {
 
 		} else {
 			if ( settings.data.id == replyID )
-				/* translators: Comment reply button text. */
-				replyButton.text( _x( 'Reply', 'verb' ) );
+				replyButton.text( __( 'Reply' ) );
 
 			c.find( '.row-actions span.view' ).removeClass( 'hidden' ).end()
 				.find( 'div.comment_status' ).html( '1' );
@@ -1013,8 +1012,7 @@ window.commentReply = {
 			if ( c.hasClass('unapproved') ) {
 				replyButton.text( __( 'Approve and Reply' ) );
 			} else {
-				/* translators: Comment reply button text. */
-				replyButton.text( _x( 'Reply', 'verb' ) );
+				replyButton.text( __( 'Reply' ) );
 			}
 
 			$('#replyrow').fadeIn(300, function(){ $(this).show(); });

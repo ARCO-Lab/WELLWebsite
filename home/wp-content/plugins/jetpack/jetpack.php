@@ -4,12 +4,12 @@
  * Plugin URI: https://jetpack.com
  * Description: Security, performance, and marketing tools made by WordPress experts. Jetpack keeps your site protected so you can focus on more important things.
  * Author: Automattic
- * Version: 16.4
+ * Version: 15.8.1
  * Author URI: https://jetpack.com
  * License: GPL2+
  * Text Domain: jetpack
- * Requires at least: 7.0
- * Requires PHP: 7.4
+ * Requires at least: 6.8
+ * Requires PHP: 7.2
  *
  * @package automattic/jetpack
  */
@@ -37,10 +37,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 if ( ! defined( 'JETPACK__VERSION' ) ) {
 	// This breaks the project version checks when a one-liner.
-	define( 'JETPACK__VERSION', '16.4' );
+	define( 'JETPACK__VERSION', '15.8.1' );
 }
-defined( 'JETPACK__MINIMUM_WP_VERSION' ) || define( 'JETPACK__MINIMUM_WP_VERSION', '7.0' );
-defined( 'JETPACK__MINIMUM_PHP_VERSION' ) || define( 'JETPACK__MINIMUM_PHP_VERSION', '7.4' );
+defined( 'JETPACK__MINIMUM_WP_VERSION' ) || define( 'JETPACK__MINIMUM_WP_VERSION', '6.8' );
+defined( 'JETPACK__MINIMUM_PHP_VERSION' ) || define( 'JETPACK__MINIMUM_PHP_VERSION', '7.2' );
 
 /**
  * Constant used to fetch the connection owner token
@@ -54,6 +54,7 @@ defined( 'JETPACK__API_VERSION' ) || define( 'JETPACK__API_VERSION', 1 );
 defined( 'JETPACK__PLUGIN_DIR' ) || define( 'JETPACK__PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 defined( 'JETPACK__PLUGIN_FILE' ) || define( 'JETPACK__PLUGIN_FILE', __FILE__ );
 
+defined( 'JETPACK__RELEASE_POST_BLOG_SLUG' ) || define( 'JETPACK__RELEASE_POST_BLOG_SLUG', 'jetpackreleaseblog.wordpress.com' );
 defined( 'JETPACK_CLIENT__AUTH_LOCATION' ) || define( 'JETPACK_CLIENT__AUTH_LOCATION', 'header' );
 
 /**

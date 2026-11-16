@@ -2,7 +2,6 @@
 	"production": [
 		"ai-assistant",
 		"ai-chat",
-		"subscriptions",
 		"ai-assistant-plugin",
 		"blogging-prompt",
 		"business-hours",
@@ -14,7 +13,6 @@
 		"contact-info",
 		"donations",
 		"eventbrite",
-		"featured-image-duplicate",
 		"field-file",
 		"gif",
 		"google-calendar",
@@ -28,7 +26,6 @@
 		"opentable",
 		"payments",
 		"pinterest",
-		"podcast-episode",
 		"podcast-player",
 		"premium-content",
 		"rating-star",
@@ -44,6 +41,7 @@
 		"slideshow",
 		"story",
 		"subscriber-login",
+		"subscriptions",
 		"tiled-gallery",
 		"tock",
 		"videopress",
@@ -75,14 +73,11 @@
 		"ai-title-optimization-keywords-support",
 		"ai-response-feedback",
 		"ai-assistant-image-extension",
-		"ai-sidebar-toolbar-button",
-		"ai-sidebar-agent-notice",
-		"ai-sidebar-agent-support",
 		"ai-seo-enhancer",
 		"ai-correct-spelling",
 		"paypal-payment-buttons",
 		"image-studio",
-		"zoom-scheduler"
+		"block-notes"
 	],
 	"beta": [
 		"google-docs-embed",
@@ -119,7 +114,6 @@
 		"tock",
 		"videopress",
 		"voice-to-content",
-		"wordads",
-		"zoom-scheduler"
+		"wordads"
 	]
 }

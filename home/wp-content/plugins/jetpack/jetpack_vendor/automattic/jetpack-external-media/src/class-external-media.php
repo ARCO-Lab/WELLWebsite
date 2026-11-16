@@ -18,11 +18,9 @@ use Jetpack_Options;
  * Class External_Media
  */
 class External_Media {
-	const PACKAGE_VERSION = '0.9.12';
+	const PACKAGE_VERSION = '0.8.15';
 	const BASE_DIR        = __DIR__ . '/';
 	const BASE_FILE       = __FILE__;
-
-	private const EDITOR_HANDLE = 'jetpack-external-media-editor';
 
 	/**
 	 * Add hooks and filters.
@@ -35,9 +33,9 @@ class External_Media {
 			require_once __DIR__ . '/features/admin/external-media-import.php';
 		}
 
-		// Only the stylesheet goes into the iframed canvas: loading the script there hurt site editor performance. See pdWQjU-1rA-p2.
+		// @todo this current approach results in a console warning in the editor related to adding the css to the iframe incorrectly.
+		// It has been temporarily added back to prevent performance issues in the site editor. See pdWQjU-1rA-p2 for more details.
 		add_action( 'enqueue_block_editor_assets', array( __CLASS__, 'enqueue_block_editor_assets' ) );
-		add_action( 'enqueue_block_assets', array( __CLASS__, 'enqueue_block_canvas_styles' ) );
 
 		External_Connections::add_settings_for_service(
 			'media',
@@ -57,49 +55,26 @@ class External_Media {
 	 * Enqueue block editor assets.
 	 */
 	public static function enqueue_block_editor_assets() {
-		self::register_editor_assets();
-		Assets::enqueue_script( self::EDITOR_HANDLE );
+		$assets_base_path = 'build/';
+		$asset_name       = 'jetpack-external-media-editor';
+
+		Assets::register_script(
+			$asset_name,
+			$assets_base_path . "$asset_name/$asset_name.js",
+			self::BASE_FILE,
+			array(
+				'enqueue'    => true,
+				'textdomain' => 'jetpack-external-media',
+			)
+		);
 
 		wp_add_inline_script(
-			self::EDITOR_HANDLE,
+			$asset_name,
 			sprintf( 'var JetpackExternalMediaData = %s;', wp_json_encode( self::get_data(), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ) ),
 			'before'
 		);
 
-		Connection_Initial_State::render_script( self::EDITOR_HANDLE );
-	}
-
-	/**
-	 * Enqueue the editor stylesheet in the iframed editor canvas, where block placeholders render the media buttons.
-	 *
-	 * @since 0.9.5
-	 */
-	public static function enqueue_block_canvas_styles() {
-		// Skip the front end, and the editor's parent document, where the editor script already brings the stylesheet.
-		if ( ! is_admin() || wp_style_is( self::EDITOR_HANDLE ) ) {
-			return;
-		}
-
-		self::register_editor_assets();
-		$style = wp_styles()->query( self::EDITOR_HANDLE );
-		if ( $style ) {
-			// A separate handle drops the script-derived deps, which would load the editor UI styles into every canvas.
-			wp_enqueue_style( self::EDITOR_HANDLE . '-canvas', $style->src, array(), $style->ver );
-		}
-	}
-
-	/**
-	 * Register the editor script and its stylesheet.
-	 */
-	private static function register_editor_assets() {
-		Assets::register_script(
-			self::EDITOR_HANDLE,
-			'build/' . self::EDITOR_HANDLE . '/' . self::EDITOR_HANDLE . '.js',
-			self::BASE_FILE,
-			array(
-				'textdomain' => 'jetpack-external-media',
-			)
-		);
+		Connection_Initial_State::render_script( $asset_name );
 	}
 
 	/**

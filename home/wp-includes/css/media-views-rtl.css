@@ -37,18 +37,17 @@
 
 .media-frame a {
 	border-bottom: none;
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
 }
 
 .media-frame a:hover,
 .media-frame a:active {
-	color: var(--wp-admin-theme-color-darker-20, #183ad6);
+	color: #135e96;
 }
 
 .media-frame a:focus {
-	border-radius: 2px;
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
-	color: var(--wp-admin-theme-color-darker-20, #183ad6);
+	box-shadow: 0 0 0 2px #2271b1;
+	color: #043959;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -68,12 +67,12 @@
 
 .media-frame input,
 .media-frame textarea {
-	padding: 8px 12px;
+	padding: 6px 8px;
 }
 
 .media-frame select,
 .wp-admin .media-frame select {
-	min-height: 40px;
+	min-height: 30px;
 	vertical-align: middle;
 }
 
@@ -94,13 +93,13 @@
 .media-frame textarea,
 .media-frame select {
 	box-shadow: 0 0 0 transparent;
-	border-radius: 2px;
-	border: 1px solid #949494;
+	border-radius: 4px;
+	border: 1px solid #8c8f94;
 	background-color: #fff;
-	color: #1e1e1e;
+	color: #2c3338;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
-	font-size: 14px;
-	line-height: 1.42857143;
+	font-size: 13px;
+	line-height: 1.38461538;
 }
 
 .media-frame input[type="text"],
@@ -116,10 +115,9 @@
 .media-frame input[type="time"],
 .media-frame input[type="url"],
 .media-frame input[type="week"] {
-	padding: 0 12px;
-	/* inherits font size 14px */
-	line-height: 2.71428571; /* 38px for 40px min-height */
-	min-height: 40px;
+	padding: 0 8px;
+	/* inherits font size 13px */
+	line-height: 2.15384615; /* 28px */
 }
 
 /* Search field in the Media Library toolbar */
@@ -136,8 +134,8 @@
 .media-frame input[type="url"]:focus,
 .media-frame textarea:focus,
 .media-frame select:focus {
-	border-color: var(--wp-admin-theme-color, #3858e9);
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	border-color: #3582c4;
+	box-shadow: 0 0 0 1px #3582c4;
 	outline: 2px solid transparent;
 }
 
@@ -145,9 +143,7 @@
 .media-frame textarea:disabled,
 .media-frame input[readonly],
 .media-frame textarea[readonly] {
-	background-color: #f0f0f0;
-	border-color: #cccccc;
-	color: #949494;
+	background-color: #f0f0f1;
 }
 
 .media-frame input[type="search"] {
@@ -159,6 +155,11 @@
 }
 
 .media-frame ::-moz-placeholder {
+	color: #646970;
+	opacity: 1;
+}
+
+.media-frame :-ms-input-placeholder {
 	color: #646970;
 }
 
@@ -235,13 +236,13 @@
 
 .media-modal-close:hover,
 .media-modal-close:active {
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #135e96;
 }
 
 .media-modal-close:focus {
-	color: var(--wp-admin-theme-color, #3858e9);
-	border-color: var(--wp-admin-theme-color, #3858e9);
-	box-shadow: 0 0 3px rgba(var(--wp-admin-theme-color--rgb, 56, 88, 233), 0.8);
+	color: #135e96;
+	border-color: #4f94d4;
+	box-shadow: 0 0 3px rgba(34, 113, 177, 0.8);
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -252,8 +253,8 @@
 
 .media-modal-close .media-modal-icon:before {
 	content: "\f158";
-	content: "\f158" / '';
 	font: normal 20px/1 dashicons;
+	speak: never;
 	vertical-align: middle;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
@@ -272,20 +273,11 @@
 	-webkit-font-smoothing: subpixel-antialiased;
 }
 
-.media-toolbar input[type="text"],
-.media-toolbar input[type="search"],
-.media-toolbar select {
-	min-height: 32px;
-	line-height: 2.14285714; /* 30px for 32px height with 14px font */
-}
-
-.media-toolbar input[type="text"],
-.media-toolbar input[type="search"] {
-	padding: 0 8px;
-}
-
-.media-toolbar select {
-	padding: 0 8px 0 24px;
+.media-modal-content .media-frame select.attachment-filters {
+	margin-top: 32px;
+	margin-left: 2%;
+	width: 42%;
+	width: calc(48% - 12px);
 }
 
 /* higher specificity */
@@ -303,25 +295,18 @@
 	right: 0;
 	left: 0;
 	z-index: 100;
-	height: 48px;
+	height: 60px;
 	padding: 0 16px;
 	border: 0 solid #dcdcde;
-	overflow: auto;
+	overflow: hidden;
 }
 
 .media-frame-toolbar .media-toolbar {
 	top: auto;
-	bottom: -60px;
+	bottom: -47px;
 	height: auto;
 	overflow: visible;
 	border-top: 1px solid #dcdcde;
-	background: #fff;
-}
-
-.media-frame-toolbar .media-toolbar-primary > .media-button,
-.media-frame-toolbar .media-toolbar-primary > .media-button-group {
-	margin-top: 10px;
-	margin-bottom: 10px;
 }
 
 .media-toolbar-primary {
@@ -333,43 +318,6 @@
 .media-toolbar-secondary {
 	float: right;
 	height: 100%;
-	display: grid;
-	grid-template-columns: repeat( 2, 1fr );
-	grid-template-rows: repeat( 2, 1fr );
-	grid-column-gap: 12px;
-	grid-row-gap: 0px;
-	align-items: end;
-}
-
-label[for="media-attachment-filters"] {
-	grid-area: 1 / 1 / 2 / 2;
-}
-
-select#media-attachment-filters {
-	grid-area: 2 / 1 / 3 / 2;
-}
-
-label[for="media-attachment-date-filters"] {
-	grid-area: 1 / 1 / 2 / 2;
-}
-
-select#media-attachment-date-filters {
-	grid-area: 2 / 1 / 3 / 2;
-}
-
-select#media-attachment-filters ~ label[for="media-attachment-date-filters"] {
-	grid-area: 1 / 2 / 2 / 3;
-}
-
-select#media-attachment-filters ~ select#media-attachment-date-filters {
-	grid-area: 2 / 2 / 3 / 3;
-}
-
-.media-modal .media-toolbar-secondary > .spinner {
-	position: absolute;
-	left: -30px;
-	top: 50%;
-	margin: 0;
 }
 
 .media-toolbar-primary > .media-button,
@@ -561,13 +509,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	float: left;
 }
 
-.attachment-details .setting + .description .dashicons {
-	width: 16px;
-	height: 16px;
-	font-size: 16px;
-	margin-top: 0px;
-}
-
 .media-sidebar .setting .value,
 .attachment-details .setting .value,
 .attachment-details .setting + .description {
@@ -690,7 +631,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	font-size: 14px;
 	line-height: 1.28571428;
 	background: transparent;
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
 	text-align: right;
 	text-decoration: none;
 	cursor: pointer;
@@ -701,7 +642,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .media-menu .media-menu-item:active {
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
 	outline: none;
 }
 
@@ -712,8 +653,8 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .media-menu .media-menu-item:focus {
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
-	color: var(--wp-admin-theme-color-darker-20, #183ad6);
+	box-shadow: 0 0 0 2px #2271b1;
+	color: #043959;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -756,7 +697,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 .media-router .media-menu-item:hover,
 .media-router .media-menu-item:active {
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
 }
 
 .media-router .active,
@@ -765,8 +706,8 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .media-router .media-menu-item:focus {
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
-	color: var(--wp-admin-theme-color-darker-20, #183ad6);
+	box-shadow: 0 0 0 2px #2271b1;
+	color: #043959;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 	z-index: 1;
@@ -955,10 +896,10 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
  * Attachment Browser Filters
  */
 .media-frame select.attachment-filters {
-	min-height: 32px;
-	line-height: 2.14285714; /* 30px for 32px height with 14px font */
-	padding: 0 8px 0 24px;
+	margin-top: 11px;
 	margin-left: 2%;
+	max-width: 42%;
+	max-width: calc(48% - 12px);
 }
 
 .media-frame select.attachment-filters:last-of-type {
@@ -969,7 +910,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
  * Search
  */
 .media-frame .search {
-	margin: 0;
+	margin: 32px 0 0;
 	padding: 4px;
 	font-size: 13px;
 	color: #3c434a;
@@ -982,7 +923,11 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .media-modal .media-frame .media-search-input-label {
-	display: block;
+	position: absolute;
+	right: 0;
+	top: 10px;
+	margin: 0;
+	line-height: 1;
 }
 
 /**
@@ -1011,35 +956,12 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	box-sizing: border-box;
 }
 
-.wp-core-ui .attachment:not(:has(.filename))::after {
-	content: attr(aria-label);
-	position: absolute;
-	bottom: 8px;
-	width: calc( 100% - 16px );
-	right: 8px;
-	font-size: 12px;
-	background-color: rgba(255, 255, 255, 0.8);
-	color: #1d2327;
-	max-height: 3rem;
-	overflow: hidden;
-	text-align: start;
-	padding: 5px 10px;
-	word-wrap: break-word;
-	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
-	box-sizing: border-box;
-	font-weight: 600;
-}
-
-/* Do not show the aria-label overlay on thumbnails in the gallery selection strip. */
-.wp-core-ui .media-selection .attachment::after {
-	content: none;
-}
-
 .wp-core-ui .attachment:focus,
 .wp-core-ui .selected.attachment:focus,
 .wp-core-ui .attachment.details:focus {
-	/* Keep this box-shadow consistent between media.css and media-views.css. */
-	box-shadow: inset 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	box-shadow:
+		inset 0 0 2px 3px #fff,
+		inset 0 0 0 7px #4f94d4;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 	outline-offset: -6px;
@@ -1054,7 +976,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 .wp-core-ui .attachment.details {
 	box-shadow:
 		inset 0 0 0 3px #fff,
-		inset 0 0 0 7px var(--wp-admin-theme-color-darker-20, #183ad6);
+		inset 0 0 0 7px #2271b1;
 }
 
 .wp-core-ui .attachment-preview {
@@ -1161,20 +1083,14 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	width: 22px;
 	padding: 0;
 	background-color: #fff;
+	background-position: -96px 4px;
 	border-radius: 3px;
 	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
 	transition: none;
 }
 
-.wp-core-ui .attachment-close .media-modal-icon {
-	display: inline-block;
-	background-position: -96px 4px;
-	height: 22px;
-	width: 22px;
-}
-
-.wp-core-ui .attachment-close:hover .media-modal-icon,
-.wp-core-ui .attachment-close:focus .media-modal-icon {
+.wp-core-ui .attachment-close:hover,
+.wp-core-ui .attachment-close:focus {
 	background-position: -36px 4px;
 }
 
@@ -1213,10 +1129,10 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 .wp-core-ui .attachment.details .check,
 .wp-core-ui .attachment.selected .check:focus,
 .wp-core-ui .media-frame.mode-grid .attachment.selected .check {
-	background-color: var(--wp-admin-theme-color, #3858e9);
+	background-color: #2271b1;
 	box-shadow:
 		0 0 0 1px #fff,
-		0 0 0 2px var(--wp-admin-theme-color, #3858e9);
+		0 0 0 2px #2271b1;
 }
 
 .wp-core-ui .attachment.selected .check:focus {
@@ -1257,8 +1173,8 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 .attachments-browser .media-toolbar {
 	left: 300px;
+	height: 72px;
 	background: #fff;
-	padding: 12px 16px;
 }
 
 .attachments-browser.hide-sidebar .media-toolbar {
@@ -1293,7 +1209,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .attachments-browser .media-toolbar-primary {
-	max-width: calc( 33% - 20px );
+	max-width: 33%;
 }
 
 .mode-grid .attachments-browser .media-toolbar-primary {
@@ -1309,7 +1225,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 .attachments-browser .media-toolbar-secondary {
 	max-width: 66%;
-	position: relative;
 }
 
 .uploader-inline .close {
@@ -1332,14 +1247,13 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	color: #50575e;
 	display: inline-block;
 	content: "\f335";
-	content: "\f335" / '';
 	font-weight: 300;
 	margin-top: 1px;
 }
 
 .uploader-inline .close:focus {
-	outline: 1px solid var(--wp-admin-theme-color, #3858e9);
-	box-shadow: 0 0 3px rgba(var(--wp-admin-theme-color--rgb, 56, 88, 233), 0.8);
+	outline: 1px solid #4f94d4;
+	box-shadow: 0 0 3px rgba(34, 113, 177, 0.8);
 }
 
 .attachments-browser.hide-sidebar .attachments,
@@ -1406,11 +1320,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .attachment.new-media {
-	/* Dotted outline for the first added item when Infinite scrolling is disabled. */
-	/* Contrast ratio must be at least 3:1 against the #dcdcde background for added items when Infinite scrolling is disabled. */
-	outline: 2px dotted #757575;
-	/* Prevent the border from being obscured by adjacent items. */
-	outline-offset: -2px;
+	outline: 2px dotted #c3c4c7;
 }
 
 /**
@@ -1430,7 +1340,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	height: 10px;
 	min-width: 20px;
 	width: 0;
-	background: var(--wp-admin-theme-color, #3858e9);
+	background: #2271b1;
 	border-radius: 10px;
 	transition: width 300ms;
 }
@@ -1548,7 +1458,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 .uploader-window,
 .wp-editor-wrap .uploader-editor.droppable {
-	background-color: rgba(var(--wp-admin-theme-color--rgb, 56, 88, 233), 0.9);
+	background: rgba(10, 75, 120, 0.9);
 }
 
 .uploader-window-content,
@@ -1709,13 +1619,13 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	margin: 1px -8px 1px 8px;
 	line-height: 1.4;
 	border-left: 1px solid #dcdcde;
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
 	text-decoration: none;
 }
 
 .media-selection .button-link:hover,
 .media-selection .button-link:focus {
-	color: var(--wp-admin-theme-color-darker-20, #183ad6);
+	color: #135e96;
 }
 
 .media-selection .button-link:last-child {
@@ -1773,7 +1683,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 .wp-core-ui .media-selection .attachment.details:focus {
 	box-shadow:
 		0 0 0 1px #fff,
-		0 0 2px 3px var(--wp-admin-theme-color, #3858e9);
+		0 0 2px 3px #4f94d4;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -1785,7 +1695,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 .wp-core-ui .media-selection .attachment.details {
 	box-shadow:
 		0 0 0 1px #fff,
-		0 0 0 3px var(--wp-admin-theme-color, #3858e9);
+		0 0 0 3px #2271b1;
 }
 
 .media-selection:after {
@@ -1832,16 +1742,18 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	vertical-align: middle;
 }
 
+.media-modal .media-toolbar .spinner {
+	float: none;
+	vertical-align: bottom;
+	margin: 0 5px 5px 0;
+}
+
 .media-frame .instructions + .spinner.is-active {
 	vertical-align: middle;
 }
 
 .media-frame .spinner.is-active {
 	visibility: visible;
-}
-
-.media-bg-overlay {
-	position: absolute;
 }
 
 /**
@@ -1856,7 +1768,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	text-align: left;
 	text-transform: none;
 	font-weight: 400;
-	display: flex;
 }
 
 .attachment-details .settings-save-status .spinner {
@@ -2064,7 +1975,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	margin: 0;
 	padding: 0;
 	background: transparent;
-	color: var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
 	font-size: 20px;
 	line-height: 1;
 	cursor: pointer;
@@ -2073,9 +1984,9 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .wp-core-ui.media-modal .image-editor .imgedit-help-toggle:focus {
-	color: var(--wp-admin-theme-color, #3858e9);
-	border-color: var(--wp-admin-theme-color, #3858e9);
-	box-shadow: 0 0 0 1px var(--wp-admin-theme-color, #3858e9);
+	color: #2271b1;
+	border-color: #2271b1;
+	box-shadow: 0 0 0 1px #2271b1;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -2090,7 +2001,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 .media-modal .imgedit-help-toggled span.dashicons:before {
 	content: "\f142";
-	content: "\f142" / '';
 }
 
 .media-modal .imgedit-thumbnail-preview {
@@ -2192,8 +2102,8 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 }
 
 .mejs-container:focus {
-	outline: 1px solid var(--wp-admin-theme-color, #3858e9);
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	outline: 1px solid #2271b1;
+	box-shadow: 0 0 0 2px #2271b1;
 }
 
 .image-details .media-modal {
@@ -2269,18 +2179,17 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 .image-details .advanced-toggle:after {
 	font: normal 20px/1 dashicons;
+	speak: never;
 	vertical-align: top;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 	content: "\f140";
-	content: "\f140" / '';
 	display: inline-block;
 	margin-top: -2px;
 }
 
 .image-details .advanced-visible .advanced-toggle:after {
 	content: "\f142";
-	content: "\f142" / '';
 }
 
 .image-details .custom-size label, /* Back-compat for pre-5.3 */
@@ -2587,9 +2496,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 		width: 1px;
 		border: 0;
 		margin: -1px;
-		/* Many screen reader and browser combinations announce broken words as they would appear visually. */
 		word-wrap: normal !important;
-		word-break: normal !important;
 	}
 
 	/* Reveal the menu toggle button. */
@@ -2609,10 +2516,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 		height: 0.1%;
 		/* Modern browsers */
 		min-height: 40px;
-	}
-
-	.wp-core-ui .media-frame:not(.hide-menu) .button.media-frame-menu-toggle .dashicons {
-		line-height: 1;
 	}
 
 	.wp-core-ui .button.media-frame-menu-toggle:hover,
@@ -2637,7 +2540,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	}
 
 	.attachments-browser .attachments,
-	.attachments-browser:not(.has-load-more) .attachments,
 	.attachments-browser .uploader-inline,
 	.attachments-browser .media-toolbar,
 	.attachments-browser .attachments-wrapper,
@@ -2646,14 +2548,13 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	}
 
 	.attachments-browser .media-toolbar {
-		height: 117px;
+		height: 82px;
 	}
 
 	.attachments-browser .attachments,
-	.attachments-browser:not(.has-load-more) .attachments,
 	.attachments-browser .uploader-inline,
 	.media-frame-content .attachments-browser .attachments-wrapper {
-		top: 131px;
+		top: 82px;
 	}
 
 	.media-sidebar .setting,
@@ -2737,11 +2638,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 
 	.media-frame .media-toolbar input[type="search"] {
 		line-height: 2.25; /* 36px */
-	}
-
-	.media-toolbar-secondary,
-	.media-toolbar-secondary label {
-		display: block;
 	}
 
 	.media-sidebar .setting select.columns,
@@ -2844,10 +2740,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 		float: left;
 	}
 
-	.media-modal .media-frame .media-toolbar-secondary .spinner {
-		top: calc( 50% - 8px );
-	}
-
 	.media-modal .attachments-browser .media-toolbar .attachment-filters {
 		height: auto;
 	}
@@ -2868,6 +2760,10 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	.media-frame .media-toolbar input[type="search"] {
 		line-height: 2.3755; /* 38px */
 	}
+
+	.media-modal .media-toolbar .spinner {
+		margin-bottom: 10px;
+	}
 }
 
 @media screen and (max-width: 782px) {
@@ -2876,11 +2772,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	}
 
 	.media-frame-toolbar .media-toolbar {
-		bottom: -60px;
-	}
-
-	.media-modal .media-frame .media-toolbar-secondary .spinner {
-		top: 0;
+		bottom: -54px;
 	}
 
 	.mode-grid .attachments-browser .media-toolbar-primary {
@@ -2902,9 +2794,13 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 		position: unset;
 	}
 
-	.media-modal .media-frame .media-toolbar-secondary .spinner {
+	.media-frame .media-toolbar-secondary .spinner {
+		position: absolute;
+		top: 0;
 		bottom: 0;
 		margin: auto;
+		right: 0;
+		left: 0;
 		z-index: 9;
 	}
 
@@ -2914,6 +2810,7 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 		width: 100%;
 		height: 100%;
 		display: none;
+		position: absolute;
 		right: 0;
 		left: 0;
 		top: 0;
@@ -2956,7 +2853,6 @@ select#media-attachment-filters ~ select#media-attachment-date-filters {
 	}
 
 	.attachments-browser .attachments,
-	.attachments-browser:not(.has-load-more) .attachments,
 	.attachments-browser .uploader-inline,
 	.attachments-browser .media-toolbar,
 	.media-frame-content .attachments-browser .attachments-wrapper {

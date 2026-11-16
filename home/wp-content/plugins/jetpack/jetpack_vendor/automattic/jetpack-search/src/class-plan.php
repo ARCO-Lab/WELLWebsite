@@ -1,6 +1,7 @@
 <?php
 /**
  * The Search Plan class.
+ * Registers the REST routes for Search.
  *
  * @package automattic/jetpack-search
  */
@@ -8,7 +9,6 @@
 namespace Automattic\Jetpack\Search;
 
 use Automattic\Jetpack\Connection\Client;
-use Automattic\Jetpack\Status;
 use Jetpack_Options;
 use WP_Error;
 
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Manage Search plan information.
+ * Registers the REST routes for Search.
  */
 class Plan {
 	const JETPACK_SEARCH_PLAN_INFO_OPTION_KEY  = 'jetpack_search_plan_info';
@@ -47,20 +47,10 @@ class Plan {
 	}
 
 	/**
-	 * Refresh stored plan info from WordPress.com when online.
-	 *
-	 * @return array|WP_Error HTTP response, or an error when offline, unregistered, or the request could not be sent.
+	 * Refresh plan info stored in options
 	 */
 	public function get_plan_info_from_wpcom() {
-		if ( ( new Status() )->is_offline_mode() ) {
-			return new WP_Error( 'site_offline', 'Site is in offline mode.' );
-		}
-		$blog_id = Jetpack_Options::get_option( 'id' );
-		// An unregistered site (or a stale cache view hiding the registration) has no
-		// blog ID: bail rather than requesting the malformed `/sites//…` path.
-		if ( ! $blog_id ) {
-			return new WP_Error( 'site_not_registered', 'Site not registered.' );
-		}
+		$blog_id  = Jetpack_Options::get_option( 'id' );
 		$response = Client::wpcom_json_api_request_as_blog(
 			'/sites/' . $blog_id . '/jetpack-search/plan',
 			'2',
@@ -78,7 +68,7 @@ class Plan {
 	/**
 	 * Get plan info.
 	 *
-	 * @param bool $force_refresh - Default to false. Set true to attempt a refresh via get_plan_info_from_wpcom().
+	 * @param bool $force_refresh - Default to false. Set true to load from WPCOM.
 	 */
 	public function get_plan_info( $force_refresh = false ) {
 		if ( $force_refresh ) {

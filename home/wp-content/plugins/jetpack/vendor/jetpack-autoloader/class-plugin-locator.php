@@ -5,7 +5,7 @@
  * @package automattic/jetpack-autoloader
  */
 
-namespace Automattic\Jetpack\Autoloader\jpf11009ded9fc4592b6a05b61ce272b3c_jetpackⓥ16_4\al6_0_3;
+namespace Automattic\Jetpack\Autoloader\jpf11009ded9fc4592b6a05b61ce272b3c_jetpackⓥ15_8\al5_0_17;
 
  // phpcs:ignore
 
@@ -115,7 +115,7 @@ class Plugin_Locator {
 				break;
 		}
 
-		return $this->convert_plugins_to_paths( $plugin_slugs, true );
+		return $this->convert_plugins_to_paths( $plugin_slugs );
 	}
 
 	/**
@@ -124,11 +124,10 @@ class Plugin_Locator {
 	 * if they are plugin paths!
 	 *
 	 * @param string[] $plugins Plugin paths or slugs to filter.
-	 * @param bool     $safe_mode Reject plugins in unsafe paths.
 	 *
 	 * @return string[]
 	 */
-	private function convert_plugins_to_paths( $plugins, $safe_mode = false ) {
+	private function convert_plugins_to_paths( $plugins ) {
 		if ( ! is_array( $plugins ) || empty( $plugins ) ) {
 			return array();
 		}
@@ -138,12 +137,12 @@ class Plugin_Locator {
 
 		$plugin_paths = array();
 		foreach ( $plugins as $key => $value ) {
-			$path = $this->path_processor->find_directory_with_autoloader( $key, $path_constants, $safe_mode );
+			$path = $this->path_processor->find_directory_with_autoloader( $key, $path_constants );
 			if ( $path ) {
 				$plugin_paths[] = $path;
 			}
 
-			$path = $this->path_processor->find_directory_with_autoloader( $value, $path_constants, $safe_mode );
+			$path = $this->path_processor->find_directory_with_autoloader( $value, $path_constants );
 			if ( $path ) {
 				$plugin_paths[] = $path;
 			}

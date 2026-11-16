@@ -64,11 +64,9 @@ body.js .theme-browser.search-loading {
 	margin: 0 4% 4% 0;
 	position: relative;
 	width: 30.6%;
-	background: #ffffff;
-	border: 1px solid rgb(0, 0, 0, 0.1);
-	border-radius: 8px;
+	border: 1px solid #dcdcde;
+	box-shadow: 0 1px 1px -1px rgba(0, 0, 0, 0.1);
 	box-sizing: border-box;
-	overflow: hidden;
 }
 
 .theme-browser .theme:nth-child(3n) {
@@ -85,12 +83,13 @@ body.js .theme-browser.search-loading {
 	font-weight: 600;
 	height: 18px;
 	margin: 0;
-	padding: 16px 15px;
-	border-top: 1px solid rgb(0, 0, 0, 0.1);
+	padding: 15px;
+	box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.1);
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
-	background: #ffffff;
+	background: #fff;
+	background: rgba(255, 255, 255, 0.65);
 }
 
 /* Activate and Customize buttons, shown on hover and focus */
@@ -113,33 +112,9 @@ body.js .theme-browser.search-loading {
 	margin-right: 3px;
 }
 
-/* Use compact size for space-constrained theme cards */
-.theme-browser .theme .theme-actions .button.updated-message,
-.theme-browser .theme .theme-actions .button.updating-message,
 .theme-browser .theme .theme-actions .button {
 	float: none;
 	margin-left: 3px;
-}
-
-.theme-browser .theme .theme-actions .button.updated-message::before,
-.theme-browser .theme .theme-actions .button.updating-message::before {
-	line-height: 1;
-	vertical-align: text-bottom;
-	position: relative;
-	top: 2px;
-}
-
-/* Secondary buttons need white background for visibility on semi-transparent overlay */
-.theme-browser .theme .theme-actions .button:not(.button-primary) {
-	background: #fff;
-}
-
-.theme-browser .theme .theme-actions .button:not(.button-primary):hover {
-	background: #f0f0f0;
-}
-
-.theme-browser .theme .theme-actions .button:not(.button-primary):focus {
-	background: #fff;
 }
 
 /**
@@ -205,12 +180,12 @@ body.js .theme-browser.search-loading {
 }
 
 .theme-browser .theme .more-details:focus {
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	box-shadow: 0 0 0 2px #2271b1;
 }
 
 .theme-browser .theme.focus {
-	border-color: var(--wp-admin-theme-color);
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	border-color: #2271b1;
+	box-shadow: 0 0 0 1px #2271b1;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -236,7 +211,7 @@ body.js .theme-browser.search-loading {
 .theme-browser .theme.active .theme-name {
 	background: #1d2327;
 	color: #fff;
-	padding-right: 115px;
+	padding-right: 110px;
 	font-weight: 300;
 	box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.5);
 }
@@ -250,13 +225,9 @@ body.js .theme-browser.search-loading {
 }
 
 .theme-browser .theme.active .theme-actions {
-	background: transparent;
+	background: rgba(44, 51, 56, 0.7);
 	border-left: none;
 	opacity: 1;
-}
-
-.theme-browser .theme.active .theme-actions .button-primary {
-	border-color: #fff;
 }
 
 .theme-id-container {
@@ -269,28 +240,12 @@ body.js .theme-browser.search-loading {
 	top: 50%;
 	transform: translateY(-50%);
 	right: 0;
-	padding: 9px 12px;
-}
-
-.theme-browser .theme:not(.active) .theme-actions {
+	padding: 9px 15px;
 	box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.1);
 }
 
 .theme-browser .theme.active .theme-actions .button-primary {
 	margin-right: 0;
-}
-
-/* Active theme secondary buttons need white background for visibility on dark overlay */
-.theme-browser .theme.active .theme-actions .button:not(.button-primary) {
-	background: #fff;
-}
-
-.theme-browser .theme.active .theme-actions .button:not(.button-primary):hover {
-	background: #f0f0f0;
-}
-
-.theme-browser .theme.active .theme-actions .button:not(.button-primary):focus {
-	background: #fff;
 }
 
 .theme-browser .theme .theme-author {
@@ -316,9 +271,8 @@ body.js .theme-browser.search-loading {
  * Add new theme
  */
 .theme-browser .theme.add-new-theme {
-	background: transparent;
 	border: none;
-	overflow: visible;
+	box-shadow: none;
 }
 
 .theme-browser .theme.add-new-theme a {
@@ -351,7 +305,6 @@ body.js .theme-browser.search-loading {
 	border-radius: 50%;
 	display: inline-block;
 	content: "\f132";
-	content: "\f132" / '';
 	-webkit-font-smoothing: antialiased;
 	font: normal 74px/115px dashicons;
 	width: 100px;
@@ -394,8 +347,8 @@ body.js .theme-browser.search-loading {
 
 .theme-browser .theme.add-new-theme .theme-name {
 	background: none;
-	border: none;
 	text-align: center;
+	box-shadow: none;
 	font-weight: 400;
 	position: relative;
 	top: 0;
@@ -456,7 +409,6 @@ body.js .theme-browser.search-loading {
 	color: #787c82;
 	display: inline-block;
 	content: "\f335";
-	content: "\f335" / '';
 	font-weight: 300;
 }
 
@@ -516,12 +468,10 @@ body.js .theme-browser.search-loading {
 
 .theme-overlay .theme-header .left:before {
 	content: "\f341";
-	content: "\f341" / '';
 }
 
 .theme-overlay .theme-header .right:before {
 	content: "\f345";
-	content: "\f345" / '';
 }
 
 .theme-overlay .theme-wrap {
@@ -1011,7 +961,12 @@ body.folded .theme-browser ~ .theme-overlay .theme-wrap {
 	}
 
 	.themes-php .wp-filter-search {
+		float: none;
+		clear: both;
+		left: 0;
+		right: 0;
 		width: 100%;
+		max-width: 280px;
 	}
 
 	.theme-install-php .wp-filter p.search-box {
@@ -1073,7 +1028,6 @@ body.folded .theme-browser ~ .theme-overlay .theme-wrap {
 .theme-browser .theme .notice-success p:before {
 	color: #68de7c;
 	content: "\f147";
-	content: "\f147" / '';
 	display: inline-block;
 	font: normal 20px/1 'dashicons';
 	-webkit-font-smoothing: antialiased;
@@ -1132,24 +1086,18 @@ body.folded .theme-browser ~ .theme-overlay .theme-wrap {
 
 .upload-theme .wp-upload-form,
 .upload-plugin .wp-upload-form {
-	position: relative;
-	margin: 30px;
+	background: #f6f7f7;
+	border: 1px solid #c3c4c7;
+	padding: 30px;
+	margin: 30px auto;
 	display: inline-flex;
 	justify-content: space-between;
 	align-items: center;
-	border: 1px solid #c3c4c7;
-	background: #f6f7f7;
 }
 
 .upload-theme .wp-upload-form input[type="file"],
 .upload-plugin .wp-upload-form input[type="file"] {
-	background: transparent;
-    margin: 0;
-    padding: 30px 0 30px 30px;
-}
-
-.wp-upload-form input[type="submit"].button {
-	margin-right: 30px;
+	margin-right: 10px;
 }
 
 .upload-theme .install-help,
@@ -1183,7 +1131,6 @@ p.no-themes-local {
 }
 
 @media only screen and (max-width: 1120px) {
-	.upload-plugin .wp-upload-form,
 	.upload-theme .wp-upload-form {
 		margin: 20px 0;
 		max-width: 100%;
@@ -1401,6 +1348,10 @@ div#custom-background-image img {
 	transform: rotate( 45deg );
 }
 
+.background-position-control .button-group .dashicons {
+	margin-top: 9px;
+}
+
 .background-position-control .button-group + .button-group {
 	margin-top: -1px;
 }
@@ -1516,7 +1467,7 @@ body.full-overlay-active {
 }
 
 .wp-full-overlay-sidebar .wp-full-overlay-header a.back {
-	margin-top: 3px; /* Vertically center 40px button in 45px header */
+	margin-top: 9px;
 }
 
 .wp-full-overlay-sidebar .wp-full-overlay-footer {
@@ -1572,7 +1523,6 @@ body.full-overlay-active {
 .theme-install-overlay .close-full-overlay:before {
 	font: normal 22px/1 dashicons;
 	content: "\f335";
-	content: "\f335" / '';
 	position: relative;
 	top: 7px;
 	left: 13px;
@@ -1581,7 +1531,6 @@ body.full-overlay-active {
 .theme-install-overlay .previous-theme:before {
 	font: normal 20px/1 dashicons;
 	content: "\f341";
-	content: "\f341" / '';
 	position: relative;
 	top: 6px;
 	left: 14px;
@@ -1590,7 +1539,6 @@ body.full-overlay-active {
 .theme-install-overlay .next-theme:before {
 	font: normal 20px/1 dashicons;
 	content: "\f345";
-	content: "\f345" / '';
 	position: relative;
 	top: 6px;
 	left: 13px;
@@ -1661,7 +1609,7 @@ body.full-overlay-active {
 
 .wp-full-overlay .collapse-sidebar:hover .collapse-sidebar-arrow,
 .wp-full-overlay .collapse-sidebar:focus .collapse-sidebar-arrow {
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	box-shadow: 0 0 0 2px #2271b1;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -1677,9 +1625,9 @@ body.full-overlay-active {
 .wp-full-overlay .collapse-sidebar-arrow:before {
 	display: block;
 	content: "\f148";
-	content: "\f148" / '';
 	background: #f0f0f1;
 	font: normal 20px/1 dashicons;
+	speak: never;
 	padding: 0;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
@@ -1748,7 +1696,6 @@ body.full-overlay-active {
 	background: transparent;
 	border: none;
 	height: 45px;
-	min-width: 50px;
 	padding: 0 3px;
 	margin: 0 0 0 -4px;
 	box-shadow: none;
@@ -1768,9 +1715,9 @@ body.full-overlay-active {
 .wp-full-overlay-footer .devices button:before {
 	display: inline-block;
 	-webkit-font-smoothing: antialiased;
-	font: normal 20px/20px "dashicons";
+	font: normal 20px/30px "dashicons";
 	vertical-align: top;
-	margin: 0 0 -2px;
+	margin: 3px 0;
 	padding: 4px 8px;
 	color: #646970;
 }
@@ -1800,23 +1747,14 @@ body.full-overlay-active {
 
 .wp-full-overlay-footer .devices .preview-desktop:before {
 	content: "\f472";
-	content: "\f472" / '';
 }
 
 .wp-full-overlay-footer .devices .preview-tablet:before {
 	content: "\f471";
-	content: "\f471" / '';
 }
 
 .wp-full-overlay-footer .devices .preview-mobile:before {
 	content: "\f470";
-	content: "\f470" / '';
-}
-
-.wp-full-overlay-footer .devices .devices__preview-label {
-	display: block;
-	font-size: 10px;
-	line-height: 1;
 }
 
 @media screen and (max-width: 1024px) {
@@ -1971,14 +1909,7 @@ body.full-overlay-active {
 
 .theme-install-overlay .wp-full-overlay-header .button {
 	float: right;
-	margin: 7px 10px 0 0; /* Vertically center 32px button in 45px header */
-	min-height: 32px;
-	line-height: 2.30769231; /* 30px for 32px height with 13px font */
-}
-
-.theme-install-overlay .wp-full-overlay-header .button.updating-message:before,
-.theme-install-overlay .wp-full-overlay-header .button.updated-message:before {
-	line-height: 1.5; /* 30px (20px * 1.5) - matches the button above */
+	margin: 8px 10px 0 0;
 }
 
 .theme-install-overlay .wp-full-overlay-sidebar {
@@ -2064,6 +1995,8 @@ body.full-overlay-active {
 
 	.theme-install-overlay .wp-full-overlay-header .button {
 		font-size: 13px;
+		line-height: 2.15384615;
+		min-height: 30px;
 	}
 
 	.theme-browser .theme .theme-actions .button {
@@ -2076,15 +2009,17 @@ body.full-overlay-active {
 		padding-bottom: 4px;
 	}
 
-	.upload-plugin .wp-upload-form,
-	.upload-theme .wp-upload-form {
-		width: 100%;
-		box-sizing: border-box;
+	.upload-theme .wp-upload-form,
+	.upload-plugin .wp-upload-form {
+		display: block;
 	}
+}
 
-	.upload-plugin .wp-upload-form input[type=file],
-	.upload-theme .wp-upload-form input[type=file] {
-		padding: 30px 0 30px 30px;
-		width: 100%;
+@media aural {
+	.theme .notice:before,
+	.theme-info .updating-message:before,
+	.theme-info .updated-message:before,
+	.theme-install.updating-message:before {
+		speak: never;
 	}
 }

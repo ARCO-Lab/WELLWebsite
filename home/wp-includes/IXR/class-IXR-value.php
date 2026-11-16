@@ -44,10 +44,10 @@ class IXR_Value {
         if ($this->data === true || $this->data === false) {
             return 'boolean';
         }
-        if (is_int($this->data)) {
+        if (is_integer($this->data)) {
             return 'int';
         }
-        if (is_float($this->data)) {
+        if (is_double($this->data)) {
             return 'double';
         }
 

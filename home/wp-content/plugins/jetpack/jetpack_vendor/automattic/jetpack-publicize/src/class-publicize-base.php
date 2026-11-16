@@ -80,16 +80,6 @@ abstract class Publicize_Base {
 	 */
 	const POST_CUSTOMIZE_PER_NETWORK = '_wpas_customize_per_network';
 
-	/**
-	 * Attachment meta key for the social image focal point.
-	 *
-	 * Stored on the image (attachment), not the post, so a focal point set once is
-	 * shared by every post that uses the image.
-	 *
-	 * @var string
-	 */
-	const ATTACHMENT_IMAGE_FOCAL_POINT = '_jetpack_social_image_focal_point';
-
 	// Skip meta keys. We used to rely on _wpas_skip_ appended with the token_id to skip posts. But to support
 	// multiple connections for the same token, we are going to use the _wpas_skip_publicize_ which
 	// will be appended with the connection_id.
@@ -272,8 +262,6 @@ abstract class Publicize_Base {
 		// Custom priority to ensure post type support is added prior to thumbnail support being added to the theme.
 		add_action( 'init', array( $this, 'add_post_type_support' ), 8 );
 		add_action( 'init', array( $this, 'register_post_meta' ), 20 );
-		// Last, so a veto from another filter is respected before any row changes.
-		add_filter( 'update_post_metadata', array( $this, 'collapse_duplicate_post_meta' ), PHP_INT_MAX, 5 );
 
 		// The custom priority for this action ensures that any existing code that
 		// removes post-thumbnails support during 'init' continues to work.
@@ -331,7 +319,7 @@ abstract class Publicize_Base {
 		}
 
 		$connections = $this->get_connections( $service_name, $_blog_id, $_user_id );
-		return is_array( $connections ) && count( $connections ) > 0;
+		return ( is_array( $connections ) && count( $connections ) > 0 ? true : false );
 	}
 
 	/**
@@ -383,6 +371,8 @@ abstract class Publicize_Base {
 				return 'Google Drive';
 			case 'instagram-business':
 				return 'Instagram';
+			case 'x':
+				return 'X';
 			case 'twitter':
 			case 'facebook':
 			case 'tumblr':
@@ -543,6 +533,10 @@ abstract class Publicize_Base {
 			return 'https://twitter.com/' . substr( $cmeta['external_display'], 1 ); // Has a leading '@'.
 		}
 
+		if ( 'x' === $service_name && isset( $cmeta['external_name'] ) ) {
+			return 'https://x.com/' . $cmeta['external_name'];
+		}
+
 		if ( 'bluesky' === $service_name ) {
 			return 'https://bsky.app/profile/' . $cmeta['external_id'];
 		}
@@ -612,6 +606,7 @@ abstract class Publicize_Base {
 			case 'mastodon':
 				return $cmeta['external_display'] ?? null;
 
+			case 'x':
 			case 'bluesky':
 			case 'threads':
 				return $cmeta['external_name'] ?? null;
@@ -997,7 +992,53 @@ abstract class Publicize_Base {
 			}
 		}
 
+		$x_skip_ids = array_flip( self::get_x_connection_ids_to_skip( $connection_list ) );
+		foreach ( $connection_list as $index => $connection ) {
+			if ( isset( $x_skip_ids[ $connection['connection_id'] ?? '' ] ) ) {
+				$connection_list[ $index ]['enabled'] = false;
+			}
+		}
+
 		return $connection_list;
+	}
+
+	/**
+	 * Return the connection IDs that must be forced to skip to comply with X
+	 * Developer Policy, which forbids posting the same content from multiple
+	 * X accounts.
+	 *
+	 * Keeps the first enabled X connection and returns the IDs of any
+	 * subsequent enabled X connections. Already-done connections are
+	 * historical and are neither disabled nor counted toward the limit.
+	 *
+	 * @param array $connections List of connection arrays. Each entry must have
+	 *                           `service_name`, `connection_id`, and `enabled`;
+	 *                           may optionally include `done`.
+	 *
+	 * @return string[] Connection IDs that should be forced to skip.
+	 */
+	public static function get_x_connection_ids_to_skip( array $connections ): array {
+		$kept     = false;
+		$skip_ids = array();
+
+		foreach ( $connections as $connection ) {
+			if ( 'x' !== ( $connection['service_name'] ?? '' ) ) {
+				continue;
+			}
+			if ( empty( $connection['enabled'] ) ) {
+				continue;
+			}
+			if ( ! empty( $connection['done'] ) ) {
+				continue;
+			}
+			if ( ! $kept ) {
+				$kept = true;
+				continue;
+			}
+			$skip_ids[] = $connection['connection_id'];
+		}
+
+		return $skip_ids;
 	}
 
 	/**
@@ -1013,18 +1054,35 @@ abstract class Publicize_Base {
 	abstract public function post_is_done_sharing( $post_id = null );
 
 	/**
-	 * Retrieve the available Publicize services and their connect URLs.
+	 * Retrieves full list of available Publicize connection services.
+	 *
+	 * Retrieves current available publicize service connections
+	 * with associated labels and URLs.
 	 *
 	 * @since 0.1.0
 	 * @since-jetpack 6.7.0
-	 * @deprecated 0.88.0 Services and their connect URLs come from the `publicize/services` REST endpoint.
 	 *
-	 * @return array Always empty.
+	 * @return array {
+	 *     Array of UI service connection data for all services
+	 *
+	 *     @type string 'name'  Name of service.
+	 *     @type string 'label' Display label for service.
+	 *     @type string 'url'   URL for adding connection to service.
+	 * }
 	 */
 	public function get_available_service_data() {
-		_deprecated_function( __METHOD__, 'publicize-0.88.0' );
+		$available_services     = $this->get_services( 'all' );
+		$available_service_data = array();
 
-		return array();
+		foreach ( $available_services as $service_name => $service ) {
+			$available_service_data[] = array(
+				'name'  => $service_name,
+				'label' => static::get_service_label( $service_name ),
+				'url'   => $this->connect_url( $service_name ),
+			);
+		}
+
+		return $available_service_data;
 	}
 
 	/**
@@ -1115,18 +1173,11 @@ abstract class Publicize_Base {
 	 * Registers for each post type that with `publicize` feature support.
 	 */
 	public function register_post_meta() {
-		/*
-		 * Default the share-message meta to the saved global template
-		 */
-		$message_default = $this->has_paid_features()
-			? ( new Jetpack_Social_Settings\Settings() )->get_message_template()
-			: '';
-
 		$message_args = array(
 			'type'          => 'string',
 			'description'   => __( 'The message to use instead of the title when sharing to Jetpack Social services', 'jetpack-publicize-pkg' ),
 			'single'        => true,
-			'default'       => $message_default,
+			'default'       => '',
 			'show_in_rest'  => array(
 				'name' => 'jetpack_publicize_message',
 			),
@@ -1232,36 +1283,6 @@ abstract class Publicize_Base {
 			'auth_callback' => array( $this, 'message_meta_auth_callback' ),
 		);
 
-		$image_focal_point_args = array(
-			'type'          => 'object',
-			'description'   => __( 'The focal point of the image, used to crop social share variants.', 'jetpack-publicize-pkg' ),
-			'single'        => true,
-			'default'       => array(
-				'x' => 0.5,
-				'y' => 0.5,
-			),
-			'show_in_rest'  => array(
-				'schema' => array(
-					'type'                 => 'object',
-					'required'             => array( 'x', 'y' ),
-					'properties'           => array(
-						'x' => array(
-							'type'    => 'number',
-							'minimum' => 0,
-							'maximum' => 1,
-						),
-						'y' => array(
-							'type'    => 'number',
-							'minimum' => 0,
-							'maximum' => 1,
-						),
-					),
-					'additionalProperties' => false,
-				),
-			),
-			'auth_callback' => array( $this, 'image_focal_point_auth_callback' ),
-		);
-
 		$connection_overrides_args = array(
 			'type'          => 'object',
 			'description'   => __( 'Per-connection customizations for message and media.', 'jetpack-publicize-pkg' ),
@@ -1270,16 +1291,11 @@ abstract class Publicize_Base {
 			'auth_callback' => array( $this, 'message_meta_auth_callback' ),
 		);
 
-		$customize_per_network_default = (
-			$this->has_paid_features()
-			&& $this->any_connection_has_custom_template()
-		);
-
 		$customize_per_network_args = array(
 			'type'          => 'boolean',
 			'description'   => __( 'Whether to enable per-network customization.', 'jetpack-publicize-pkg' ),
 			'single'        => true,
-			'default'       => $customize_per_network_default,
+			'default'       => false,
 			'show_in_rest'  => $this->has_paid_features(),
 			'auth_callback' => array( $this, 'message_meta_auth_callback' ),
 		);
@@ -1303,105 +1319,6 @@ abstract class Publicize_Base {
 			register_meta( 'post', self::POST_CONNECTION_OVERRIDES, $connection_overrides_args );
 			register_meta( 'post', self::POST_CUSTOMIZE_PER_NETWORK, $customize_per_network_args );
 		}
-
-		// The focal point lives on the image (attachment), not the post, so it is shared
-		// by every post that uses the image. Registered once, not per publicizeable type.
-		register_post_meta( 'attachment', self::ATTACHMENT_IMAGE_FOCAL_POINT, $image_focal_point_args );
-	}
-
-	/**
-	 * Collapse duplicate rows of a single-value Publicize post meta key into one on update.
-	 *
-	 * With several rows core skips its "unchanged" check, so an UPDATE that matches no changed row fails.
-	 *
-	 * @param null|bool $check      Whether to short-circuit the update.
-	 * @param int       $object_id  Post ID.
-	 * @param string    $meta_key   Meta key.
-	 * @param mixed     $meta_value Unslashed meta value.
-	 * @param mixed     $prev_value Previous value to match, if any.
-	 * @return null|bool Null to let core update the meta, otherwise whether the update succeeded.
-	 */
-	public function collapse_duplicate_post_meta( $check, $object_id, $meta_key, $meta_value, $prev_value ) {
-		// Cheap bail first: this runs on every post meta update site-wide.
-		if ( null !== $check || ! empty( $prev_value ) || 0 !== strncmp( $meta_key, '_wpas_', 6 ) ) {
-			return $check;
-		}
-
-		$single_keys = array(
-			$this->POST_MESS,
-			self::POST_PUBLICIZE_FEATURE_ENABLED,
-			$this->POST_DONE . 'all',
-			self::POST_JETPACK_SOCIAL_OPTIONS,
-			self::POST_CONNECTION_OVERRIDES,
-			self::POST_CUSTOMIZE_PER_NETWORK,
-		);
-		if ( ! in_array( $meta_key, $single_keys, true ) ) {
-			return $check;
-		}
-
-		$stored = get_metadata_raw( 'post', $object_id, $meta_key, false );
-		if ( ! is_array( $stored ) || count( $stored ) < 2 ) {
-			return $check;
-		}
-
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Row IDs aren't exposed by the meta API.
-		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC", $object_id, $meta_key ) );
-		if ( ! is_array( $rows ) || count( $rows ) < 2 ) {
-			return $check;
-		}
-
-		// Bail before deleting, so a failed write leaves every row intact.
-		$keep = array_shift( $rows );
-		// Cast like `$wpdb` does, e.g. `true` is stored as "1".
-		$wanted = (string) maybe_serialize( $meta_value );
-		if ( $wanted !== $keep->meta_value && ! update_metadata_by_mid( 'post', (int) $keep->meta_id, $meta_value ) ) {
-			// A 0-row UPDATE (e.g. a concurrent collapse) looks like a failure, so confirm the row.
-			$current = get_metadata_by_mid( 'post', (int) $keep->meta_id );
-			if ( ! $current || $wanted !== (string) maybe_serialize( $current->meta_value ) ) {
-				return false;
-			}
-		}
-
-		// The kept row holds the value, so a redundant row that is already gone is not a failure.
-		foreach ( $rows as $row ) {
-			delete_metadata_by_mid( 'post', (int) $row->meta_id );
-		}
-
-		// The 0-row and already-deleted paths skip core's cache flush.
-		wp_cache_delete( $object_id, 'post_meta' );
-
-		// Unlike core, report an unchanged value as success, which is what lets the REST save complete.
-		return true;
-	}
-
-	/**
-	 * Auth callback for the image focal point attachment meta.
-	 *
-	 * Writing the focal point edits the image, so it requires edit rights on the attachment.
-	 *
-	 * @param bool   $allowed   Whether the user can edit the meta. Unused; recomputed here.
-	 * @param string $meta_key  The meta key. Unused.
-	 * @param int    $object_id The attachment ID.
-	 * @return bool
-	 */
-	public function image_focal_point_auth_callback( $allowed, $meta_key, $object_id ) {
-		return current_user_can( 'edit_post', $object_id );
-	}
-
-	/**
-	 * Whether any connection available to the current user has a custom message template.
-	 *
-	 * @return bool
-	 */
-	protected function any_connection_has_custom_template() {
-		foreach ( Connections::get_all_for_user() as $connection ) {
-			if ( '' !== trim( (string) ( $connection['template'] ?? '' ) ) ) {
-				return true;
-			}
-		}
-
-		return false;
 	}
 
 	/**
@@ -1481,7 +1398,7 @@ abstract class Publicize_Base {
 		$submit_post = $this->should_submit_post_pre_checks( $post );
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- We're only checking if a value is set
-		$admin_page = $_POST[ $this->ADMIN_PAGE ] ?? null;
+		$admin_page = isset( $_POST[ $this->ADMIN_PAGE ] ) ? $_POST[ $this->ADMIN_PAGE ] : null;
 
 		// Did this request happen via wp-admin?
 		$from_web = isset( $_SERVER['REQUEST_METHOD'] )
@@ -1508,6 +1425,22 @@ abstract class Publicize_Base {
 		 * it will Publicize to everything *except* those marked for skipping.
 		 */
 		foreach ( (array) $this->get_services( 'connected' ) as $service_name => $connections ) {
+			// Pre-compute the set of connection IDs that must be forced to skip
+			// under X Developer Policy (only one X connection per post).
+			$force_skip_ids = array();
+			if ( $from_web && 'x' === $service_name ) {
+				$x_snapshot = array();
+				foreach ( $connections as $connection ) {
+					$cid          = $this->get_connection_id( $connection );
+					$x_snapshot[] = array(
+						'service_name'  => 'x',
+						'connection_id' => $cid,
+						'enabled'       => ! empty( $admin_page['submit'][ $cid ] ) || ! empty( $admin_page['submit'][ $service_name ] ),
+					);
+				}
+				$force_skip_ids = array_flip( self::get_x_connection_ids_to_skip( $x_snapshot ) );
+			}
+
 			foreach ( $connections as $connection ) {
 				$connection_data = '';
 				if ( is_object( $connection ) && method_exists( $connection, 'get_meta' ) ) {
@@ -1529,8 +1462,11 @@ abstract class Publicize_Base {
 					// Delete stray service-based post meta.
 					delete_post_meta( $post_id, $this->POST_SKIP . $service_name );
 
-					// We *unchecked* this stream from the admin page, or it's set to readonly, or it's a new addition.
-					if ( empty( $admin_page['submit'][ $connection_id ] ) ) {
+					if ( isset( $force_skip_ids[ $connection_id ] ) ) {
+						// Force-skip under the X single-connection rule.
+						update_post_meta( $post_id, $this->POST_SKIP_PUBLICIZE . $connection_id, 1 );
+					} elseif ( empty( $admin_page['submit'][ $connection_id ] ) ) {
+						// We *unchecked* this stream from the admin page, or it's set to readonly, or it's a new addition.
 						// Also make sure that the service-specific input isn't there.
 						// If the user connected to a new service 'in-page' then a hidden field with the service
 						// name is added, so we just assume they wanted to Publicize to that service.
@@ -1762,7 +1698,7 @@ abstract class Publicize_Base {
 			return array();
 		}
 
-		$image = wp_get_attachment_image_src( $media_id, array( 1200, 1200 ) );
+		$image = wp_get_attachment_image_src( $media_id, array( 1200 ) );
 
 		if ( ! $image ) {
 			return array();
@@ -1802,16 +1738,6 @@ abstract class Publicize_Base {
 
 		if ( $attached_media ) {
 			return $attached_media;
-		}
-
-		$featured_image_id = get_post_thumbnail_id( $post_id );
-
-		if ( $featured_image_id && Current_Plan::supports( 'social-image-focal-point' ) ) {
-			$featured_image = Focal_Point::get_cropped_image( $featured_image_id );
-
-			if ( $featured_image ) {
-				return $featured_image;
-			}
 		}
 
 		return array();
@@ -2010,6 +1936,7 @@ abstract class Publicize_Base {
 			return ! is_wp_error( $api_data_response ) ? $api_data_response : array();
 		}
 
+		$rest_controller   = new REST_Controller();
 		$response          = Client::wpcom_json_api_request_as_blog(
 			sprintf( 'sites/%d/jetpack-social', absint( $blog_id ) ),
 			'2',
@@ -2020,7 +1947,7 @@ abstract class Publicize_Base {
 			null,
 			'wpcom'
 		);
-		$api_data_response = Publicize_Utils::make_proper_response( $response );
+		$api_data_response = $rest_controller->make_proper_response( $response );
 
 		if ( ! is_wp_error( $api_data_response ) ) {
 			set_transient( $key, $api_data_response, DAY_IN_SECONDS );

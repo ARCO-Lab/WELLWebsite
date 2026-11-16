@@ -153,7 +153,7 @@ if ( isset( $_GET['updated'] ) ) {
 	<h1><?php echo esc_html( $title ); ?></h1>
 	<form method="post" action="settings.php" novalidate="novalidate">
 		<?php wp_nonce_field( 'siteoptions' ); ?>
-		<h2 id="wp-settings-section-operational-settings"><?php _e( 'Operational Settings' ); ?></h2>
+		<h2><?php _e( 'Operational Settings' ); ?></h2>
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row"><label for="site_name"><?php _e( 'Network Title' ); ?></label></th>
@@ -197,11 +197,10 @@ if ( isset( $_GET['updated'] ) ) {
 				</td>
 			</tr>
 		</table>
-		<h2 id="wp-settings-section-registration-settings"><?php _e( 'Registration Settings' ); ?></h2>
+		<h2><?php _e( 'Registration Settings' ); ?></h2>
 		<table class="form-table" role="presentation">
-			<?php $new_registrations_settings_title = __( 'Allow new registrations' ); ?>
 			<tr>
-				<th scope="row"><?php echo $new_registrations_settings_title; ?></th>
+				<th scope="row"><?php _e( 'Allow new registrations' ); ?></th>
 				<?php
 				if ( ! get_site_option( 'registration' ) ) {
 					update_site_option( 'registration', 'none' );
@@ -210,7 +209,12 @@ if ( isset( $_GET['updated'] ) ) {
 				?>
 				<td>
 					<fieldset>
-					<legend class="screen-reader-text"><?php echo $new_registrations_settings_title; ?></legend>
+					<legend class="screen-reader-text">
+						<?php
+						/* translators: Hidden accessibility text. */
+						_e( 'New registrations settings' );
+						?>
+					</legend>
 					<label><input name="registration" type="radio" id="registration1" value="none"<?php checked( $reg, 'none' ); ?> /> <?php _e( 'Registration is disabled' ); ?></label><br />
 					<label><input name="registration" type="radio" id="registration2" value="user"<?php checked( $reg, 'user' ); ?> /> <?php _e( 'User accounts may be registered' ); ?></label><br />
 					<label><input name="registration" type="radio" id="registration3" value="blog"<?php checked( $reg, 'blog' ); ?> /> <?php _e( 'Logged in users may register new sites' ); ?></label><br />
@@ -315,7 +319,7 @@ if ( isset( $_GET['updated'] ) ) {
 			</tr>
 
 		</table>
-		<h2 id="wp-settings-section-new-site-settings"><?php _e( 'New Site Settings' ); ?></h2>
+		<h2><?php _e( 'New Site Settings' ); ?></h2>
 		<table class="form-table" role="presentation">
 
 			<tr>
@@ -396,7 +400,7 @@ if ( isset( $_GET['updated'] ) ) {
 				</td>
 			</tr>
 		</table>
-		<h2 id="wp-settings-section-upload-settings"><?php _e( 'Upload Settings' ); ?></h2>
+		<h2><?php _e( 'Upload Settings' ); ?></h2>
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row"><?php _e( 'Site upload space' ); ?></th>
@@ -454,7 +458,7 @@ if ( isset( $_GET['updated'] ) ) {
 		$translations = wp_get_available_translations();
 		if ( ! empty( $languages ) || ! empty( $translations ) ) {
 			?>
-			<h2 id="wp-settings-section-language-settings"><?php _e( 'Language Settings' ); ?></h2>
+			<h2><?php _e( 'Language Settings' ); ?></h2>
 			<table class="form-table" role="presentation">
 				<tr>
 					<th><label for="WPLANG"><?php _e( 'Default Language' ); ?><span class="dashicons dashicons-translation" aria-hidden="true"></span></label></th>
@@ -504,14 +508,16 @@ if ( isset( $_GET['updated'] ) ) {
 
 		if ( $menu_items ) :
 			?>
-			<h2 id="wp-settings-section-menu-settings"><?php _e( 'Menu Settings' ); ?></h2>
+			<h2><?php _e( 'Menu Settings' ); ?></h2>
 			<table id="menu" class="form-table">
-				<?php $enable_administration_menus_title = __( 'Enable administration menus' ); ?>
 				<tr>
-					<th scope="row"><?php echo $enable_administration_menus_title; ?></th>
+					<th scope="row"><?php _e( 'Enable administration menus' ); ?></th>
 					<td>
 						<?php
-						echo '<fieldset><legend class="screen-reader-text">' . $enable_administration_menus_title . '</legend>';
+						echo '<fieldset><legend class="screen-reader-text">' .
+							/* translators: Hidden accessibility text. */
+							__( 'Enable menus' ) .
+						'</legend>';
 
 						foreach ( (array) $menu_items as $key => $val ) {
 							echo "<label><input type='checkbox' name='menu_items[" . $key . "]' value='1'" . ( isset( $menu_perms[ $key ] ) ? checked( $menu_perms[ $key ], '1', false ) : '' ) . ' /> ' . esc_html( $val ) . '</label><br/>';

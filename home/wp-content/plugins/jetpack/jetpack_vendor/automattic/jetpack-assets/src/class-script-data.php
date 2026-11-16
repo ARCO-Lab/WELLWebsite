@@ -29,12 +29,6 @@ class Script_Data {
 	 * Configure.
 	 */
 	public static function configure() {
-		// Hooked by actions.php since 2.3.0, so this is the package's recovery point.
-		// Assets can still resolve to an older copy than this class, hence the guard.
-		if ( method_exists( Assets::class, 'ensure_package_bootstrap' ) ) {
-			Assets::ensure_package_bootstrap();
-		}
-
 		/**
 		 * Ensure that assets are registered on wp_loaded,
 		 * which is fired before *_enqueue_scripts actions.
@@ -198,7 +192,7 @@ class Script_Data {
 	 * @return string
 	 */
 	protected static function get_site_title() {
-		$title = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
+		$title = get_bloginfo( 'name' );
 
 		return $title ? $title : esc_url_raw( ( get_site_url() ) );
 	}
@@ -236,9 +230,8 @@ class Script_Data {
 			'display_name' => $current_user->display_name,
 			'id'           => $current_user->ID,
 			'capabilities' => array(
-				'edit_others_posts' => current_user_can( 'edit_others_posts' ),
-				'manage_options'    => current_user_can( 'manage_options' ),
-				'manage_modules'    => current_user_can( 'jetpack_manage_modules' ),
+				'manage_options' => current_user_can( 'manage_options' ),
+				'manage_modules' => current_user_can( 'jetpack_manage_modules' ),
 			),
 		);
 	}

@@ -55,8 +55,7 @@ final class WP_Block_Type_Registry {
 		if ( ! is_string( $name ) ) {
 			_doing_it_wrong(
 				__METHOD__,
-				/* translators: %s: The received block type name type. */
-				sprintf( __( 'Block type names must be strings, received %s.' ), gettype( $name ) ),
+				__( 'Block type names must be strings.' ),
 				'5.0.0'
 			);
 			return false;
@@ -65,8 +64,7 @@ final class WP_Block_Type_Registry {
 		if ( preg_match( '/[A-Z]+/', $name ) ) {
 			_doing_it_wrong(
 				__METHOD__,
-				/* translators: %s: Block name. */
-				sprintf( __( 'Block type names must not contain uppercase characters. "%s" was given.' ), esc_html( $name ) ),
+				__( 'Block type names must not contain uppercase characters.' ),
 				'5.0.0'
 			);
 			return false;
@@ -76,8 +74,7 @@ final class WP_Block_Type_Registry {
 		if ( ! preg_match( $name_matcher, $name ) ) {
 			_doing_it_wrong(
 				__METHOD__,
-				/* translators: %s: Block name. */
-				sprintf( __( 'Block type names must contain a namespace prefix. Example: my-plugin/my-custom-block-type. "%s" was given.' ), esc_html( $name ) ),
+				__( 'Block type names must contain a namespace prefix. Example: my-plugin/my-custom-block-type' ),
 				'5.0.0'
 			);
 			return false;
@@ -137,7 +134,7 @@ final class WP_Block_Type_Registry {
 	 *
 	 * @since 5.0.0
 	 *
-	 * @param string|null $name Block type name including namespace.
+	 * @param string $name Block type name including namespace.
 	 * @return WP_Block_Type|null The registered block type, or null if it is not registered.
 	 */
 	public function get_registered( $name ) {
@@ -164,11 +161,11 @@ final class WP_Block_Type_Registry {
 	 *
 	 * @since 5.0.0
 	 *
-	 * @param string|null $name Block type name including namespace.
+	 * @param string $name Block type name including namespace.
 	 * @return bool True if the block type is registered, false otherwise.
 	 */
 	public function is_registered( $name ) {
-		return isset( $name, $this->registered_block_types[ $name ] );
+		return isset( $this->registered_block_types[ $name ] );
 	}
 
 	public function __wakeup() {

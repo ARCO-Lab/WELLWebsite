@@ -1,5 +1,5 @@
 /*!
- * jQuery UI Droppable 1.14.2
+ * jQuery UI Droppable 1.13.3
  * https://jqueryui.com
  *
  * Copyright OpenJS Foundation and other contributors
@@ -35,7 +35,7 @@
 "use strict";
 
 $.widget( "ui.droppable", {
-	version: "1.14.2",
+	version: "1.13.3",
 	widgetEventPrefix: "drop",
 	options: {
 		accept: "*",
@@ -463,7 +463,7 @@ $.ui.ddmanager = {
 
 // DEPRECATED
 // TODO: switch return back to widget declaration at top of file when this is removed
-if ( $.uiBackCompat === true ) {
+if ( $.uiBackCompat !== false ) {
 
 	// Backcompat for activeClass and hoverClass options
 	$.widget( "ui.droppable", $.ui.droppable, {

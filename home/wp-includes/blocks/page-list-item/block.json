@@ -38,11 +38,9 @@
 		"customFontSize",
 		"showSubmenuIcon",
 		"style",
-		"openSubmenusOnClick",
-		"submenuVisibility"
+		"openSubmenusOnClick"
 	],
 	"supports": {
-		"anchor": true,
 		"reusable": false,
 		"html": false,
 		"lock": false,

@@ -48,19 +48,19 @@ function get_category_to_edit( $id ) {
  *
  * @since 2.0.0
  *
- * @param string $category_name   Category name.
- * @param int    $category_parent Optional. ID of parent category.
- * @return int The ID of category term on success, or zero on failure.
+ * @param int|string $cat_name        Category name.
+ * @param int        $category_parent Optional. ID of parent category.
+ * @return int|WP_Error
  */
-function wp_create_category( $category_name, $category_parent = 0 ) {
-	$id = category_exists( $category_name, $category_parent );
+function wp_create_category( $cat_name, $category_parent = 0 ) {
+	$id = category_exists( $cat_name, $category_parent );
 	if ( $id ) {
-		return (int) $id;
+		return $id;
 	}
 
 	return wp_insert_category(
 		array(
-			'cat_name'        => $category_name,
+			'cat_name'        => $cat_name,
 			'category_parent' => $category_parent,
 		)
 	);
@@ -75,7 +75,7 @@ function wp_create_category( $category_name, $category_parent = 0 ) {
  * @param int      $post_id    Optional. The post ID. Default empty.
  * @return int[] Array of IDs of categories assigned to the given post.
  */
-function wp_create_categories( $categories, $post_id = 0 ) {
+function wp_create_categories( $categories, $post_id = '' ) {
 	$cat_ids = array();
 	foreach ( $categories as $category ) {
 		$id = category_exists( $category );

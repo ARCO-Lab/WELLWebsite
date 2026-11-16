@@ -12,7 +12,6 @@
  * @since 2.5.0
  *
  * @see WP_Filesystem_Base
- * @phpstan-import-type FileListing from WP_Filesystem_Base
  */
 class WP_Filesystem_Direct extends WP_Filesystem_Base {
 
@@ -24,8 +23,6 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 	 * @param mixed $arg Not used.
 	 */
 	public function __construct( $arg ) {
-		// The $arg parameter is required for signature parity with the other transports, but is unused here.
-		unset( $arg );
 		$this->method = 'direct';
 		$this->errors = new WP_Error();
 	}
@@ -48,7 +45,7 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 	 * @since 2.5.0
 	 *
 	 * @param string $file Path to the file.
-	 * @return string[]|false File contents in an array on success, false on failure.
+	 * @return array|false File contents in an array on success, false on failure.
 	 */
 	public function get_contents_array( $file ) {
 		return @file( $file );
@@ -141,12 +138,9 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 		// Is a directory, and we want recursive.
 		$file     = trailingslashit( $file );
 		$filelist = $this->dirlist( $file );
-		if ( false === $filelist ) {
-			return false;
-		}
 
-		foreach ( $filelist as $file_listing ) {
-			$this->chgrp( $file . $file_listing['name'], $group, $recursive );
+		foreach ( $filelist as $filename ) {
+			$this->chgrp( $file . $filename, $group, $recursive );
 		}
 
 		return true;
@@ -176,22 +170,6 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 		}
 
 		if ( ! $recursive || ! $this->is_dir( $file ) ) {
-			$current_mode = fileperms( $file ) & 0777;
-
-			/*
-			 * fileperms() populates the stat cache, so have to clear it
-			 * to maintain parity with the previous behavior.
-			 */
-			clearstatcache( true, $file );
-
-			/*
-			 * Avoid calling chmod() if the requested mode is already set,
-			 * to prevent throwing a warning when we aren't the owner.
-			 */
-			if ( $current_mode === $mode ) {
-				return true;
-			}
-
 			return chmod( $file, $mode );
 		}
 
@@ -232,12 +210,9 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 
 		// Is a directory, and we want recursive.
 		$filelist = $this->dirlist( $file );
-		if ( false === $filelist ) {
-			return false;
-		}
 
-		foreach ( $filelist as $file_listing ) {
-			$this->chown( $file . '/' . $file_listing['name'], $owner, $recursive );
+		foreach ( $filelist as $filename ) {
+			$this->chown( $file . '/' . $filename, $owner, $recursive );
 		}
 
 		return true;
@@ -249,7 +224,7 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 	 * @since 2.5.0
 	 *
 	 * @param string $file Path to the file.
-	 * @return string|int<1, max>|false Username of the owner on success, or UID of file owner if not available; false on failure.
+	 * @return string|false Username of the owner on success, false on failure.
 	 */
 	public function owner( $file ) {
 		$owneruid = @fileowner( $file );
@@ -274,18 +249,15 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 	/**
 	 * Gets the permissions of the specified file or filepath in their octal format.
 	 *
+	 * FIXME does not handle errors in fileperms()
+	 *
 	 * @since 2.5.0
 	 *
 	 * @param string $file Path to the file.
-	 * @return string Mode of the file (the last 3 digits), or the string "0" on failure.
+	 * @return string Mode of the file (the last 3 digits).
 	 */
 	public function getchmod( $file ) {
-		$perms = @fileperms( $file );
-		if ( false === $perms ) {
-			return '0';
-		}
-
-		return substr( decoct( $perms ), -3 );
+		return substr( decoct( @fileperms( $file ) ), -3 );
 	}
 
 	/**
@@ -294,7 +266,7 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 	 * @since 2.5.0
 	 *
 	 * @param string $file Path to the file.
-	 * @return string|int<1, max>|false Group name on success, or GID of the file's group if not available; false on failure.
+	 * @return string|false The group on success, false on failure.
 	 */
 	public function group( $file ) {
 		$gid = @filegroup( $file );
@@ -648,7 +620,6 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 	 *                                             files. False if unable to list directory contents.
 	 *     }
 	 * }
-	 * @phpstan-return array<string, FileListing>|false
 	 */
 	public function dirlist( $path, $include_hidden = true, $recursive = false ) {
 		if ( $this->is_file( $path ) ) {
@@ -694,8 +665,8 @@ class WP_Filesystem_Direct extends WP_Filesystem_Base {
 			$struc['group']       = $this->group( $path . $entry );
 			$struc['size']        = $this->size( $path . $entry );
 			$struc['lastmodunix'] = $this->mtime( $path . $entry );
-			$struc['lastmod']     = is_int( $struc['lastmodunix'] ) ? gmdate( 'M j', $struc['lastmodunix'] ) : false;
-			$struc['time']        = is_int( $struc['lastmodunix'] ) ? gmdate( 'h:i:s', $struc['lastmodunix'] ) : false;
+			$struc['lastmod']     = gmdate( 'M j', $struc['lastmodunix'] );
+			$struc['time']        = gmdate( 'h:i:s', $struc['lastmodunix'] );
 			$struc['type']        = $this->is_dir( $path . $entry ) ? 'd' : 'f';
 
 			if ( 'd' === $struc['type'] ) {

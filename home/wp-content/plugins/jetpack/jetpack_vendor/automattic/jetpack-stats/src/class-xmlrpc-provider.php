@@ -96,12 +96,9 @@ class XMLRPC_Provider {
 		$blog = array_merge( Options::get_options(), $blog );
 		unset( $blog['roles'], $blog['blog_id'] );
 
-		$blog = map_deep(
-			$blog,
-			function ( $value ) {
-				return is_string( $value ) ? esc_html( $value ) : $value;
-			}
-		);
+		add_filter( 'esc_html', array( $this, 'filter_esc_html_check_if_string' ), 10, 2 );
+		$blog = map_deep( $blog, 'esc_html' );
+		remove_filter( 'esc_html', array( $this, 'filter_esc_html_check_if_string' ) );
 
 		return $blog;
 	}
@@ -110,7 +107,6 @@ class XMLRPC_Provider {
 	 * Make sure we are only escaping html if the input is a string.
 	 * Used for `esc_html` filter-hook.
 	 *
-	 * @deprecated since 0.20.3
 	 * @param  string $safe_text The output after esc_html has been applied.
 	 * @param  mixed  $text      The initial input.
 	 * @return mixed

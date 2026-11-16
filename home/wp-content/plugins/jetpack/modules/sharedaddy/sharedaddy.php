@@ -153,29 +153,30 @@ add_filter( 'is_protected_meta', 'sharing_meta_box_protected', 10, 2 );
 /**
  * Add link to sharing settings in the Plugins screen.
  *
- * @deprecated 16.3 Sharing has not shipped as a standalone plugin for years.
- *
  * @param array $links An array of plugin action links.
  *
- * @return array The unchanged $links.
+ * @return array
  */
 function sharing_plugin_settings( $links ) {
-	_deprecated_function( __FUNCTION__, 'jetpack-16.3' );
+	$settings_link = '<a href="options-general.php?page=sharing.php">' . __( 'Settings', 'jetpack' ) . '</a>';
+	array_unshift( $links, $settings_link );
 	return $links;
 }
 
 /**
  * Add links to settings and support in the plugin row.
  *
- * @deprecated 16.3 Sharing has not shipped as a standalone plugin for years.
- *
  * @param array  $links An array of the plugin's metadata, including the version, author, author URI, and plugin URI.
  * @param string $file  Path to the plugin file relative to the plugins directory.
  *
- * @return array The unchanged $links.
+ * @return array
  */
-function sharing_add_plugin_settings( $links, $file ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
-	_deprecated_function( __FUNCTION__, 'jetpack-16.3' );
+function sharing_add_plugin_settings( $links, $file ) {
+	if ( $file === basename( __DIR__ ) . '/' . basename( __FILE__ ) ) {
+		$links[] = '<a href="options-general.php?page=sharing.php">' . __( 'Settings', 'jetpack' ) . '</a>';
+		$links[] = '<a href="https://support.wordpress.com/sharing/" rel="noopener noreferrer" target="_blank">' . __( 'Support', 'jetpack' ) . '</a>';
+	}
+
 	return $links;
 }
 
@@ -194,26 +195,40 @@ function sharing_init() {
 /**
  * Add settings to disable CSS and JS normally enqueued by our feature.
  *
- * @deprecated 16.3 Settings > Sharing renders the field itself.
- *
  * @return void
  */
 function sharing_global_resources() {
-	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Sharing_Likes\Settings\Sharing_Resources::render' );
+	$disable = get_option( 'sharedaddy_disable_resources' );
+	?>
+<tr valign="top">
+	<th scope="row"><label for="disable_css"><?php esc_html_e( 'Disable CSS and JS', 'jetpack' ); ?></label></th>
+	<td>
+		<?php
+		printf(
+			'<input id="disable_css" type="checkbox" name="disable_resources"%1$s />  <small><em>%2$s</em></small>',
+			( 1 == $disable ) ? ' checked="checked"' : '', // phpcs:ignore Universal.Operators.StrictComparisons.LooseEqual
+			esc_html__( 'Advanced. If this option is checked, you must include these files in your theme manually for the sharing links to work.', 'jetpack' )
+		);
+		?>
+	</td>
+</tr>
+	<?php
 }
 
 /**
  * Save settings to disable CSS and JS normally enqueued by our feature.
  *
- * @deprecated 16.3 Settings > Sharing saves the field itself.
- *
  * @return void
  */
 function sharing_global_resources_save() {
-	_deprecated_function( __FUNCTION__, 'jetpack-16.3', 'Automattic\Jetpack\Sharing_Likes\Settings\Sharing_Resources::save' );
+	update_option( 'sharedaddy_disable_resources', isset( $_POST['disable_resources'] ) ? 1 : 0 ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce handling is handled for all elements at once.
 }
 
 add_action( 'init', 'sharing_init' );
 add_action( 'add_meta_boxes', 'sharing_add_meta_box' );
 add_action( 'save_post', 'sharing_meta_box_save' );
 add_action( 'edit_attachment', 'sharing_meta_box_save' );
+add_action( 'sharing_global_options', 'sharing_global_resources', 30 );
+add_action( 'sharing_admin_update', 'sharing_global_resources_save' );
+add_action( 'plugin_action_links_' . basename( __DIR__ ) . '/' . basename( __FILE__ ), 'sharing_plugin_settings', 10, 4 );
+add_filter( 'plugin_row_meta', 'sharing_add_plugin_settings', 10, 2 );

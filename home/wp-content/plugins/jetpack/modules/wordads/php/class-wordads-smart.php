@@ -11,6 +11,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit( 0 );
 }
 
+// phpcs:disable WordPress.WP.EnqueuedResources.NonEnqueuedScript
+
 require_once WORDADS_ROOT . '/php/class-wordads-array-utils.php';
 
 /**

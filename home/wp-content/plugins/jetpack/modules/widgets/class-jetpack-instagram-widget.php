@@ -122,8 +122,6 @@ class Jetpack_Instagram_Widget extends WP_Widget {
 	 * Updates the widget's option in the database to have the passed Keyring token ID.
 	 *
 	 * Sends a json success or error response.
-	 *
-	 * @return never
 	 */
 	public function ajax_update_widget_token_id() {
 		if ( ! check_ajax_referer( 'instagram-widget-save-token', 'savetoken', false ) ) {
@@ -147,14 +145,14 @@ class Jetpack_Instagram_Widget extends WP_Widget {
 				)
 			);
 			if ( get_current_user_id() !== (int) $token->meta['user_id'] ) {
-				wp_send_json_error( array( 'message' => 'not_authorized' ), 403, JSON_UNESCAPED_SLASHES );
+				return wp_send_json_error( array( 'message' => 'not_authorized' ), 403, JSON_UNESCAPED_SLASHES );
 			}
 		}
 
 		$this->update_widget_token_id( $token_id, $widget_id );
 		$this->update_widget_token_legacy_status( false );
 
-		wp_send_json_success( null, 200, JSON_UNESCAPED_SLASHES );
+		return wp_send_json_success( null, 200, JSON_UNESCAPED_SLASHES );
 	}
 
 	/**
@@ -404,7 +402,7 @@ class Jetpack_Instagram_Widget extends WP_Widget {
 			printf(
 				// translators: %1$1 and %2$s are the opening and closing a tags creating a link to the Jetpack dashboard.
 				esc_html__( 'In order to use this widget you need to %1$scomplete your Jetpack connection%2$s by authorizing your user.', 'jetpack' ),
-				'<a href="' . esc_url( Jetpack::admin_url( array( 'page' => 'jetpack-settings#/connect-user' ) ) ) . '">',
+				'<a href="' . esc_url( Jetpack::admin_url( array( 'page' => 'jetpack#/connect-user' ) ) ) . '">',
 				'</a>'
 			);
 			echo '</p>';

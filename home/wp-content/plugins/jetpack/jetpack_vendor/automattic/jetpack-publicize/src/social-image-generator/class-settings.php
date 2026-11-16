@@ -98,6 +98,6 @@ class Settings {
 	public function get_default_template() {
 		$defaults = $this->get_defaults();
 
-		return $defaults['template'] ?? Templates::DEFAULT_TEMPLATE;
+		return isset( $defaults['template'] ) ? $defaults['template'] : Templates::DEFAULT_TEMPLATE;
 	}
 }

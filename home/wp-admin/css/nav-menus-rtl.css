@@ -222,6 +222,7 @@ input.bulk-select-switcher:focus + .bulk-select-button-label {
 
 .menu-settings-group {
 	margin: 0 0 10px;
+	overflow: hidden;
 	padding-right: 20%;
 }
 
@@ -376,9 +377,15 @@ input.bulk-select-switcher:focus + .bulk-select-button-label {
 }
 
 /* Add Menu Item Boxes */
-.postbox .howto input {
+.postbox .howto input,
+.customlinkdiv .menu-item-textbox,
+.customlinkdiv .error-message {
 	width: 180px;
 	float: left;
+}
+
+.customlinkdiv .error-message {
+	clear: left;
 }
 
 .accordion-container .outer-border {
@@ -422,6 +429,7 @@ input.bulk-select-switcher:focus + .bulk-select-button-label {
 /* Button Secondary Actions */
 .list-controls {
 	float: right;
+	margin-top: 5px;
 }
 
 .add-to-menu {
@@ -472,10 +480,7 @@ input.bulk-select-switcher:focus + .bulk-select-button-label {
 	width: 180px;
 }
 
-.customlinkdiv .menu-item-textbox {
-	width: 100%;
-}
-
+.customlinkdiv label,
 .nav-menus-php .howto span {
 	float: right;
 	margin-top: 6px;
@@ -752,7 +757,7 @@ body.menu-max-depth-11 { min-width: 1280px !important; }
 }
 
 .nav-menus-php .item-edit:focus:before {
-	box-shadow: 0 0 0 var(--wp-admin-border-width-focus, 1.5px) var(--wp-admin-theme-color, #3858e9);
+	box-shadow: 0 0 0 2px #2271b1;
 	/* Only visible in Windows High Contrast mode */
 	outline: 2px solid transparent;
 }
@@ -863,19 +868,10 @@ body.menu-max-depth-11 { min-width: 1280px !important; }
 }
 
 #nav-menus-frame,
+.button-controls,
 #menu-item-url-wrap,
 #menu-item-name-wrap {
 	display: block;
-}
-
-.button-controls {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-}
-
-.button-controls-customlinkdiv {
-	justify-content: flex-end;
 }
 
 /* =Media Queries

@@ -1,5 +1,5 @@
 /*!
- * jQuery UI Effects 1.14.2
+ * jQuery UI Effects 1.13.3
  * https://jqueryui.com
  *
  * Copyright OpenJS Foundation and other contributors
@@ -9,7 +9,9 @@
 
 //>>label: Effects Core
 //>>group: Effects
+/* eslint-disable max-len */
 //>>description: Extends the internal jQuery effects. Includes morphing and easing. Required by all other effects.
+/* eslint-enable max-len */
 //>>docs: https://api.jqueryui.com/category/effects-core/
 //>>demos: https://jqueryui.com/effect/
 
@@ -79,14 +81,26 @@ function camelCase( string ) {
 
 function getElementStyles( elem ) {
 	var key, len,
-		style = elem.ownerDocument.defaultView.getComputedStyle( elem ),
+		style = elem.ownerDocument.defaultView ?
+			elem.ownerDocument.defaultView.getComputedStyle( elem, null ) :
+			elem.currentStyle,
 		styles = {};
 
-	len = style.length;
-	while ( len-- ) {
-		key = style[ len ];
-		if ( typeof style[ key ] === "string" ) {
-			styles[ camelCase( key ) ] = style[ key ];
+	if ( style && style.length && style[ 0 ] && style[ style[ 0 ] ] ) {
+		len = style.length;
+		while ( len-- ) {
+			key = style[ len ];
+			if ( typeof style[ key ] === "string" ) {
+				styles[ camelCase( key ) ] = style[ key ];
+			}
+		}
+
+	// Support: Opera, IE <9
+	} else {
+		for ( key in style ) {
+			if ( typeof style[ key ] === "string" ) {
+				styles[ key ] = style[ key ];
+			}
 		}
 	}
 
@@ -109,6 +123,15 @@ function styleDifference( oldStyle, newStyle ) {
 	}
 
 	return diff;
+}
+
+// Support: jQuery <1.8
+if ( !$.fn.addBack ) {
+	$.fn.addBack = function( selector ) {
+		return this.add( selector == null ?
+			this.prevObject : this.prevObject.filter( selector )
+		);
+	};
 }
 
 $.effects.animateClass = function( value, duration, easing, callback ) {
@@ -250,7 +273,7 @@ if ( $.expr && $.expr.pseudos && $.expr.pseudos.animated ) {
 	} )( $.expr.pseudos.animated );
 }
 
-if ( $.uiBackCompat === true ) {
+if ( $.uiBackCompat !== false ) {
 	$.extend( $.effects, {
 
 		// Saves a set of properties in a data storage
@@ -318,7 +341,7 @@ if ( $.uiBackCompat === true ) {
 			try {
 				// eslint-disable-next-line no-unused-expressions
 				active.id;
-			} catch ( _e ) {
+			} catch ( e ) {
 				active = document.body;
 			}
 
@@ -379,7 +402,7 @@ if ( $.uiBackCompat === true ) {
 }
 
 $.extend( $.effects, {
-	version: "1.14.2",
+	version: "1.13.3",
 
 	define: function( name, mode, effect ) {
 		if ( !effect ) {
@@ -736,7 +759,7 @@ $.fn.extend( {
 			// as toggle can be either show or hide depending on element state
 			args.mode = modes.shift();
 
-			if ( $.uiBackCompat === true && !defaultMode ) {
+			if ( $.uiBackCompat !== false && !defaultMode ) {
 				if ( elem.is( ":hidden" ) ? mode === "hide" : mode === "show" ) {
 
 					// Call the core method to track "olddisplay" properly

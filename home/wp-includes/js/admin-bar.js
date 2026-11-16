@@ -417,7 +417,7 @@
 				};
 		}
 
-		// Get the closest matching element.
+		// Get the closest matching elent.
 		for ( ; el && el !== document; el = el.parentNode ) {
 			if ( el.matches( selector ) ) {
 				return el;

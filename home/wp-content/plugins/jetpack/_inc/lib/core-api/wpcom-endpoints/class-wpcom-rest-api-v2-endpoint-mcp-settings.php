@@ -7,7 +7,7 @@
  *         MCP state. Reshapes the response into the { account, site, sites,
  *         site_level_enabled_default } structure the client utilities expect.
  * POST — proxies to WPCOM POST /sites/{blog_id}/mcp-abilities (user token auth) which
- *         persists { site_level_enabled, abilities, remote_groups } to user settings via SettingsHelper,
+ *         persists { site_level_enabled, abilities } to user settings via SettingsHelper,
  *         keeping Jetpack and Calypso in sync.
  *
  * @package automattic/jetpack
@@ -184,12 +184,6 @@ class WPCOM_REST_API_V2_Endpoint_MCP_Settings extends WP_REST_Controller {
 		// when derived from WPCOM (no per-site override concept at this layer).
 		$site_level_enabled_default = $site_level_enabled;
 
-		// Group descriptors (AIINT-469) — pass through if the WPCOM endpoint returns them.
-		$groups = array();
-		if ( isset( $body['groups'] ) && is_array( $body['groups'] ) ) {
-			$groups = $body['groups'];
-		}
-
 		// Use only the explicit per-site user overrides returned by WPCOM in user_overrides.abilities.
 		// These are the raw values stored via SettingsHelper — not the computed effective states
 		// (account defaults merged with overrides). Keeping only explicit overrides here lets the
@@ -200,13 +194,6 @@ class WPCOM_REST_API_V2_Endpoint_MCP_Settings extends WP_REST_Controller {
 		if ( isset( $body['user_overrides']['abilities'] ) && is_array( $body['user_overrides']['abilities'] ) ) {
 			foreach ( $body['user_overrides']['abilities'] as $name => $value ) {
 				$site_tool_abilities[ (string) $name ] = (bool) $value;
-			}
-		}
-
-		$remote_groups = array();
-		if ( isset( $body['user_overrides']['remote_groups'] ) && is_array( $body['user_overrides']['remote_groups'] ) ) {
-			foreach ( $body['user_overrides']['remote_groups'] as $key => $value ) {
-				$remote_groups[ (string) $key ] = (bool) $value;
 			}
 		}
 
@@ -221,11 +208,9 @@ class WPCOM_REST_API_V2_Endpoint_MCP_Settings extends WP_REST_Controller {
 							'blog_id'            => (int) $blog_id,
 							'site_level_enabled' => $site_level_enabled,
 							'abilities'          => (object) $site_tool_abilities,
-							'remote_groups'      => (object) $remote_groups,
 						),
 					),
 					'site_level_enabled_default' => $site_level_enabled_default,
-					'groups'                     => $groups,
 				),
 			)
 		);
@@ -281,17 +266,6 @@ class WPCOM_REST_API_V2_Endpoint_MCP_Settings extends WP_REST_Controller {
 					$normalised[ $name ] = (bool) $value;
 				}
 				$wpcom_body['abilities'] = $normalised;
-			}
-
-			if ( isset( $site_update['remote_groups'] ) ) {
-				$groups     = is_object( $site_update['remote_groups'] )
-					? get_object_vars( $site_update['remote_groups'] )
-					: (array) $site_update['remote_groups'];
-				$normalised = array();
-				foreach ( $groups as $key => $value ) {
-					$normalised[ (string) $key ] = (bool) $value;
-				}
-				$wpcom_body['remote_groups'] = $normalised;
 			}
 		}
 

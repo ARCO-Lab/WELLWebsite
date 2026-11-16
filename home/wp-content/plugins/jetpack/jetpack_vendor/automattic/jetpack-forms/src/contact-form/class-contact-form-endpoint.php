@@ -33,15 +33,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 
 	/**
-	 * Seconds a chunked bulk delete may run before it stops and reports `has_more`.
-	 *
-	 * Kept well under the 120s gateway timeout measured on Atomic.
-	 *
-	 * @var int
-	 */
-	const BULK_DELETE_TIME_BUDGET = 20;
-
-	/**
 	 * Temporary storage for the source filter ID used in query modifications.
 	 *
 	 * @var int|null
@@ -76,9 +67,7 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			),
 			'zero-bs-crm'  => array(
 				'type'                    => 'plugin',
-				// White-label builds rename the folder and main file, so ask the CRM where it lives.
-				// Not ZBS_ROOTPLUGIN: it names a symlink's target folder, which WordPress does not key plugins by.
-				'file'                    => defined( 'ZBS_ROOTFILE' ) ? plugin_basename( ZBS_ROOTFILE ) : 'zero-bs-crm/ZeroBSCRM.php',
+				'file'                    => 'zero-bs-crm/ZeroBSCRM.php',
 				'settings_url'            => 'admin.php?page=zerobscrm-plugin-settings',
 				'marketing_redirect_slug' => 'org-crm',
 				'title'                   => __( 'Jetpack CRM', 'jetpack-forms' ),
@@ -287,7 +276,14 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 				'methods'             => \WP_REST_Server::DELETABLE,
 				'callback'            => array( $this, 'delete_posts_by_status' ),
 				'permission_callback' => array( $this, 'delete_items_permissions_check' ),
-				'args'                => $this->get_bulk_scope_args( array( 'trash', 'spam' ), 'trash' ),
+				'args'                => array(
+					'status' => array(
+						'type'     => 'string',
+						'enum'     => array( 'trash', 'spam' ),
+						'required' => false,
+						'default'  => 'trash',
+					),
+				),
 			)
 		);
 
@@ -663,15 +659,6 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			'readonly'    => true,
 		);
 
-		$schema['properties']['form_fill_duration'] = array(
-			'description' => __( 'The duration in seconds from first user interaction to form submission. Null when the duration is unknown, such as for submissions predating this feature.', 'jetpack-forms' ),
-			'type'        => array( 'integer', 'null' ),
-			'context'     => array( 'view', 'edit', 'embed' ),
-			// No sanitize_callback: the field is readonly and sanitized on storage, and
-			// `absint` would coerce a legitimate null into 0.
-			'readonly'    => true,
-		);
-
 		$schema['properties']['browser'] = array(
 			'description' => __( 'The browser and platform used to submit the form.', 'jetpack-forms' ),
 			'type'        => 'string',
@@ -729,13 +716,6 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			'arg_options' => array(
 				'sanitize_callback' => 'sanitize_text_field',
 			),
-			'readonly'    => true,
-		);
-
-		$schema['properties']['form_id'] = array(
-			'description' => __( 'The ID of the jetpack_form post the response is tied to, or 0 for classic (embedded) forms.', 'jetpack-forms' ),
-			'type'        => 'integer',
-			'context'     => array( 'view', 'edit', 'embed' ),
 			'readonly'    => true,
 		);
 
@@ -1004,10 +984,6 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			$data['country_code'] = $feedback_response->get_country_code();
 		}
 
-		if ( rest_is_field_included( 'form_fill_duration', $fields ) ) {
-			$data['form_fill_duration'] = $feedback_response->get_form_fill_duration();
-		}
-
 		if ( rest_is_field_included( 'browser', $fields ) ) {
 			$data['browser'] = $feedback_response->get_browser();
 		}
@@ -1022,10 +998,6 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 
 		if ( rest_is_field_included( 'entry_permalink', $fields ) ) {
 			$data['entry_permalink'] = $feedback_response->get_entry_permalink();
-		}
-
-		if ( rest_is_field_included( 'form_id', $fields ) ) {
-			$data['form_id'] = (int) $feedback_response->get_form_id();
 		}
 
 		if ( rest_is_field_included( 'edit_form_url', $fields ) ) {
@@ -1126,11 +1098,9 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 
 		$invalid_ids_sql = implode( ',', array_map( 'absint', $this->temp_invalid_ids ) );
 
-		// Wrap the existing WHERE in parentheses before appending the OR branch, and re-assert
-		// post_type='feedback' on the OR side. SQL AND binds tighter than OR; without these
-		// guards the appended " OR ID IN (...)" would collapse the existing post_type filter
-		// and let any post ID (regardless of type or status) be returned by the endpoint.
-		$where = "({$where}) OR ({$wpdb->posts}.ID IN ({$invalid_ids_sql}) AND {$wpdb->posts}.post_type = 'feedback')";
+		// Add OR condition for invalid_ids at the end of the WHERE clause
+		// Keep the AND at the beginning since WordPress WHERE clauses start with "AND"
+		$where .= " OR {$wpdb->posts}.ID IN ({$invalid_ids_sql})";
 
 		return $where;
 	}
@@ -1174,7 +1144,7 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 					'compare' => 'NOT EXISTS',
 				);
 			}
-			$args['meta_query'] = $meta_query;
+			$args['meta_query'] = $meta_query; // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 		}
 
 		return $args;
@@ -1303,203 +1273,12 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 	}
 
 	/**
-	 * Builds the REST args for the scope-aware `/trash` endpoint.
+	 * Handles emptying Jetpack Forms responses based on status.
 	 *
-	 * @param string[] $allowed_statuses Statuses that may be operated on.
-	 * @param string   $default_status   Default status if none is provided.
-	 * @return array
-	 */
-	protected function get_bulk_scope_args( $allowed_statuses, $default_status ) {
-		return array(
-			'status'    => array(
-				'type'     => 'string',
-				'enum'     => $allowed_statuses,
-				'required' => false,
-				'default'  => $default_status,
-			),
-			'post_ids'  => array(
-				'type'              => 'array',
-				'items'             => array( 'type' => 'integer' ),
-				'required'          => false,
-				'sanitize_callback' => function ( $param ) {
-					$ids = array_map( 'intval', (array) $param );
-					return array_values(
-						array_filter(
-							$ids,
-							function ( $id ) {
-								return $id > 0;
-							}
-						)
-					);
-				},
-			),
-			'search'    => array(
-				'type'              => 'string',
-				'required'          => false,
-				'sanitize_callback' => 'sanitize_text_field',
-			),
-			'parent'    => array(
-				'type'              => 'integer',
-				'required'          => false,
-				'sanitize_callback' => 'absint',
-			),
-			'source'    => array(
-				'type'              => 'integer',
-				'required'          => false,
-				'sanitize_callback' => 'absint',
-			),
-			'before'    => array(
-				'type'              => 'string',
-				'format'            => 'date-time',
-				'required'          => false,
-				'sanitize_callback' => 'sanitize_text_field',
-			),
-			'after'     => array(
-				'type'              => 'string',
-				'format'            => 'date-time',
-				'required'          => false,
-				'sanitize_callback' => 'sanitize_text_field',
-			),
-			'is_unread' => array(
-				'type'              => 'boolean',
-				'required'          => false,
-				'sanitize_callback' => 'rest_sanitize_boolean',
-			),
-			'is_test'   => array(
-				'type'              => 'boolean',
-				'required'          => false,
-				'sanitize_callback' => 'rest_sanitize_boolean',
-			),
-			'limit'     => array(
-				'description' => __( 'Delete at most this many responses, then report whether more remain.', 'jetpack-forms' ),
-				'type'        => 'integer',
-				'minimum'     => 1,
-				'maximum'     => 5000,
-				'required'    => false,
-			),
-		);
-	}
-
-	/**
-	 * Fetches a batch of feedback IDs within the requested status, honoring the
-	 * bulk-scope params (explicit IDs or filter query). Source filtering is
-	 * applied via the existing `posts_join` / `posts_where` hooks.
-	 *
-	 * @param WP_REST_Request $request    The request.
-	 * @param string          $status     Post status to scope to (`spam` or `trash`).
-	 * @param int             $batch_size Max IDs to return.
-	 * @return int[] Feedback post IDs.
-	 */
-	private function fetch_bulk_scope_batch( $request, $status, $batch_size ) {
-		$post_ids_param = (array) $request->get_param( 'post_ids' );
-		$has_explicit   = ! empty( $post_ids_param );
-
-		$query_args = array(
-			'post_type'      => 'feedback',
-			'post_status'    => $status,
-			'posts_per_page' => $batch_size,
-			'fields'         => 'ids',
-		);
-
-		if ( $has_explicit ) {
-			$query_args['post__in'] = $post_ids_param;
-			$query_args['orderby']  = 'post__in';
-		} else {
-			$search = $request->get_param( 'search' );
-			if ( is_string( $search ) && $search !== '' ) {
-				$query_args['s'] = $search;
-			}
-
-			$parent = $request->get_param( 'parent' );
-			if ( is_numeric( $parent ) && (int) $parent > 0 ) {
-				$query_args['post_parent'] = (int) $parent;
-			}
-
-			$before = $request->get_param( 'before' );
-			$after  = $request->get_param( 'after' );
-			if ( ! empty( $before ) || ! empty( $after ) ) {
-				$query_args['date_query'] = array_filter(
-					array(
-						'before' => $before,
-						'after'  => $after,
-					)
-				);
-			}
-
-			$is_unread = $request->get_param( 'is_unread' );
-			if ( null !== $is_unread ) {
-				$query_args['comment_status'] = $is_unread ? Feedback::STATUS_UNREAD : Feedback::STATUS_READ;
-			}
-
-			$is_test = $request->get_param( 'is_test' );
-			if ( null !== $is_test ) {
-				$is_test_clause = array(
-					'key'     => Feedback::IS_TEST_META_KEY,
-					'compare' => 'NOT EXISTS',
-				);
-				if ( $is_test ) {
-					$is_test_clause = array(
-						'key'     => Feedback::IS_TEST_META_KEY,
-						'value'   => '1',
-						'compare' => '=',
-					);
-				}
-				$query_args['meta_query'] = array( $is_test_clause );
-			}
-		}
-
-		$query = new \WP_Query( $query_args );
-		return array_map( 'intval', $query->get_posts() );
-	}
-
-	/**
-	 * Attaches source-filter hooks if the request includes a `source` param and
-	 * no explicit `post_ids`. Returns true if hooks were attached (caller must
-	 * call `remove_source_filter_hooks()` after the loop).
-	 *
-	 * @param WP_REST_Request $request The request.
-	 * @return bool Whether hooks were attached.
-	 */
-	private function maybe_attach_source_filter_hooks( $request ) {
-		if ( ! empty( (array) $request->get_param( 'post_ids' ) ) ) {
-			return false;
-		}
-		$source = $request->get_param( 'source' );
-		$source = is_numeric( $source ) ? absint( $source ) : 0;
-		if ( $source <= 0 ) {
-			return false;
-		}
-		$this->temp_source_filter_id  = $source;
-		$this->temp_source_filter_sql = Feedback::get_source_filter_sql( $source );
-		add_filter( 'posts_join', array( $this, 'join_source_meta' ), 10, 2 );
-		add_filter( 'posts_where', array( $this, 'filter_by_source_id' ), 10, 2 );
-		return true;
-	}
-
-	/**
-	 * Removes source-filter hooks attached by `maybe_attach_source_filter_hooks`.
-	 */
-	private function remove_source_filter_hooks() {
-		remove_filter( 'posts_join', array( $this, 'join_source_meta' ), 10 );
-		remove_filter( 'posts_where', array( $this, 'filter_by_source_id' ), 10 );
-		$this->temp_source_filter_id  = null;
-		$this->temp_source_filter_sql = null;
-	}
-
-	/**
-	 * Handles permanently deleting Jetpack Forms responses by status.
-	 *
-	 * Scope resolution:
-	 *  - With `post_ids` → deletes those IDs (filtered to rows actually in `status`).
-	 *  - Else with any filter (search / parent / source / before / after / is_unread / is_test) →
-	 *    deletes every response in `status` matching those filters.
-	 *  - Else → deletes every response in `status` (legacy behavior).
-	 *
-	 * With `limit`, at most that many are deleted (stopping early after
-	 * BULK_DELETE_TIME_BUDGET seconds) and `has_more` tells the caller to repeat the request.
-	 *
-	 * The operation is non-reversible; restricted to statuses spam and trash via the
-	 * route args enum, and re-checked here for defense in depth.
+	 * By default, it empties the trash, meaning it will delete all feedbacks in the trash (status = trash).
+	 * Passing a status will delete all feedbacks in the status.
+	 * The operation is non reversible and thus restricted to statuses spam and trash,
+	 * enforced by endpoint query args enum[spam, trash] but also double checked by the endpoint.
 	 *
 	 * @param WP_REST_Request $request The request sent to the WP REST API.
 	 *
@@ -1512,29 +1291,25 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			return new WP_REST_Response( array( 'error' => __( 'Bad request', 'jetpack-forms' ) ), 400 );
 		}
 
-		// A `post_ids` that sanitizes to nothing must not fall through to "delete everything".
-		if ( $request->has_param( 'post_ids' ) && empty( (array) $request->get_param( 'post_ids' ) ) ) {
-			return new WP_REST_Response( array( 'error' => __( 'No valid responses to delete.', 'jetpack-forms' ) ), 400 );
-		}
-
-		$status        = $from_status;
-		$limit         = $request->get_param( 'limit' );
-		$limit         = is_numeric( $limit ) ? (int) $limit : 0;
-		$deadline      = $limit > 0 ? microtime( true ) + self::BULK_DELETE_TIME_BUDGET : 0;
-		$batch_size    = 1000;
+		$status        = $from_status ?? 'trash';
+		$batch_size    = 1000; // Process in batches to avoid memory issues
 		$total_deleted = 0;
 		$has_more      = true;
-		$processed_ids = array();
-
-		$has_source_hooks = $this->maybe_attach_source_filter_hooks( $request );
 
 		while ( $has_more ) {
-			$want        = $limit > 0 ? min( $batch_size, $limit - $total_deleted ) : $batch_size;
-			$fetched_ids = $this->fetch_bulk_scope_batch( $request, $status, $want );
-			// Skip IDs already handled, so a delete short-circuited by `pre_delete_post` can't loop forever.
-			$post_ids = array_values( array_diff( $fetched_ids, $processed_ids ) );
+			$query_args = array(
+				'post_type'      => 'feedback',
+				'post_status'    => $status,
+				'posts_per_page' => $batch_size, // phpcs:ignore WordPress.WP.PostsPerPage.posts_per_page_posts_per_page
+				'fields'         => 'ids', // Only get IDs to reduce memory usage
+			);
+
+			$query    = new \WP_Query( $query_args );
+			$post_ids = $query->get_posts();
 
 			if ( empty( $post_ids ) ) {
+				$has_more = false;
+
 				break;
 			}
 
@@ -1542,51 +1317,24 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 				$feedback_deleted = wp_delete_post( $post_id, true );
 
 				if ( ! $feedback_deleted ) {
-					if ( $has_source_hooks ) {
-						$this->remove_source_filter_hooks();
+					if ( $status === 'trash' ) {
+						return new WP_REST_Response( array( 'error' => __( 'Failed to empty trash.', 'jetpack-forms' ) ), 400 );
 					}
-					$error = $status === 'spam'
-						? __( 'Failed to empty spam.', 'jetpack-forms' )
-						: __( 'Failed to empty trash.', 'jetpack-forms' );
-					return new WP_REST_Response(
-						array(
-							'error'   => $error,
-							'deleted' => $total_deleted,
-						),
-						400
-					);
+
+					if ( $status === 'spam' ) {
+						return new WP_REST_Response( array( 'error' => __( 'Failed to empty spam.', 'jetpack-forms' ) ), 400 );
+					}
 				}
 
-				$processed_ids[] = $post_id;
 				++$total_deleted;
-
-				if ( $deadline && microtime( true ) >= $deadline ) {
-					break 2;
-				}
 			}
 
-			if ( count( $fetched_ids ) < $want || ( $limit > 0 && $total_deleted >= $limit ) ) {
+			if ( count( $post_ids ) < $batch_size ) {
 				$has_more = false;
 			}
 		}
 
-		$has_more = false;
-		if ( $limit > 0 ) {
-			$next     = array_diff( $this->fetch_bulk_scope_batch( $request, $status, 1 ), $processed_ids );
-			$has_more = ! empty( $next );
-		}
-
-		if ( $has_source_hooks ) {
-			$this->remove_source_filter_hooks();
-		}
-
-		return new WP_REST_Response(
-			array(
-				'deleted'  => $total_deleted,
-				'has_more' => $has_more,
-			),
-			200
-		);
+		return new WP_REST_Response( array( 'deleted' => $total_deleted ), 200 );
 	}
 
 	/**
@@ -1662,7 +1410,7 @@ class Contact_Form_Endpoint extends \WP_REST_Posts_Controller {
 			return true;
 		}
 
-		if ( ! current_user_can( 'delete_others_pages' ) ) {
+		if ( ! current_user_can( 'delete_posts' ) ) {
 			return false;
 		}
 

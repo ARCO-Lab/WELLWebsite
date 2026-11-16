@@ -1,4 +1,4 @@
-<?php
+<?php // phpcs:ignore WordPress.Files.FileName.InvalidClassFileName
 /**
  * The Image Sizes library.
  *
@@ -171,13 +171,13 @@ class Image_CDN_Image_Sizes {
 
 			$size_data = $this->standardize_size_data( $size_data );
 
-			if ( empty( $size_data ) ) {
+			if ( true === empty( $size_data ) ) {
 				continue;
 			}
 
 			$resized_image = $this->resize( $size_data );
 
-			if ( is_array( $resized_image ) ) {
+			if ( true === is_array( $resized_image ) ) {
 				$metadata[ $size ] = $resized_image;
 			}
 		}

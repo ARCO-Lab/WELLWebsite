@@ -124,10 +124,7 @@ class UI {
 			'isDevelopmentSite'              => $is_development_site,
 
 			/**
-			 * Use the filter to provide custom HTML container element ID.
-			 *
-			 * The element may be added after the page loads, within 60 seconds of it;
-			 * the screen is rendered into it once.
+			 * Use the filter to provide custom HTML elecontainer ID.
 			 *
 			 * @since 0.10.0
 			 *
@@ -189,11 +186,9 @@ class UI {
 	/**
 	 * Get the site platform.
 	 *
-	 * @since 9.15.0 Public, so the Connectors card can send the same value to Tracks.
-	 *
 	 * @return string
 	 */
-	public static function get_platform() {
+	private static function get_platform() {
 		$host = new Host();
 
 		if ( $host->is_woa_site() ) {

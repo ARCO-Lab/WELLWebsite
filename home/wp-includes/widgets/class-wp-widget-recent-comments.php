@@ -55,7 +55,12 @@ class WP_Widget_Recent_Comments extends WP_Widget {
 			return;
 		}
 
-		echo '<style>.recentcomments a{display:inline !important;padding:0 !important;margin:0 !important;}</style>';
+		$type_attr = current_theme_supports( 'html5', 'style' ) ? '' : ' type="text/css"';
+
+		printf(
+			'<style%s>.recentcomments a{display:inline !important;padding:0 !important;margin:0 !important;}</style>',
+			$type_attr
+		);
 	}
 
 	/**
@@ -185,7 +190,7 @@ class WP_Widget_Recent_Comments extends WP_Widget {
 	 * @param array $instance Current settings.
 	 */
 	public function form( $instance ) {
-		$title  = $instance['title'] ?? '';
+		$title  = isset( $instance['title'] ) ? $instance['title'] : '';
 		$number = isset( $instance['number'] ) ? absint( $instance['number'] ) : 5;
 		?>
 		<p>

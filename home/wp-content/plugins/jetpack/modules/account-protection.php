@@ -1,12 +1,12 @@
 <?php
 /**
  * Module Name: Account Protection
- * Module Description: Detect compromised passwords at login and flag weak ones when users set a new password.
+ * Module Description: Shield your login page with rate‑limiting and secure authentication safeguards.
  * Sort Order: 4
  * First Introduced: 14.5
  * Requires Connection: Yes
  * Requires User Connection: No
- * Auto Activate: No
+ * Auto Activate: Yes
  * Module Tags: Account Protection
  * Feature: Security
  *

@@ -162,12 +162,4 @@ class WP_Block_Template {
 	 * @var string|null
 	 */
 	public $modified;
-
-	/**
-	 * Date.
-	 *
-	 * @since 7.1.0
-	 * @var string|null
-	 */
-	public $date;
 }

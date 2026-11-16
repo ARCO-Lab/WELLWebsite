@@ -173,6 +173,7 @@ class WordAds {
 		// Remove linebreaks and sanitize.
 		$snippet = esc_js( str_replace( array( "\n", "\t", "\r" ), '', $ad_div ) );
 
+		// phpcs:disable WordPress.Security.EscapeOutput.OutputNotEscaped
 		$fallback_snippet = <<<HTML
 			<script>
 				var sas_fallback = sas_fallback || [];

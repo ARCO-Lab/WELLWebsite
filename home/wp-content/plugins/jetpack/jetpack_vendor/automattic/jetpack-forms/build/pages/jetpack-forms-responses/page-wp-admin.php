@@ -87,26 +87,11 @@ function jetpack_forms_get_jetpack_forms_responses_wp_admin_menu_items() {
  */
 function jetpack_forms_jetpack_forms_responses_wp_admin_preload_data() {
 	// Define paths to preload - same for all pages
-	// This must exactly match the _fields list in packages/core-data/src/entities.js,
-	// same fields in the same order, or the preload is never consumed.
+	// Please also change packages/core-data/src/entities.js when changing this.
 	$preload_paths = array(
-		'/?_fields=description,generate_animated_image_subsizes,gmt_offset,home,image_max_bit_depth,image_sizes,image_size_threshold,image_strip_meta,name,site_icon,site_icon_url,site_logo,timezone_string,url,page_for_posts,page_on_front,show_on_front',
-		// WordPress 7.1's bundled core-data requests this list, without generate_animated_image_subsizes.
-		'/?_fields=description,gmt_offset,home,image_max_bit_depth,image_sizes,image_size_threshold,image_strip_meta,name,site_icon,site_icon_url,site_logo,timezone_string,url,page_for_posts,page_on_front,show_on_front',
+		'/?_fields=description,gmt_offset,home,image_sizes,image_size_threshold,name,site_icon,site_icon_url,site_logo,timezone_string,url,page_for_posts,page_on_front,show_on_front',
 		array( '/wp/v2/settings', 'OPTIONS' ),
 	);
-
-	/**
-	 * Filters the REST API paths preloaded for this page.
-	 *
-	 * Each entry is either a string path (GET) or a `[ path, method ]` tuple.
-	 * Pages that know which requests their JS will issue on mount can add
-	 * them here so the responses are embedded in the initial HTML rather
-	 * than fetched over the network after hydration.
-	 *
-	 * @param array<string|string[]> $preload_paths Paths to preload.
-	 */
-	$preload_paths = apply_filters( 'jetpack_forms_jetpack_forms_responses_wp_admin_preload_paths', $preload_paths );
 
 	// Use rest_preload_api_request to gather the preloaded data
 	$preload_data = array_reduce(
@@ -149,9 +134,7 @@ function jetpack_forms_jetpack_forms_responses_wp_admin_enqueue_scripts( $hook_s
 	// Load build constants
 	$build_constants = require __DIR__ . '/../../constants.php';
 
-	/**
-	 * Fires when the jetpack-forms-responses admin page is initialized so extensions can register routes and menu items.
-	 */
+	// Fire init action for extensions to register routes and menu items
 	do_action( 'jetpack-forms-responses-wp-admin_init' );
 
 	// Preload REST API data
@@ -160,12 +143,8 @@ function jetpack_forms_jetpack_forms_responses_wp_admin_enqueue_scripts( $hook_s
 	// Get all registered routes
 	$routes = jetpack_forms_get_jetpack_forms_responses_wp_admin_routes();
 
-	// Get boot module asset file for dependencies. Plugins that build their own
-	// boot module use it; everyone else falls back to the copy bundled with Core.
+	// Get boot module asset file for dependencies
 	$asset_file = __DIR__ . '/../../modules/boot/index.min.asset.php';
-	if ( ! file_exists( $asset_file ) ) {
-		$asset_file = ABSPATH . WPINC . '/js/dist/script-modules/boot/index.min.asset.php';
-	}
 	if ( file_exists( $asset_file ) ) {
 		$asset = require $asset_file;
 
@@ -174,58 +153,13 @@ function jetpack_forms_jetpack_forms_responses_wp_admin_enqueue_scripts( $hook_s
 		// 2. It initializes the boot module as an inline script.
 		wp_register_script( 'jetpack-forms-responses-wp-admin-prerequisites', '', $asset['dependencies'], $asset['version'], true );
 
-		$init_modules = ["@jetpack-forms/init"];
-
-		/*
-		 * Add inline script to initialize the app using initSinglePage (no menuItems).
-		 * The dynamic import is deferred until DOMContentLoaded so that all classic
-		 * script dependencies of @wordpress/boot (wp-private-apis, wp-components,
-		 * wp-theme, etc.) have finished parsing and executing before the boot module
-		 * evaluates. Otherwise, a modulepreloaded @wordpress/boot can win the race
-		 * against the classic-script-printing pass on fast CDN-fronted hosts in
-		 * Chrome, evaluating before wp.theme.privateApis is defined and throwing
-		 * "Cannot unlock an undefined object". See <https://core.trac.wordpress.org/ticket/65103>.
-		 */
-		$init_js_function = <<<'JS'
-		( mountId, routes, initModules ) => {
-			const run = async () => {
-				const mod = await import( "@wordpress/boot" );
-				/*
-				 * Run the init modules here instead of delegating to
-				 * initSinglePage(): WordPress cores that bundle an older
-				 * @wordpress/boot (initModules support postdates WP 7.0's copy,
-				 * and the import map resolves @wordpress/boot to core's bundle
-				 * when core provides one) silently ignore the option, so init
-				 * modules would never execute. Running them before
-				 * initSinglePage() gives identical behavior on every core.
-				 */
-				for ( const id of initModules ?? [] ) {
-					try {
-						const initModule = await import( id );
-						if ( typeof initModule.init === "function" ) {
-							await initModule.init();
-						}
-					} catch ( error ) {
-						console.warn( "Failed to run boot init module:", id, error );
-					}
-				}
-				mod.initSinglePage( { mountId, routes } );
-			};
-			if ( document.readyState === "loading" ) {
-				document.addEventListener( "DOMContentLoaded", run );
-			} else {
-				run();
-			}
-		}
-JS;
+		// Add inline script to initialize the app using initSinglePage (no menuItems)
 		wp_add_inline_script(
 			'jetpack-forms-responses-wp-admin-prerequisites',
 			sprintf(
-				'( %s )( %s, %s, %s );',
-				$init_js_function,
-				wp_json_encode( 'jetpack-forms-responses-wp-admin-app', JSON_HEX_TAG | JSON_UNESCAPED_SLASHES ),
-				wp_json_encode( $routes, JSON_HEX_TAG | JSON_UNESCAPED_SLASHES ),
-				wp_json_encode( $init_modules, JSON_HEX_TAG | JSON_UNESCAPED_SLASHES )
+				'import("@wordpress/boot").then(mod => mod.initSinglePage({mountId: "%s", routes: %s}));',
+				'jetpack-forms-responses-wp-admin-app',
+				wp_json_encode( $routes, JSON_HEX_TAG | JSON_UNESCAPED_SLASHES )
 			)
 		);
 
@@ -246,9 +180,6 @@ JS;
 			),
 		);
 
-		// Add init modules as static dependencies
-			$boot_dependencies[] = array( 'import' => 'static', 'id' => '@jetpack-forms/init' );
-
 		// Add all registered routes as dependencies
 		foreach ( $routes as $route ) {
 			if ( isset( $route['route_module'] ) ) {
@@ -264,21 +195,6 @@ JS;
 				);
 			}
 		}
-
-		/**
-		 * Filters the boot script-module dependencies for the
-		 * jetpack-forms-responses-wp-admin page.
-		 *
-		 * Surfaces extending this page can append entries to the boot
-		 * dependency list. Each entry is an array with 'import' (string
-		 * 'static' or 'dynamic') and 'id' (script-module handle) keys.
-		 *
-		 * @param array $boot_dependencies Boot dependencies for the page.
-		 */
-		$boot_dependencies = apply_filters(
-			'jetpack-forms-responses-wp-admin_boot_dependencies',
-			$boot_dependencies
-		);
 
 		// Dummy script module to ensure dependencies are loaded
 		wp_register_script_module(
@@ -304,26 +220,28 @@ function jetpack_forms_jetpack_forms_responses_wp_admin_render_page() {
 	<style>
 		/* Critical styles to prevent layout shifts - inlined for immediate application */
 
+		/* Background colors */
 		#wpwrap {
+			background: var(--wpds-color-fg-content-neutral, #1e1e1e);
 			overflow-y: auto;
 		}
-		body.js {
+		body {
 			background: #fff;
 		}
 
 		/* Reset wp-admin padding */
-		body.js #wpcontent {
+		#wpcontent {
 			padding-inline-start: 0;
 		}
-		body.js #wpbody-content {
+		#wpbody-content {
 			padding-bottom: 0;
 		}
 
 		/* Hide legacy admin elements */
-		body.js #wpbody-content > div:not(#jetpack-forms-responses-wp-admin-app):not(#screen-meta) {
+		#wpbody-content > div:not(.boot-layout-container):not(#screen-meta) {
 			display: none;
 		}
-		body.js #wpfooter {
+		#wpfooter {
 			display: none;
 		}
 
@@ -352,23 +270,10 @@ function jetpack_forms_jetpack_forms_responses_wp_admin_render_page() {
 			}
 		}
 	</style>
-	<div class="wrap hide-if-js">
-		<h1 class="wp-heading-inline"><?php echo esc_html( get_admin_page_title() ); ?></h1>
-		<?php
-		wp_admin_notice(
-			__( 'This screen requires JavaScript. Enable JavaScript in your browser settings and reload the page.' ),
-			array( 'type' => 'error' )
-		);
-		?>
-	</div>
-	<?php
-	// Core's pre-CSS Modules Boot layout uses this class for viewport sizing.
-	// Remove it when the minimum supported WordPress version includes the Boot
-	// changes from Gutenberg #81756.
-	?>
 	<div id="jetpack-forms-responses-wp-admin-app" class="boot-layout-container"></div>
 	<?php
 }
 
 // Hook the enqueue function to admin_enqueue_scripts
 add_action( 'admin_enqueue_scripts', 'jetpack_forms_jetpack_forms_responses_wp_admin_enqueue_scripts' );
+

@@ -199,7 +199,7 @@ final class WP_Block_Patterns_Registry {
 	 * @since 5.5.0
 	 *
 	 * @param string $pattern_name Block pattern name including namespace.
-	 * @return array|null Registered pattern properties or `null` if the pattern is not registered.
+	 * @return array Registered pattern properties.
 	 */
 	public function get_registered( $pattern_name ) {
 		if ( ! $this->is_registered( $pattern_name ) ) {
@@ -227,9 +227,10 @@ final class WP_Block_Patterns_Registry {
 	 *                 and per style.
 	 */
 	public function get_all_registered( $outside_init_only = false ) {
-		$patterns = $outside_init_only
-			? $this->registered_patterns_outside_init
-			: $this->registered_patterns;
+		$patterns      = $outside_init_only
+				? $this->registered_patterns_outside_init
+				: $this->registered_patterns;
+		$hooked_blocks = get_hooked_blocks();
 
 		foreach ( $patterns as $index => $pattern ) {
 			$content                       = $this->get_content( $pattern['name'], $outside_init_only );
@@ -248,11 +249,11 @@ final class WP_Block_Patterns_Registry {
 	 *
 	 * @since 5.5.0
 	 *
-	 * @param string|null $pattern_name Block pattern name including namespace.
+	 * @param string $pattern_name Block pattern name including namespace.
 	 * @return bool True if the pattern is registered, false otherwise.
 	 */
 	public function is_registered( $pattern_name ) {
-		return isset( $pattern_name, $this->registered_patterns[ $pattern_name ] );
+		return isset( $this->registered_patterns[ $pattern_name ] );
 	}
 
 	public function __wakeup() {
@@ -286,4 +287,30 @@ final class WP_Block_Patterns_Registry {
 
 		return self::$instance;
 	}
+}
+
+/**
+ * Registers a new block pattern.
+ *
+ * @since 5.5.0
+ *
+ * @param string $pattern_name       Block pattern name including namespace.
+ * @param array  $pattern_properties List of properties for the block pattern.
+ *                                   See WP_Block_Patterns_Registry::register() for accepted arguments.
+ * @return bool True if the pattern was registered with success and false otherwise.
+ */
+function register_block_pattern( $pattern_name, $pattern_properties ) {
+	return WP_Block_Patterns_Registry::get_instance()->register( $pattern_name, $pattern_properties );
+}
+
+/**
+ * Unregisters a block pattern.
+ *
+ * @since 5.5.0
+ *
+ * @param string $pattern_name Block pattern name including namespace.
+ * @return bool True if the pattern was unregistered with success and false otherwise.
+ */
+function unregister_block_pattern( $pattern_name ) {
+	return WP_Block_Patterns_Registry::get_instance()->unregister( $pattern_name );
 }

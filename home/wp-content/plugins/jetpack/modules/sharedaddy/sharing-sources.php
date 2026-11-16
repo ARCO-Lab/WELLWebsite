@@ -7,7 +7,6 @@
 
 use Automattic\Jetpack\Device_Detection\User_Agent_Info;
 use Automattic\Jetpack\Post_Media\Images;
-use Automattic\Jetpack\Sharing_Likes\Share_Destination;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit( 0 );
@@ -49,15 +48,15 @@ abstract class Sharing_Source {
 	/**
 	 * Sharing unique ID.
 	 *
-	 * @var string
+	 * @var int
 	 */
 	protected $id;
 
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		$this->id = $id;
@@ -93,17 +92,6 @@ abstract class Sharing_Source {
 	}
 
 	/**
-	 * Whether the service still works on sites that use it, but is no longer offered to others.
-	 *
-	 * @since 16.4
-	 *
-	 * @return bool
-	 */
-	public function is_legacy() {
-		return false;
-	}
-
-	/**
 	 * Get the protocol to use for a sharing service, based on the site settings.
 	 *
 	 * @return string
@@ -115,7 +103,7 @@ abstract class Sharing_Source {
 	/**
 	 * Get unique sharing ID.
 	 *
-	 * @return string
+	 * @return int
 	 */
 	public function get_id() {
 		return $this->id;
@@ -124,7 +112,7 @@ abstract class Sharing_Source {
 	/**
 	 * Get unique sharing ID. Similar to get_id().
 	 *
-	 * @return string
+	 * @return int
 	 */
 	public function get_class() {
 		return $this->id;
@@ -690,19 +678,7 @@ abstract class Sharing_Source {
 	}
 
 	/**
-	 * Register a sharing service's popup window features with the front-end script.
-	 *
-	 * Services that open their share link in a popup publish the window features
-	 * they need in `window.WPCOM_sharing_popups`. A single delegated click handler
-	 * in sharing.js reads them and opens the popup, so no per-service handler is
-	 * emitted.
-	 *
-	 * $name has to be the same slug that appears in the share link's `share-<name>`
-	 * class, since that class is all the handler has to look the features back up
-	 * with. Every caller passes $this->shortname, which works because get_link()
-	 * builds the class from get_class() and the built-in services register under
-	 * the slug they declare as their shortname. Share_Custom is the exception: its
-	 * class and shortname do not round-trip, but it does not register a popup.
+	 * Add extra JavaScript to a sharing service.
 	 *
 	 * @param string $name   Sharing service name.
 	 * @param array  $params Array of sharing options.
@@ -730,11 +706,39 @@ abstract class Sharing_Source {
 		// Add JS after sharing-js has been enqueued.
 		wp_add_inline_script(
 			'sharing-js',
-			sprintf(
-				"window.WPCOM_sharing_popups = window.WPCOM_sharing_popups || {};\nwindow.WPCOM_sharing_popups[ %s ] = %s;",
-				wp_json_encode( (string) $name, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP ),
-				wp_json_encode( $opts, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP )
-			)
+			"var windowOpen;
+			( function () {
+				function matches( el, sel ) {
+					return !! (
+						el.matches && el.matches( sel ) ||
+						el.msMatchesSelector && el.msMatchesSelector( sel )
+					);
+				}
+
+				document.body.addEventListener( 'click', function ( event ) {
+					if ( ! event.target ) {
+						return;
+					}
+
+					var el;
+					if ( matches( event.target, 'a.share-$name' ) ) {
+						el = event.target;
+					} else if ( event.target.parentNode && matches( event.target.parentNode, 'a.share-$name' ) ) {
+						el = event.target.parentNode;
+					}
+
+					if ( el ) {
+						event.preventDefault();
+
+						// If there's another sharing window open, close it.
+						if ( typeof windowOpen !== 'undefined' ) {
+							windowOpen.close();
+						}
+						windowOpen = window.open( el.getAttribute( 'href' ), 'wpcom$name', '$opts' );
+						return false;
+					}
+				} );
+			} )();"
 		);
 	}
 }
@@ -767,7 +771,7 @@ abstract class Deprecated_Sharing_Source extends Sharing_Source {
 	/**
 	 * Sharing unique ID.
 	 *
-	 * @var string
+	 * @var int
 	 */
 	protected $id;
 
@@ -781,8 +785,8 @@ abstract class Deprecated_Sharing_Source extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	final public function __construct( $id, array $settings ) {
 		$this->id = $id;
@@ -956,8 +960,8 @@ class Share_Email extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -998,7 +1002,7 @@ class Share_Email extends Sharing_Source {
 	 * @param WP_Post $post Post object.
 	 * @param array   $post_data Array of information about the post we're sharing.
 	 *
-	 * @return never
+	 * @return void
 	 */
 	public function process_request( $post, array $post_data ) {
 		$is_ajax = false;
@@ -1026,6 +1030,8 @@ class Share_Email extends Sharing_Source {
 			wp_safe_redirect( get_permalink( $post->ID ) . '?shared=email&msg=fail' );
 			exit( 0 );
 		}
+
+		wp_die();
 	}
 
 	/**
@@ -1126,8 +1132,8 @@ class Share_Twitter extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -1146,17 +1152,6 @@ class Share_Twitter extends Sharing_Source {
 	 */
 	public function get_name() {
 		return __( 'X', 'jetpack' );
-	}
-
-	/**
-	 * Share_X has the same name and icon, so only sites already using this button keep it.
-	 *
-	 * @since 16.4
-	 *
-	 * @return bool
-	 */
-	public function is_legacy() {
-		return true;
 	}
 
 	/**
@@ -1408,8 +1403,8 @@ class Share_X extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -1713,8 +1708,8 @@ class Share_LinkedIn extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -1876,8 +1871,8 @@ class Share_Facebook extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -2076,8 +2071,8 @@ class Share_Print extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -2144,8 +2139,8 @@ class Share_PressThis extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -2290,8 +2285,8 @@ class Share_Custom extends Sharing_Advanced_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -2563,8 +2558,8 @@ class Share_Tumblr extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -2605,21 +2600,20 @@ class Share_Tumblr extends Sharing_Source {
 			 * In this case, we want Tumblr to focus on our current post, so we will limit the post type to link, where we can give Tumblr a link to our post.
 			 */
 			if ( ! is_single() ) {
-				$posttype = ' data-posttype="link"'; // Leading space separates it from the preceding title attribute.
+				$posttype = 'data-posttype="link"';
 			} else {
 				$posttype = '';
 			}
 
 			// Documentation: https://www.tumblr.com/docs/en/share_button
 			return sprintf(
-				'<a class="tumblr-share-button" target="%1$s" href="%2$s" data-title="%3$s" data-content="%4$s" title="%5$s"%6$s>%7$s</a>',
+				'<a class="tumblr-share-button" target="%1$s" href="%2$s" data-title="%3$s" data-content="%4$s" title="%5$s"%6$s>%5$s</a>',
 				$target,
 				'https://www.tumblr.com/share',
-				esc_attr( $this->get_share_title( $post->ID ) ),
-				esc_url( $this->get_share_url( $post->ID ) ),
-				esc_attr__( 'Share on Tumblr', 'jetpack' ),
-				$posttype,
-				esc_html__( 'Share on Tumblr', 'jetpack' )
+				$this->get_share_title( $post->ID ),
+				$this->get_share_url( $post->ID ),
+				__( 'Share on Tumblr', 'jetpack' ),
+				$posttype
 			);
 		} else {
 			return $this->get_link( $this->get_process_request_url( $post->ID ), _x( 'Tumblr', 'share to', 'jetpack' ), __( 'Share on Tumblr', 'jetpack' ), 'share=tumblr', 'sharing-tumblr-' . $post->ID );
@@ -2687,8 +2681,8 @@ class Share_Pinterest extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) {
 		parent::__construct( $id, $settings );
@@ -2741,7 +2735,7 @@ class Share_Pinterest extends Sharing_Source {
 	 * @return string
 	 */
 	public function get_external_url( $post ) {
-		$url = 'https://www.pinterest.com/pin/create/link/?url=' . rawurlencode( $this->get_share_url( $post->ID ) ) . '&media=' . rawurlencode( $this->get_image( $post ) ) . '&description=' . rawurlencode( $post->post_title );
+		$url = 'https://www.pinterest.com/pin/create/button/?url=' . rawurlencode( $this->get_share_url( $post->ID ) ) . '&media=' . rawurlencode( $this->get_image( $post ) ) . '&description=' . rawurlencode( $post->post_title );
 
 		/**
 		 * Filters the Pinterest share URL used in sharing button output.
@@ -2773,29 +2767,6 @@ class Share_Pinterest extends Sharing_Source {
 		 * @param string $type Pinterest widget type. Default of 'buttonPin' for single-image selection. 'buttonBookmark' for multi-image modal.
 		 */
 		return apply_filters( 'jetpack_sharing_pinterest_widget_type', 'buttonPin' );
-	}
-
-	/**
-	 * AMP display for Pinterest.
-	 *
-	 * AMP's Pinterest share has no default image, so without data-param-media
-	 * Pinterest asks the visitor to upload one. Pass the same image the
-	 * non-AMP button uses.
-	 *
-	 * @param \WP_Post|null $post The current post being viewed.
-	 *
-	 * @return bool|string
-	 */
-	public function get_amp_display( $post ) {
-		if ( empty( $post ) ) {
-			return false;
-		}
-
-		return $this->build_amp_markup(
-			array(
-				'data-param-media' => $this->get_image( $post ),
-			)
-		);
 	}
 
 	/**
@@ -2952,8 +2923,8 @@ class Share_Telegram extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) { // phpcs:ignore Generic.CodeAnalysis.UselessOverridingMethod.Found
 		parent::__construct( $id, $settings );
@@ -3037,8 +3008,8 @@ class Jetpack_Share_WhatsApp extends Sharing_Source {
 	/**
 	 * Constructor.
 	 *
-	 * @param string $id       Sharing source ID.
-	 * @param array  $settings Sharing settings.
+	 * @param int   $id       Sharing source ID.
+	 * @param array $settings Sharing settings.
 	 */
 	public function __construct( $id, array $settings ) { // phpcs:ignore Generic.CodeAnalysis.UselessOverridingMethod.Found
 		parent::__construct( $id, $settings );
@@ -3163,23 +3134,9 @@ class Share_Mastodon extends Sharing_Source {
 
 		check_admin_referer( 'jetpack_share_mastodon_instance' );
 
-		// Another plugin's autoloader can serve a jetpack-sharing-likes release from before Share_Destination.
-		if ( class_exists( Share_Destination::class ) ) {
-			$share_endpoint = is_string( $_POST['jetpack-mastodon-instance'] )
-				? Share_Destination::get_endpoint(
-					wp_unslash( $_POST['jetpack-mastodon-instance'] ), // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Share_Destination validates and rebuilds the URL.
-					'share',
-					Share_Destination::UPGRADE_HTTP
-				)
-				: null;
-
-			if ( null === $share_endpoint ) {
-				wp_safe_redirect( Share_Destination::get_prompt_url( $post->ID, $this->shortname ) );
-				exit( 0 );
-			}
-		} else {
-			$share_endpoint = trailingslashit( sanitize_text_field( wp_unslash( $_POST['jetpack-mastodon-instance'] ) ) ) . 'share';
-		}
+		$mastodon_instance = isset( $_POST['jetpack-mastodon-instance'] )
+			? trailingslashit( sanitize_text_field( wp_unslash( $_POST['jetpack-mastodon-instance'] ) ) )
+			: null;
 
 		$post_title = $this->get_share_title( $post->ID );
 		$post_link  = $this->get_share_url( $post->ID );
@@ -3203,8 +3160,8 @@ class Share_Mastodon extends Sharing_Source {
 		);
 
 		$share_url = sprintf(
-			'%1$s?text=%2$s',
-			$share_endpoint,
+			'%1$sshare?text=%2$s',
+			$mastodon_instance,
 			rawurlencode( $shared_message )
 		);
 

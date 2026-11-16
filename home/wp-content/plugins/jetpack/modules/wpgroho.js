@@ -48,7 +48,7 @@
 						if ( heading ) {
 							var extra = document.createElement( 'p' );
 							extra.className = 'grav-extra ' + key;
-							extra.textContent = data[ key ];
+							extra.innerHTML = data[ key ];
 
 							heading.insertAdjacentElement( 'afterend', extra );
 						}

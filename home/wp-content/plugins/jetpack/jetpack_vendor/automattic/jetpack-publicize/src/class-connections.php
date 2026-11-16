@@ -41,14 +41,7 @@ class Connections {
 			}
 		}
 
-		/**
-		 * Filters the list of Publicize connections for the site.
-		 *
-		 * @since 0.84.3
-		 *
-		 * @param array $connections List of connections.
-		 */
-		return (array) apply_filters( 'jetpack_publicize_connections', $connections );
+		return $connections;
 	}
 
 	/**
@@ -235,8 +228,6 @@ class Connections {
 		$connection_meta = $publicize->get_connection_meta( $connection );
 		$connection_data = $connection_meta['connection_data'];
 
-		$row_meta = $connection_data['meta'] ?? array();
-
 		return array(
 			'connection_id'        => (string) $connection_id,
 			'display_name'         => (string) $publicize->get_display_name( $service_name, $connection ),
@@ -247,7 +238,6 @@ class Connections {
 			'service_label'        => (string) Publicize::get_service_label( $service_name ),
 			'service_name'         => $service_name,
 			'shared'               => ! $connection_data['user_id'],
-			'template'             => (string) ( $row_meta['template'] ?? '' ),
 			'wpcom_user_id'        => (int) $connection_data['user_id'],
 
 			// Deprecated fields.

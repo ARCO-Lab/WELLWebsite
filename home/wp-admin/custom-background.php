@@ -11,7 +11,7 @@
 
 // Don't load directly.
 if ( ! defined( 'ABSPATH' ) ) {
-	exit;
+	die( '-1' );
 }
 
 _deprecated_file( basename( __FILE__ ), '5.3.0', 'wp-admin/includes/class-custom-background.php' );

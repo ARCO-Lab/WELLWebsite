@@ -297,7 +297,7 @@ class Jetpack_Recipes {
 		}
 
 		// Print content between codes.
-		$html .= '<div class="jetpack-recipe-content">' . apply_shortcodes( $content ) . '</div>';
+		$html .= '<div class="jetpack-recipe-content">' . do_shortcode( $content ) . '</div>';
 
 		// Close it up.
 		$html .= '</div>';
@@ -484,6 +484,11 @@ class Jetpack_Recipes {
 				$itemprop              = ' itemprop="nutrition"';
 				$listtype              = 'ul';
 				break;
+			case 'nutrition':
+				$list_item_replacement = '<li class="jetpack-recipe-nutrition nutrition">${1}</li>';
+				$itemprop              = ' itemprop="nutrition"';
+				$listtype              = 'ul';
+				break;
 			default:
 				$list_item_replacement = '<li class="jetpack-recipe-notes">${1}</li>';
 				$itemprop              = '';
@@ -528,10 +533,10 @@ class Jetpack_Recipes {
 				$empty_p_pattern = '/(<p>)*\s*<\/p>/mi';
 				$html            = preg_replace( $empty_p_pattern, '', $html );
 			} else {
-				$html .= apply_shortcodes( $content );
+				$html .= do_shortcode( $content );
 			}
 		} else {
-			$html .= apply_shortcodes( $content );
+			$html .= do_shortcode( $content );
 		}
 
 		// Return our formatted content.

@@ -191,7 +191,7 @@ window.wp = window.wp || {};
 	 */
 	setBulk : function(){
 		var te = '', type = this.type, c = true;
-		var checkedPosts = $( 'tbody .check-column input[type="checkbox"]:checked' );
+		var checkedPosts = $( 'tbody th.check-column input[type="checkbox"]:checked' );
 		var categories = {};
 		this.revert();
 
@@ -207,7 +207,7 @@ window.wp = window.wp || {};
 		 *
 		 * Get the selected posts based on the checked checkboxes in the post table.
 		 */
-		$( 'tbody .check-column input[type="checkbox"]' ).each( function() {
+		$( 'tbody th.check-column input[type="checkbox"]' ).each( function() {
 
 			// If the checkbox for a post is selected, add the post to the edit list.
 			if ( $(this).prop('checked') ) {
@@ -618,14 +618,13 @@ $( function() {
 		wp.heartbeat.interval( 10 );
 	}
 }).on( 'heartbeat-tick.wp-check-locked-posts', function( e, data ) {
-	var locked = data['wp-check-locked-posts'] || {},
-		lockedClass = 'wp-locked';
+	var locked = data['wp-check-locked-posts'] || {};
 
 	$('#the-list tr').each( function(i, el) {
 		var key = el.id, row = $(el), lock_data, avatar;
 
 		if ( locked.hasOwnProperty( key ) ) {
-			if ( ! row.hasClass( lockedClass ) ) {
+			if ( ! row.hasClass('wp-locked') ) {
 				lock_data = locked[key];
 				row.find('.column-title .locked-text').text( lock_data.text );
 				row.find('.check-column checkbox').prop('checked', false);
@@ -641,10 +640,10 @@ $( function() {
 					} );
 					row.find('.column-title .locked-avatar').empty().append( avatar );
 				}
-				row.addClass( lockedClass );
+				row.addClass('wp-locked');
 			}
-		} else if ( row.hasClass( lockedClass ) ) {
-			row.removeClass( lockedClass ).find( '.locked-info span' ).empty();
+		} else if ( row.hasClass('wp-locked') ) {
+			row.removeClass( 'wp-locked' ).find( '.locked-info span' ).empty();
 		}
 	});
 }).on( 'heartbeat-send.wp-check-locked-posts', function( e, data ) {

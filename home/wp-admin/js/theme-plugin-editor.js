@@ -2,9 +2,7 @@
  * @output wp-admin/js/theme-plugin-editor.js
  */
 
-/* eslint-env es2020 */
-
-/* eslint no-magic-numbers: ["error", { "ignore": [-1, 0, 1, 9, 1000] }] */
+/* eslint no-magic-numbers: ["error", { "ignore": [-1, 0, 1] }] */
 
 if ( ! window.wp ) {
 	window.wp = {};
@@ -81,18 +79,6 @@ wp.themePluginEditor = (function( $ ) {
 				component.docsLookUpButton.prop( 'disabled', true );
 			} else {
 				component.docsLookUpButton.prop( 'disabled', false );
-			}
-		} );
-
-		// Initiate saving the file when not focused in CodeMirror or when the user has syntax highlighting turned off.
-		$( window ).on( 'keydown', function( event ) {
-			if (
-				( event.ctrlKey || event.metaKey ) &&
-				( 's' === event.key.toLowerCase() ) &&
-				( ! component.instance || ! component.instance.codemirror.hasFocus() )
-			) {
-				event.preventDefault();
-				component.form.trigger( 'submit' );
 			}
 		} );
 	};
@@ -203,10 +189,6 @@ wp.themePluginEditor = (function( $ ) {
 
 		if ( component.isSaving ) {
 			return;
-		}
-
-		if ( component.instance && component.instance.updateErrorNotice ) {
-			component.instance.updateErrorNotice();
 		}
 
 		// Scroll to the line that has the error.
@@ -416,16 +398,6 @@ wp.themePluginEditor = (function( $ ) {
 
 		editor = wp.codeEditor.initialize( $( '#newcontent' ), codeEditorSettings );
 		editor.codemirror.on( 'change', component.onChange );
-
-		function onSaveShortcut() {
-			component.form.trigger( 'submit' );
-		}
-
-		editor.codemirror.setOption( 'extraKeys', {
-			...( editor.codemirror.getOption( 'extraKeys' ) || {} ),
-			'Ctrl-S': onSaveShortcut,
-			'Cmd-S': onSaveShortcut,
-		} );
 
 		// Improve the editor accessibility.
 		$( editor.codemirror.display.lineDiv )

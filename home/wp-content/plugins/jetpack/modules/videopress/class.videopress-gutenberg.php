@@ -208,11 +208,6 @@ class VideoPress_Gutenberg {
 			JETPACK__VERSION,
 			false
 		);
-		wp_add_inline_script(
-			'jetpack-videopress-gutenberg-override-video-upload',
-			'window.videoPressGutenbergUploadEnabled = ' . ( Jetpack_Plan::supports( 'videopress' ) ? 'true' : 'false' ) . ';',
-			'before'
-		);
 	}
 }
 

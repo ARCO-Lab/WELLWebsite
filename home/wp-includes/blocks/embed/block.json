@@ -41,7 +41,6 @@
 		}
 	},
 	"supports": {
-		"anchor": true,
 		"align": true,
 		"spacing": {
 			"margin": true

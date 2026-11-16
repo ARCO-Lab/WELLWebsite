@@ -14,10 +14,10 @@ class Utils {
 	/**
 	 * Build a VideoPress video URL based on the guid and block attributes.
 	 *
-	 * @param string|null $guid       - Video GUID; null returns null.
-	 * @param array       $attributes - Video block attributes. Default is an empty array.
+	 * @param string $guid       - Video GUID.
+	 * @param array  $attributes - Video block attributes. Default is an empty array.
 	 *
-	 * @return string|null VideoPress video URL with the specified attributes, or null without a guid.
+	 * @return string VideoPress video URL with the specified attributes.
 	 */
 	public static function get_video_press_url( $guid, $attributes = array() ) {
 		if ( ! $guid ) {
@@ -40,11 +40,6 @@ class Utils {
 				'useAverageColor'     => true,
 			)
 		);
-
-		// The site-wide opt-out wins over the block's own preload attribute.
-		if ( Data::get_videopress_player_preload_disabled() ) {
-			$video_press_url_options['preload'] = 'none';
-		}
 
 		$query_args = array(
 			'resizeToParent'  => 1,

@@ -134,7 +134,7 @@ function get_post_format_string( $slug ) {
 	if ( ! $slug ) {
 		return $strings['standard'];
 	} else {
-		return $strings[ $slug ] ?? '';
+		return ( isset( $strings[ $slug ] ) ) ? $strings[ $slug ] : '';
 	}
 }
 

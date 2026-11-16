@@ -590,7 +590,7 @@
 			return deferred.reject( { code: 'illegal_status_in_changeset_update' } ).promise();
 		}
 
-		// Dates not being allowed for revisions is a technical limitation of post revisions.
+		// Dates not beung allowed for revisions are is a technical limitation of post revisions.
 		if ( submittedArgs.date && submittedArgs.autosave ) {
 			return deferred.reject( { code: 'illegal_autosave_with_date_gmt' } ).promise();
 		}
@@ -1615,7 +1615,6 @@
 				} else {
 					expand = function() {
 						section._animateChangeExpanded( function() {
-							backBtn.attr( 'tabindex', '0' );
 							backBtn.trigger( 'focus' );
 							content.css( 'top', '' );
 							container.scrollTop( 0 );
@@ -1661,7 +1660,7 @@
 					}
 				}
 				section._animateChangeExpanded( function() {
-					backBtn.attr( 'tabindex', '-1' );
+
 					sectionTitle.trigger( 'focus' );
 					content.css( 'top', '' );
 
@@ -1701,7 +1700,6 @@
 		filtersHeight: 0,
 		headerContainer: null,
 		updateCountDebounced: null,
-		announceThemeDebounced: null,
 
 		/**
 		 * wp.customize.ThemesSection
@@ -1725,13 +1723,6 @@
 			section.$body = $( document.body );
 			api.Section.prototype.initialize.call( section, id, options );
 			section.updateCountDebounced = _.debounce( section.updateCount, 500 );
-			section.announceThemeDebounced = _.debounce( function( name ) {
-				if ( ! name ) {
-					return;
-				}
-
-				wp.a11y.speak( api.settings.l10n.announceThemeDetails.replace( '%s', name ) );
-			}, 500 );
 		},
 
 		/**
@@ -1785,20 +1776,13 @@
 					return;
 				}
 
-				// Require the alt key for arrow events.
-				if ( 27 !== event.keyCode && ! event.altKey ) {
-					return;
-				}
-
 				// Pressing the right arrow key fires a theme:next event.
 				if ( 39 === event.keyCode ) {
-					event.preventDefault(); // Prevent browser from triggering history shortcuts.
 					section.nextTheme();
 				}
 
 				// Pressing the left arrow key fires a theme:previous event.
 				if ( 37 === event.keyCode ) {
-					event.preventDefault(); // Prevent browser from triggering history shortcuts.
 					section.previousTheme();
 				}
 
@@ -2617,8 +2601,7 @@
 			section.$body.addClass( 'modal-open' );
 			section.containFocus( section.overlay );
 			section.updateLimits();
-
-			section.announceThemeDebounced( theme.name );
+			wp.a11y.speak( api.settings.l10n.announceThemeDetails.replace( '%s', theme.name ) );
 			if ( callback ) {
 				callback();
 			}
@@ -2636,8 +2619,6 @@
 			section.$body.removeClass( 'modal-open' );
 			section.overlay.fadeOut( 'fast' );
 			api.control( section.params.action + '_theme_' + section.currentTheme ).container.find( '.theme' ).focus();
-			// Cancel any pending navigation announcement.
-			section.announceThemeDebounced.cancel();
 		},
 
 		/**
@@ -2733,7 +2714,6 @@
 				} else {
 					expand = function() {
 						section._animateChangeExpanded( function() {
-							backBtn.attr( 'tabindex', '0' );
 							backBtn.trigger( 'focus' );
 							content.css( 'top', '' );
 							container.scrollTop( 0 );
@@ -2764,7 +2744,7 @@
 					}
 				}
 				section._animateChangeExpanded( function() {
-					backBtn.attr( 'tabindex', '-1' );
+
 					sectionTitle.trigger( 'focus' );
 					content.css( 'top', '' );
 
@@ -2984,7 +2964,6 @@
 					} );
 				} else {
 					panel._animateChangeExpanded( function() {
-						backBtn.attr( 'tabindex', '0' );
 						backBtn.trigger( 'focus' );
 						accordionSection.css( 'top', '' );
 						container.scrollTop( 0 );
@@ -4084,7 +4063,7 @@
 		 * @return {void}
 		 */
 		addNewPage: function () {
-			var control = this, promise, toggle, container, input, inputError, title, select;
+			var control = this, promise, toggle, container, input, title, select;
 
 			if ( 'dropdown-pages' !== control.params.type || ! control.params.allow_addition || ! api.Menus ) {
 				return;
@@ -4093,23 +4072,15 @@
 			toggle = control.container.find( '.add-new-toggle' );
 			container = control.container.find( '.new-content-item-wrapper' );
 			input = control.container.find( '.create-item-input' );
-			inputError = control.container.find('.create-item-error');
 			title = input.val();
 			select = control.container.find( 'select' );
 
 			if ( ! title ) {
-				container.addClass( 'form-invalid' );
-				input.attr('aria-invalid', 'true');
-				input.attr('aria-describedby', inputError.attr('id'));
-				inputError.slideDown( 'fast' );
-				wp.a11y.speak( inputError.text() );
+				input.addClass( 'invalid' );
 				return;
 			}
 
-			container.removeClass( 'form-invalid' );
-			input.attr('aria-invalid', 'false');
-			input.removeAttr('aria-describedby');
-			inputError.hide();
+			input.removeClass( 'invalid' );
 			input.attr( 'disabled', 'disabled' );
 
 			// The menus functions add the page, publish when appropriate,
@@ -4744,19 +4715,10 @@
 		 * @param {Object} attachment
 		 */
 		setImageFromAttachment: function( attachment ) {
-			var control = this;
 			this.params.attachment = attachment;
 
 			// Set the Customizer setting; the callback takes care of rendering.
 			this.setting( attachment.id );
-
-			// Set focus to the first relevant button after the icon.
-			_.defer( function() {
-				var firstButton = control.container.find( '.actions .button' ).first();
-				if ( firstButton.length ) {
-					firstButton.focus();
-				}
-			} );
 		}
 	});
 
@@ -4839,8 +4801,7 @@
 		 * @param {Object} attachment
 		 */
 		setImageFromAttachment: function( attachment ) {
-			var control = this,
-				sizes = [ 'site_icon-32', 'thumbnail', 'full' ], link,
+			var sizes = [ 'site_icon-32', 'thumbnail', 'full' ], link,
 				icon;
 
 			_.each( sizes, function( size ) {
@@ -4861,14 +4822,6 @@
 			// Update the icon in-browser.
 			link = $( 'link[rel="icon"][sizes="32x32"]' );
 			link.attr( 'href', icon.url );
-
-			// Set focus to the first relevant button after the icon.
-			_.defer( function() {
-				var firstButton = control.container.find( '.actions .button' ).first();
-				if ( firstButton.length ) {
-					firstButton.focus();
-				}
-			} );
 		},
 
 		/**

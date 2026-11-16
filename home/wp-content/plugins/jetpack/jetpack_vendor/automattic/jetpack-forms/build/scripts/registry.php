@@ -7,9 +7,5 @@
  */
 
 return array(
-	array(
-		'handle' => 'jetpack-forms-init',
-		'path' => 'init/index',
-		'asset' => 'init/index.min.asset.php',
-	),
+
 );

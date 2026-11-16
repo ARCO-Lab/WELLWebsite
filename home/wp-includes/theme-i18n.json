@@ -43,24 +43,12 @@
 				{
 					"name": "Aspect ratio name"
 				}
-			],
-			"dimensionSizes": [
-				{
-					"name": "Dimension size name"
-				}
 			]
 		},
 		"shadow": {
 			"presets": [
 				{
 					"name": "Shadow name"
-				}
-			]
-		},
-		"border": {
-			"radiusSizes": [
-				{
-					"name": "Border radius size name"
 				}
 			]
 		},
@@ -100,24 +88,12 @@
 						{
 							"name": "Aspect ratio name"
 						}
-					],
-					"dimensionSizes": [
-						{
-							"name": "Dimension size name"
-						}
 					]
 				},
 				"spacing": {
 					"spacingSizes": [
 						{
 							"name": "Space size name"
-						}
-					]
-				},
-				"border": {
-					"radiusSizes": [
-						{
-							"name": "Border radius size name"
 						}
 					]
 				}

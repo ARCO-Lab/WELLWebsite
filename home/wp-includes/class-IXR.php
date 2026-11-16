@@ -41,7 +41,7 @@
 
 // Don't load directly.
 if ( ! defined( 'ABSPATH' ) ) {
-	exit;
+	die( '-1' );
 }
 
 require_once ABSPATH . WPINC . '/IXR/class-IXR-server.php';

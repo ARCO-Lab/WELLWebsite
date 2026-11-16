@@ -14,41 +14,9 @@
  *
  * @property string $page_template
  *
- * @property-read list<non-negative-int> $ancestors
- * @property-read list<non-negative-int> $post_category
- * @property-read list<non-empty-string> $tags_input
- *
- * @phpstan-type Data_Array array{
- *     ID: non-negative-int,
- *     post_author: numeric-string|'',
- *     post_date: string,
- *     post_date_gmt: string,
- *     post_content: string,
- *     post_title: string,
- *     post_excerpt: string,
- *     post_status: non-empty-string,
- *     comment_status: non-empty-string,
- *     ping_status: non-empty-string,
- *     post_password: string,
- *     post_name: string,
- *     to_ping: string,
- *     pinged: string,
- *     post_modified: string,
- *     post_modified_gmt: string,
- *     post_content_filtered: string,
- *     post_parent: non-negative-int,
- *     guid: string,
- *     menu_order: int,
- *     post_type: non-empty-string,
- *     post_mime_type: string,
- *     comment_count: numeric-string,
- *     filter: 'raw'|'edit'|'db'|'display'|'attribute'|'js'|'sample'|null,
- *     ancestors: list<non-negative-int>,
- *     page_template: string,
- *     post_category: list<non-negative-int>,
- *     tags_input: list<non-empty-string>,
- *     ...
- * }
+ * @property-read int[]    $ancestors
+ * @property-read int[]    $post_category
+ * @property-read string[] $tags_input
  */
 #[AllowDynamicProperties]
 final class WP_Post {
@@ -58,19 +26,16 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var int
-	 * @phpstan-var non-negative-int
 	 */
 	public $ID;
 
 	/**
 	 * ID of post author.
 	 *
-	 * A numeric string, for compatibility reasons. May be an empty string for a
-	 * default post that has not yet been assigned an author.
+	 * A numeric string, for compatibility reasons.
 	 *
 	 * @since 3.5.0
 	 * @var string
-	 * @phpstan-var numeric-string|''
 	 */
 	public $post_author = '0';
 
@@ -119,7 +84,6 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var string
-	 * @phpstan-var non-empty-string
 	 */
 	public $post_status = 'publish';
 
@@ -128,7 +92,6 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var string
-	 * @phpstan-var non-empty-string
 	 */
 	public $comment_status = 'open';
 
@@ -137,7 +100,6 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var string
-	 * @phpstan-var non-empty-string
 	 */
 	public $ping_status = 'open';
 
@@ -202,7 +164,6 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var int
-	 * @phpstan-var non-negative-int
 	 */
 	public $post_parent = 0;
 
@@ -227,7 +188,6 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var string
-	 * @phpstan-var non-empty-string
 	 */
 	public $post_type = 'post';
 
@@ -246,7 +206,6 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 * @var string
-	 * @phpstan-var numeric-string
 	 */
 	public $comment_count = '0';
 
@@ -255,11 +214,8 @@ final class WP_Post {
 	 *
 	 * Does not correspond to a DB field.
 	 *
-	 * The 'sample' value is set exclusively by {@see get_sample_permalink()} and is read during permalink previewing.
-	 *
 	 * @since 3.5.0
-	 * @var string|null
-	 * @phpstan-var 'raw'|'edit'|'db'|'display'|'attribute'|'js'|'sample'|null
+	 * @var string
 	 */
 	public $filter;
 
@@ -272,20 +228,18 @@ final class WP_Post {
 	 *
 	 * @param int $post_id Post ID.
 	 * @return WP_Post|false Post object, false otherwise.
-	 *
-	 * @phpstan-param int|numeric-string $post_id
 	 */
 	public static function get_instance( $post_id ) {
 		global $wpdb;
 
 		$post_id = (int) $post_id;
-		if ( $post_id <= 0 ) {
+		if ( ! $post_id ) {
 			return false;
 		}
 
 		$_post = wp_cache_get( $post_id, 'posts' );
 
-		if ( ! ( $_post instanceof stdClass ) && ! ( $_post instanceof WP_Post ) ) {
+		if ( ! $_post ) {
 			$_post = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $wpdb->posts WHERE ID = %d LIMIT 1", $post_id ) );
 
 			if ( ! $_post ) {
@@ -293,7 +247,7 @@ final class WP_Post {
 			}
 
 			$_post = sanitize_post( $_post, 'raw' );
-			wp_cache_add( (int) $_post->ID, $_post, 'posts' );
+			wp_cache_add( $_post->ID, $_post, 'posts' );
 		} elseif ( empty( $_post->filter ) || 'raw' !== $_post->filter ) {
 			$_post = sanitize_post( $_post, 'raw' );
 		}
@@ -306,7 +260,7 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 *
-	 * @param object $post Post object.
+	 * @param WP_Post|object $post Post object.
 	 */
 	public function __construct( $post ) {
 		foreach ( get_object_vars( $post ) as $key => $value ) {
@@ -360,7 +314,7 @@ final class WP_Post {
 				$terms = get_the_terms( $this, 'category' );
 			}
 
-			if ( empty( $terms ) || $terms instanceof WP_Error ) {
+			if ( empty( $terms ) ) {
 				return array();
 			}
 
@@ -372,7 +326,7 @@ final class WP_Post {
 				$terms = get_the_terms( $this, 'post_tag' );
 			}
 
-			if ( empty( $terms ) || $terms instanceof WP_Error ) {
+			if ( empty( $terms ) ) {
 				return array();
 			}
 
@@ -394,22 +348,12 @@ final class WP_Post {
 	}
 
 	/**
-	 * Applies the provided context filter for the current post.
-	 *
-	 * If the requested filter was already applied, then it returns without any changes.
-	 *
-	 * If the 'raw' filter is supplied, then a new instance of the post is obtained and this method _may_ return false
-	 * in case the underlying post was deleted.
+	 * {@Missing Summary}
 	 *
 	 * @since 3.5.0
 	 *
 	 * @param string $filter Filter.
-	 * @return WP_Post|false
-	 *
-	 * @phpstan-param 'raw'|'edit'|'db'|'display'|'attribute'|'js' $filter
-	 * @phpstan-return (
-	 *     $filter is 'raw' ? WP_Post|false : WP_Post
-	 * )
+	 * @return WP_Post
 	 */
 	public function filter( $filter ) {
 		if ( $this->filter === $filter ) {
@@ -428,9 +372,7 @@ final class WP_Post {
 	 *
 	 * @since 3.5.0
 	 *
-	 * @return array<string, mixed> Object as array.
-	 *
-	 * @phpstan-return Data_Array
+	 * @return array Object as array.
 	 */
 	public function to_array() {
 		$post = get_object_vars( $this );
@@ -441,7 +383,6 @@ final class WP_Post {
 			}
 		}
 
-		/** @var Data_Array $post */
 		return $post;
 	}
 }

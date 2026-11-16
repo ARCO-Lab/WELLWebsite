@@ -35,7 +35,6 @@
 		{ "name": "outline", "label": "Outline" }
 	],
 	"supports": {
-		"anchor": true,
 		"html": false,
 		"align": true,
 		"spacing": {
@@ -65,5 +64,6 @@
 				"style": true
 			}
 		}
-	}
+	},
+	"editorStyle": "wp-block-tag-cloud-editor"
 }

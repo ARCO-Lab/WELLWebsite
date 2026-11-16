@@ -9,8 +9,7 @@
 	"textdomain": "default",
 	"attributes": {
 		"label": {
-			"type": "string",
-			"role": "content"
+			"type": "string"
 		},
 		"type": {
 			"type": "string"
@@ -29,8 +28,7 @@
 			"default": false
 		},
 		"url": {
-			"type": "string",
-			"role": "content"
+			"type": "string"
 		},
 		"title": {
 			"type": "string"
@@ -40,14 +38,7 @@
 		},
 		"isTopLevelItem": {
 			"type": "boolean"
-		},
-		"isParentSubmenu": {
-			"type": "boolean",
-			"default": true
 		}
-	},
-	"providesContext": {
-		"core/isInsideSubmenu": "isParentSubmenu"
 	},
 	"usesContext": [
 		"textColor",
@@ -63,11 +54,9 @@
 		"showSubmenuIcon",
 		"maxNestingLevel",
 		"openSubmenusOnClick",
-		"submenuVisibility",
 		"style"
 	],
 	"supports": {
-		"anchor": true,
 		"reusable": false,
 		"html": false,
 		"typography": {

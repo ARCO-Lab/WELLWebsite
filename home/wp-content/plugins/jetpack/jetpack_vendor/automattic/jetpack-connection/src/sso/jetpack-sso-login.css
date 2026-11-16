@@ -91,15 +91,13 @@
 	padding: 26px 24px;
 }
 
-.jetpack-sso-or,
-.jetpack-sso-then {
+.jetpack-sso-or {
 	margin-bottom: 16px;
 	position: relative;
 	text-align: center;
 }
 
-.jetpack-sso-or::before,
-.jetpack-sso-then::before {
+.jetpack-sso-or::before {
 	background: #dcdcde;
 	content: "";
 	height: 1px;
@@ -109,8 +107,7 @@
 	width: 100%;
 }
 
-.jetpack-sso-or span,
-.jetpack-sso-then span {
+.jetpack-sso-or span {
 	background: #fff;
 	color: #777;
 	position: relative;
@@ -119,10 +116,6 @@
 }
 
 #jetpack-sso-wrap .button {
-
-	/* Core login.css floats .button-primary right, which pulls
-	   the next block up under the button. */
-	float: none;
 	display: flex;
 	justify-content: center;
 	align-items: center;

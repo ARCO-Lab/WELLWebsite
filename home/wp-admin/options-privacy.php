@@ -30,7 +30,7 @@ add_filter(
 	}
 );
 
-$action = $_POST['action'] ?? '';
+$action = isset( $_POST['action'] ) ? $_POST['action'] : '';
 
 get_current_screen()->add_help_tab(
 	array(
@@ -51,15 +51,12 @@ if ( ! empty( $action ) ) {
 	check_admin_referer( $action );
 
 	if ( 'set-privacy-page' === $action ) {
-		$previous_privacy_policy_page_id = (int) get_option( 'wp_page_for_privacy_policy' );
-		$privacy_policy_page_id          = isset( $_POST['page_for_privacy_policy'] ) ? (int) $_POST['page_for_privacy_policy'] : 0;
+		$privacy_policy_page_id = isset( $_POST['page_for_privacy_policy'] ) ? (int) $_POST['page_for_privacy_policy'] : 0;
 		update_option( 'wp_page_for_privacy_policy', $privacy_policy_page_id );
 
-		$privacy_page_message_type = 'success';
+		$privacy_page_updated_message = __( 'Privacy Policy page updated successfully.' );
 
 		if ( $privacy_policy_page_id ) {
-			$privacy_page_updated_message = __( 'Privacy Policy page updated successfully.' );
-
 			/*
 			 * Don't always link to the menu customizer:
 			 *
@@ -78,16 +75,9 @@ if ( ! empty( $action ) ) {
 					esc_url( add_query_arg( 'autofocus[panel]', 'nav_menus', admin_url( 'customize.php' ) ) )
 				);
 			}
-		} elseif ( $previous_privacy_policy_page_id ) {
-			// A previously set Privacy Policy page was cleared.
-			$privacy_page_updated_message = __( 'Privacy Policy page removed.' );
-		} else {
-			// No Privacy Policy page was set before, and none is set now.
-			$privacy_page_updated_message = __( 'No Privacy Policy page is currently set.' );
-			$privacy_page_message_type    = 'info';
 		}
 
-		add_settings_error( 'page_for_privacy_policy', 'page_for_privacy_policy', $privacy_page_updated_message, $privacy_page_message_type );
+		add_settings_error( 'page_for_privacy_policy', 'page_for_privacy_policy', $privacy_page_updated_message, 'success' );
 	} elseif ( 'create-privacy-page' === $action ) {
 
 		if ( ! class_exists( 'WP_Privacy_Policy_Content' ) ) {

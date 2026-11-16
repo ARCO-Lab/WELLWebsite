@@ -64,6 +64,7 @@ class POP3 {
                 set_time_limit($timeout);
             }
         }
+        return true;
     }
 
 	/**

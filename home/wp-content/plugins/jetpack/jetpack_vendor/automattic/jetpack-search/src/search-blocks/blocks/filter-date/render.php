@@ -10,10 +10,6 @@
 
 namespace Automattic\Jetpack\Search;
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
-
 // phpcs:disable VariableAnalysis.CodeAnalysis.VariableAnalysis.UndefinedVariable
 
 // @phan-suppress-next-line PhanUndeclaredGlobalVariable
@@ -34,23 +30,22 @@ wp_interactivity_state(
 	)
 );
 
-$view          = Search_Blocks::pre_hydration_filter_view( $filter_key );
-$label         = $config['label'];
-$display_style = Search_Blocks::normalize_display_style( $attributes['displayStyle'] ?? null );
+$label = $config['label'];
 ?>
 <div
-	<?php echo wp_kses_data( get_block_wrapper_attributes( array( 'data-display-style' => $display_style ) ) ); ?>
+	<?php echo wp_kses_data( get_block_wrapper_attributes() ); ?>
 	data-wp-interactive="jetpack-search"
-	<?php Search_Blocks::emit_filter_wrapper_context( $filter_key, $view['show_wrapper'] ); ?>
-	data-wp-bind--hidden="context.wrapperHidden"
-	data-wp-watch="callbacks.syncFilterWrapperVisibility"
-	<?php echo $view['show_wrapper'] ? '' : 'hidden'; ?>
+	<?php echo wp_kses_data( wp_interactivity_data_wp_context( array( 'filterKey' => $filter_key ) ) ); ?>
+	data-wp-bind--hidden="!state.hasFilterBuckets"
+	hidden
 >
 	<?php if ( '' !== $label ) : ?>
 		<h3 class="jetpack-search-filter__title"><?php echo esc_html( $label ); ?></h3>
 	<?php endif; ?>
-	<?php require __DIR__ . '/../filter-skeleton-partial.php'; ?>
-	<ul class="jetpack-search-filter__list">
+	<ul
+		class="jetpack-search-filter__list"
+		data-wp-bind--hidden="state.allBucketsSelected"
+	>
 		<template
 			data-wp-each--item="state.filterItems"
 			data-wp-each-key="context.item.value"
@@ -62,7 +57,6 @@ $display_style = Search_Blocks::normalize_display_style( $attributes['displaySty
 					<input
 						type="checkbox"
 						data-wp-bind--value="context.item.value"
-						data-wp-bind--checked="context.item.checked"
 						data-wp-on--change="actions.onFilterChange"
 					/>
 					<span
@@ -78,4 +72,11 @@ $display_style = Search_Blocks::normalize_display_style( $attributes['displaySty
 			</li>
 		</template>
 	</ul>
+	<p
+		class="jetpack-search-filter__all-selected"
+		data-wp-bind--hidden="!state.allBucketsSelected"
+		hidden
+	>
+		<?php esc_html_e( 'All filters applied', 'jetpack-search-pkg' ); ?>
+	</p>
 </div>

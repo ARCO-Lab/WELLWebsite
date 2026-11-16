@@ -29,7 +29,7 @@ class WP_HTML_Token {
 	 *
 	 * @since 6.4.0
 	 *
-	 * @var string|null
+	 * @var string
 	 */
 	public $bookmark_name = null;
 

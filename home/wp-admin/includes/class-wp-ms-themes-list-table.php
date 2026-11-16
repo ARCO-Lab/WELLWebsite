@@ -37,8 +37,8 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	 *
 	 * @see WP_List_Table::__construct() for more information on default arguments.
 	 *
-	 * @global string $status The current theme status.
-	 * @global int    $page   The current page number.
+	 * @global string $status
+	 * @global int    $page
 	 *
 	 * @param array $args An associative array of arguments.
 	 */
@@ -48,18 +48,18 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 		parent::__construct(
 			array(
 				'plural' => 'themes',
-				'screen' => $args['screen'] ?? null,
+				'screen' => isset( $args['screen'] ) ? $args['screen'] : null,
 			)
 		);
 
-		$status = $_REQUEST['theme_status'] ?? 'all';
+		$status = isset( $_REQUEST['theme_status'] ) ? $_REQUEST['theme_status'] : 'all';
 		if ( ! in_array( $status, array( 'all', 'enabled', 'disabled', 'upgrade', 'search', 'broken', 'auto-update-enabled', 'auto-update-disabled' ), true ) ) {
 			$status = 'all';
 		}
 
 		$page = $this->get_pagenum();
 
-		$this->is_site_themes = 'site-themes-network' === $this->screen->id;
+		$this->is_site_themes = ( 'site-themes-network' === $this->screen->id ) ? true : false;
 
 		if ( $this->is_site_themes ) {
 			$this->site_id = isset( $_REQUEST['id'] ) ? (int) $_REQUEST['id'] : 0;
@@ -70,9 +70,7 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Gets the list of CSS classes for the table tag.
-	 *
-	 * @return string[] The list of CSS classes.
+	 * @return array
 	 */
 	protected function get_table_classes() {
 		// @todo Remove and add CSS for .themes.
@@ -80,9 +78,7 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Checks if the current user has permissions to perform AJAX actions.
-	 *
-	 * @return bool True if the current user has permissions, false otherwise.
+	 * @return bool
 	 */
 	public function ajax_user_can() {
 		if ( $this->is_site_themes ) {
@@ -93,14 +89,12 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Prepares the themes list for display.
-	 *
-	 * @global string             $status  The current theme status.
-	 * @global array<string, int> $totals  An array of theme counts for each status.
-	 * @global int                $page    The current page number.
-	 * @global string             $orderby The column to order the themes list by.
-	 * @global string             $order   The order of the themes list (ASC or DESC).
-	 * @global string             $s       The search string.
+	 * @global string $status
+	 * @global array $totals
+	 * @global int $page
+	 * @global string $orderby
+	 * @global string $order
+	 * @global string $s
 	 */
 	public function prepare_items() {
 		global $status, $totals, $page, $orderby, $order, $s;
@@ -159,7 +153,7 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 			$themes[ $filter ][ $key ] = $themes['all'][ $key ];
 
 			$theme_data = array(
-				'update_supported' => $theme->update_supported ?? true,
+				'update_supported' => isset( $theme->update_supported ) ? $theme->update_supported : true,
 			);
 
 			// Extra info if known. array_merge() ensures $theme_data has precedence if keys collide.
@@ -267,10 +261,8 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Filters a theme by the search term.
-	 *
-	 * @param WP_Theme $theme The WP_Theme object to check.
-	 * @return bool True if the theme matches the search term, false otherwise.
+	 * @param WP_Theme $theme
+	 * @return bool
 	 */
 	public function _search_callback( $theme ) {
 		static $term = null;
@@ -298,14 +290,11 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 
 	// Not used by any core columns.
 	/**
-	 * Compares the order of two themes by a specific field.
-	 *
-	 * @global string $orderby The column to order the themes list by.
-	 * @global string $order   The order of the themes list (ASC or DESC).
-	 *
-	 * @param WP_Theme $theme_a The first theme to compare.
-	 * @param WP_Theme $theme_b The second theme to compare.
-	 * @return int 0 if equal, -1 if the first is less than the second, 1 if more.
+	 * @global string $orderby
+	 * @global string $order
+	 * @param array $theme_a
+	 * @param array $theme_b
+	 * @return int
 	 */
 	public function _order_callback( $theme_a, $theme_b ) {
 		global $orderby, $order;
@@ -313,13 +302,18 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 		$a = $theme_a[ $orderby ];
 		$b = $theme_b[ $orderby ];
 
-		return 'DESC' === $order ?
-			$b <=> $a :
-			$a <=> $b;
+		if ( $a === $b ) {
+			return 0;
+		}
+
+		if ( 'DESC' === $order ) {
+			return ( $a < $b ) ? 1 : -1;
+		} else {
+			return ( $a < $b ) ? -1 : 1;
+		}
 	}
 
 	/**
-	 * Displays the message when there are no items to list.
 	 */
 	public function no_items() {
 		if ( $this->has_items ) {
@@ -330,9 +324,7 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Gets the list of columns for the list table.
-	 *
-	 * @return array<string, string> Array of column titles keyed by their column name.
+	 * @return string[] Array of column titles keyed by their column name.
 	 */
 	public function get_columns() {
 		$columns = array(
@@ -349,9 +341,7 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Gets the list of sortable columns for the list table.
-	 *
-	 * @return array<string, array<int, mixed>> An array of sortable columns.
+	 * @return array
 	 */
 	protected function get_sortable_columns() {
 		return array(
@@ -371,12 +361,9 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Gets the list of views (statuses) for the list table.
-	 *
-	 * @global array<string, int> $totals An array of theme counts for each status.
-	 * @global string             $status The current theme status.
-	 *
-	 * @return array<string, string> The list of views.
+	 * @global array $totals
+	 * @global string $status
+	 * @return array
 	 */
 	protected function get_views() {
 		global $totals, $status;
@@ -470,11 +457,9 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Gets the list of bulk actions for the list table.
+	 * @global string $status
 	 *
-	 * @global string $status The current theme status.
-	 *
-	 * @return array<string, string> The list of bulk actions.
+	 * @return array
 	 */
 	protected function get_bulk_actions() {
 		global $status;
@@ -553,9 +538,9 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	 *
 	 * @since 4.3.0
 	 *
-	 * @global string $status The current theme status.
-	 * @global int    $page   The current page number.
-	 * @global string $s      The search string.
+	 * @global string $status
+	 * @global int    $page
+	 * @global string $s
 	 *
 	 * @param WP_Theme $theme The current WP_Theme object.
 	 */
@@ -710,8 +695,8 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	 *
 	 * @since 4.3.0
 	 *
-	 * @global string             $status The current theme status.
-	 * @global array<string, int> $totals An array of theme counts for each status.
+	 * @global string $status
+	 * @global array  $totals
 	 *
 	 * @param WP_Theme $theme The current WP_Theme object.
 	 */
@@ -798,8 +783,8 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	 *
 	 * @since 5.5.0
 	 *
-	 * @global string $status The current theme status.
-	 * @global int    $page   The current page number.
+	 * @global string $status
+	 * @global int  $page
 	 *
 	 * @param WP_Theme $theme The current WP_Theme object.
 	 */
@@ -940,11 +925,11 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 
 			switch ( $column_name ) {
 				case 'cb':
-					echo '<td class="check-column">';
+					echo '<th scope="row" class="check-column">';
 
 					$this->column_cb( $item );
 
-					echo '</td>';
+					echo '</th>';
 					break;
 
 				case 'name':
@@ -966,11 +951,11 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 						}
 					}
 
-					echo "<th scope='row' class='theme-title column-primary{$extra_classes}' aria-label='" . esc_attr( $item->display( 'Name' ) ) . "'><strong>" . $item->display( 'Name' ) . $active_theme_label . '</strong>';
+					echo "<td class='theme-title column-primary{$extra_classes}'><strong>" . $item->display( 'Name' ) . $active_theme_label . '</strong>';
 
 					$this->column_name( $item );
 
-					echo '</th>';
+					echo '</td>';
 					break;
 
 				case 'description':
@@ -1000,12 +985,10 @@ class WP_MS_Themes_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Handles the output for a single table row.
+	 * @global string $status
+	 * @global array  $totals
 	 *
-	 * @global string             $status The current theme status.
-	 * @global array<string, int> $totals An array of theme counts for each status.
-	 *
-	 * @param WP_Theme $theme The current WP_Theme object.
+	 * @param WP_Theme $theme
 	 */
 	public function single_row( $theme ) {
 		global $status, $totals;

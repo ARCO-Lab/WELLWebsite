@@ -49,10 +49,7 @@ function wp_apply_aria_label_support( $block_type, $block_attributes ) {
 	}
 
 	$has_aria_label_support = block_has_support( $block_type, array( 'ariaLabel' ), false );
-	if (
-		! $has_aria_label_support ||
-		wp_should_skip_block_supports_serialization( $block_type, 'ariaLabel' )
-	) {
+	if ( ! $has_aria_label_support ) {
 		return array();
 	}
 

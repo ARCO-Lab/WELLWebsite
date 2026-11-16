@@ -43,7 +43,6 @@
 	},
 	"usesContext": [ "enhancedPagination" ],
 	"supports": {
-		"anchor": true,
 		"align": true,
 		"html": false,
 		"spacing": {

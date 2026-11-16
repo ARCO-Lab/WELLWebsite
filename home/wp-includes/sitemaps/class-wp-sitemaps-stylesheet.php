@@ -20,7 +20,6 @@ class WP_Sitemaps_Stylesheet {
 	 * Renders the XSL stylesheet depending on whether it's the sitemap index or not.
 	 *
 	 * @param string $type Stylesheet type. Either 'sitemap' or 'index'.
-	 * @return never
 	 */
 	public function render_stylesheet( $type ) {
 		header( 'Content-Type: application/xml; charset=UTF-8' );

@@ -14,8 +14,6 @@
  * This class is for internal usage of the WP_HTML_Tag_Processor class.
  *
  * @access private
- * @ignore
- *
  * @since 6.2.0
  * @since 6.5.0 Replaced `end` with `length` to more closely match `substr()`.
  *
@@ -32,7 +30,7 @@ class WP_HTML_Attribute_Token {
 	public $name;
 
 	/**
-	 * Byte offset in the input HTML where the attribute value starts.
+	 * Attribute value.
 	 *
 	 * @since 6.2.0
 	 *
@@ -101,7 +99,7 @@ class WP_HTML_Attribute_Token {
 	 * @since 6.5.0 Replaced `end` with `length` to more closely match `substr()`.
 	 *
 	 * @param string $name         Attribute name.
-	 * @param int    $value_start  Byte offset where the attribute value starts.
+	 * @param int    $value_start  Attribute value.
 	 * @param int    $value_length Number of bytes attribute value spans.
 	 * @param int    $start        The string offset where the attribute name starts.
 	 * @param int    $length       Byte length of the entire attribute name or name and value pair expression.

@@ -1,7 +1,7 @@
 <?php
 /**
  * Module Name: Post List
- * Module Description: Show featured images and a copy link action in your WP Admin post and page lists.
+ * Module Description: Display a customizable list of your latest posts anywhere on your site.
  * Sort Order: 31
  * Recommendation Order: 12
  * First Introduced: 11.3

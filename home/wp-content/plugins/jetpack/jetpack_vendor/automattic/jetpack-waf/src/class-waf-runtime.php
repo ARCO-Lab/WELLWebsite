@@ -203,7 +203,7 @@ class Waf_Runtime {
 				} else {
 					// otherwise just mark single props to ignore.
 					$targets[ $name ]['except'] = array_merge(
-						$targets[ $name ]['except'] ?? array(),
+						isset( $targets[ $name ]['except'] ) ? $targets[ $name ]['except'] : array(),
 						$props
 					);
 				}
@@ -314,9 +314,7 @@ class Waf_Runtime {
 	 * @param int    $status_code Http status code.
 	 */
 	public function block( $action, $rule_id, $reason, $status_code = 403 ) {
-		// The recovery flow needs transients, `wp_salt()` and `$pagenow`, so it cannot run in
-		// standalone mode, where the WAF executes from `auto_prepend_file` before WordPress.
-		if ( 'ip block list' === $reason && defined( 'ABSPATH' ) ) {
+		if ( 'ip block list' === $reason ) {
 			$real_ip = $this->request->get_real_user_ip_address();
 
 			if ( $this->is_ip_allowed_for_recovery( $real_ip ) ) {
@@ -342,10 +340,6 @@ class Waf_Runtime {
 		if ( defined( 'JETPACK_WAF_MODE' ) && 'normal' === JETPACK_WAF_MODE ) {
 			$protocol = isset( $_SERVER['SERVER_PROTOCOL'] ) ? wp_unslash( $_SERVER['SERVER_PROTOCOL'] ) : 'HTTP';
 			header( $protocol . ' 403 Forbidden', true, $status_code );
-			if ( 'ip block list' === $reason ) {
-				// Plain English: in standalone mode WordPress, and so translation, is not loaded yet.
-				die( 'Access to this site from your IP address has been blocked. If you manage this site, please log in for additional information. Otherwise, contact the site owner.' );
-			}
 			die( "rule $rule_id - reason $reason" );
 		}
 	}
@@ -403,7 +397,9 @@ class Waf_Runtime {
 	 * @param string $key Key.
 	 */
 	public function get_var( $key ) {
-		return $this->state[ $key ] ?? '';
+		return isset( $this->state[ $key ] )
+			? $this->state[ $key ]
+			: '';
 	}
 
 	/**
@@ -624,8 +620,8 @@ class Waf_Runtime {
 		$return = array();
 		foreach ( $targets as $k => $v ) {
 			$count_only = isset( $v['count'] ) ? self::NORMALIZE_ARRAY_COUNT : 0;
-			$only       = $v['only'] ?? array();
-			$except     = $v['except'] ?? array();
+			$only       = isset( $v['only'] ) ? $v['only'] : array();
+			$except     = isset( $v['except'] ) ? $v['except'] : array();
 			$_k         = strtolower( $k );
 			switch ( $_k ) {
 				case 'request_headers':

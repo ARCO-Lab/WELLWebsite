@@ -29,7 +29,7 @@ class WP_Links_List_Table extends WP_List_Table {
 		parent::__construct(
 			array(
 				'plural' => 'bookmarks',
-				'screen' => $args['screen'] ?? null,
+				'screen' => isset( $args['screen'] ) ? $args['screen'] : null,
 			)
 		);
 	}
@@ -42,10 +42,10 @@ class WP_Links_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * @global int    $cat_id  Link category ID.
-	 * @global string $s       Search string.
-	 * @global string $orderby The field to order the links by.
-	 * @global string $order   The direction to order the links.
+	 * @global int    $cat_id
+	 * @global string $s
+	 * @global string $orderby
+	 * @global string $order
 	 */
 	public function prepare_items() {
 		global $cat_id, $s, $orderby, $order;
@@ -77,15 +77,12 @@ class WP_Links_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Displays the message for no items.
 	 */
 	public function no_items() {
 		_e( 'No links found.' );
 	}
 
 	/**
-	 * Gets the list of bulk actions.
-	 *
 	 * @return array
 	 */
 	protected function get_bulk_actions() {
@@ -96,8 +93,8 @@ class WP_Links_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * @global int $cat_id Link category ID.
-	 * @param string $which The location: 'top' or 'bottom'.
+	 * @global int $cat_id
+	 * @param string $which
 	 */
 	protected function extra_tablenav( $which ) {
 		global $cat_id;
@@ -123,7 +120,7 @@ class WP_Links_List_Table extends WP_List_Table {
 
 			wp_dropdown_categories( $dropdown_options );
 
-			submit_button( __( 'Filter' ), 'compact', 'filter_action', false, array( 'id' => 'post-query-submit' ) );
+			submit_button( __( 'Filter' ), '', 'filter_action', false, array( 'id' => 'post-query-submit' ) );
 			?>
 		</div>
 		<?php
@@ -145,8 +142,6 @@ class WP_Links_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Gets the list of sortable columns.
-	 *
 	 * @return array
 	 */
 	protected function get_sortable_columns() {
@@ -229,7 +224,7 @@ class WP_Links_List_Table extends WP_List_Table {
 	 *
 	 * @since 4.3.0
 	 *
-	 * @global int $cat_id Link category ID.
+	 * @global int $cat_id
 	 *
 	 * @param object $link The current link object.
 	 */
@@ -363,23 +358,5 @@ class WP_Links_List_Table extends WP_List_Table {
 		);
 
 		return $this->row_actions( $actions );
-	}
-
-	/**
-	 * Returns a clean label for the primary (Name) column's row header `aria-label`.
-	 *
-	 * Provides screen readers with just the link name as the row header name,
-	 * preventing them from computing the name from the full cell content.
-	 *
-	 * @since 7.1.0
-	 *
-	 * @param object $link The current link object.
-	 * @return string The link name.
-	 */
-	protected function get_primary_column_aria_label( $link ) {
-		$link_name = html_entity_decode( $link->link_name, ENT_QUOTES, get_bloginfo( 'charset' ) );
-		$link_name = wp_strip_all_tags( $link_name );
-
-		return $link_name;
 	}
 }

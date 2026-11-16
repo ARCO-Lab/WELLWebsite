@@ -129,7 +129,7 @@ abstract class WPCOM_REST_API_V2_Field_Controller {
 		}
 
 		// If you have something more complicated, use $schema['default'].
-		switch ( $schema['type'] ?? 'null' ) {
+		switch ( isset( $schema['type'] ) ? $schema['type'] : 'null' ) {
 			case 'string':
 				return '';
 			case 'integer':

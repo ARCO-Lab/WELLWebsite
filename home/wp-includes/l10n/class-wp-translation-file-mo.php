@@ -90,7 +90,7 @@ class WP_Translation_File_MO extends WP_Translation_File {
 	protected function parse_file(): bool {
 		$this->parsed = true;
 
-		$file_contents = file_get_contents( $this->file );
+		$file_contents = file_get_contents( $this->file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
 
 		if ( false === $file_contents ) {
 			return false;

@@ -48,8 +48,7 @@ if ( isset( $_REQUEST['c'] ) ) {
 		);
 	}
 } else {
-	$comment_id = 0;
-	$comment    = null;
+	$comment = null;
 }
 
 switch ( $action ) {

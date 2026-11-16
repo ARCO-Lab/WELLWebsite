@@ -219,7 +219,7 @@ class Jetpack_ReCaptcha {
 		);
 
 		if ( ! $this->config['script_lazy'] ) {
-			$html .= sprintf(
+			$html = $html . sprintf(
 				// phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript
 				'<script src="%s"%s%s></script>
 				',

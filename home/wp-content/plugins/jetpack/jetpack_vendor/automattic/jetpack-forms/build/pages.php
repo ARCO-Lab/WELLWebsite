@@ -6,11 +6,5 @@
  * @package jetpack_forms
  */
 
-foreach ( [
-	__DIR__ . '/pages/jetpack-forms-responses/page.php',
-	__DIR__ . '/pages/jetpack-forms-responses/page-wp-admin.php',
-] as $file ) {
-	if ( file_exists( $file ) ) {
-		require_once $file;
-	}
-}
+require_once __DIR__ . '/pages/jetpack-forms-responses/page.php';
+require_once __DIR__ . '/pages/jetpack-forms-responses/page-wp-admin.php';

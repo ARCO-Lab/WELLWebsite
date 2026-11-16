@@ -9,23 +9,17 @@
 
 namespace Automattic\Jetpack\Search;
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
-
 // phpcs:disable VariableAnalysis.CodeAnalysis.VariableAnalysis.UndefinedVariable
 
-// First-paint FOUC guard: emit `hidden` on the wrapper when the seeded state
-// has no active filters, so the "Active filters:" heading doesn't briefly
-// render before hydration and push siblings ~30px down — `data-wp-bind--hidden`
-// keeps the attribute reactive afterwards. Reads activeFilters AND priceRange
-// so a price-only deep link doesn't keep the wrapper hidden after hydration
-// sees a half-open range come through the URL.
+// Render `hidden` on first paint when no filters are active. JS unhides once
+// `state.hasActiveFilters` flips — relying only on data-wp-bind--hidden leaves
+// the "Active filters:" label and "Clear all" button visible on the server-
+// rendered HTML until hydration, which pushes sibling filter blocks ~30px
+// down and misaligns the sidebar with the adjacent results column.
 $seeded_state        = function_exists( 'wp_interactivity_state' )
 	? wp_interactivity_state( 'jetpack-search' )
 	: array();
 $seeded_active       = $seeded_state['activeFilters'] ?? array();
-$seeded_price_range  = $seeded_state['priceRange'] ?? null;
 $has_active_on_paint = false;
 foreach ( (array) $seeded_active as $values ) {
 	if ( is_array( $values ) && ! empty( $values ) ) {
@@ -33,30 +27,10 @@ foreach ( (array) $seeded_active as $values ) {
 		break;
 	}
 }
-if ( ! $has_active_on_paint && is_array( $seeded_price_range ) ) {
-	$min = $seeded_price_range['min'] ?? null;
-	$max = $seeded_price_range['max'] ?? null;
-	if ( $min !== null || $max !== null ) {
-		$has_active_on_paint = true;
-	}
-}
-
-// Skip `data-wp-interactive` when an ancestor already owns the
-// `jetpack-search` interactive scope (signalled by the
-// `jetpack-search/inInteractiveScope` block context from
-// `jetpack-search/filters-popover`). Nesting two same-namespace interactive
-// scopes makes the Interactivity runtime re-run its `data-wp-each` pass
-// against the inner scope and materializes the pill template twice — the
-// SEARCH-266 trigger. Inheriting the parent's scope keeps every directive
-// resolving against a single store hydration. The `instanceof` check
-// narrows `$block`'s type for static analysis — WP guarantees it's set
-// to a `WP_Block` instance when render.php is included from `WP_Block::render()`.
-$in_interactive_scope = isset( $block ) && $block instanceof \WP_Block
-	&& ! empty( $block->context['jetpack-search/inInteractiveScope'] );
 ?>
 <div
 	<?php echo wp_kses_data( get_block_wrapper_attributes() ); ?>
-	<?php echo $in_interactive_scope ? '' : 'data-wp-interactive="jetpack-search"'; ?>
+	data-wp-interactive="jetpack-search"
 	data-wp-bind--hidden="!state.hasActiveFilters"
 	<?php echo $has_active_on_paint ? '' : 'hidden'; ?>
 >
@@ -71,7 +45,7 @@ $in_interactive_scope = isset( $block ) && $block instanceof \WP_Block
 			<li>
 				<button
 					type="button"
-					class="jetpack-search-active-filters__pill"
+					class="wp-element-button jetpack-search-active-filters__pill"
 					data-wp-on--click="actions.onRemovePill"
 					data-wp-bind--aria-label="context.pill.ariaLabel"
 				>
@@ -84,4 +58,11 @@ $in_interactive_scope = isset( $block ) && $block instanceof \WP_Block
 			</li>
 		</template>
 	</ul>
+	<button
+		type="button"
+		class="jetpack-search-active-filters__clear-all"
+		data-wp-on--click="actions.clearFilters"
+	>
+		<?php esc_html_e( 'Clear all', 'jetpack-search-pkg' ); ?>
+	</button>
 </div>

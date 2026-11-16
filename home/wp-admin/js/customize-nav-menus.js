@@ -667,7 +667,6 @@
 				itemType = dataContainer.data( 'type' ),
 				itemObject = dataContainer.data( 'object' ),
 				itemTypeLabel = dataContainer.data( 'type_label' ),
-				inputError = container.find('.create-item-error'),
 				promise;
 
 			if ( ! this.currentMenuControl ) {
@@ -678,18 +677,13 @@
 			if ( 'post_type' !== itemType ) {
 				return;
 			}
+
 			if ( '' === itemName.val().trim() ) {
-				container.addClass( 'form-invalid' );
-				itemName.attr('aria-invalid', 'true');
-				itemName.attr('aria-describedby', inputError.attr('id'));
-				inputError.slideDown( 'fast' );
-				wp.a11y.speak( inputError.text() );
+				itemName.addClass( 'invalid' );
+				itemName.focus();
 				return;
 			} else {
-				container.removeClass( 'form-invalid' );
-				itemName.attr('aria-invalid', 'false');
-				itemName.removeAttr('aria-describedby');
-				inputError.hide();
+				itemName.removeClass( 'invalid' );
 				container.find( '.accordion-section-title' ).addClass( 'loading' );
 			}
 
@@ -3539,7 +3533,7 @@
 
 	/**
 	 * Apply sanitize_text_field()-like logic to the supplied name, returning a
-	 * "unnamed" fallback string if the name is then empty.
+	 * "unnammed" fallback string if the name is then empty.
 	 *
 	 * @alias wp.customize.Menus~displayNavMenuName
 	 *

@@ -18,6 +18,9 @@
 			"source": "rich-text",
 			"selector": "cite",
 			"role": "content"
+		},
+		"textAlign": {
+			"type": "string"
 		}
 	},
 	"supports": {
@@ -26,10 +29,8 @@
 		"background": {
 			"backgroundImage": true,
 			"backgroundSize": true,
-			"gradient": true,
 			"__experimentalDefaultControls": {
-				"backgroundImage": true,
-				"gradient": true
+				"backgroundImage": true
 			}
 		},
 		"color": {
@@ -42,7 +43,10 @@
 			}
 		},
 		"dimensions": {
-			"minHeight": true
+			"minHeight": true,
+			"__experimentalDefaultControls": {
+				"minHeight": false
+			}
 		},
 		"spacing": {
 			"margin": true,
@@ -51,7 +55,6 @@
 		"typography": {
 			"fontSize": true,
 			"lineHeight": true,
-			"textAlign": true,
 			"__experimentalFontFamily": true,
 			"__experimentalFontWeight": true,
 			"__experimentalFontStyle": true,

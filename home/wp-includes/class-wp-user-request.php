@@ -20,10 +20,9 @@ final class WP_User_Request {
 	 * User ID.
 	 *
 	 * @since 4.9.6
-	 * @var string
-	 * @phpstan-var numeric-string
+	 * @var int
 	 */
-	public $user_id = '0';
+	public $user_id = 0;
 
 	/**
 	 * User email.

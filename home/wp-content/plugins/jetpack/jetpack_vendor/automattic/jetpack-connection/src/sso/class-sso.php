@@ -14,7 +14,6 @@ use Automattic\Jetpack\Connection\SSO\Notices;
 use Automattic\Jetpack\Connection\SSO\User_Admin;
 use Automattic\Jetpack\Connection\Webhooks\Authorize_Redirect;
 use Automattic\Jetpack\Constants;
-use Automattic\Jetpack\Redirect;
 use Automattic\Jetpack\Roles;
 use Automattic\Jetpack\Status;
 use Automattic\Jetpack\Status\Host;
@@ -34,13 +33,6 @@ class SSO {
 	 * @var false|object
 	 */
 	private $user_data;
-
-	/**
-	 * Whether the SSO attempt failed because the site requires two-step authentication and the WordPress.com account lacks it.
-	 *
-	 * @var bool
-	 */
-	private $two_step_required = false;
 
 	/**
 	 * Automattic\Jetpack\Connection\SSO instance.
@@ -240,7 +232,14 @@ class SSO {
 	 * @param int $user_id User to disconnect from the site.
 	 **/
 	public function xmlrpc_user_disconnect( $user_id ) {
-		$user = self::get_user_by_wpcom_id( $user_id );
+		$user_query = new WP_User_Query(
+			array(
+				'meta_key'   => 'wpcom_user_id',
+				'meta_value' => $user_id,
+			)
+		);
+		$user       = $user_query->get_results();
+		$user       = $user[0];
 
 		if ( $user instanceof WP_User ) {
 			$user = wp_set_current_user( $user->ID );
@@ -292,7 +291,7 @@ class SSO {
 			/**
 			 * Should we show the SSO login form?
 			 *
-			 * $_GET['jetpack-sso-show-default-form'] is used to provide a fallback in case JavaScript is not enabled.
+			 * $_GET['jetpack-sso-default-form'] is used to provide a fallback in case JavaScript is not enabled.
 			 *
 			 * The default_to_sso_login() method allows us to dynamically decide whether we show the SSO login form or not.
 			 * The SSO module uses the method to display the default login form if we cannot find a user to log in via SSO.
@@ -311,11 +310,6 @@ class SSO {
 				}
 			}
 
-			if ( $this->two_step_required && '1' !== $default_form_preference ) {
-				// The two-step screen only follows an SSO attempt, so show the SSO form regardless of the site default.
-				$show_sso_form = true;
-			}
-
 			if ( $show_sso_form ) {
 				$classes[] = 'jetpack-sso-form-display';
 			}
@@ -325,40 +319,21 @@ class SSO {
 	}
 
 	/**
-	 * Print the SSO styles for the login screen.
-	 *
-	 * @deprecated 8.12.0 Use enqueue_login_styles().
+	 * Inlined admin styles for SSO.
 	 */
 	public function print_inline_admin_css() {
-		_deprecated_function( __METHOD__, 'connection-8.12.0', __CLASS__ . '::enqueue_login_styles' );
-		$this->enqueue_login_styles();
-	}
+		?>
+			<style>
+				.jetpack-sso .message {
+					margin-top: 20px;
+				}
 
-	/**
-	 * Enqueue the SSO styles for the login screen.
-	 */
-	public function enqueue_login_styles() {
-		$handle = 'jetpack-sso-login-styles';
-
-		// No src: the handle only carries the inline CSS below. Core enqueues `login` before `login_enqueue_scripts` fires,
-		// so these rules already print after the core login stylesheet, which sets `.message` margins at the same
-		// specificity. No dependency on `login`: plugins that replace the login screen deregister that handle, and a
-		// missing dependency would drop this one from the queue.
-		wp_register_style( $handle, false, array(), Package_Version::PACKAGE_VERSION );
-		wp_enqueue_style( $handle );
-
-		$css = <<<'CSS'
-.jetpack-sso .message {
-	margin-top: 20px;
-}
-
-.jetpack-sso #login .message:first-child,
-.jetpack-sso #login h1 + .message {
-	margin-top: 0;
-}
-CSS;
-
-		wp_add_inline_style( $handle, $css );
+				.jetpack-sso #login .message:first-child,
+				.jetpack-sso #login h1 + .message {
+					margin-top: 0;
+				}
+			</style>
+		<?php
 	}
 
 	/**
@@ -584,7 +559,7 @@ CSS;
 	 */
 	public function display_sso_login_form() {
 		add_filter( 'login_body_class', array( $this, 'login_body_class' ) );
-		add_action( 'login_enqueue_scripts', array( $this, 'enqueue_login_styles' ) );
+		add_action( 'login_head', array( $this, 'print_inline_admin_css' ) );
 
 		if ( ( new Status() )->in_safe_mode() ) {
 			add_filter( 'login_message', array( Notices::class, 'sso_not_allowed_in_safe_mode' ) );
@@ -671,7 +646,7 @@ CSS;
 		 */
 		do_action( 'jetpack_sso_login_form_above_wpcom' );
 
-		if ( $display_name && $gravatar && ! $this->two_step_required ) :
+		if ( $display_name && $gravatar ) :
 			?>
 				<div id="jetpack-sso-wrap__user">
 					<img width="72" height="72" src="<?php echo esc_html( $gravatar ); ?>" />
@@ -691,16 +666,6 @@ CSS;
 
 
 			<div id="jetpack-sso-wrap__action">
-				<?php if ( $this->two_step_required ) : ?>
-					<?php // Opens in a new tab so this tab keeps the button to log in again after setup. ?>
-					<a rel="noopener noreferrer" target="_blank" class="button button-primary" href="<?php echo esc_url( Redirect::get_url( 'calypso-me-security-two-step' ) ); ?>">
-						<?php esc_html_e( 'Set up two-step authentication', 'jetpack-connection' ); ?>
-					</a>
-					<div class="jetpack-sso-then">
-						<span><?php esc_html_e( 'Then', 'jetpack-connection' ); ?></span>
-					</div>
-					<?php echo $this->build_sso_button(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Escaping done in build_sso_button() ?>
-				<?php else : ?>
 					<?php echo $this->build_sso_button( array(), true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Escaping done in build_sso_button() ?>
 
 					<?php if ( $display_name && $gravatar ) : ?>
@@ -730,7 +695,6 @@ CSS;
 							echo esc_html( $sso_explanation );
 						?>
 					</p>
-					<?php endif; ?>
 				<?php endif; ?>
 			</div>
 
@@ -946,11 +910,11 @@ CSS;
 	 * @return bool True if WP.com authorized broker mode for this nonce.
 	 */
 	private static function is_broker_authorized() {
-		$broker_signal = ! empty( $_COOKIE[ self::BROKER_COOKIE ] )
-			? sanitize_key( wp_unslash( $_COOKIE[ self::BROKER_COOKIE ] ) )
+		$broker_signal = ! empty( $_COOKIE[ self::BROKER_COOKIE ] ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			? sanitize_key( wp_unslash( $_COOKIE[ self::BROKER_COOKIE ] ) ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			: false;
-		$current_nonce = ! empty( $_COOKIE['jetpack_sso_nonce'] )
-			? sanitize_key( wp_unslash( $_COOKIE['jetpack_sso_nonce'] ) )
+		$current_nonce = ! empty( $_COOKIE['jetpack_sso_nonce'] ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			? sanitize_key( wp_unslash( $_COOKIE['jetpack_sso_nonce'] ) ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			: false;
 
 		return $broker_signal && $current_nonce && $broker_signal === $current_nonce;
@@ -969,7 +933,7 @@ CSS;
 		// Check the cookie persisted by save_cookies() on the initial login page
 		// load. The live HTTP Referer changes to the site's own wp-login.php when
 		// the user clicks the SSO button, so the cookie carries the original signal.
-		if ( ! empty( $_COOKIE['jetpack_sso_wpcom_referrer'] ) ) {
+		if ( ! empty( $_COOKIE['jetpack_sso_wpcom_referrer'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			return true;
 		}
 
@@ -1042,16 +1006,8 @@ CSS;
 		$wpcom_nonce   = isset( $_GET['sso_nonce'] ) ? sanitize_key( $_GET['sso_nonce'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$wpcom_user_id = isset( $_GET['user_id'] ) ? (int) $_GET['user_id'] : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
-		$token_lookup             = $this->get_signed_user_token_for_wpcom_id( $wpcom_user_id );
-		$signed_user_token        = $token_lookup['signed_token'];
-		$token_validated_for_user = $token_lookup['local_user_id'];
-
 		$xml = new Jetpack_IXR_Client();
-		if ( $signed_user_token ) {
-			$xml->query( 'jetpack.sso.validateResult', $wpcom_nonce, $wpcom_user_id, $signed_user_token );
-		} else {
-			$xml->query( 'jetpack.sso.validateResult', $wpcom_nonce, $wpcom_user_id );
-		}
+		$xml->query( 'jetpack.sso.validateResult', $wpcom_nonce, $wpcom_user_id );
 
 		$user_data = $xml->isError() ? false : $xml->getResponse();
 		if ( empty( $user_data ) ) {
@@ -1077,8 +1033,7 @@ CSS;
 		$tracking = new Tracking();
 
 		if ( Helpers::is_two_step_required() && 0 === (int) $user_data->two_step_enabled ) {
-			$this->user_data         = $user_data;
-			$this->two_step_required = true;
+			$this->user_data = $user_data;
 
 			$tracking->record_user_event(
 				'sso_login_failed',
@@ -1091,12 +1046,7 @@ CSS;
 
 			/** This filter is documented in core/src/wp-includes/pluggable.php */
 			do_action( 'wp_login_failed', $user_data->login, $error );
-			add_filter(
-				'login_message',
-				function ( $message ) use ( $user_data ) {
-					return Notices::error_msg_enable_two_step( $message, $user_data );
-				}
-			);
+			add_filter( 'login_message', array( Notices::class, 'error_msg_enable_two_step' ) );
 			return;
 		}
 
@@ -1105,8 +1055,8 @@ CSS;
 			$user_found_with = 'external_user_id';
 			$user            = get_user_by( 'id', (int) $user_data->external_user_id );
 			if ( $user ) {
-				$expected_id = Utils::get_wpcom_user_id( $user->ID );
-				if ( $expected_id && $expected_id !== (int) $user_data->ID ) {
+				$expected_id = get_user_meta( $user->ID, 'wpcom_user_id', true );
+				if ( $expected_id && $expected_id != $user_data->ID ) { // phpcs:ignore WordPress.PHP.StrictComparisons.LooseComparison, Universal.Operators.StrictComparisons.LooseNotEqual
 					$error = new WP_Error( 'expected_wpcom_user', __( 'Something got a little mixed up and an unexpected WordPress.com user logged in.', 'jetpack-connection' ) );
 
 					$tracking->record_user_event(
@@ -1121,7 +1071,7 @@ CSS;
 					add_filter( 'login_message', array( Notices::class, 'error_invalid_response_data' ) ); // @todo Need to have a better notice. This is only for the sake of testing the validation.
 					return;
 				}
-				self::set_wpcom_user_id_meta( $user->ID, $user_data->ID );
+				update_user_meta( $user->ID, 'wpcom_user_id', $user_data->ID );
 			}
 		}
 
@@ -1130,7 +1080,7 @@ CSS;
 			$user_found_with = 'match_by_email';
 			$user            = get_user_by( 'email', $user_data->email );
 			if ( $user ) {
-				self::set_wpcom_user_id_meta( $user->ID, $user_data->ID );
+				update_user_meta( $user->ID, 'wpcom_user_id', $user_data->ID );
 			}
 		}
 
@@ -1249,19 +1199,8 @@ CSS;
 			$json_api_auth_environment = Helpers::get_json_api_auth_environment();
 
 			$is_json_api_auth  = ! empty( $json_api_auth_environment );
-			$manager           = new Manager();
-			$is_user_connected = $manager->is_user_connected( $user->ID );
-
-			if ( $is_user_connected ) {
-				$is_user_connected = $this->verify_user_token(
-					$user->ID,
-					$user_data,
-					$manager->get_tokens(),
-					$token_validated_for_user
-				);
-			}
-
-			$roles = new Roles();
+			$is_user_connected = ( new Manager() )->is_user_connected( $user->ID );
+			$roles             = new Roles();
 			$tracking->record_user_event(
 				'sso_user_logged_in',
 				array(
@@ -1516,18 +1455,6 @@ CSS;
 	}
 
 	/**
-	 * Sets the wpcom_user_id meta on a local user.
-	 *
-	 * @since 8.6.0
-	 *
-	 * @param int $user_id       The local WordPress user ID to set the meta on.
-	 * @param int $wpcom_user_id The WordPress.com user ID.
-	 */
-	private static function set_wpcom_user_id_meta( $user_id, $wpcom_user_id ) {
-		Utils::set_wpcom_user_id( $user_id, $wpcom_user_id );
-	}
-
-	/**
 	 * Determines local user associated with a given WordPress.com user ID.
 	 *
 	 * @since jetpack-2.6.0
@@ -1546,93 +1473,6 @@ CSS;
 
 		$users = $user_query->get_results();
 		return $users ? array_shift( $users ) : null;
-	}
-
-	/**
-	 * Retrieves the signed user token for a given WP.com user ID, if one exists locally.
-	 *
-	 * Looks up the local WordPress user associated with the WP.com user ID and returns
-	 * a signed representation of their user token along with the local user ID.
-	 * The signed token is sent to WP.com during SSO validation so WP.com can verify
-	 * the token is still valid on its side.
-	 *
-	 * @since 8.6.0
-	 *
-	 * @param int $wpcom_user_id The WordPress.com user ID.
-	 * @return array{signed_token: string, local_user_id: int} The signed token and local user ID.
-	 *               Both values are 0/empty when no valid token exists.
-	 */
-	private function get_signed_user_token_for_wpcom_id( $wpcom_user_id ) {
-		$result = array(
-			'signed_token'  => '',
-			'local_user_id' => 0,
-		);
-
-		if ( ! $wpcom_user_id ) {
-			return $result;
-		}
-
-		$local_user = self::get_user_by_wpcom_id( $wpcom_user_id );
-		if ( ! $local_user ) {
-			return $result;
-		}
-
-		$tokens     = new Tokens();
-		$user_token = $tokens->get_access_token( $local_user->ID );
-		if ( ! $user_token ) {
-			return $result;
-		}
-
-		$signed = $tokens->get_signed_token( $user_token );
-		if ( is_wp_error( $signed ) ) {
-			return $result;
-		}
-
-		$result['signed_token']  = $signed;
-		$result['local_user_id'] = $local_user->ID;
-		return $result;
-	}
-
-	/**
-	 * Verifies that a locally-stored user token is still valid on WP.com.
-	 *
-	 * Uses the `user_token_valid` field from the SSO validate response when the
-	 * signed token was sent for the same user that was resolved during login.
-	 *
-	 * When the validate response can't be trusted for this user (a different user
-	 * was resolved, or no signed token was sent), login proceeds without an extra
-	 * verification call. In that case `set_wpcom_user_id_meta()` records the
-	 * mapping during this login, so the fast path validates the token on the next
-	 * SSO login. This avoids an extra HTTP request on every first-SSO login and
-	 * keeps the Error_Handler from being triggered for users whose token state can
-	 * only be resolved by a direct token-health check.
-	 *
-	 * If the token is found to be invalid, it is removed locally so the user will be
-	 * prompted to re-authorize and obtain a fresh token.
-	 *
-	 * @since 8.6.0
-	 *
-	 * @param int    $user_id                  The local WordPress user ID (the resolved user).
-	 * @param object $user_data                The WP.com user data from jetpack.sso.validateResult.
-	 * @param Tokens $tokens                   The Tokens instance.
-	 * @param int    $token_validated_for_user  The local user ID whose token was sent to WP.com, or 0 if none.
-	 * @return bool True if the user token is valid (or could not be verified), false if invalid and removed.
-	 */
-	private function verify_user_token( $user_id, $user_data, Tokens $tokens, $token_validated_for_user ) {
-		// Only trust the validateResult response if the signed token was for this same user.
-		if ( $token_validated_for_user === $user_id && isset( $user_data->user_token_valid ) ) {
-			if ( false === $user_data->user_token_valid ) {
-				$tokens->disconnect_user( $user_id );
-				return false;
-			}
-			return true;
-		}
-
-		// The signed token was for a different user (or wasn't sent at all), so the
-		// validateResult response can't be trusted for this user. Let login proceed;
-		// the wpcom_user_id meta set during this login means the next SSO login will
-		// validate the token via the fast path.
-		return true;
 	}
 
 	/**

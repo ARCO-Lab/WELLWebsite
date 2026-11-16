@@ -14,8 +14,7 @@
 	"textdomain": "default",
 	"attributes": {
 		"label": {
-			"type": "string",
-			"role": "content"
+			"type": "string"
 		},
 		"type": {
 			"type": "string"
@@ -34,8 +33,7 @@
 			"default": false
 		},
 		"url": {
-			"type": "string",
-			"role": "content"
+			"type": "string"
 		},
 		"title": {
 			"type": "string"
@@ -63,7 +61,6 @@
 		"style"
 	],
 	"supports": {
-		"anchor": true,
 		"reusable": false,
 		"html": false,
 		"__experimentalSlashInserter": true,
@@ -83,11 +80,6 @@
 		"renaming": false,
 		"interactivity": {
 			"clientNavigation": true
-		}
-	},
-	"selectors": {
-		"states": {
-			"-current": ".wp-block-navigation .current-menu-item"
 		}
 	},
 	"editorStyle": "wp-block-navigation-link-editor",

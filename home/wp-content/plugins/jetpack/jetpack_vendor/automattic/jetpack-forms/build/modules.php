@@ -21,11 +21,7 @@ function jetpack_forms_register_script_modules() {
 	$already_registered = true;
 
 	// Load build constants
-	$constants_file = __DIR__ . '/constants.php';
-	if ( ! file_exists( $constants_file ) ) {
-		return;
-	}
-	$build_constants = require $constants_file;
+	$build_constants = require __DIR__ . '/constants.php';
 	$modules_dir     = __DIR__ . '/modules';
 	$modules_file    = $modules_dir . '/registry.php';
 
@@ -38,7 +34,9 @@ function jetpack_forms_register_script_modules() {
 
 	foreach ( $modules as $module ) {
 		// WASM-only modules (e.g., vips worker) only have .min.js; use it even when SCRIPT_DEBUG is `true`.
-		$extension = '.min.js';
+		$extension = ( defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG && empty( $module['min_only'] ) )
+			? '.js'
+			: '.min.js';
 
 		$asset_path = $modules_dir . '/' . $module['asset'];
 		$asset = file_exists( $asset_path ) ? require $asset_path : array();

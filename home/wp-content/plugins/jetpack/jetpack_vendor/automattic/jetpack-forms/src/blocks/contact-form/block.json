@@ -14,13 +14,6 @@
 			"link": true,
 			"gradients": true
 		},
-		"background": {
-			"backgroundImage": true,
-			"backgroundSize": true,
-			"__experimentalDefaultControls": {
-				"backgroundImage": true
-			}
-		},
 		"html": false,
 		"spacing": {
 			"padding": true,
@@ -53,8 +46,7 @@
 				"style": true,
 				"width": true
 			}
-		},
-		"listView": true
+		}
 	},
 	"attributes": {},
 	"editorScript": "file:./editor.js",

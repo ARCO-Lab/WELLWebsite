@@ -15,11 +15,13 @@
 		"linkTarget": {
 			"type": "string",
 			"default": "_self"
+		},
+		"textAlign": {
+			"type": "string"
 		}
 	},
 	"usesContext": [ "commentId" ],
 	"supports": {
-		"anchor": true,
 		"html": false,
 		"spacing": {
 			"margin": true,
@@ -37,7 +39,6 @@
 		"typography": {
 			"fontSize": true,
 			"lineHeight": true,
-			"textAlign": true,
 			"__experimentalFontFamily": true,
 			"__experimentalFontWeight": true,
 			"__experimentalFontStyle": true,

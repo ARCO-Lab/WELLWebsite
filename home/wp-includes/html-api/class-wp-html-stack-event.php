@@ -13,8 +13,6 @@
  * This class is for internal usage of the WP_HTML_Processor class.
  *
  * @access private
- * @ignore
- *
  * @since 6.6.0
  *
  * @see WP_HTML_Processor

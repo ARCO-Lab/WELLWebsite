@@ -1096,7 +1096,7 @@ abstract class WPCOM_JSON_API_Endpoint {
 	 */
 	public function document( $show_description = true ) {
 		global $wpdb;
-		$original_post = $GLOBALS['post'] ?? 'unset';
+		$original_post = isset( $GLOBALS['post'] ) ? $GLOBALS['post'] : 'unset';
 		unset( $GLOBALS['post'] );
 
 		$doc = $this->generate_documentation();
@@ -1449,7 +1449,7 @@ abstract class WPCOM_JSON_API_Endpoint {
 		$last_name  = null;
 		$nice       = null;
 		$url        = null;
-		$ip_address = $author->comment_author_IP ?? '';
+		$ip_address = isset( $author->comment_author_IP ) ? $author->comment_author_IP : '';
 		$site_id    = -1;
 
 		if ( isset( $author->comment_author_email ) ) {
@@ -1475,6 +1475,8 @@ abstract class WPCOM_JSON_API_Endpoint {
 					$first_name = $user->first_name ?? '';
 					$last_name  = $user->last_name ?? '';
 					$nice       = $user->user_nicename ?? '';
+				} else {
+					trigger_error( 'Unknown user', E_USER_WARNING ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
 				}
 			}
 
@@ -1521,6 +1523,8 @@ abstract class WPCOM_JSON_API_Endpoint {
 		if ( ! isset( $id ) ) {
 			$user = get_user_by( 'id', $author );
 			if ( ! $user || is_wp_error( $user ) ) {
+				trigger_error( 'Unknown user', E_USER_WARNING ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
+
 				return null;
 			}
 			$id         = $user->ID;
@@ -1614,30 +1618,6 @@ abstract class WPCOM_JSON_API_Endpoint {
 	}
 
 	/**
-	 * Whether the current user may read the given media item through a media GET endpoint.
-	 *
-	 * Requires `edit_posts`, which Contributors hold, and returns only attachments. Any
-	 * other post type is reported as unknown media.
-	 *
-	 * @param int $media_id Media post ID.
-	 * @return true|WP_Error True if the item may be returned, WP_Error otherwise.
-	 */
-	public function check_media_item_read_permission( $media_id ) {
-		// upload_files can probably be used for other endpoints but we want contributors to be able to use media too.
-		if ( ! current_user_can( 'edit_posts' ) ) {
-			return new WP_Error( 'unauthorized', 'User cannot view media', 403 );
-		}
-
-		$media_item = get_post( $media_id );
-
-		if ( $media_item && 'attachment' !== $media_item->post_type ) {
-			return new WP_Error( 'unknown_media', 'Unknown Media', 404 );
-		}
-
-		return true;
-	}
-
-	/**
 	 * Get a media item.
 	 *
 	 * @param int $media_id Media post ID.
@@ -1699,7 +1679,7 @@ abstract class WPCOM_JSON_API_Endpoint {
 
 		$file      = basename( $attachment_file ? $attachment_file : $file );
 		$file_info = pathinfo( $file );
-		$ext       = $file_info['extension'] ?? null;
+		$ext       = isset( $file_info['extension'] ) ? $file_info['extension'] : null;
 
 		// File operations are handled differently on WordPress.com.
 		if ( defined( 'IS_WPCOM' ) && IS_WPCOM ) {
@@ -1713,19 +1693,19 @@ abstract class WPCOM_JSON_API_Endpoint {
 		}
 
 		$response = array(
-			'ID'          => $media_item->ID ?? null,
+			'ID'          => isset( $media_item->ID ) ? $media_item->ID : null,
 			'URL'         => isset( $media_item->ID ) ? wp_get_attachment_url( $media_item->ID ) : null,
-			'guid'        => $media_item->guid ?? null,
+			'guid'        => isset( $media_item->guid ) ? $media_item->guid : null,
 			'date'        => ( isset( $media_item->post_date_gmt ) && isset( $media_item->post_date ) ) ?
 			(string) $this->format_date( $media_item->post_date_gmt, $media_item->post_date ) : null,
-			'post_ID'     => $media_item->post_parent ?? null,
+			'post_ID'     => isset( $media_item->post_parent ) ? $media_item->post_parent : null,
 			'author_ID'   => isset( $media_item->post_author ) ? (int) $media_item->post_author : null,
 			'file'        => $file,
-			'mime_type'   => $media_item->post_mime_type ?? null,
+			'mime_type'   => isset( $media_item->post_mime_type ) ? $media_item->post_mime_type : null,
 			'extension'   => $ext,
-			'title'       => $media_item->post_title ?? '',
-			'caption'     => $media_item->post_excerpt ?? '',
-			'description' => $media_item->post_content ?? '',
+			'title'       => isset( $media_item->post_title ) ? $media_item->post_title : '',
+			'caption'     => isset( $media_item->post_excerpt ) ? $media_item->post_excerpt : '',
+			'description' => isset( $media_item->post_content ) ? $media_item->post_content : '',
 			'alt'         => isset( $media_item->ID ) ? get_post_meta( $media_item->ID, '_wp_attachment_image_alt', true ) : '',
 			'icon'        => isset( $media_item->ID ) ? wp_mime_type_icon( $media_item->ID ) : null,
 			'size'        => size_format( (int) $filesize, 2 ),
@@ -1755,9 +1735,7 @@ abstract class WPCOM_JSON_API_Endpoint {
 				$sizes = apply_filters( 'rest_api_thumbnail_sizes', $metadata['sizes'], $media_item->ID );
 				if ( is_array( $sizes ) ) {
 					foreach ( $sizes as $size => $size_details ) {
-						if ( isset( $size_details['file'] ) ) {
-							$response['thumbnails'][ $size ] = dirname( $response['URL'] ) . '/' . $size_details['file'];
-						}
+						$response['thumbnails'][ $size ] = dirname( $response['URL'] ) . '/' . $size_details['file'];
 					}
 					/**
 					 * Filter the thumbnail URLs for attachment files.
@@ -1778,12 +1756,9 @@ abstract class WPCOM_JSON_API_Endpoint {
 		}
 
 		if ( in_array( $ext, array( 'mp3', 'm4a', 'wav', 'ogg' ), true ) && isset( $media_item->ID ) ) {
-			$metadata = wp_get_attachment_metadata( $media_item->ID );
-
-			if ( isset( $metadata['length'] ) ) {
-				$response['length'] = $metadata['length'];
-			}
-			$response['exif'] = is_array( $metadata ) ? $metadata : false;
+			$metadata           = wp_get_attachment_metadata( $media_item->ID );
+			$response['length'] = $metadata['length'];
+			$response['exif']   = $metadata;
 		}
 
 		$is_video = false;
@@ -2042,7 +2017,7 @@ abstract class WPCOM_JSON_API_Endpoint {
 	 * Load the functions.php file for the current theme to get its post formats, CPTs, etc.
 	 */
 	public function load_theme_functions() {
-		if ( ! defined( 'STYLESHEETPATH' ) ) {
+		if ( false === defined( 'STYLESHEETPATH' ) ) {
 			wp_templating_constants();
 		}
 
@@ -2749,7 +2724,7 @@ abstract class WPCOM_JSON_API_Endpoint {
 	public function create_rest_route_for_endpoint() {
 		register_rest_route(
 			static::REST_NAMESPACE,
-			$this->build_rest_route_regex(),
+			$this->build_rest_route(),
 			array(
 				'methods'             => $this->method,
 				'callback'            => array( $this, 'rest_callback' ),
@@ -2813,14 +2788,6 @@ abstract class WPCOM_JSON_API_Endpoint {
 		if ( ! $response && ! is_array( $response ) ) {
 			// Dealing with empty non-array response.
 			$response = new WP_Error( 'empty_response', 'Endpoint response is empty', 500 );
-		}
-
-		// Mirror the XML-RPC path, which runs filter_fields() in WPCOM_JSON_API::output() before
-		// returning, so a `fields` request yields the same keys on both transports. Endpoints may
-		// force-add keys past `fields` for internal processors (e.g. the post type/status/password);
-		// without this they would leak on the REST transport only.
-		if ( ! is_wp_error( $response ) ) {
-			$response = $this->api->filter_fields( $response );
 		}
 
 		$status_code = 200;
@@ -2914,59 +2881,6 @@ abstract class WPCOM_JSON_API_Endpoint {
 	public function build_rest_route() {
 		$version_prefix = $this->max_version ? 'v' . $this->max_version : '';
 		return $version_prefix . $this->rest_route;
-	}
-
-	/**
-	 * Whether the endpoint's rest_route carries %d/%s path-parameter tokens.
-	 *
-	 * @return bool
-	 */
-	private function rest_route_has_tokens() {
-		return str_contains( (string) $this->rest_route, '%' );
-	}
-
-	/**
-	 * REST route with %d/%s path tokens converted to named captures, for register_rest_route().
-	 * Static (token-less) routes are returned unchanged.
-	 *
-	 * @return string
-	 */
-	public function build_rest_route_regex() {
-		if ( ! $this->rest_route_has_tokens() ) {
-			return $this->build_rest_route();
-		}
-
-		$index = 0;
-		return preg_replace_callback(
-			'/%[sd]/',
-			function ( $matches ) use ( &$index ) {
-				$name = 'p' . ( ++$index );
-				return '%d' === $matches[0] ? "(?P<$name>\\d+)" : "(?P<$name>[^/]+)";
-			},
-			$this->build_rest_route()
-		);
-	}
-
-	/**
-	 * Concrete REST route for a single request: the real path-parameter values (from the request URL,
-	 * minus the leading site segment) substituted into the tokenized rest_route. Static routes are
-	 * returned unchanged. Used by the proxy transport.
-	 *
-	 * @param string $url Full request URL.
-	 * @return string
-	 */
-	public function build_concrete_rest_route( $url ) {
-		if ( ! $this->rest_route_has_tokens() ) {
-			return $this->build_rest_route();
-		}
-
-		// The request path minus its "/rest/vX.Y/sites/<site>" prefix already IS the concrete route
-		// tail. The proxy matched this request to the endpoint's path template first, so the tail is
-		// guaranteed to fit the pattern build_rest_route_regex() registered on the remote.
-		$path = (string) wp_parse_url( $url, PHP_URL_PATH );
-		$path = preg_replace( '#^/rest/v[\d.]+/sites/[^/]+#', '', $path );
-
-		return 'v' . $this->max_version . $path;
 	}
 
 	/**

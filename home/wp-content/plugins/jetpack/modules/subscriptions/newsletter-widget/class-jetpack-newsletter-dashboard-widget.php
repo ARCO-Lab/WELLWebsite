@@ -8,10 +8,6 @@
 use Automattic\Jetpack\Connection\Client;
 use Automattic\Jetpack\Modules;
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
-
 /**
  * Class that adds the Jetpack Newsletter Dashboard Widget to the WordPress admin dashboard.
  */
@@ -176,11 +172,8 @@ class Jetpack_Newsletter_Dashboard_Widget {
 		);
 		$options         = wp_parse_args( $options, $default_options );
 
-		/*
-		 * Get the asset file path. The widget is built unminified (see tools/webpack.config.js),
-		 * so read the matching non-minified asset metadata.
-		 */
-		$asset_path = JETPACK__PLUGIN_DIR . '_inc/build/' . $asset_name . '.asset.php';
+		// Get the asset file path
+		$asset_path = JETPACK__PLUGIN_DIR . '_inc/build/' . $asset_name . '.min.asset.php';
 
 		// Get dependencies and version from asset file
 		$dependencies = array();

@@ -41,13 +41,6 @@ if ( is_network_admin() ) {
 	do_action( '_admin_menu' );
 }
 
-/**
- * @global array $menu
- * @global array $submenu
- * @global array $compat
- */
-global $menu, $submenu, $compat;
-
 // Create list of page plugin hook names.
 foreach ( $menu as $menu_page ) {
 	$pos = strpos( $menu_page[2], '?' );
@@ -334,9 +327,12 @@ if ( apply_filters( 'custom_menu_order', false ) ) {
 		} elseif ( ! isset( $menu_order[ $a ] ) && isset( $menu_order[ $b ] ) ) {
 			return 1;
 		} elseif ( isset( $menu_order[ $a ] ) && isset( $menu_order[ $b ] ) ) {
-			return $menu_order[ $a ] <=> $menu_order[ $b ];
+			if ( $menu_order[ $a ] === $menu_order[ $b ] ) {
+				return 0;
+			}
+			return ( $menu_order[ $a ] < $menu_order[ $b ] ) ? -1 : 1;
 		} else {
-			return $default_menu_order[ $a ] <=> $default_menu_order[ $b ];
+			return ( $default_menu_order[ $a ] <= $default_menu_order[ $b ] ) ? -1 : 1;
 		}
 	}
 

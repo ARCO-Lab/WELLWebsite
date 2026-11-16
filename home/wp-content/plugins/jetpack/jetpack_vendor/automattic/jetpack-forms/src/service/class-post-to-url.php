@@ -7,7 +7,6 @@
 
 namespace Automattic\Jetpack\Forms\Service;
 
-use Automattic\Jetpack\Forms\ContactForm\Feedback;
 use WP_Error;
 
 /**
@@ -48,27 +47,40 @@ class Post_To_Url {
 
 	/**
 	 * Get the setup for the post to URL.
-	 *
-	 * Salesforce-only: posts to the fixed Salesforce Web-to-Lead endpoint when
-	 * the form has a salesforceData.organizationId attribute. The legacy
-	 * postToUrl override is intentionally NOT honored here — postToUrl is
-	 * deprecated and the new pipeline (Form_Webhooks) already handles it with
-	 * proper URL validation. Honoring it here too would let an Editor with
-	 * Salesforce enabled override the destination to an arbitrary URL,
-	 * including internal/cloud-metadata endpoints (SSRF).
+	 * This is a helper function to get the setup for the post to URL.
+	 * It will return false if the setup is not valid.
 	 *
 	 * @param array $attributes - the attributes of the contact form.
-	 * @return array|bool Array setup, or false if Salesforce isn't configured.
+	 * @return array|bool
 	 */
 	private function get_setup( $attributes = array() ) {
-		if ( empty( $attributes['salesforceData']['organizationId'] ) ) {
+		$defaults = array(
+			'url'      => '',
+			'verified' => false,
+			'format'   => 'urlencoded',
+			'enabled'  => false,
+		);
+
+		// Backwards compatibility setup for Salesforce.
+		if ( ! empty( $attributes['salesforceData'] ) && ! empty( $attributes['salesforceData']['organizationId'] ) ) {
+			$defaults['url']      = 'https://webto.salesforce.com/servlet/servlet.WebToLead?encoding=UTF-8';
+			$defaults['format']   = 'urlencoded';
+			$defaults['enabled']  = true;
+			$defaults['verified'] = true;
+		}
+
+		// if new setup for postToUrl is present, use it on top of the defaults (hence, salesforceData will be stepped on)
+		$setup = wp_parse_args( ! empty( $attributes['postToUrl'] ) ? $attributes['postToUrl'] : array(), $defaults );
+		if ( empty( $setup['enabled'] ) || empty( $setup['url'] ) ) {
 			return false;
 		}
 
-		return array(
-			'url'    => 'https://webto.salesforce.com/servlet/servlet.WebToLead?encoding=UTF-8',
-			'format' => 'urlencoded',
-		);
+		if ( ! in_array( $setup['format'], array( 'urlencoded', 'json' ), true ) ) {
+			return false;
+		}
+
+		// TODO: eventually, I'd like us to verify the URL and invalidate the setup, but for now, we'll just trust the user.
+		return $setup;
 	}
 
 	/**
@@ -105,7 +117,7 @@ class Post_To_Url {
 			return;
 		}
 
-		$form_data = $this->get_form_data( $form, $fields, $entry_values );
+		$form_data = $this->get_form_data( $form, $entry_values );
 
 		$result = $this->post_to_url( $form_data, $setup );
 
@@ -129,7 +141,7 @@ class Post_To_Url {
 	 * @param array $data The data key/value pairs to send in POST.
 	 * @param array $options Options for POST.
 	 *
-	 * @return array|WP_Error The result value from wp_safe_remote_post
+	 * @return array|WP_Error The result value from wp_remote_post
 	 *
 	 * TODO: do complex fields (MC, etc) need to be handled differently? JSON should be fine, but URLencoded might need to be serialized.
 	 */
@@ -137,15 +149,18 @@ class Post_To_Url {
 		global $wp_version;
 
 		$user_agent = "WordPress/{$wp_version} | Jetpack/" . constant( 'JETPACK__VERSION' ) . '; ' . get_bloginfo( 'url' );
+		$url        = $options['url'];
 		$format     = $options['format'] === 'urlencoded' ? 'application/x-www-form-urlencoded' : 'application/json';
 		$args       = array(
-			'body'    => $data,
-			'headers' => array(
+			'body'      => $data,
+			'headers'   => array(
 				'Content-Type' => $format,
 				'user-agent'   => $user_agent,
 			),
+			'sslverify' => empty( $options['sslverify'] ) ? false : $options['sslverify'],
 		);
-		return wp_safe_remote_post( $options['url'], $args );
+		// phpcs:ignore Universal.CodeAnalysis.ConstructorDestructorReturn.ReturnValueFound -- this is no constructor
+		return wp_remote_post( $url, $args );
 	}
 
 	/**
@@ -153,41 +168,23 @@ class Post_To_Url {
 	 * Sanitizes the hidden fields values
 	 *
 	 * @param \Automattic\Jetpack\Forms\ContactForm\Contact_Form $form The form instance being processed/submitted.
-	 * @param array                                              $visible_fields Visible submitted fields.
 	 * @param array                                              $entry_values The feedback entry values.
 	 */
-	private function get_form_data( $form, $visible_fields, $entry_values ) {
+	private function get_form_data( $form, $entry_values ) {
 		$fields = array();
-		foreach ( $visible_fields as $field ) {
-			$fields[ $field->get_attribute( 'id' ) ] = Feedback::encode_special_chars( $field->value );
+		foreach ( $form->fields as $field ) {
+			$fields[ $field->get_attribute( 'id' ) ] = $field->value;
 		}
 
 		// Right in the middle, backwards compatibility for salesforceData implementation.
-		$salesforce_data = (array) ( $form->attributes['salesforceData'] ?? array() );
-		if ( ! empty( $salesforce_data['organizationId'] ) ) {
-			$fields['oid']         = sanitize_text_field( $salesforce_data['organizationId'] );
+		if ( ! empty( $form->attributes['salesforceData'] ) && ! empty( $form->attributes['salesforceData']['organizationId'] ) ) {
+			$fields['oid']         = sanitize_text_field( $form->attributes['salesforceData']['organizationId'] );
 			$fields['lead_source'] = $entry_values['entry_permalink'];
 		}
 
-		// `hiddenFields` is a legacy attribute that may appear in a few shapes on forms
-		// in the wild: an array of `{ name, value }` objects (its original design), an
-		// associative `name => value` map, or a JSON-encoded string. Iterating it blindly
-		// and accessing `['name']`/`['value']` on a non-array element fatals on PHP 8 with
-		// "Cannot access offset of type string on string", so normalize defensively.
-		$hidden_fields = $form->attributes['hiddenFields'] ?? array();
-		if ( is_string( $hidden_fields ) ) {
-			$decoded       = json_decode( $hidden_fields, true );
-			$hidden_fields = is_array( $decoded ) ? $decoded : array();
-		}
-		foreach ( (array) $hidden_fields as $key => $hidden_field ) {
-			if ( is_array( $hidden_field ) ) {
-				// Original `{ name, value }` object shape.
-				if ( isset( $hidden_field['name'] ) ) {
-					$fields[ $hidden_field['name'] ] = sanitize_text_field( $hidden_field['value'] ?? '' );
-				}
-			} elseif ( ! is_int( $key ) ) {
-				// Associative `name => value` shape.
-				$fields[ $key ] = sanitize_text_field( (string) $hidden_field );
+		if ( ! empty( $form->attributes['hiddenFields'] ) ) {
+			foreach ( $form->attributes['hiddenFields'] as $hidden_field ) {
+				$fields[ $hidden_field['name'] ] = sanitize_text_field( $hidden_field['value'] );
 			}
 		}
 

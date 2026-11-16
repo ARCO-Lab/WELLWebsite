@@ -11,10 +11,6 @@ use DateTimeZone;
 use WC_DateTime;
 use WP_Error;
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
-
 /**
  * Class to handle sync for WooCommerce Products table.
  *

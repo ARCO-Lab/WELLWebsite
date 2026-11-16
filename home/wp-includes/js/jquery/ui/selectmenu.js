@@ -1,5 +1,5 @@
 /*!
- * jQuery UI Selectmenu 1.14.2
+ * jQuery UI Selectmenu 1.13.3
  * https://jqueryui.com
  *
  * Copyright OpenJS Foundation and other contributors
@@ -9,7 +9,9 @@
 
 //>>label: Selectmenu
 //>>group: Widgets
+/* eslint-disable max-len */
 //>>description: Duplicates and extends the functionality of a native HTML select element, allowing it to be customizable in behavior and appearance far beyond the limitations of a native select.
+/* eslint-enable max-len */
 //>>docs: https://api.jqueryui.com/selectmenu/
 //>>demos: https://jqueryui.com/selectmenu/
 //>>css.structure: ../../themes/base/core.css
@@ -42,7 +44,7 @@
 "use strict";
 
 return $.widget( "ui.selectmenu", [ $.ui.formResetMixin, {
-	version: "1.14.2",
+	version: "1.13.3",
 	defaultElement: "<select>",
 	options: {
 		appendTo: null,
@@ -165,6 +167,12 @@ return $.widget( "ui.selectmenu", [ $.ui.formResetMixin, {
 				role: "listbox",
 				select: function( event, ui ) {
 					event.preventDefault();
+
+					// Support: IE8
+					// If the item was selected via a click, the text selection
+					// will be destroyed in IE
+					that._setSelection();
+
 					that._select( ui.item.data( "ui-selectmenu-item" ), event );
 				},
 				focus: function( event, ui ) {
@@ -401,9 +409,20 @@ return $.widget( "ui.selectmenu", [ $.ui.formResetMixin, {
 			return;
 		}
 
-		selection = window.getSelection();
-		selection.removeAllRanges();
-		selection.addRange( this.range );
+		if ( window.getSelection ) {
+			selection = window.getSelection();
+			selection.removeAllRanges();
+			selection.addRange( this.range );
+
+		// Support: IE8
+		} else {
+			this.range.select();
+		}
+
+		// Support: IE
+		// Setting the text selection kills the button focus in IE, but
+		// restoring the focus doesn't kill the selection.
+		this.button.trigger( "focus" );
 	},
 
 	_documentClick: {
@@ -413,7 +432,7 @@ return $.widget( "ui.selectmenu", [ $.ui.formResetMixin, {
 			}
 
 			if ( !$( event.target ).closest( ".ui-selectmenu-menu, #" +
-				CSS.escape( this.ids.button ) ).length ) {
+				$.escapeSelector( this.ids.button ) ).length ) {
 				this.close( event );
 			}
 		}
@@ -423,9 +442,17 @@ return $.widget( "ui.selectmenu", [ $.ui.formResetMixin, {
 
 		// Prevent text selection from being reset when interacting with the selectmenu (#10144)
 		mousedown: function() {
-			var selection = window.getSelection();
-			if ( selection.rangeCount ) {
-				this.range = selection.getRangeAt( 0 );
+			var selection;
+
+			if ( window.getSelection ) {
+				selection = window.getSelection();
+				if ( selection.rangeCount ) {
+					this.range = selection.getRangeAt( 0 );
+				}
+
+			// Support: IE8
+			} else {
+				this.range = document.selection.createRange();
 			}
 		},
 
@@ -616,7 +643,11 @@ return $.widget( "ui.selectmenu", [ $.ui.formResetMixin, {
 	_resizeMenu: function() {
 		this.menu.outerWidth( Math.max(
 			this.button.outerWidth(),
-			this.menu.width( "" ).outerWidth()
+
+			// Support: IE10
+			// IE10 wraps long text (possibly a rounding bug)
+			// so we add 1px to avoid the wrapping
+			this.menu.width( "" ).outerWidth() + 1
 		) );
 	},
 

@@ -28,7 +28,6 @@
 		"showLabel": "showLabel"
 	},
 	"supports": {
-		"anchor": true,
 		"align": true,
 		"reusable": false,
 		"html": false,

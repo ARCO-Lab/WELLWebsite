@@ -7,14 +7,12 @@
  * @package automattic/jetpack
  */
 
+// @phan-file-suppress PhanUndeclaredFunction, PhanUndeclaredClassMethod @phan-suppress-current-line UnusedSuppression -- Abilities API added in WP 6.9; suppressions needed for older-WP compatibility runs.
+
 namespace Automattic\Jetpack\Plugin\Abilities;
 
 use Automattic\Jetpack\WP_Abilities\Registrar;
 use Jetpack;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
 
 /**
  * Registers Jetpack module management abilities with the WordPress Abilities API.
@@ -34,20 +32,12 @@ class Modules_Abilities extends Registrar {
 
 	/**
 	 * {@inheritDoc}
-	 *
-	 * The `jetpack` ability-category is shared across multiple subpackages
-	 * (Connection, Plugin, etc.). `wp_register_ability_category()` only honours
-	 * the first registration, so the English source string here is kept
-	 * byte-identical to the one in
-	 * {@see \Automattic\Jetpack\Connection\Abilities\Connection_Abilities::get_category_definition()}
-	 * to keep the visible category text consistent regardless of which
-	 * registrar runs first.
 	 */
 	public static function get_category_definition(): array {
 		return array(
 			// "Jetpack" is a product name and should not be translated.
 			'label'       => 'Jetpack',
-			'description' => __( 'Abilities provided by Jetpack.', 'jetpack' ),
+			'description' => __( 'Abilities exposed by the Jetpack plugin.', 'jetpack' ),
 		);
 	}
 
@@ -74,17 +64,13 @@ class Modules_Abilities extends Registrar {
 				'requires_connection'      => array( 'type' => 'boolean' ),
 				'requires_user_connection' => array( 'type' => 'boolean' ),
 				'auto_activate'            => array( 'type' => 'string' ),
-				'override'                 => array(
-					'type' => 'string',
-					'enum' => array( 'none', 'active', 'inactive' ),
-				),
 			),
 		);
 
 		return array(
 			'jetpack/get-modules'       => array(
 				'label'               => __( 'Get Jetpack modules', 'jetpack' ),
-				'description'         => __( 'Return zero or more Jetpack modules as an array. Each element has { slug, name, description, active, sort, feature, plan_classes, requires_connection, requires_user_connection, auto_activate, override }. An override of "active" or "inactive" means a filter or the host forces that state, so jetpack/set-module-status cannot change it. Combine slug / active / feature / search filters to narrow the list. When slug is provided and unknown, the result is an empty array (not an error). Use this before calling jetpack/set-module-status to enumerate legal slugs.', 'jetpack' ),
+				'description'         => __( 'Return zero or more Jetpack modules as an array. Each element has { slug, name, description, active, sort, feature, plan_classes, requires_connection, requires_user_connection, auto_activate }. Combine slug / active / feature / search filters to narrow the list. When slug is provided and unknown, the result is an empty array (not an error). Use this before calling jetpack/set-module-status to enumerate legal slugs.', 'jetpack' ),
 				'input_schema'        => array(
 					'type'                 => 'object',
 					'default'              => array(),
@@ -156,10 +142,6 @@ class Modules_Abilities extends Registrar {
 						'slug'    => array( 'type' => 'string' ),
 						'active'  => array( 'type' => 'boolean' ),
 						'changed' => array( 'type' => 'boolean' ),
-						'note'    => array(
-							'type'        => 'string',
-							'description' => __( 'What the change leaves unaffected, when that is not obvious.', 'jetpack' ),
-						),
 					),
 				),
 				'execute_callback'    => array( __CLASS__, 'set_module_status' ),
@@ -222,8 +204,6 @@ class Modules_Abilities extends Registrar {
 		$name = isset( $i18n['name'] ) ? (string) $i18n['name'] : ( isset( $mod['name'] ) ? (string) $mod['name'] : $slug );
 		$desc = isset( $i18n['description'] ) ? (string) $i18n['description'] : ( isset( $mod['description'] ) ? (string) $mod['description'] : '' );
 
-		$override = \Jetpack_Modules_Overrides::instance()->get_module_override( $slug );
-
 		return array(
 			'slug'                     => $slug,
 			'name'                     => $name,
@@ -235,7 +215,6 @@ class Modules_Abilities extends Registrar {
 			'requires_connection'      => ! empty( $mod['requires_connection'] ),
 			'requires_user_connection' => ! empty( $mod['requires_user_connection'] ),
 			'auto_activate'            => isset( $mod['auto_activate'] ) ? (string) $mod['auto_activate'] : 'No',
-			'override'                 => $override ? $override : 'none',
 		);
 	}
 
@@ -414,18 +393,11 @@ class Modules_Abilities extends Registrar {
 			);
 		}
 
-		$result = array(
+		return array(
 			'slug'    => $slug,
 			'active'  => $actual,
 			'changed' => true,
 		);
-
-		$note = $actual ? '' : Jetpack::get_module_deactivation_note( $slug );
-		if ( $note ) {
-			$result['note'] = $note;
-		}
-
-		return $result;
 	}
 
 	/**

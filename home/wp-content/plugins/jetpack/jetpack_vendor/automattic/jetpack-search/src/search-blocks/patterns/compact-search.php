@@ -10,10 +10,6 @@
 
 namespace Automattic\Jetpack\Search;
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit( 0 );
-}
-
 register_block_pattern(
 	'jetpack-search/compact-search',
 	array(
@@ -31,28 +27,22 @@ register_block_pattern(
 
 <!-- wp:group {"className":"jetpack-search-compact-toolbar","layout":{"type":"flex","flexWrap":"nowrap"}} -->
 <div class="wp-block-group jetpack-search-compact-toolbar">
-<!-- wp:jetpack-search/search-input /-->
-<!-- wp:jetpack-search/filters-popover -->
-<!-- wp:jetpack-search/active-filters /-->
-<!-- wp:jetpack-search/filter-checkbox {"filterType":"taxonomy","taxonomy":"category"} /-->
-<!-- wp:jetpack-search/filter-checkbox {"filterType":"taxonomy","taxonomy":"post_tag"} /-->
-<!-- wp:jetpack-search/filter-checkbox {"filterType":"post_type"} /-->
-<!-- /wp:jetpack-search/filters-popover -->
-<!-- wp:jetpack-search/results-sort {"displayAs":"popover"} /-->
+<!-- wp:jetpack/search-input /-->
+<!-- wp:jetpack/filter-popover -->
+<!-- wp:jetpack/active-filters /-->
+<!-- wp:jetpack/filter-checkbox {"filterType":"taxonomy","taxonomy":"category"} /-->
+<!-- wp:jetpack/filter-checkbox {"filterType":"taxonomy","taxonomy":"post_tag"} /-->
+<!-- wp:jetpack/filter-checkbox {"filterType":"post_type"} /-->
+<!-- /wp:jetpack/filter-popover -->
+<!-- wp:jetpack/sort-control {"displayAs":"popover"} /-->
 </div>
 <!-- /wp:group -->
 
-<!-- wp:jetpack-search/search-results -->
-<!-- wp:jetpack-search/results-count /-->
-<!-- wp:jetpack-search/results-list {"layout":"compact"} /-->
-<!-- wp:jetpack-search/no-results -->
-<!-- wp:jetpack-search/no-results-slot /-->
-<!-- wp:jetpack-search/no-results-slot {"condition":"filtered"} /-->
-<!-- wp:jetpack-search/no-results-slot {"condition":"error"} /-->
-<!-- /wp:jetpack-search/no-results -->
-<!-- wp:jetpack-search/results-load-more /-->
-<!-- wp:jetpack-search/powered-by /-->
-<!-- /wp:jetpack-search/search-results -->
+<!-- wp:jetpack/results-count /-->
+<!-- wp:jetpack/search-results {"layout":"compact"} /-->
+<!-- wp:jetpack/search-error /-->
+<!-- wp:jetpack/no-results /-->
+<!-- wp:jetpack/load-more /-->
 
 </div>
 <!-- /wp:group -->',

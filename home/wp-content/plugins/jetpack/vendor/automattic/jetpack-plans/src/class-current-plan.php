@@ -30,15 +30,6 @@ class Current_Plan {
 	private static $simple_site_specific_features = array();
 
 	/**
-	 * Atomic site-specific features available, cached for the request alongside the Simple ones.
-	 *
-	 * Not keyed on a blog ID: an Atomic site can only ever answer for itself.
-	 *
-	 * @var array|null Site-specific features.
-	 */
-	private static $atomic_site_specific_features = null;
-
-	/**
 	 * The name of the option that will store the site's plan.
 	 *
 	 * @var string
@@ -74,7 +65,6 @@ class Current_Plan {
 				'core/audio',
 				'multistep-form',
 				'form-webhooks',
-				'form-conditional-logic',
 			),
 		),
 		'personal' => array(
@@ -163,10 +153,6 @@ class Current_Plan {
 				'social-image-generator',
 			),
 		),
-		'pro'      => array(
-			'plans'    => array( 'jetpack_pro_yearly', 'jetpack_pro_bi_yearly', 'jetpack_pro_monthly' ),
-			'supports' => array(),
-		),
 	);
 
 	/**
@@ -187,40 +173,31 @@ class Current_Plan {
 			return false;
 		}
 
-		return self::update_from_site_record( json_decode( $body, true ) );
-	}
+		// Decode the results.
+		$results = json_decode( $body, true );
 
-	/**
-	 * Given a decoded `/sites/%d` record, attempt to set the site's plan and products from it.
-	 *
-	 * @since 0.12.0
-	 *
-	 * @param array $record The decoded site record from the WordPress.com `/sites/%d` endpoint.
-	 * @return bool Was the plan successfully updated?
-	 */
-	public static function update_from_site_record( $record ) {
-		if ( ! is_array( $record ) ) {
+		if ( ! is_array( $results ) ) {
 			return false;
 		}
 
-		if ( isset( $record['products'] ) ) {
+		if ( isset( $results['products'] ) ) {
 			// Store the site's products in an option and return true if updated.
-			self::store_data_in_option( self::SITE_PRODUCTS_OPTION, $record['products'] );
+			self::store_data_in_option( self::SITE_PRODUCTS_OPTION, $results['products'] );
 		}
 
-		if ( ! isset( $record['plan'] ) ) {
+		if ( ! isset( $results['plan'] ) ) {
 			return false;
 		}
 
 		$current_plan = get_option( self::PLAN_OPTION, array() );
 
-		if ( ! empty( $current_plan ) && $current_plan === $record['plan'] ) {
+		if ( ! empty( $current_plan ) && $current_plan === $results['plan'] ) {
 			// Bail if the plans array hasn't changed.
 			return false;
 		}
 
 		// Store the new plan in an option and return true if updated.
-		$result = self::store_data_in_option( self::PLAN_OPTION, $record['plan'] );
+		$result = self::store_data_in_option( self::PLAN_OPTION, $results['plan'] );
 
 		if ( $result ) {
 			// Reset the cache since we've just updated the plan.
@@ -240,21 +217,13 @@ class Current_Plan {
 	private static function store_data_in_option( $option, $data ) {
 		$result = update_option( $option, $data, true );
 
-		if ( $result ) {
-			return true;
+		// If something goes wrong with the update, so delete the current option and then update it.
+		if ( ! $result ) {
+			delete_option( $option );
+			$result = update_option( $option, $data, true );
 		}
 
-		// update_option() also reports false when the stored value already matches, which is not a
-		// failure. Both options are autoloaded, so reading it as one rewrites them on every
-		// unchanged fetch and drops the alloptions cache with it.
-		if ( get_option( $option ) === $data ) {
-			return true;
-		}
-
-		// If the update genuinely failed, delete the option and write it again.
-		delete_option( $option );
-
-		return update_option( $option, $data, true );
+		return $result;
 	}
 
 	/**
@@ -267,19 +236,9 @@ class Current_Plan {
 	 * @access public
 	 * @static
 	 *
-	 * @since 0.14.0 Accepts request arguments.
-	 *
-	 * @param array $args Request arguments, as accepted by `Client::wpcom_json_api_request_as_blog()`.
-	 *                    A caller refreshing in front of a page render can cap `timeout` here; the
-	 *                    `http_request_timeout` filter cannot, because the client always sends one.
 	 * @return bool True if plan is updated, false if no update
 	 */
-	public static function refresh_from_wpcom( $args = array() ) {
-		// Also registered as an action callback, and `do_action()` hands those an empty string.
-		if ( ! is_array( $args ) ) {
-			$args = array();
-		}
-
+	public static function refresh_from_wpcom() {
 		$site_id = Manager::get_site_id();
 		if ( is_wp_error( $site_id ) ) {
 			return false;
@@ -289,20 +248,10 @@ class Current_Plan {
 
 		$response = Client::wpcom_json_api_request_as_blog(
 			sprintf( '/sites/%d?force=wpcom', $site_id ),
-			'1.1',
-			$args
+			'1.1'
 		);
 
-		$updated = self::update_from_sites_response( $response );
-
-		// The shared site record cache can still hold a record older than this response, and a
-		// cached read stores the plan again. Dropping it keeps that older record from reverting
-		// what this fetch just stored.
-		if ( ! is_wp_error( $response ) ) {
-			Manager::delete_cached_site_data();
-		}
-
-		return $updated;
+		return self::update_from_sites_response( $response );
 	}
 
 	/**
@@ -343,7 +292,7 @@ class Current_Plan {
 			if ( ! isset( $module ) || ! is_array( $module ) ) {
 				continue;
 			}
-			if ( in_array( 'free', $module['plan_classes'], true ) || in_array( $plan['class'], $module['plan_classes'], true ) || ( 'pro' === $plan['class'] && in_array( 'complete', $module['plan_classes'], true ) ) ) {
+			if ( in_array( 'free', $module['plan_classes'], true ) || in_array( $plan['class'], $module['plan_classes'], true ) ) {
 				$supports[] = $module_slug;
 			}
 		}
@@ -462,11 +411,10 @@ class Current_Plan {
 	 *
 	 * See Jetpack_Gutenberg::get_site_specific_features()
 	 *
-	 * @param bool $include_available Whether to include upgradeable features, which requires a billing catalog lookup.
 	 * @return array
 	 */
-	public static function get_simple_site_specific_features( $include_available = true ) {
-		$is_simple_site = Constants::is_true( 'IS_WPCOM' );
+	public static function get_simple_site_specific_features() {
+		$is_simple_site = defined( 'IS_WPCOM' ) && constant( 'IS_WPCOM' );
 
 		if ( ! $is_simple_site ) {
 			return array(
@@ -476,83 +424,20 @@ class Current_Plan {
 		}
 
 		$current_blog_id = get_current_blog_id();
-		$cache_key       = $include_available ? 'full' : 'active_only';
 
-		// Return the cached value if it exists. A full result answers an active-only
-		// request too, so that one is reused rather than recomputed.
-		if ( isset( self::$simple_site_specific_features[ $current_blog_id ][ $cache_key ] ) ) {
-			return self::$simple_site_specific_features[ $current_blog_id ][ $cache_key ];
-		}
-		if ( ! $include_available && isset( self::$simple_site_specific_features[ $current_blog_id ]['full'] ) ) {
-			return self::$simple_site_specific_features[ $current_blog_id ]['full'];
+		// Return the cached value if it exists.
+		if ( isset( self::$simple_site_specific_features[ $current_blog_id ] ) ) {
+			return self::$simple_site_specific_features[ $current_blog_id ];
 		}
 
 		if ( ! class_exists( '\Store_Product_List' ) ) {
 			require WP_CONTENT_DIR . '/admin-plugins/wpcom-billing/store-product-list.php';
 		}
 
-		$simple_site_specific_features = \Store_Product_List::get_site_specific_features_data( $current_blog_id, $include_available );
+		$simple_site_specific_features = \Store_Product_List::get_site_specific_features_data( $current_blog_id );
 
-		self::$simple_site_specific_features[ $current_blog_id ][ $cache_key ] = $simple_site_specific_features;
+		self::$simple_site_specific_features[ $current_blog_id ] = $simple_site_specific_features;
 
 		return $simple_site_specific_features;
-	}
-
-	/**
-	 * Retrieve site-specific features from the WordPress.com registry the site itself carries.
-	 *
-	 * Simple sites read the store; Atomic sites read the purchases wpcomsh keeps in sync. Both
-	 * answer as of this request, where `self::PLAN_OPTION` is only as current as its last fetch.
-	 *
-	 * @since 0.14.0
-	 *
-	 * @return array|null Active and available features, or null where the site carries no registry.
-	 */
-	public static function get_wpcom_site_specific_features() {
-		if ( defined( 'IS_WPCOM' ) && constant( 'IS_WPCOM' ) ) {
-			return self::get_simple_site_specific_features();
-		}
-
-		if (
-			! Constants::is_true( 'IS_ATOMIC' )
-			|| ! class_exists( '\WPCOM_Features' )
-			|| ! function_exists( 'wpcom_get_site_purchases' )
-		) {
-			return null;
-		}
-
-		if ( null !== self::$atomic_site_specific_features ) {
-			return self::$atomic_site_specific_features;
-		}
-
-		// No blog ID anywhere below. wpcomsh resolves it from `jetpack_options`, where WordPress
-		// reports 1, and throws when the two disagree.
-		$purchases = \wpcom_get_site_purchases();
-
-		/*
-		 * A site whose Atomic persistent data has not synced reads exactly like one that bought
-		 * nothing, and answering would gate a paid site. Only WordPress.com can tell the two
-		 * apart, so report no answer and leave the caller its own fallback.
-		 */
-		if ( ! $purchases ) {
-			return null;
-		}
-
-		$active = array();
-
-		foreach ( \WPCOM_Features::get_feature_slugs() as $feature ) {
-			if ( \WPCOM_Features::has_feature( $feature, $purchases, 'wpcom' ) ) {
-				$active[] = $feature;
-			}
-		}
-
-		// `available` names the plans that would grant each feature the site lacks, which only the
-		// WordPress.com product catalogue can answer. Callers here read `active`.
-		self::$atomic_site_specific_features = array(
-			'active'    => $active,
-			'available' => array(),
-		);
-
-		return self::$atomic_site_specific_features;
 	}
 }

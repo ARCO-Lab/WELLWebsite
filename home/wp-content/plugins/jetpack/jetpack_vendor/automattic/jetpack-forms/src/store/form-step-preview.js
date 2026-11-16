@@ -1,4 +1,4 @@
-import { createReduxStore, register, select } from '@wordpress/data';
+import { createReduxStore, register } from '@wordpress/data';
 
 const DEFAULT_STATE = {
 	// Map of form client IDs to their single step mode state
@@ -162,6 +162,4 @@ export const store = createReduxStore( STORE_NAME, {
 	selectors,
 } );
 
-if ( ! select( STORE_NAME ) ) {
-	register( store );
-}
+register( store );

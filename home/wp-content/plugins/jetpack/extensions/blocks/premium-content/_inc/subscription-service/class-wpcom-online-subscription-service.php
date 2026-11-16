@@ -31,16 +31,24 @@ class WPCOM_Online_Subscription_Service extends Jetpack_Token_Subscription_Servi
 	/**
 	 * Lookup users subscriptions for a site and determine if the user has a valid subscription to match the plan ID
 	 *
-	 * @param array    $valid_plan_ids .
-	 * @param string   $access_level .
-	 * @param int|null $post_id Post to gate against. Defaults to the loop post, which is only right while rendering it.
+	 * @param array  $valid_plan_ids .
+	 * @param string $access_level .
 	 *
 	 * @return bool
 	 */
-	public function visitor_can_view_content( $valid_plan_ids, $access_level, $post_id = null ) {
-		$is_blog_subscriber = $this->is_current_user_subscribed();
+	public function visitor_can_view_content( $valid_plan_ids, $access_level ) {
+		include_once WP_CONTENT_DIR . '/mu-plugins/email-subscriptions/subscriptions.php';
+		$email             = wp_get_current_user()->user_email;
+		$subscriber_object = \Blog_Subscriber::get( $email );
 
-		return $this->user_can_view_content( $valid_plan_ids, $access_level, $is_blog_subscriber, null === $post_id ? get_the_ID() : $post_id );
+		$is_blog_subscriber = false;
+		if ( $subscriber_object ) {
+			$blog_id             = $this->get_site_id();
+			$subscription_status = \Blog_Subscription::get_subscription_status_for_blog( $subscriber_object, $blog_id );
+			$is_blog_subscriber  = 'active' === $subscription_status;
+		}
+
+		return $this->user_can_view_content( $valid_plan_ids, $access_level, $is_blog_subscriber, get_the_ID() );
 	}
 
 	/**
@@ -59,30 +67,23 @@ class WPCOM_Online_Subscription_Service extends Jetpack_Token_Subscription_Servi
 	}
 
 	/**
-	 * Returns true if the current authenticated user is subscribed to the current site,
-	 * either via an active email subscription or by following it in the Reader.
+	 * Returns true if the current authenticated user is subscribed to the current site.
 	 *
 	 * @return bool
 	 */
 	public function is_current_user_subscribed(): bool {
 		include_once WP_CONTENT_DIR . '/mu-plugins/email-subscriptions/subscriptions.php';
-		$email                = wp_get_current_user()->user_email;
-		$subscriber_object    = \Blog_Subscriber::get( $email );
-		$blog_id              = $this->get_site_id();
-		$has_active_email_sub = false;
-		if ( ! empty( $subscriber_object ) ) {
-			$subscription_status  = \Blog_Subscription::get_subscription_status_for_blog( $subscriber_object, $blog_id );
-			$has_active_email_sub = 'active' === $subscription_status;
+		$email             = wp_get_current_user()->user_email;
+		$subscriber_object = \Blog_Subscriber::get( $email );
+		if ( empty( $subscriber_object ) ) {
+			return false;
 		}
-
-		$is_following = ! $has_active_email_sub && function_exists( 'wpcom_subs_is_subscribed' ) && wpcom_subs_is_subscribed(
-			array(
-				'user_id' => get_current_user_id(),
-				'blog_id' => $blog_id,
-			)
-		);
-
-		return $has_active_email_sub || $is_following;
+		$blog_id             = $this->get_site_id();
+		$subscription_status = \Blog_Subscription::get_subscription_status_for_blog( $subscriber_object, $blog_id );
+		if ( 'active' !== $subscription_status ) {
+			return false;
+		}
+		return true;
 	}
 
 	/**
