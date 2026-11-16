@@ -37,6 +37,13 @@ interface SampleChartProps {
 
 const NONE: string[] = [];
 
+/** One more pass over a chart's y-axes (see where it is called). */
+function settleAxes(chart: Highcharts.Chart | undefined): void {
+  if (!chart || chart.yAxis.length < 2) return;
+  for (const axis of chart.yAxis) (axis as Highcharts.Axis & { isDirty?: boolean }).isDirty = true;
+  chart.redraw(false);
+}
+
 const SampleChart: React.FC<SampleChartProps> = ({
   siteName,
   subFilters,
@@ -202,10 +209,7 @@ const SampleChart: React.FC<SampleChartProps> = ({
   // the browser paints, so a chart always shows its settled scales. (The page's re-renders used to redraw every chart
   // over and over, which hid this; now a chart is only redrawn when what it shows changes.)
   useLayoutEffect(() => {
-    const chart = chartRef.current?.chart;
-    if (!chart || chart.yAxis.length < 2) return;
-    for (const axis of chart.yAxis) (axis as Highcharts.Axis & { isDirty?: boolean }).isDirty = true;
-    chart.redraw(false);
+    settleAxes(chartRef.current?.chart);
   }, [chartOptions]);
 
   const isEmpty = !loading && !error && Array.isArray(chartOptions.series)
