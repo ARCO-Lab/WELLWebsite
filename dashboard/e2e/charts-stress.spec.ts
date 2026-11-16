@@ -672,25 +672,40 @@ test.describe("chart performance budgets", () => {
         return style.visibility !== "hidden" && Number(style.opacity) > 0.5 && (t.textContent ?? "").trim().length > 5;
       }));
       const cdp = await page.context().newCDPSession(page);
-      let p = await at(logger, 0.5);
+      const touch = (type: string, x: number, y: number) =>
+        cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y, id: 1 }] });
+      const p = await at(logger, 0.5);
       const scrollY = await page.evaluate(() => window.scrollY);
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, id: 1 }] });
-      for (let i = 1; i <= 12; i++) {
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: p.x, y: p.y - i * 15, id: 1 }] });
-        await page.waitForTimeout(16);
-      }
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await touch("touchStart", p.x, p.y);
+      for (let i = 1; i <= 12; i++) { await touch("touchMove", p.x, p.y - i * 15); await page.waitForTimeout(16); }
+      for (let i = 0; i < 3; i++) { await touch("touchMove", p.x, p.y - 180); await page.waitForTimeout(30); } // held still: no fling
+      await touch("touchEnd", 0, 0);
       await page.waitForTimeout(600);
       expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollY + 50);
       expect(await pointActions()).toBe(0); // the scroll didn't wait for a tooltip
       expect(await tooltipShown()).toBe(false);
-      // A tap: Highcharts gets the touch when the finger lifts
-      p = await at(logger, 0.5);
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, id: 1 }] });
+      // A tap on a reading (Highcharts says where it drew one): Highcharts gets the touch when the finger lifts
+      const reading = await page.evaluate(() => {
+        type HPoint = { plotX?: number; plotY?: number; y: number | null };
+        type HChart = { container: HTMLElement; plotLeft: number; plotTop: number; plotWidth: number;
+          series: { type: string; visible: boolean; options: { custom?: { label?: string } }; points: HPoint[] }[] };
+        const H = (window as unknown as { _Highcharts: { charts: (HChart | undefined)[] } })._Highcharts;
+        const chart = H.charts.find((c) => !!c?.container.closest('[data-testid="chart-logger"]'));
+        const line = chart?.series.find((sr) => sr.type === "line" && sr.visible && !!sr.options.custom?.label);
+        const point = line?.points.find((pt) => pt.y !== null && pt.plotX !== undefined && pt.plotX > 20 && pt.plotX < chart!.plotWidth - 20);
+        if (!chart || point?.plotX === undefined || point.plotY === undefined) return null;
+        chart.container.scrollIntoView({ block: "center" });
+        const box = chart.container.getBoundingClientRect();
+        return { x: box.left + chart.plotLeft + point.plotX, y: box.top + chart.plotTop + point.plotY };
+      });
+      expect(reading, "the logger chart has drawn a reading").not.toBeNull();
+      await page.waitForTimeout(300);
+      await touch("touchStart", reading!.x, reading!.y);
+      await page.waitForTimeout(60);
       expect(await pointActions()).toBe(0);
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await touch("touchEnd", 0, 0);
+      await expect.poll(pointActions).toBeGreaterThan(0);
       await expect.poll(tooltipShown).toBe(true);
-      expect(await pointActions()).toBeGreaterThan(0);
     });
 
     test("one finger moving sideways pans the chart; a tap on the navigator's track centres the window there", async ({ page }) => {
