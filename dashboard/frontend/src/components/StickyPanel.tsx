@@ -7,6 +7,9 @@
 // Embedded in the WordPress page (lib/embed.ts), the iframe is as tall as the dashboard and never scrolls, so CSS
 // sticky does nothing. There the "window" is the part of the iframe the WordPress page reports in view, and the panel
 // is moved with a transform instead, never past the bottom of its column.
+//
+// Below the lg width (phones) the panel is an ordinary block that scrolls with the page: nothing is measured or
+// written there, so scrolling the page costs this panel nothing.
 
 import React, { useEffect, useRef } from "react";
 import { getEmbedView, subscribeEmbedView } from "@/lib/embed";
@@ -25,29 +28,37 @@ const StickyPanel: React.FC<{ className?: string; children: React.ReactNode }> =
     const viewHeight = () => getEmbedView()?.height ?? window.innerHeight;
     let top = MARGIN_PX;
     let lastY = scrollY();
+    let placed = false; // an offset or a transform of ours is on the panel
     // top ranges from MARGIN_PX (top in view) down to where the bottom is MARGIN_PX above the window's bottom
     const clamp = () => {
+      if (!wide.matches) {
+        if (placed) {
+          placed = false;
+          el.style.top = el.style.transform = "";
+        }
+        top = MARGIN_PX; // sticks to the top again when the window gets wide
+        return;
+      }
+      placed = true;
       const lowest = Math.min(MARGIN_PX, viewHeight() - el.offsetHeight - MARGIN_PX);
       top = Math.min(MARGIN_PX, Math.max(lowest, top));
       const embedView = getEmbedView();
       const column = el.parentElement;
-      if (embedView && column && wide.matches) {
+      if (embedView && column) {
         // Moved down from where it sits to `top` below the part in view, within its column (whose height the
         // transform doesn't change)
         const columnTop = column.getBoundingClientRect().top + window.scrollY;
         const room = column.offsetHeight - el.offsetHeight;
         const shift = Math.max(0, Math.min(room, embedView.top + top - columnTop));
         el.style.top = "";
-        // Follows the page at once (.mcmaster-card animates every property, which would make it trail behind)
-        el.style.transitionProperty = "box-shadow, background-color, border-color, color";
         el.style.transform = shift > 0 ? `translateY(${Math.round(shift)}px)` : "";
       } else {
         el.style.transform = "";
-        el.style.transitionProperty = "";
         el.style.top = `${top}px`;
       }
     };
     const onScroll = () => {
+      if (!wide.matches) return;
       const y = scrollY();
       top -= y - lastY; // follow the page
       lastY = y;
@@ -59,13 +70,15 @@ const StickyPanel: React.FC<{ className?: string; children: React.ReactNode }> =
     if (el.parentElement) observer.observe(el.parentElement); // the column grows as graphs open
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", clamp);
-    wide.addEventListener("change", clamp);
+    // Wide again: the page may have been scrolled meanwhile, so start from where it is now
+    const onWide = () => { lastY = scrollY(); clamp(); };
+    wide.addEventListener("change", onWide);
     const unsubscribe = subscribeEmbedView(onScroll);
     return () => {
       observer.disconnect();
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", clamp);
-      wide.removeEventListener("change", clamp);
+      wide.removeEventListener("change", onWide);
       unsubscribe();
     };
   }, []);
