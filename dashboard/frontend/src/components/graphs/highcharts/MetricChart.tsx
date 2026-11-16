@@ -46,6 +46,7 @@ import { POINTS_PER_PX, POINTS_PER_PX_PHONE, RAW_S } from '@/lib/seriesTiles';
 import { MIN_RANGE_MS, TIME_ZONE, bucketSpanLabel, shortBucket, valueDecimals, type PointInfo, type Range } from '@/utils/chartWindow';
 import { compassLabel, seriesType, type Agg } from '@/utils/chartStyle';
 import type { AxisSpec, SeriesSpec } from '@/utils/cardSeries';
+import { suspectBandsFor, windowRangeLabel, type SuspectBand, type SuspectKind } from '@/components/config/suspectWindows';
 
 export interface MetricChartProps {
   id: string; // stable for this chart: "logger", "weather", "quality"
@@ -93,6 +94,33 @@ const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
   month: "%b '%y", year: '%Y',
 };
 const EXTENT_ID = 'picked-range'; // the invisible series that spans the picked range
+
+// Known-suspect periods (config/suspectWindows) as subtle shaded bands behind the lines: amber for a logger out of the
+// water, red for a sensor stuck near zero. Display only; the data and every export are untouched.
+const SUSPECT_STYLE: Record<SuspectKind, { fill: string; border: string; text: string }> = {
+  'out-of-water': { fill: 'rgba(217, 119, 6, 0.07)', border: 'rgba(180, 83, 9, 0.35)', text: '#92400e' },
+  'sensor-error': { fill: 'rgba(203, 32, 39, 0.06)', border: 'rgba(203, 32, 39, 0.32)', text: '#9b1c1c' },
+};
+
+// The bands for a chart's series. `labels` (the larger view only; on a card they would crowd the lines) prints the
+// window's short label at the band's top-left.
+function suspectPlotBands(specs: SeriesSpec[], labels: boolean): Highcharts.XAxisPlotBandsOptions[] {
+  return suspectBandsFor(specs).map((b: SuspectBand) => {
+    const style = SUSPECT_STYLE[b.window.kind];
+    return {
+      from: b.from,
+      to: b.to,
+      color: style.fill,
+      borderColor: style.border,
+      borderWidth: 1,
+      zIndex: 0, // behind the series (which sit at zIndex 1+)
+      ...(labels
+        ? { label: { text: b.window.label, align: 'left' as const, verticalAlign: 'top' as const, y: 14, x: 5,
+              style: { color: style.text, fontSize: '10px', fontFamily: FONT } } }
+        : {}),
+    };
+  });
+}
 
 // What a series is, for the tooltip and legend.
 // `at`: each drawn bucket's details (span, range of readings, count), by its x. The chart gets plain [x, y] pairs,
@@ -319,6 +347,8 @@ function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[],
       max: w.end,
       minRange: MIN_RANGE_MS,
       crosshair: { width: 1, color: '#9ca3af' },
+      // Known-suspect periods for the series drawn here; Highcharts clips a band to the shown range on its own
+      plotBands: suspectPlotBands(specs, axes),
       title: { text: null },
       dateTimeLabelFormats: DATE_FORMATS,
       labels: { style: { fontFamily: FONT, fontSize: '10px' } },
@@ -357,6 +387,9 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
     const s = JSON.parse(structure) as { specs: SeriesSpec[]; axes: AxisSpec[] };
     return buildOptions(title, s.specs, s.axes, controller, chartHeight, modalOpen);
   }, [title, structure, controller, chartHeight, modalOpen]);
+
+  // Known-suspect periods touching this chart's series, for the caption below it (the bands themselves are on the x-axis)
+  const suspect = useMemo(() => suspectBandsFor((JSON.parse(structure) as { specs: SeriesSpec[] }).specs), [structure]);
 
   const error = useChartValue(controller, (s) => s.error);
   const firstLoad = useChartValue(controller, (s) => s.shownBucket === null && !s.error);
@@ -955,6 +988,22 @@ const MetricChart: React.FC<MetricChartProps> = (props) => {
           </div>
         )}
       </div>
+      {/* A small, unobtrusive caption naming the shaded suspect periods (config/suspectWindows). Display only: the data
+          and every export are untouched. The native title gives the fuller explanation. */}
+      {suspect.length > 0 && (
+        <ul className="mt-1 space-y-0.5 px-1 text-[11px] leading-snug text-muted" data-testid={`chart-suspect-${id}`}>
+          {suspect.map((b, i) => (
+            <li key={i} className="flex items-start gap-1.5" title={b.window.detail ?? b.window.label}>
+              <span aria-hidden="true" className="mt-[3px] inline-block h-2 w-3 shrink-0 rounded-[1px]"
+                style={{ backgroundColor: SUSPECT_STYLE[b.window.kind].fill, outline: `1px solid ${SUSPECT_STYLE[b.window.kind].border}` }} />
+              <span>
+                <span className="font-medium" style={{ color: SUSPECT_STYLE[b.window.kind].text }}>{b.window.label}</span>
+                {' '}({windowRangeLabel(b.window)})
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 };
