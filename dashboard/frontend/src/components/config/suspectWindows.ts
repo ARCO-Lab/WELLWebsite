@@ -101,6 +101,12 @@ export function windowMatchesSpecs(w: SuspectWindow, specs: SeriesSpec[]): boole
   );
 }
 
+const DAY_MS = 86_400_000;
+// A bare "YYYY-MM-DD" end is meant inclusively (the caption reads "– May 22, 2026" as "through May 22"), so the band
+// runs to the end of that day, not to its midnight start; an end given with a time is taken as written.
+const endInstant = (endDate: string): number =>
+  parseIsoParam(endDate) + (endDate.includes("T") ? 0 : DAY_MS);
+
 /** The bands to draw on a chart with these series: the matching windows, each with its instants resolved. A window
  *  whose dates don't parse, or whose end isn't after its start, is skipped (a typo never breaks the chart). */
 export function suspectBandsFor(specs: SeriesSpec[]): SuspectBand[] {
@@ -108,7 +114,7 @@ export function suspectBandsFor(specs: SeriesSpec[]): SuspectBand[] {
   for (const w of SUSPECT_DATA_WINDOWS) {
     if (!windowMatchesSpecs(w, specs)) continue;
     const from = w.startDate == null ? dataStart() : parseIsoParam(w.startDate);
-    const to = w.endDate == null ? ONGOING_TO : parseIsoParam(w.endDate);
+    const to = w.endDate == null ? ONGOING_TO : endInstant(w.endDate);
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
     bands.push({ window: w, from, to });
   }
