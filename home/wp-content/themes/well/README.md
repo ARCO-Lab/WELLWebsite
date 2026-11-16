@@ -44,3 +44,21 @@ This guide explains how to **add**, **edit**, and **delete** news articles (post
 
 To build or edit **pages** (not posts) and use the ready-made WELL building blocks (patterns), see
 the **[WELL Website Editor Handbook](../../../../docs/EDITOR-HANDBOOK.md)**.
+
+---
+
+## Sampling data upload guide (link-only page)
+
+The theme includes a page template, **Sampling Data Upload Guide** (`template-sampling-upload.php`), for a
+link-only help page that tells researchers how to format and upload their sampling CSV and lets them check a file
+before uploading. It is meant to be **shared by its link only**:
+
+- Create a **Page** (Pages > Add New), give it an **unlisted/obscure slug** (Page > URL), leave it **out of every
+  menu**, and under **Page Attributes > Template** choose **Sampling Data Upload Guide**.
+- The template marks the page **noindex** automatically, so search engines skip it.
+- The format rules, reference tables and the "Check my CSV format" box all come from the dashboard
+  (`/api/samples/validate` and `/api/samples/format`), so they always match what the weekly import accepts — there
+  is no separate copy to keep in step.
+- **Screenshots:** the step boxes show dashed placeholders. To add real screenshots, drop images into the page
+  content or replace the placeholder markup in `template-sampling-upload.php`. Use your own screenshots only; do not
+  paste branded Borealis/McMaster images you don't have the right to publish.

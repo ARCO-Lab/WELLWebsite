@@ -14,6 +14,10 @@ cd dashboard/backend/app
 python scripts/check_sampling_csv.py ~/WELLAncasterWatershed_May2026.csv
 ```
 
+Researchers who don't run Python get the same check two other ways, both backed by this exact validator: the
+**Sampling data upload** guide page on the WordPress site (a link-only help page with step-by-step instructions and
+a "Check my CSV format" box), and the `POST /api/samples/validate` endpoint it uses (see *For maintainers*).
+
 ## The file
 
 - **UTF-8 text, comma-separated, with a header row.** In Excel: *File > Save As > CSV UTF-8 (Comma delimited)*.
@@ -148,6 +152,14 @@ date,time,site,parameter,value,unit,below_detection,qc_flag,sampler,method,notes
 - `validate_file(path)` in that module checks a file and returns every problem; it needs no database, so any source of
   files (such as the Borealis download in `scripts/download_data.py`) can use it. `scripts/inject_sampling.py`
   imports a file with it, and `scripts/check_sampling_csv.py` only checks.
+- The researcher-facing checker is backed by the same validator: `POST /api/samples/validate` (in
+  `api/routes/samples.py`) runs `validate_csv` on the posted CSV text and returns `{ok, problems:[{row, column,
+  message}], summary, counts}`; it only checks, stores nothing and never touches the database, and caps the input at
+  2 MB. `GET /api/samples/format` returns the canonical columns, sites and parameters so a page can render reference
+  tables from the same lists. Both are reached through the Next.js routes `pages/api/samples/validate.ts` and
+  `pages/api/samples/format.ts`, which add CORS for the WordPress origin only (`lib/publicCors.ts`,
+  `WORDPRESS_ORIGIN` to override). The link-only WordPress guide that uses them is the `Sampling Data Upload Guide`
+  page template (`home/wp-content/themes/well/template-sampling-upload.php`, kept `noindex` and out of the menus).
 - Why one reading per row: the field sheets so far have had different columns from trip to trip (parameters missing
   for a trip, renamed or misspelled headers), and a wide sheet has no room for a per-value detection-limit flag, QC
   flag or method. In the long layout a new parameter is a new row value, not a new column, and every value is checked
