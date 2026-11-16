@@ -14,10 +14,10 @@
  * This template is assigned to a Page with an unlisted slug, kept out of the nav menus, and marked noindex by
  * well_sampling_upload_noindex() in functions.php, so the page is reachable only by its link.
  *
- * Screenshots: the step boxes below hold captioned placeholders. Drop real screenshots into
- * img/media/ (e.g. sampling-borealis-upload.webp) and replace the matching placeholder <div> with an <img>, or add
- * them through the media library. Do not paste branded Borealis/McMaster screenshots you do not have the right to
- * publish.
+ * Images: the checker screenshots (img/sampling/sampling-checker-*.webp) are real captures of this page's own tool,
+ * and the spreadsheet and "#####" pictures are our own illustrations. The Borealis step keeps an original diagram,
+ * not a screenshot: do not paste branded Borealis/McMaster screenshots you do not have the right to publish. A WELL
+ * team member with Borealis access can drop a real screenshot into img/sampling/ and swap it in later.
  */
 defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
@@ -28,6 +28,7 @@ $validate_url    = $dashboard_url . '/api/samples/validate';
 $format_url      = $dashboard_url . '/api/samples/format';
 $template_url    = $dashboard_url . '/api/sampling-template';
 $borealis_url    = 'https://borealisdata.ca/dataverse/WELL';
+$img_base        = get_template_directory_uri() . '/img/sampling';
 
 wp_enqueue_style(
   'well-sampling-check',
@@ -50,8 +51,8 @@ get_header();
   <div class="container">
     <div class="row align-items-center">
       <div class="col-sm-12">
-        <h1 class="mb-2">Sampling data upload — researcher guide</h1>
-        <p class="lead mb-0">How to format and upload your creek sampling results so they appear on the WELL dashboard, plus a tool to check your file before you send it.</p>
+        <h1 class="mb-2">Uploading your creek sampling data</h1>
+        <p class="lead mb-0">Thanks for collecting data for WELL. This page shows you how to put your sampling results into a file the dashboard can read, and it has a little tool at the bottom that checks the file before you send it.</p>
       </div>
     </div>
   </div>
@@ -65,20 +66,20 @@ get_header();
       <div class="row">
         <div class="col-lg-8">
           <h2>How your data reaches the dashboard</h2>
-          <p>When you have sampling results from the Ancaster Creek watershed, you share them as a spreadsheet (a
-             CSV file) by uploading it to our <strong>Borealis</strong> data repository. From there everything is
-             automatic:</p>
+          <p>When you have sampling results from the Ancaster Creek watershed, you share them as a spreadsheet saved
+             as a <strong>CSV file</strong> and upload it to our <strong>Borealis</strong> data repository. From
+             there, nobody has to copy anything by hand:</p>
           <ol>
             <li>You upload your CSV to the <em>Ancaster Watershed Sampling Uploads</em> dataset on Borealis.</li>
-            <li>Once a week, WELL downloads any new files from that dataset.</li>
-            <li>Each file is <strong>checked against the standard format</strong>. If it passes, every reading is
-                imported automatically.</li>
-            <li>Your readings appear on the dashboard's <strong>Ancaster Watershed</strong> tab, where anyone can
+            <li>Once a week, WELL picks up any new files from that dataset.</li>
+            <li>Each file is <strong>checked against the standard format</strong>, and if it passes, every reading in
+                it is imported for you.</li>
+            <li>Your readings show up on the dashboard's <strong>Ancaster Watershed</strong> tab, where anyone can
                 view and download them.</li>
           </ol>
-          <p>If a file does <strong>not</strong> match the format, <strong>nothing from it is imported</strong> and
-             the WELL team is alerted to take a look. Your data is never half-imported — so it is worth getting the
-             format right, and that is what this page is for.</p>
+          <p>If a file doesn't match the format, <strong>none of it is imported</strong> and the WELL team gets a
+             heads-up to look into it. Your data is never half-imported, so it really is worth getting the format
+             right the first time. That is what the rest of this page is for.</p>
         </div>
         <div class="col-lg-4">
           <?php
@@ -125,54 +126,76 @@ get_header();
 
       <div class="sampling-step">
         <h3><span class="sampling-step__num">1</span> Download the template</h3>
-        <p>Start from the blank template — it already has the correct column headings and a few example rows:</p>
+        <p>The easiest way to start is from the blank template. It already has the column headings in the right
+           order, plus a few example rows to show you the idea:</p>
         <p>
           <a class="btn btn-primary" style="background-color:#fdbf57;color:#000;border-color:#fdbf57;"
              href="<?php echo esc_url($template_url); ?>">Download the CSV template</a>
         </p>
-        <p class="text-muted">Open it in Excel, Google Sheets or Numbers. Keep the heading row exactly as it is.</p>
-        <div class="sampling-shot" role="img" aria-label="Screenshot placeholder: the template open in a spreadsheet">
-          <span>Screenshot placeholder — the template open in a spreadsheet. (Add your own image here.)</span>
+        <p class="text-muted">Open it in Excel, Google Sheets or Numbers, whatever you normally use. Leave the
+           heading row exactly as it is.</p>
+
+        <div class="alert-box alert-box--info">
+          <strong>Seeing <code>#####</code> where a date should be?</strong> That is just Excel saying the column is
+          too narrow to show the whole date, not a sign that anything is wrong. Double-click the line between the
+          column letters (or drag it wider) and the date comes right back. The one thing to check is that your dates
+          read as <code>YYYY-MM-DD</code>, for example <code>2026-05-06</code>, when the column is wide enough to see
+          them.
         </div>
+        <figure class="sampling-figure">
+          <img src="<?php echo esc_url($img_base . '/sampling-excel-hash.webp'); ?>" width="1200" height="207"
+               loading="lazy" decoding="async"
+               alt="A spreadsheet with a date column too narrow to read, showing #####, next to the same column widened to show 2026-05-06.">
+          <figcaption>Left: a narrow column hides the date behind <code>#####</code>. Right: widen the column and the
+             date is there, in <code>YYYY-MM-DD</code> form.</figcaption>
+        </figure>
       </div>
 
       <div class="sampling-step">
         <h3><span class="sampling-step__num">2</span> Fill in your readings</h3>
-        <p>The golden rule: <strong>one reading per row</strong>. If you measured nine things at one site on one
-           visit, that is nine rows — one per parameter. Fill in these columns:</p>
+        <p>The one rule to remember: <strong>one reading per row</strong>. If you measured nine things at a site on a
+           single visit, that is nine rows, one for each parameter. Here is what goes in each column:</p>
 
         <h4 class="h5 mt-4">Required in every row</h4>
         <ul class="sampling-cols" id="required-columns">
-          <li><code>date</code> — the sampling date as <code>YYYY-MM-DD</code> (for example <code>2026-05-06</code>).</li>
-          <li><code>site</code> — one of the sites in the table below.</li>
-          <li><code>parameter</code> — one of the parameters in the table below.</li>
-          <li><code>value</code> — a plain number (for example <code>1295</code> or <code>0.015</code>).</li>
-          <li><code>unit</code> — the parameter's unit, exactly as listed below.</li>
+          <li><code>date</code>: the sampling date as <code>YYYY-MM-DD</code>, for example <code>2026-05-06</code>.</li>
+          <li><code>site</code>: one of the sites in the table below.</li>
+          <li><code>parameter</code>: one of the parameters in the table below.</li>
+          <li><code>value</code>: a plain number, for example <code>1295</code> or <code>0.015</code>.</li>
+          <li><code>unit</code>: the parameter's unit, exactly as listed below.</li>
         </ul>
 
         <h4 class="h5 mt-4">Optional (fill in if you have them)</h4>
         <ul class="sampling-cols" id="optional-columns">
-          <li><code>time</code> — time of sampling in 24-hour <code>HH:MM</code> (for example <code>14:05</code>), local Hamilton time.</li>
-          <li><code>creek</code> — the creek's name (a cross-check that you picked the right site).</li>
-          <li><code>below_detection</code> — <code>true</code> if the value was below the detection limit.</li>
-          <li><code>qc_flag</code> — <code>ok</code>, <code>suspect</code> or <code>rejected</code>.</li>
-          <li><code>sampler</code>, <code>method</code>, <code>notes</code> — anything else worth recording.</li>
+          <li><code>time</code>: the time of sampling in 24-hour <code>HH:MM</code>, for example <code>14:05</code>, in local Hamilton time.</li>
+          <li><code>creek</code>: the creek's name. We use it to double-check you picked the right site.</li>
+          <li><code>below_detection</code>: <code>true</code> if the value was below the detection limit.</li>
+          <li><code>qc_flag</code>: <code>ok</code>, <code>suspect</code> or <code>rejected</code>.</li>
+          <li><code>sampler</code>, <code>method</code>, <code>notes</code>: anything else worth keeping with the reading.</li>
         </ul>
 
+        <figure class="sampling-figure">
+          <img src="<?php echo esc_url($img_base . '/sampling-template-spreadsheet.webp'); ?>" width="1200" height="259"
+               loading="lazy" decoding="async"
+               alt="The template open in a spreadsheet: a header row of column names and example rows, one reading per row, with dates in YYYY-MM-DD form.">
+          <figcaption>A filled-in template, one reading per row. (This is an example; your sites and parameters will
+             differ.)</figcaption>
+        </figure>
+
         <div class="alert-box alert-box--info">
-          <strong>Formatting that trips people up:</strong>
+          <strong>A few things that trip people up:</strong>
           <ul class="mb-0">
-            <li><strong>Dates must be <code>YYYY-MM-DD</code>.</strong> A date like <code>05/06/2026</code> is rejected because it could mean 5 June or 6 May — the system never guesses.</li>
-            <li><strong>Values are plain numbers:</strong> no commas for thousands, no units in the cell. Put the unit in the <code>unit</code> column.</li>
-            <li><strong>Below the detection limit?</strong> Write the limit with a <code>&lt;</code> in front, e.g. <code>&lt;0.01</code>.</li>
-            <li><strong>Didn't measure something?</strong> Leave that row out, or leave <code>value</code> empty. Never write <code>0</code> for "not measured".</li>
-            <li><strong>Save as CSV UTF-8.</strong> In Excel: <em>File → Save As → CSV UTF-8 (Comma delimited)</em>.</li>
+            <li><strong>Dates must be <code>YYYY-MM-DD</code>.</strong> Something like <code>05/06/2026</code> is turned away, because it could mean 5 June or 6 May and the system won't guess.</li>
+            <li><strong>Values are plain numbers.</strong> No commas for thousands, and no units in the cell. The unit goes in the <code>unit</code> column.</li>
+            <li><strong>Below the detection limit?</strong> Write the limit with a <code>&lt;</code> in front, like <code>&lt;0.01</code>.</li>
+            <li><strong>Didn't measure something?</strong> Just leave that row out, or leave <code>value</code> empty. Please don't write <code>0</code> to mean "not measured".</li>
+            <li><strong>Save as CSV UTF-8.</strong> In Excel that is <em>File &gt; Save As &gt; CSV UTF-8 (Comma delimited)</em>.</li>
           </ul>
         </div>
 
         <h4 class="h5 mt-4">Sites</h4>
-        <p>Use the site's name, its number, or both (for example <code>Falkirk Forest</code>, <code>1</code>, or
-           <code>#1 Falkirk Forest</code>). Spelling matters; capitals and extra spaces do not.</p>
+        <p>You can use the site's name, its number, or both (for example <code>Falkirk Forest</code>, <code>1</code>,
+           or <code>#1 Falkirk Forest</code>). Spelling matters; capitals and extra spaces don't.</p>
         <div class="table-responsive">
           <table class="table table-sm sampling-ref" id="sites-table">
             <thead><tr><th>Site number</th><th>Name</th><th>Creek</th></tr></thead>
@@ -189,13 +212,13 @@ get_header();
             </tbody>
           </table>
         </div>
-        <p class="text-muted">There is no site 7. A site that is not on this list has to be added to the dashboard
-           first, so please <a href="<?php echo esc_url(home_url('/about/')); ?>">contact the WELL team</a> before
-           uploading data for a new site.</p>
+        <p class="text-muted">There is no site 7. A site that isn't on this list has to be added to the dashboard
+           first, so please <a href="<?php echo esc_url(home_url('/about/')); ?>">get in touch with the WELL team</a>
+           before uploading data for a new site.</p>
 
         <h4 class="h5 mt-4">Parameters and units</h4>
-        <p>Each value must be in the unit shown here. A different unit is an error (the value is not converted for
-           you), so convert it yourself before uploading.</p>
+        <p>Each value needs to be in the unit shown here. A different unit is treated as an error (we don't convert it
+           for you), so do the conversion yourself before you upload.</p>
         <div class="table-responsive">
           <table class="table table-sm sampling-ref" id="parameters-table">
             <thead><tr><th>Parameter</th><th>Unit</th><th>Also accepted as</th></tr></thead>
@@ -217,10 +240,23 @@ get_header();
       </div>
 
       <div class="sampling-step">
-        <h3><span class="sampling-step__num">3</span> Check your file (below)</h3>
-        <p>Before you upload, drop your file into the <a href="#sampling-checker">Check my CSV format</a> tool at the
-           bottom of this page. It tells you right away whether the file will import, and if not, exactly what to
-           fix.</p>
+        <h3><span class="sampling-step__num">3</span> Check your file (right here)</h3>
+        <p>Before you upload anything, drop your file into the <a href="#sampling-checker">Check my CSV format</a>
+           tool at the bottom of this page. It tells you straight away whether the file will import, and if it won't,
+           it points you to exactly what to fix.</p>
+        <figure class="sampling-figure">
+          <img src="<?php echo esc_url($img_base . '/sampling-checker-pass.webp'); ?>" width="1100" height="716"
+               loading="lazy" decoding="async"
+               alt="The Check my CSV format tool showing a green 'Looks good' banner after checking a valid file.">
+          <figcaption>When a file is good to go, you get a green "Looks good" and a quick count of what it holds.</figcaption>
+        </figure>
+        <figure class="sampling-figure">
+          <img src="<?php echo esc_url($img_base . '/sampling-checker-fix.webp'); ?>" width="1100" height="946"
+               loading="lazy" decoding="async"
+               alt="The Check my CSV format tool showing a red 'Not ready yet' banner and a table listing each problem with its row, column and what to fix.">
+          <figcaption>When something is off, it lists each problem with its row, column and a plain-English note on
+             what to change.</figcaption>
+        </figure>
       </div>
 
       <div class="sampling-step">
@@ -231,38 +267,66 @@ get_header();
           <a class="btn btn-primary" style="background-color:#fdbf57;color:#000;border-color:#fdbf57;"
              href="<?php echo esc_url($borealis_url); ?>" target="_blank" rel="noopener noreferrer">Open WELL on Borealis</a>
         </p>
-        <p class="text-muted">If you do not yet have access to the dataset, ask the WELL team to add you.</p>
-        <div class="sampling-shot" role="img" aria-label="Screenshot placeholder: adding a file on the Borealis dataset page">
-          <span>Screenshot placeholder — the "Upload Files" step on the Borealis dataset. (Add your own image here.)</span>
-        </div>
+        <p class="text-muted">If you don't have access to the dataset yet, just ask the WELL team to add you.</p>
+
+        <?php
+        // Original annotated diagram of the three clicks on Borealis (not a screenshot of the Borealis UI, which we
+        // can't republish). A WELL team member with access can later add a real screenshot to img/sampling/.
+        ?>
+        <figure class="sampling-figure" aria-hidden="false">
+          <svg viewBox="0 0 640 150" width="100%" height="auto" role="img" aria-labelledby="bor-title bor-desc">
+            <title id="bor-title">Uploading a file on Borealis, in three steps</title>
+            <desc id="bor-desc">Open the Sampling Uploads dataset, use Edit then Upload Files to add your CSV, then save the changes.</desc>
+            <g font-family="Poppins, sans-serif" font-size="13" text-anchor="middle">
+              <rect x="10" y="30" width="180" height="70" rx="10" fill="#fff" stroke="#7a003c" stroke-width="2"></rect>
+              <text x="100" y="60" fill="#7a003c" font-weight="600">1. Open the dataset</text>
+              <text x="100" y="80" fill="#495965" font-size="11">Sampling Uploads</text>
+              <line x1="190" y1="65" x2="228" y2="65" stroke="#495965" stroke-width="2" marker-end="url(#bor-arrow)"></line>
+              <rect x="230" y="30" width="180" height="70" rx="10" fill="#fff" stroke="#7a003c" stroke-width="2"></rect>
+              <text x="320" y="60" fill="#7a003c" font-weight="600">2. Add your CSV</text>
+              <text x="320" y="80" fill="#495965" font-size="11">Edit &gt; Upload Files</text>
+              <line x1="410" y1="65" x2="448" y2="65" stroke="#495965" stroke-width="2" marker-end="url(#bor-arrow)"></line>
+              <rect x="450" y="30" width="180" height="70" rx="10" fill="#7a003c"></rect>
+              <text x="540" y="60" fill="#fff" font-weight="600">3. Save</text>
+              <text x="540" y="80" fill="#fdbf57" font-size="11">then publish (step 5)</text>
+            </g>
+            <defs>
+              <marker id="bor-arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#495965"></path>
+              </marker>
+            </defs>
+          </svg>
+          <figcaption>The three steps on Borealis. This is an illustration, not a Borealis screenshot; the buttons may
+             be labelled slightly differently depending on your role.</figcaption>
+        </figure>
       </div>
 
       <div class="sampling-step">
         <h3><span class="sampling-step__num">5</span> Publish, and confirm it worked</h3>
-        <p>On Borealis, a newly added file is only picked up once the dataset version is <strong>published</strong>.
-           Depending on your role, either you can publish it yourself or a dataset curator publishes it for you — if
-           in doubt, let the WELL team know you have uploaded a file.</p>
-        <p>After the next weekly import, your readings will show up on the dashboard's <strong>Ancaster
-           Watershed</strong> tab. If something was wrong with the format, the file is set aside (nothing imported)
-           and the WELL team is alerted with the specific problems, so your upload is never silently lost — you can
-           fix it and upload a corrected file, which gets imported on the following run.</p>
+        <p>On Borealis, a file you've just added is only picked up once the dataset version is
+           <strong>published</strong>. Depending on your role, you can either publish it yourself or a dataset curator
+           publishes it for you. If you aren't sure which, just let the WELL team know you've uploaded a file.</p>
+        <p>After the next weekly import, your readings will appear on the dashboard's <strong>Ancaster
+           Watershed</strong> tab. If something was off with the format, the file is set aside (nothing from it is
+           imported) and the WELL team is told exactly what the problems were, so your upload is never quietly lost.
+           You fix it, upload a corrected file, and it goes in on the following run.</p>
       </div>
 
       <hr class="my-5">
 
       <!-- Common mistakes -->
-      <h2>Common reasons a file is refused</h2>
-      <p>The checker and the import both refuse a file for any of these. Each one tells you the exact row and
-         column, so you can go straight to it.</p>
+      <h2>Common reasons a file is turned away</h2>
+      <p>The checker and the weekly import both refuse a file for any of these, and each one tells you the exact row
+         and column so you can go straight to it:</p>
       <ul class="sampling-mistakes">
-        <li>A required column (<code>date</code>, <code>site</code>, <code>parameter</code>, <code>value</code>, <code>unit</code>) is missing, duplicated, or a heading is mis-typed.</li>
-        <li>A <code>date</code> that is not <code>YYYY-MM-DD</code>, or an impossible date like <code>2026-02-30</code>.</li>
-        <li>A <code>time</code> that is not 24-hour <code>HH:MM</code>.</li>
-        <li>A <code>site</code> that is not one of the known sites (a typo, or a site not yet added).</li>
-        <li>A <code>parameter</code> that is not on the list, or a <code>unit</code> that does not match the parameter.</li>
-        <li>A <code>value</code> that is not a plain number, or is impossible (a negative concentration, a pH above 14).</li>
-        <li>The same reading twice (same site, parameter, date and time) — report one value per reading; average replicates and note it.</li>
-        <li>The file saved as something other than CSV UTF-8, or with no readings in it at all.</li>
+        <li>A required column (<code>date</code>, <code>site</code>, <code>parameter</code>, <code>value</code>, <code>unit</code>) is missing or duplicated, or a heading is mis-typed.</li>
+        <li>A <code>date</code> that isn't <code>YYYY-MM-DD</code>, or an impossible one like <code>2026-02-30</code>.</li>
+        <li>A <code>time</code> that isn't a 24-hour <code>HH:MM</code>.</li>
+        <li>A <code>site</code> that isn't one of the known sites (a typo, or a site not added yet).</li>
+        <li>A <code>parameter</code> that isn't on the list, or a <code>unit</code> that doesn't match the parameter.</li>
+        <li>A <code>value</code> that isn't a plain number, or is impossible (a negative concentration, or a pH above 14).</li>
+        <li>The same reading twice (same site, parameter, date and time). Report one value per reading; if you have replicates, average them and say so in <code>notes</code>.</li>
+        <li>The file saved as something other than CSV UTF-8, or a file with no readings in it at all.</li>
       </ul>
 
       <hr class="my-5">
@@ -270,8 +334,8 @@ get_header();
       <!-- The checker tool -->
       <h2 id="sampling-checker">Check my CSV format</h2>
       <p>Paste the contents of your CSV, or choose the file, then press <strong>Check</strong>. Nothing is uploaded
-         or stored — this only reads your file and tells you whether it would import. The dashboard runs the very
-         same check the weekly import uses, so a pass here means a pass there.</p>
+         or saved anywhere. This only reads your file and tells you whether it would import. It runs the very same
+         check the weekly import uses, so a pass here means a pass there.</p>
 
       <div class="sampling-checker"
            data-validate-url="<?php echo esc_url($validate_url); ?>"
@@ -294,7 +358,7 @@ get_header();
 
       <noscript>
         <div class="alert-box alert-box--info mt-3">The live checker needs JavaScript. You can still upload your
-          file to Borealis — the weekly import will check it and the WELL team will tell you if anything needs
+          file to Borealis: the weekly import will check it and the WELL team will tell you if anything needs
           fixing.</div>
       </noscript>
 
