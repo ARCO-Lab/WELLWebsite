@@ -27,6 +27,37 @@ function well_theme_setup() {
     register_nav_menus( array(
         'primary' => __( 'Primary Menu', 'well' ),
     ) );
+
+    // 3. Block editor support. The theme stays a classic PHP theme; these just make the
+    // block editor (used to edit Pages and Posts in wp-admin) behave and look like the live
+    // site, so non-technical editors see real WELL styling while they work.
+    add_theme_support( 'align-wide' );   // allow full-/wide-width blocks (hero, CTA banners)
+    add_theme_support( 'editor-styles' ); // load the stylesheets below into the editor canvas
+    add_theme_support( 'wp-block-styles' ); // core block default styles
+
+    // Group the theme's patterns under a "WELL" heading in the inserter
+    // (Inserter > Patterns > WELL). The pattern files live in patterns/ and are
+    // auto-registered by WordPress (6.0+); this only names their category.
+    register_block_pattern_category( 'well', array(
+        'label' => __( 'WELL', 'well' ),
+    ) );
+
+    // Load the site's real stylesheets into the block editor canvas, so blocks, legacy
+    // content and the WELL patterns preview on-brand (maroon, gold, Poppins headings, card
+    // and button styles) instead of in generic editor styling. The iframed editor (WP 5.9+)
+    // only picks up CSS added here, not the front-end wp_enqueue_style calls below.
+    // editor.css is a small editor-only shim (brand variables + canvas padding); see the
+    // file header for why it is needed.
+    add_editor_style( array(
+        'https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap',
+        'css/theme.css',
+        'css/mcm-bw.css',
+        'css/typography.css',
+        'css/btn.css',
+        'css/new-cards.css',
+        'css/well-patterns.css',
+        'css/editor.css',
+    ) );
 }
 // This hook runs our setup function as WordPress loads.
 add_action( 'after_setup_theme', 'well_theme_setup' );
@@ -133,7 +164,8 @@ function well_theme_enqueue_assets() {
     // We list 'well-google-fonts' as a dependency to ensure fonts load first.
     $css_files = [
         'theme', 'mcm-bw', 'typography', 'btn', 'footer', 'new-cards',
-        'dynamic-filters', 'element-left-nav', 'aoda', 'ldap', 'loader'
+        'dynamic-filters', 'element-left-nav', 'aoda', 'ldap', 'loader',
+        'well-patterns'
     ];
 
     foreach ($css_files as $file) {

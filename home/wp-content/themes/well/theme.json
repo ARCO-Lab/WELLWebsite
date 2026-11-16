@@ -1,0 +1,117 @@
+{
+    "$schema": "https://schemas.wp.org/trunk/theme.json",
+    "version": 2,
+    "settings": {
+        "appearanceTools": true,
+        "useRootPaddingAwareAlignments": true,
+        "layout": {
+            "contentSize": "1360px",
+            "wideSize": "1600px"
+        },
+        "color": {
+            "custom": true,
+            "customGradient": false,
+            "defaultPalette": false,
+            "defaultGradients": false,
+            "palette": [
+                { "slug": "maroon", "color": "#7a003c", "name": "Maroon" },
+                { "slug": "maroon-dark", "color": "#620030", "name": "Dark Maroon" },
+                { "slug": "gold", "color": "#fdbf57", "name": "Gold" },
+                { "slug": "charcoal", "color": "#222222", "name": "Charcoal" },
+                { "slug": "grey", "color": "#495965", "name": "Grey" },
+                { "slug": "cool-grey", "color": "#dbdbdd", "name": "Cool Grey" },
+                { "slug": "light-grey", "color": "#efefef", "name": "Light Grey" },
+                { "slug": "white", "color": "#ffffff", "name": "White" },
+                { "slug": "black", "color": "#000000", "name": "Black" }
+            ]
+        },
+        "typography": {
+            "customFontSize": true,
+            "lineHeight": true,
+            "fontFamilies": [
+                {
+                    "slug": "poppins",
+                    "fontFamily": "\"Poppins\", sans-serif",
+                    "name": "Poppins (headings)"
+                },
+                {
+                    "slug": "body",
+                    "fontFamily": "Arial, sans-serif",
+                    "name": "Body (Arial)"
+                }
+            ],
+            "fontSizes": [
+                { "slug": "small", "size": "14px", "name": "Small" },
+                { "slug": "medium", "size": "16px", "name": "Medium" },
+                { "slug": "large", "size": "24px", "name": "Large" },
+                { "slug": "x-large", "size": "28px", "name": "Extra Large" },
+                { "slug": "xx-large", "size": "42px", "name": "Heading" }
+            ]
+        },
+        "spacing": {
+            "units": ["px", "rem", "%", "vw"],
+            "spacingSizes": [
+                { "slug": "20", "size": "12px", "name": "1" },
+                { "slug": "30", "size": "24px", "name": "2" },
+                { "slug": "40", "size": "36px", "name": "3" },
+                { "slug": "50", "size": "48px", "name": "4" },
+                { "slug": "60", "size": "72px", "name": "5" }
+            ]
+        }
+    },
+    "styles": {
+        "color": {
+            "text": "#495965",
+            "background": "#ffffff"
+        },
+        "typography": {
+            "fontFamily": "Arial, sans-serif",
+            "lineHeight": "1.5"
+        },
+        "elements": {
+            "heading": {
+                "typography": {
+                    "fontFamily": "\"Poppins\", sans-serif",
+                    "fontWeight": "600"
+                },
+                "color": {
+                    "text": "#000000"
+                }
+            },
+            "button": {
+                "color": {
+                    "background": "#7a003c",
+                    "text": "#ffffff"
+                },
+                "border": {
+                    "radius": "2px"
+                },
+                "typography": {
+                    "fontWeight": "700"
+                },
+                ":hover": {
+                    "color": {
+                        "background": "#fdbf57",
+                        "text": "#222222"
+                    }
+                },
+                ":focus": {
+                    "color": {
+                        "background": "#fdbf57",
+                        "text": "#222222"
+                    }
+                }
+            },
+            "link": {
+                "color": {
+                    "text": "#7a003c"
+                },
+                ":hover": {
+                    "color": {
+                        "text": "#222222"
+                    }
+                }
+            }
+        }
+    }
+}

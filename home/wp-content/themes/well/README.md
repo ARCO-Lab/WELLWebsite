@@ -37,3 +37,10 @@ This guide explains how to **add**, **edit**, and **delete** news articles (post
 - Posts will automatically appear on the News page and have their own unique URL.
 - You do **not** need to edit any code to manage posts.
 - Use the **Preview** button to see your changes before publishing.
+
+---
+
+## Editing Pages
+
+To build or edit **pages** (not posts) and use the ready-made WELL building blocks (patterns), see
+the **[WELL Website Editor Handbook](../../../../docs/EDITOR-HANDBOOK.md)**.
