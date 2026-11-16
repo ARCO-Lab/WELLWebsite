@@ -11,7 +11,7 @@ import {
   PopoverTrigger,
 } from "@/components/animations/popover";
 import { Label } from "@/components/animations/Label";
-import { format } from "date-fns";
+import { format, isSameDay } from "date-fns";
 import { DATA_START, siteDay } from "@/utils/siteTime";
 
 interface Props {
@@ -20,6 +20,9 @@ interface Props {
   onStartChange: (date: Date | null) => void;
   onEndChange: (date: Date | null) => void;
 }
+
+// The same calendar day (picking the day already picked changes nothing)
+const sameDay = (a: Date | undefined, b: Date | null | undefined) => !!a && !!b && isSameDay(a, b);
 
 const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndChange }) => {
   const disabledStyles = {
@@ -82,10 +85,11 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
           <PopoverContent className="w-auto p-0" align="start" onOpenAutoFocus={focusPickedDay}>
             <CalendarComponent
               mode="single"
-              required={false}
+              required // a date can't be cleared: the charts would fall back to a range the Filters don't show
               selected={startDate || undefined}
               defaultMonth={startDate || undefined}
-              onSelect={(date) => onStartChange(date ?? null)}
+              // The day already picked: nothing changes (a new date would reset the charts' windows)
+              onSelect={(date) => { if (!sameDay(date, startDate)) onStartChange(date ?? null); }}
               disabled={(date) => date > today || (endDate ? date > endDate : false)}
               {...pickerProps}
               modifiersStyles={disabledStyles}
@@ -111,10 +115,10 @@ const Calendar: React.FC<Props> = ({ startDate, endDate, onStartChange, onEndCha
           <PopoverContent className="w-auto p-0" align="start" onOpenAutoFocus={focusPickedDay}>
             <CalendarComponent
               mode="single"
-              required={false}
+              required // a date can't be cleared: the charts would fall back to a range the Filters don't show
               selected={endDate || undefined}
               defaultMonth={endDate || undefined}
-              onSelect={(date) => onEndChange(date ?? null)}
+              onSelect={(date) => { if (!sameDay(date, endDate)) onEndChange(date ?? null); }}
               disabled={(date) => date > today || (startDate ? date < startDate : false)}
               {...pickerProps}
               modifiersStyles={disabledStyles}

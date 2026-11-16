@@ -5,8 +5,7 @@ import datetime as dt
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
@@ -14,7 +13,7 @@ sys.path.insert(0, str(APP / "scripts"))
 os.environ["DATABASE_URL"] = "sqlite://"  # this test process only; never a real database
 
 from utils.digest import (  # noqa: E402
-    LOGGER_SENSORS, anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings,
+    LOGGER_SENSORS, anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings, station_gaps,
 )
 from utils.monitoring import assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
@@ -30,7 +29,7 @@ def utc(naive_site_time):
     return naive_site_time.replace(tzinfo=EST_TZ).astimezone(dt.timezone.utc)
 
 
-class AlertEmailTests(unittest.TestCase):
+class AlertEmailTests(TestCase):
     def test_parsing(self):
         self.assertEqual(parse_alert_emails("a@mcmaster.ca"), (["a@mcmaster.ca"], []))
         self.assertEqual(parse_alert_emails(" a@mcmaster.ca, b@x.org ;c@y.ca  A@mcmaster.ca,,"),
@@ -41,7 +40,7 @@ class AlertEmailTests(unittest.TestCase):
             self.assertEqual(parse_alert_emails(empty), ([], []))
 
 
-class SmtpSettingsTests(unittest.TestCase):
+class SmtpSettingsTests(TestCase):
     def test_needs_host_and_port(self):
         self.assertIsNone(smtp_settings({}))
         self.assertIsNone(smtp_settings({"SMTP_HOST": "smtp.mcmaster.ca"}))
@@ -61,7 +60,7 @@ class SmtpSettingsTests(unittest.TestCase):
             smtp_settings({"SMTP_HOST": "relay", "SMTP_PORT": "25"})   # no sender
 
 
-class GapTests(unittest.TestCase):
+class GapTests(TestCase):
     def test_gaps_over_30_minutes(self):
         ts = [T0 + dt.timedelta(minutes=m) for m in (0, 10, 20, 60, 70, 80)]
         end = T0 + dt.timedelta(minutes=90)
@@ -79,7 +78,25 @@ class GapTests(unittest.TestCase):
         self.assertEqual(find_gaps(ts, T0, ts[-1]), [])
 
 
-class AnomalyTests(unittest.TestCase):
+class StationGapTests(TestCase):
+    def test_one_logger_silent_while_the_others_report(self):
+        # The group's time slots are full (logger 2 reports), so only the per-station gaps show logger 3's 2 hours.
+        every = [T0 + dt.timedelta(minutes=10 * i) for i in range(30)]
+        logger3 = [t for t in every if not T0 + dt.timedelta(hours=1) < t < T0 + dt.timedelta(hours=3)]
+        end = every[-1]
+        group = find_gaps(sorted(set(every) | set(logger3)), T0, end)
+        self.assertEqual(group, [])
+        self.assertEqual(station_gaps(group, {"2577532": every, "2577533": logger3}, T0, end),
+                         [("Logger 3", T0 + dt.timedelta(hours=1), T0 + dt.timedelta(hours=3))])
+
+    def test_a_gap_of_the_whole_group_isnt_repeated_per_station(self):
+        ts = [T0, T0 + dt.timedelta(hours=2)]
+        group = find_gaps(ts, T0, ts[-1])
+        self.assertEqual(station_gaps(group, {"2577532": ts, "2577533": ts}, T0, ts[-1]), [])
+        self.assertEqual(station_gaps([], {"22051538": [T0]}, T0, T0 + dt.timedelta(hours=2)), [])   # one station
+
+
+class AnomalyTests(TestCase):
     def test_dissolved_oxygen_near_zero(self):
         found = anomalies("Quality", "4501", "ODO", [0.0, 0.01, 0.02, 0.0])
         self.assertEqual(len(found), 1)
@@ -124,7 +141,7 @@ class AnomalyTests(unittest.TestCase):
         self.assertEqual(anomalies("Quality", "4501", "ODO", []), [])
 
 
-class BuildDigestTests(unittest.TestCase):
+class BuildDigestTests(TestCase):
     def test_text(self):
         now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
         latest = [
@@ -137,12 +154,12 @@ class BuildDigestTests(unittest.TestCase):
         subject, body = build_digest("2026-11-10", freshness, groups, ["4501 ODO: dissolved oxygen is about 0"],
                                      {"power_min": 12.1, "power_max": 13.4, "power_readings": 59,
                                       "last_point": "2026-11-10 06:50:00", "last_point_age_minutes": 10})
-        self.assertEqual(subject, "WELL daily digest 2026-11-10: 2 to check")
-        self.assertIn("Logger 2 Water Temperature: newest 2026-11-10T01:00:00 (6.0 h ago; limit 3 h)", body)
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 2 to check")
+        self.assertIn("Logger 2 Water Temperature: newest Tue Nov 10, 01:00 (6.0 h ago; limit 3 h)", body)
         self.assertIn("Weather: 140 rows of 144 expected (1 series), 140 of 144 time slots", body)
-        self.assertIn("gap 11-10 05:00 to 11-10 06:00 (60 min)", body)
+        self.assertIn("gap Tue Nov 10, 05:00 → Tue Nov 10, 06:00 (60 min)", body)
         self.assertIn("primary power: 12.1 to 13.4 V over 59 readings", body)
-        self.assertIn("last contact (newest data point): 2026-11-10 06:50:00 (10 min ago)", body)
+        self.assertIn("last contact (newest data point): Tue Nov 10, 06:50 (10 min ago)", body)
         self.assertIn("dissolved oxygen", body)
 
     def test_all_ok_and_wqdata_error(self):
@@ -150,13 +167,125 @@ class BuildDigestTests(unittest.TestCase):
         latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
                    "recorded_at": "2026-11-10T06:50:00"}]
         freshness = assess_freshness(latest, now, env={})
-        self.assertEqual(build_digest("2026-11-10", freshness, {}, [], None)[0], "WELL daily digest 2026-11-10: all OK")
+        self.assertEqual(build_digest("2026-11-10", freshness, {}, [], None)[0],
+                         "[WELL] Daily digest 2026-11-10: all OK")
         subject, body = build_digest("2026-11-10", freshness, {}, [], {"error": "HTTPError (HTTP 429)"})
-        self.assertEqual(subject, "WELL daily digest 2026-11-10: 1 to check")
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("request failed: HTTPError (HTTP 429)", body)
 
+    def test_unset_heartbeats_come_first_and_count_as_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     unset_heartbeats=["HEALTHCHECK_URL_BACKUP", "HEALTHCHECK_URL_RESTORE"])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("Heartbeats not set", body)
+        self.assertIn("HEALTHCHECK_URL_RESTORE", body)
+        self.assertLess(body.index("Heartbeats not set"), body.index("Stale series"))
+        self.assertNotIn("Heartbeats not set", build_digest("2026-11-10", freshness, {}, [], None,
+                                                            unset_heartbeats=[])[1])
 
-class ReadGroupsTests(unittest.TestCase):
+    def test_copies_turned_off_are_listed_but_not_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        quiet_subject = build_digest("2026-11-10", freshness, {}, [], None)[0]
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     copies_off=["Borealis upload: off (`BOREALIS_UPLOAD=off`)"])
+        self.assertEqual(subject, quiet_subject)
+        self.assertIn("Off-VM copies turned off", body)
+        self.assertIn("Borealis upload: off", body)
+        self.assertNotIn("Off-VM copies turned off", build_digest("2026-11-10", freshness, {}, [], None, copies_off=[])[1])
+
+    def test_leftover_restore_databases_are_listed_as_a_problem(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None,
+                                     leftover_databases=["welldb_restore_check"])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("Restore drill databases left behind", body)
+        self.assertIn("welldb_restore_check", body)
+        self.assertNotIn("left behind", build_digest("2026-11-10", freshness, {}, [], None, leftover_databases=[])[1])
+
+    def test_sampling_rows_needing_a_decision(self):
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        entry = {"at": "2026-11-09T21:00:00-05:00",
+                 "text": "aw_2026.csv (ID: 57195): 3 rows present in the DB but not in the latest file were kept"}
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[entry])
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: aw_2026.csv (ID: 57195): "
+                      "3 rows present in the DB but not in the latest file were kept\n\nThe [WARN] lines", body)
+        _, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[])
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- none", body)
+        self.assertIn("could not be read: ValueError", build_digest(
+            "2026-11-10", freshness, {}, [], None, attention={"error": "ValueError"})[1])
+        self.assertNotIn("Sampling data", build_digest("2026-11-10", freshness, {}, [], None)[1])
+
+    def test_the_new_sections_together_by_keyword(self):
+        """recoveries, quiet_kinds, missed, attention, unset_heartbeats and leftover_databases passed together, as
+        scripts/daily_digest.py does: each lands in its own section (keywords, so one added later can't shift them)."""
+        now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=EST_TZ)
+        latest = [{"group_type": "Weather", "station_id": "22051538", "measurement_type": "Rain",
+                   "recorded_at": "2026-11-10T06:50:00"}]
+        freshness = assess_freshness(latest, now, env={})
+        recovery = {"id": 1, "kind": "SUSPECT_VALUES", "key": "suspect:WQData:4501:ODO", "title": "t",
+                    "started_at": "2026-11-09T10:00:00-05:00", "resolved_at": "2026-11-09T12:00:00-05:00",
+                    "recovery_emailed": False}
+        missed = [{"id": 2, "kind": "STALE_SENSOR", "key": "stale:WQData:4501", "title": "t",
+                   "started_at": "2026-11-07T10:00:00-05:00", "resolved_at": "2026-11-08T09:00:00-05:00"}]
+        attention = [{"at": "2026-11-09T21:00:00-05:00", "text": "a.csv: 2 corrections not applied"}]
+        subject, body = build_digest("2026-11-10", freshness, {}, [], None, recoveries=[recovery],
+                                     quiet_kinds=frozenset({"VENDOR_DOWN"}), missed=missed, attention=attention,
+                                     unset_heartbeats=["HEALTHCHECK_URL_RESTORE"],
+                                     leftover_databases=["welldb_restore_check"])
+        # The attention line, the unset heartbeats and the leftover databases.
+        self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 3 to check")
+        self.assertIn("## Heartbeats not set (these jobs, or the whole worker, could stop with nobody told)\n\n"
+                      "- `HEALTHCHECK_URL_RESTORE`", body)
+        self.assertIn("- `welldb_restore_check`", body)
+        self.assertLess(body.index("Restore drill databases left behind"), body.index("Alerts recovered"))
+        self.assertIn("## Alerts recovered in the last 24 h\n\n- **Water quality station 4501 dissolved oxygen**: "
+                      "readings back to normal. Mon Nov 9, 10:00 → Mon Nov 9, 12:00 (2 h). Email pending", body)
+        self.assertIn("## Older recoveries that could not be emailed\n\n- **Water quality station 4501**: reporting "
+                      "again. Sat Nov 7, 10:00 → Sun Nov 8, 09:00 (23 h)", body)
+        self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: a.csv: 2 corrections "
+                      "not applied", body)
+
+
+class AttentionRecordTests(TestCase):
+    """utils/jobs.record_attention: download_data.py's ATTENTION: lines, kept for the daily digest."""
+
+    def test_records_only_attention_lines_and_keeps_two_weeks(self):
+        import tempfile
+        from utils.jobs import recent_attention, record_attention
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "sampling_attention.json")
+            now = dt.datetime(2026, 11, 10, 7, 0, tzinfo=dt.timezone.utc)
+            self.assertEqual(recent_attention(now, path), [])   # nothing recorded yet
+            self.assertEqual(record_attention(["DEBUG: x", "ATTENTION: old one"], now - dt.timedelta(days=20), path), 1)
+            self.assertEqual(record_attention(["SUMMARY: 1 new", "ATTENTION: a.csv: 2 corrections not applied"],
+                                              now, path), 1)
+            self.assertEqual(record_attention(["OUTPUT: NO_NEW_FILES"], now, path), 0)
+            self.assertEqual([e["text"] for e in recent_attention(now - dt.timedelta(days=30), path)],
+                             ["a.csv: 2 corrections not applied"])   # the 20-day-old one was dropped
+            self.assertEqual(recent_attention(now + dt.timedelta(seconds=1), path), [])
+            with open(path, "w") as f:
+                f.write("{not json")
+            with self.assertRaises(ValueError):
+                recent_attention(now, path)
+            self.assertEqual(record_attention(["ATTENTION: new"], now, path), 1)   # a damaged record is replaced
+            self.assertEqual([e["text"] for e in recent_attention(now, path)], ["new"])
+
+
+class ReadGroupsTests(TestCase):
     def test_counts_gaps_and_findings_from_the_database(self):
         import daily_digest
         from server import create_app
@@ -238,7 +367,7 @@ class ReadGroupsTests(unittest.TestCase):
         self.assertEqual([g[1] for g in groups["Weather"]["gaps"]], [times[0]])   # only before the first reading
 
 
-class WqdataTests(unittest.TestCase):
+class WqdataTests(TestCase):
     def test_one_request_power_and_last_point(self):
         import daily_digest
         body = {"data": [
@@ -294,7 +423,7 @@ class FakeSMTP:
         self.calls.append("send")
 
 
-class SendEmailTests(unittest.TestCase):
+class SendEmailTests(TestCase):
     def send(self, offer_starttls, user="u@x.ca", password="pw"):
         import daily_digest
         FakeSMTP.offer_starttls, FakeSMTP.instances = offer_starttls, []
@@ -316,8 +445,19 @@ class SendEmailTests(unittest.TestCase):
     def test_a_relay_without_login_may_be_plain(self):
         self.assertEqual(self.send(False, user="", password=""), ["ehlo", "send"])
 
+    def test_message_id_when_given(self):
+        import daily_digest
+        sent = []
+        FakeSMTP.offer_starttls, FakeSMTP.instances = True, []
+        settings = {"host": "relay", "port": 587, "user": "", "password": "", "from": "well@x.ca"}
+        with mock.patch.object(daily_digest.smtplib, "SMTP", FakeSMTP), \
+                mock.patch.object(FakeSMTP, "send_message", lambda self, message: sent.append(message)):
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body", None, "<well-alert.ab12@x.ca>")
+            daily_digest.send_email(settings, ["a@x.ca"], "subject", "body")
+        self.assertEqual([m["Message-ID"] for m in sent], ["<well-alert.ab12@x.ca>", None])
 
-class DeliverTests(unittest.TestCase):
+
+class DeliverTests(TestCase):
     SMTP = {"SMTP_HOST": "relay", "SMTP_PORT": "587", "SMTP_FROM": "well@x.ca"}
 
     def deliver(self, env, dry_run=False, send=None):
@@ -349,6 +489,22 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual(self.deliver({**self.SMTP, "ALERT_EMAILS": "a@x.ca"}, send=refuse)[0], 1)
         self.assertEqual(self.deliver({"SMTP_HOST": "relay", "SMTP_PORT": "x", "ALERT_EMAILS": "a@x.ca"})[0], 1)
 
+    def test_what_it_reported_is_recorded_only_once_emailed(self):
+        import daily_digest
+        smtp = {**self.SMTP, "ALERT_EMAILS": "a@x.ca"}
+
+        def refuse(*a):
+            raise OSError("connection refused")
+        def accept(*a):
+            pass
+        # (env, --dry-run, sender, whether on_sent runs): emailed; dry run; SMTP not set up; sending failed
+        for env, dry_run, send, reported in ((smtp, False, accept, True), (smtp, True, accept, False),
+                                             ({}, False, accept, False), (smtp, False, refuse, False)):
+            calls = []
+            with mock.patch("builtins.print"):
+                daily_digest.deliver("subject", "body", dry_run, env=env, send=send, on_sent=lambda: calls.append(1))
+            self.assertEqual(calls, [1] if reported else [], (env, dry_run, send))
+
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

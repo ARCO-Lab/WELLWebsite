@@ -74,6 +74,7 @@ def prune(engine, retention_days, now=None):
 
 
 def run_once(engine, settings, get=None, now=None):
+    """Checks every target once and records the results; returns the rows."""
     rows = [check(name, url, headers, get=get, now=now) for name, url, headers in probe_targets(settings)]
     if rows:
         record(engine, rows)
@@ -81,6 +82,8 @@ def run_once(engine, settings, get=None, now=None):
 
 
 class Prober:
+    """The background thread that checks the targets every OPS_PROBE_INTERVAL_S seconds and prunes old rows every
+    PRUNE_EVERY. A failure is logged (rarely, by type only) and the loop carries on."""
     def __init__(self, engine, settings):
         self.engine, self.settings = engine, settings
         self.last_prune = None

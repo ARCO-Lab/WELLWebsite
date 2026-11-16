@@ -4,21 +4,34 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  pickBucket, zoneOffsetMs, wallToUtc, pickedDaysRange, snapDown, snapUp, normalizeWindow, shiftWindow,
-  zoomOutWindow, zoomInWindow, detailRange, composePoints, bucketLabel, bucketSpanLabel, shortBucket, valueDecimals,
-  isPartial, Lru, MIN_RANGE_MS,
+  zoneOffsetMs, wallToUtc, pickedDaysRange, snapUp, bucketSpanLabel, shortBucket, valueDecimals, typicalCounts,
+  isPartial, Lru, MIN_RANGE_MS, clampToNow, daysCovering, dataStart, torontoIso, parseIsoParam, windowFromSearch,
+  searchWithWindow, hourStart,
 } from "../src/utils/chartWindow.ts";
+import { composeSeries, cutIntoTiles, fromWall, segmentsFor, tileAt, toWall } from "../src/lib/seriesTiles.ts";
+import {
+  measurementColor, seriesType, compassLabel, panelsFor, WEATHER_PANELS, QUALITY_PANELS, seriesNote,
+} from "../src/utils/chartStyle.ts";
 
 const H = 3600 * 1000;
 const D = 24 * H;
 
-test("pickBucket mirrors the backend ladder", () => {
-  assert.equal(pickBucket(D), 600); // 144 points
-  assert.equal(pickBucket(13 * D), 600); // 1,872 points
-  assert.equal(pickBucket(14 * D), 1800); // 2,016 at 10 min: too many
-  assert.equal(pickBucket(365 * D), 21600);
-  assert.equal(pickBucket(4000 * D), 86400); // capped at daily
-});
+// A bucket start on the local (wall-clock) grid
+const snapDown = (ms, bucketS) => fromWall(Math.floor(toWall(ms) / (bucketS * 1000)) * bucketS * 1000);
+
+// One series, as the charts compose it (lib/seriesTiles): cut into tiles, drawn at its bucket, partial buckets judged
+// by the series' own usual counts (typicalCounts)
+function composePoints(s, bucketS) {
+  const arr = (a) => (a ? Array.from(a, (v) => (v === null || v === undefined ? NaN : v)) : Array.from(s.t, () => NaN));
+  const full = { t: Array.from(s.t), avg: arr(s.avg), min: arr(s.min), max: arr(s.max), n: arr(s.n) };
+  const first = tileAt(full.t[0], bucketS), last = tileAt(full.t[full.t.length - 1], bucketS);
+  const tiles = cutIntoTiles(full, first, last, bucketS);
+  const typical = typicalCounts(s);
+  // A tile more on each side: these test series aren't on the wall-clock grid, so a bucket can straddle a tile edge
+  const span = [first - 1, ...tiles.keys(), last + 1];
+  return composeSeries(segmentsFor([{ bucketS, tiles: span }]), (b, i) => tiles.get(i), () => typical);
+}
+const xy = (pts) => pts.map((p) => [p.x, p.y]);
 
 test("Toronto offsets, including both sides of DST", () => {
   assert.equal(zoneOffsetMs(Date.UTC(2026, 0, 15, 12)), -5 * H); // EST
@@ -33,52 +46,11 @@ test("picked days are Toronto midnight to the next midnight, whatever the browse
   assert.equal(r.end, Date.UTC(2026, 3, 11, 4));
 });
 
-test("snapping follows the local grid, so daily buckets are local days", () => {
+test("snapping up follows the local grid, so daily buckets are local days", () => {
   const t = Date.UTC(2026, 3, 5, 15, 7); // 11:07 Toronto
-  assert.equal(snapDown(t, 86400), Date.UTC(2026, 3, 5, 4));
   assert.equal(snapUp(t, 86400), Date.UTC(2026, 3, 6, 4));
-  assert.equal(snapDown(t, 600), Date.UTC(2026, 3, 5, 15, 0));
   assert.equal(snapUp(t, 600), Date.UTC(2026, 3, 5, 15, 10));
-  assert.equal(snapDown(Date.UTC(2026, 3, 5, 15), 600), Date.UTC(2026, 3, 5, 15)); // already on the grid
-});
-
-test("windows: at least an hour, inside the range, null when they cover it", () => {
-  const picked = { start: 0, end: 10 * D };
-  const tiny = normalizeWindow({ start: 5 * D, end: 5 * D + 60_000 }, picked); // a one-minute drag
-  assert.equal(tiny.end - tiny.start, MIN_RANGE_MS);
-  assert.equal(normalizeWindow({ start: -D, end: 11 * D }, picked), null);
-  assert.deepEqual(normalizeWindow({ start: -D, end: D }, picked), { start: 0, end: 2 * D }); // pushed inside
-  assert.deepEqual(shiftWindow({ start: 2 * D, end: 4 * D }, picked, 1), { start: 3 * D, end: 5 * D });
-  assert.deepEqual(shiftWindow({ start: 0, end: 2 * D }, picked, -1), { start: 0, end: 2 * D }); // at the edge
-  assert.deepEqual(zoomOutWindow({ start: 4 * D, end: 6 * D }, picked), { start: 3 * D, end: 7 * D });
-  assert.equal(zoomOutWindow({ start: 2 * D, end: 8 * D }, picked), null); // back to the whole range
-  assert.deepEqual(zoomInWindow(picked, picked), { start: 2.5 * D, end: 7.5 * D }); // half, around the centre
-  assert.equal(zoomInWindow({ start: 0, end: H }, picked).end - zoomInWindow({ start: 0, end: H }, picked).start, MIN_RANGE_MS);
-});
-
-test("detail range: padded by half the width each side, clamped, snapped to the overview grid", () => {
-  const picked = pickedDaysRange(new Date(2026, 3, 1), new Date(2026, 3, 30));
-  const w = { start: Date.UTC(2026, 3, 10, 15, 7), end: Date.UTC(2026, 3, 10, 17, 7) }; // 2 h
-  const r = detailRange(w, picked, 3600);
-  assert.deepEqual(r, { start: Date.UTC(2026, 3, 10, 14), end: Date.UTC(2026, 3, 10, 19) });
-  const edge = detailRange({ start: picked.start, end: picked.start + 2 * D }, picked, 21600);
-  assert.equal(edge.start, picked.start);
-});
-
-const xy = (pts) => pts.map((p) => [p.x, p.y]);
-
-test("composing: overview outside the detail range, detail inside, no gap at the joins", () => {
-  const ob = 3600, db = 600;
-  const overview = { t: [0, 1, 2, 3, 4, 5].map((h) => h * H), avg: [0, 1, 2, 3, 4, 5] };
-  const detailT = [];
-  for (let t = 2 * H; t < 4 * H; t += 600_000) detailT.push(t);
-  const detail = { values: { t: detailT, avg: detailT.map(() => 9) }, bucketS: db, range: { start: 2 * H, end: 4 * H } };
-  const pts = xy(composePoints(overview, ob, detail));
-  // hourly buckets are drawn at their middle (half past), raw 10-minute readings at their own time
-  assert.deepEqual(pts.slice(0, 2), [[H / 2, 0], [1.5 * H, 1]]);
-  assert.deepEqual(pts.filter(([, v]) => v === 9).map(([x]) => x), detailT);
-  assert.deepEqual(pts.slice(-2), [[4.5 * H, 4], [5.5 * H, 5]]);
-  assert.ok(pts.every(([, v]) => v !== null), "no break where detail meets overview");
+  assert.equal(snapUp(Date.UTC(2026, 3, 5, 15), 600), Date.UTC(2026, 3, 5, 15)); // already on the grid
 });
 
 test("gaps longer than 2.5 buckets become a null, shorter ones don't", () => {
@@ -86,12 +58,6 @@ test("gaps longer than 2.5 buckets become a null, shorter ones don't", () => {
   const pts = xy(composePoints(s, 600));
   assert.equal(pts.filter(([, v]) => v === null).length, 1); // only the 6-bucket gap (a night without power)
   assert.deepEqual(pts[4], [1_200_000 + 2 * 600_000 + 600_000, null]);
-});
-
-test("a series missing from the detail range shows a break, not a line across it", () => {
-  const overview = { t: [0, H, 2 * H, 3 * H], avg: [1, 1, 1, 1] };
-  const pts = composePoints(overview, 3600, { values: undefined, bucketS: 600, range: { start: H, end: 3 * H } });
-  assert.deepEqual(pts.map((p) => p.y), [1, null, 1]);
 });
 
 test("typed arrays as cached: NaN is a missing value, drawn as a break", () => {
@@ -196,12 +162,6 @@ test("bucket spans in Toronto wall-clock time", () => {
   assert.equal(valueDecimals("something new"), 2);
 });
 
-test("labels", () => {
-  assert.equal(bucketLabel(600, false), "10-minute readings");
-  assert.equal(bucketLabel(43200, true), "12-hour averages");
-  assert.equal(bucketLabel(86400, true), "daily averages");
-});
-
 test("LRU keeps the most recently used", () => {
   const c = new Lru(2);
   c.set("a", 1);
@@ -211,4 +171,193 @@ test("LRU keeps the most recently used", () => {
   assert.equal(c.get("b"), undefined);
   assert.equal(c.get("a"), 1);
   assert.equal(c.size, 2);
+});
+
+// ---- extent, picked days and links ----
+
+test("picked days stop at the next whole hour after now", () => {
+  const picked = pickedDaysRange(new Date(2026, 10, 10), new Date(2026, 10, 11)); // Nov 10-11, Toronto
+  const now = Date.UTC(2026, 10, 11, 17, 12); // 12:12 EST on Nov 11
+  assert.deepEqual(clampToNow(picked, now), { start: picked.start, end: Date.UTC(2026, 10, 11, 18) });
+  assert.deepEqual(clampToNow(picked, Date.UTC(2026, 10, 20)), picked); // past days: unchanged
+  const today = pickedDaysRange(new Date(2026, 10, 11), new Date(2026, 10, 11));
+  assert.equal(clampToNow(today, today.start).end - today.start, MIN_RANGE_MS); // just after midnight: an hour
+  assert.equal(hourStart(now), Date.UTC(2026, 10, 11, 17));
+  assert.equal(dataStart(), Date.UTC(2025, 4, 8, 4)); // 2025-05-08 00:00 EDT
+});
+
+test("the days a window covers", () => {
+  const w = { start: Date.UTC(2026, 9, 3, 18), end: Date.UTC(2026, 9, 5, 2) }; // Oct 3 14:00 - Oct 4 22:00 EDT
+  const { startDay, endDay } = daysCovering(w);
+  assert.deepEqual([startDay.getFullYear(), startDay.getMonth(), startDay.getDate()], [2026, 9, 3]);
+  assert.deepEqual([endDay.getFullYear(), endDay.getMonth(), endDay.getDate()], [2026, 9, 4]);
+  const whole = pickedDaysRange(new Date(2026, 9, 3), new Date(2026, 9, 4));
+  assert.equal(daysCovering(whole).endDay.getDate(), 4); // ends at midnight: that day isn't included
+});
+
+test("links: Toronto ISO times out, and only sensible ones back in", () => {
+  assert.equal(torontoIso(Date.UTC(2026, 10, 10, 19, 20, 30)), "2026-11-10T14:20-05:00");
+  assert.equal(torontoIso(Date.UTC(2026, 6, 1, 16)), "2026-07-01T12:00-04:00");
+  for (const ms of [Date.UTC(2026, 10, 10, 19, 20), Date.UTC(2026, 2, 8, 7, 30), Date.UTC(2026, 10, 1, 5, 30)]) {
+    assert.equal(parseIsoParam(torontoIso(ms)), ms); // round trip, including both DST changes
+  }
+  assert.equal(parseIsoParam("2026-11-10T19:20Z"), Date.UTC(2026, 10, 10, 19, 20));
+  assert.equal(parseIsoParam("2026-11-10T14:20"), Date.UTC(2026, 10, 10, 19, 20)); // no offset: Toronto
+  assert.equal(parseIsoParam("2026-11-10"), Date.UTC(2026, 10, 10, 5)); // a day: its Toronto midnight
+  assert.equal(parseIsoParam("2026-11-10T20:50 05:30"), Date.UTC(2026, 10, 10, 15, 20)); // a typed plus, read as a space
+  for (const bad of ["", "yesterday", "2026-02-31", "2026-11-10T25:00", "1e12", "2026-11-10T14:20-05:00x", "Nov 10 2026"]) {
+    assert.ok(Number.isNaN(parseIsoParam(bad)), bad);
+  }
+  const now = Date.UTC(2026, 10, 11, 17, 12);
+  const q = "?from=2026-11-10T14:20-05:00&to=2026-11-10T18:00-05:00";
+  assert.deepEqual(windowFromSearch(q, now), { start: Date.UTC(2026, 10, 10, 19, 20), end: Date.UTC(2026, 10, 10, 23) });
+  assert.equal(windowFromSearch("?from=2026-11-10", now), null);
+  assert.equal(windowFromSearch("?from=garbage&to=2026-11-10", now), null);
+  assert.equal(windowFromSearch("?from=2026-11-10T18:00&to=2026-11-10T14:00", now), null); // backwards
+  assert.equal(windowFromSearch("?from=2030-01-01&to=2030-02-01", now), null); // all in the future
+  assert.equal(windowFromSearch("?from=2026-11-10T14:00&to=2026-11-10T14:20", now), null); // under an hour
+  assert.equal(windowFromSearch("?from=2020-01-01&to=2025-06-01", now).start, dataStart()); // clamped to the data
+  assert.equal(searchWithWindow("?tab=x", { start: Date.UTC(2026, 10, 10, 19, 20), end: Date.UTC(2026, 10, 10, 23) }),
+    "?tab=x&from=2026-11-10T14%3A20-05%3A00&to=2026-11-10T18%3A00-05%3A00");
+  assert.equal(searchWithWindow("?from=a&to=b", null), "");
+  // Other parameters keep their commas, written the way utils/selectionLink writes them
+  assert.equal(searchWithWindow("?groups=gauges,weather&from=a&to=b", null), "?groups=gauges,weather");
+  assert.equal(searchWithWindow("?groups=gauges%2Cweather", null), "?groups=gauges,weather");
+  const back = searchWithWindow("", { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
+  assert.deepEqual(windowFromSearch(back, now), { start: Date.UTC(2026, 6, 1, 4), end: Date.UTC(2026, 6, 2, 4) });
+});
+
+test("chart style: a fixed colour per measurement, how each kind is drawn, and the charts per card", () => {
+  assert.notEqual(measurementColor("Air Temperature"), measurementColor("Dew Point"));
+  assert.notEqual(measurementColor("Air Temperature"), measurementColor("Soil Temperature"));
+  assert.equal(measurementColor("Something new"), measurementColor("Something new")); // unknown: stable too
+  assert.equal(seriesType("sum"), "column"); // rain as bars
+  assert.equal(seriesType("vector_mean"), "scatter");
+  assert.equal(seriesType("mean"), "line");
+  assert.equal(compassLabel(225), "225° (SW)");
+  assert.equal(compassLabel(-10), "350° (N)");
+  const weather = panelsFor(WEATHER_PANELS, ["Wind Speed", "Rain", "Air Temperature", "Gust Speed", "Soil Temperature", "All Weather"]);
+  assert.deepEqual(weather.map((p) => p.id), ["temperature", "rain", "wind-speed"]); // stable test ids, fixed order
+  assert.deepEqual(weather[0].measurements, ["Air Temperature", "Soil Temperature"]);
+  assert.deepEqual(weather[2].measurements, ["Wind Speed", "Gust Speed"]);
+  const extras = panelsFor(WEATHER_PANELS, ["Humidity", "Wind-Gust", "Wind Gust"], new Set(["Humidity", "Wind-Gust", "Wind Gust"]));
+  assert.deepEqual(extras.map((p) => p.id), ["extra-humidity", "extra-wind-gust", "extra-wind-gust-2"]); // no collisions
+  const quality = panelsFor(QUALITY_PANELS, ["ODO", "TSS", "Conductivity"]);
+  assert.deepEqual(quality.map((p) => p.id), ["conductivity", "oxygen"]);
+  assert.equal(seriesNote("Quality", "TSS").hidden, true);
+  assert.match(seriesNote("Quality", "ODO").note, /Jun 2026/);
+  assert.equal(seriesNote("Weather", "Rain"), undefined);
+});
+
+// ---- one chart per card: its series and axes ----
+import { cardSeries } from "../src/utils/cardSeries.ts";
+import { LOGGER_PALETTE } from "../src/utils/chartStyle.ts";
+
+test("cardSeries: every selected measurement in one chart, one y-axis per unit, in a fixed order", () => {
+  const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }],
+    ["Wind Speed", "Rainfall", "Rain", "Air Temperature", "Gust Speed", "Soil Temperature", "All Weather"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Air Temperature", "Soil Temperature", "Rain", "Wind Speed", "Gust Speed"]);
+  assert.deepEqual(axes.map((a) => a.unit), ["°C", "mm", "m/s"]);
+  assert.deepEqual(series.map((s) => s.axis), [0, 0, 1, 2, 2]);
+  assert.equal(series[0].key, "Weather|22051538|Air Temperature");
+  assert.equal(series[0].name, "Air Temperature (°C)"); // what the e2e tooltip check looks for
+  assert.equal(series.find((s) => s.measurement === "Rain").agg, "sum");
+});
+
+test("cardSeries: loggers share one chart, a hue per logger (level dark, temperature light and dashed), two axes", () => {
+  const { series, axes } = cardSeries("Logger", [{ id: "2577531", name: "Logger 1" }, { id: "2577534", name: "Logger 4" }],
+    ["Water Temperature", "Water Surface Elevation", "All Loggers"]);
+  assert.deepEqual(series.map((s) => s.name), [
+    "Logger 1 · Water Surface Elevation (m asl)", "Logger 1 · Water Temperature (°C)",
+    "Logger 4 · Water Surface Elevation (m asl)", "Logger 4 · Water Temperature (°C)",
+  ]);
+  assert.deepEqual(series.map((s) => s.color), [LOGGER_PALETTE[0].dark, LOGGER_PALETTE[0].light, LOGGER_PALETTE[1].dark, LOGGER_PALETTE[1].light]);
+  assert.deepEqual(series.map((s) => s.dash ?? ""), ["", "ShortDash", "", "ShortDash"]);
+  assert.deepEqual(axes, [{ unit: "m asl", measurements: ["Water Surface Elevation"] }, { unit: "°C", measurements: ["Water Temperature"] }]);
+});
+
+test("cardSeries: faulty sensors are noted, TSS starts hidden; nothing selected is nothing drawn", () => {
+  const { series } = cardSeries("Quality", [{ id: "4501", name: "Water quality" }], ["TSS", "ODO", "Conductivity"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Conductivity", "ODO", "TSS"]);
+  assert.equal(series[2].hidden, true);
+  assert.match(series[1].note, /Jun 2026/);
+  assert.deepEqual(cardSeries("Logger", [{ id: "1", name: "Logger 1" }], []).series, []);
+});
+
+test("cardSeries: wind direction is not drawn on the weather chart (the wind rose shows it)", () => {
+  const { series, axes } = cardSeries("Weather", [{ id: "22051538", name: "Weather station" }], ["Wind Direction", "Wind Speed"]);
+  assert.deepEqual(series.map((s) => s.measurement), ["Wind Speed"]);
+  assert.deepEqual(axes.map((a) => a.unit), ["m/s"]);
+  assert.deepEqual(cardSeries("Weather", [{ id: "22051538", name: "Weather station" }], ["Wind Direction"]).series, []);
+});
+
+test("logger palette: every shade at least 3:1 on white, the five hues all different", () => {
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  for (const { dark, light } of LOGGER_PALETTE) {
+    assert.ok(1.05 / (lum(dark) + 0.05) >= 4.5, dark);
+    assert.ok(1.05 / (lum(light) + 0.05) >= 3, light);
+  }
+  assert.equal(new Set(LOGGER_PALETTE.flatMap((p) => [p.dark, p.light])).size, 10);
+});
+
+test("guarded: a callback's exception is reported, not thrown; otherwise it runs as usual", async () => {
+  const { guarded } = await import("../src/lib/guarded.ts");
+  const seen = [];
+  const ok = guarded((a, b) => seen.push(a + b), (e) => seen.push(`reported ${e.message}`));
+  ok(1, 2);
+  const bad = guarded(() => { throw new Error("boom"); }, (e) => seen.push(`reported ${e.message}`));
+  assert.doesNotThrow(() => bad());
+  assert.deepEqual(seen, [3, "reported boom"]);
+});
+
+test("range bar: a tiny window still slides from its middle and resizes from just outside it", async () => {
+  const { barPart, MIN_GRAB_PX, HANDLE_PX } = await import("../src/lib/rangeBar.ts");
+  // A two-hour window of a year on a 700 px bar: a fraction of a pixel wide
+  const a = 400, b = 400.2;
+  assert.equal(barPart(400.1, a, b), "window");
+  assert.equal(barPart(400 - MIN_GRAB_PX / 2 + 1, a, b), "window");
+  assert.equal(barPart(400 + MIN_GRAB_PX / 2 - 1, a, b), "window");
+  assert.equal(barPart(400 - MIN_GRAB_PX / 2 - HANDLE_PX / 2, a, b), "start");
+  assert.equal(barPart(400 + MIN_GRAB_PX / 2 + HANDLE_PX / 2, a, b), "end");
+  assert.equal(barPart(300, a, b), "track");
+  // Between MIN_GRAB_PX and that plus two handles: the middle slides, the handles take their outer side
+  assert.equal(barPart(430, 420, 440), "window");
+  assert.equal(barPart(415, 420, 440), "start");
+  assert.equal(barPart(445, 420, 440), "end");
+  // A wide window: as before
+  assert.equal(barPart(105, 100, 300), "start");
+  assert.equal(barPart(200, 100, 300), "window");
+  assert.equal(barPart(295, 100, 300), "end");
+  assert.equal(barPart(50, 100, 300), "track");
+  // However narrow, some middle always slides
+  for (const w of [0, 0.5, 5, 19, 20, 25, 30, 47, 48, 60]) assert.equal(barPart(500 + w / 2, 500, 500 + w), "window", `${w} px`);
+});
+
+test("wind rose: the calm share is the slowest class's percent summed over every direction", async () => {
+  const { calmPercent } = await import("../src/utils/windRose.ts");
+  const data = {
+    sectors: ["N", "E", "S", "W"],
+    speed_classes: [{ name: "<0.5 m/s", from: 0, to: 0.5 }, { name: "0.5-2 m/s", from: 0.5, to: 2 }],
+    roses: { "Wind Speed": { total: 100, counts: [[2, 3, 1, 4], [20, 30, 25, 15]], percent: [[2, 3, 1, 4], [20, 30, 25, 15]] } },
+  };
+  assert.equal(calmPercent(data, "Wind Speed"), 10);
+  assert.equal(calmPercent(data, "Gust Speed"), null); // no rose for it
+  assert.equal(calmPercent({ ...data, roses: { "Wind Speed": { ...data.roses["Wind Speed"], total: 0 } } }, "Wind Speed"), null);
+  assert.equal(calmPercent(null, "Wind Speed"), null);
+});
+
+test("range bar: a tiny window at either end of the bar stays on it, with both handles on it and usable", async () => {
+  const { barPart, grabSpan, handleAt, MIN_GRAB_PX, HANDLE_PX } = await import("../src/lib/rangeBar.ts");
+  const lo = 0, hi = 700;
+  for (const [a, b] of [[0, 0.3], [699.7, 700], [350, 350.3]]) {
+    const [ga, gb] = grabSpan(a, b, lo, hi);
+    assert.ok(gb - ga === MIN_GRAB_PX, `${a}: ${ga}-${gb}`); // drawn the minimum width, never negative
+    assert.ok(ga - HANDLE_PX >= lo && gb + HANDLE_PX <= hi, `${a}: handles fit`); // and both handles on the bar
+    for (const i of [0, 1]) { const h = handleAt(i, a, b, lo, hi); assert.ok(h >= lo && h <= hi); }
+    assert.equal(barPart((ga + gb) / 2, a, b, lo, hi), "window");
+    assert.equal(barPart(ga - HANDLE_PX / 2, a, b, lo, hi), "start"); // on the bar
+    assert.equal(barPart(gb + HANDLE_PX / 2, a, b, lo, hi), "end"); // on the bar
+  }
+  // A wide window at an end is left as it is
+  assert.deepEqual(grabSpan(0, 100, lo, hi), [0, 100]);
 });

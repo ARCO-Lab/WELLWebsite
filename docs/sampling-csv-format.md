@@ -14,11 +14,6 @@ cd dashboard/backend/app
 python scripts/check_sampling_csv.py ~/WELLAncasterWatershed_May2026.csv
 ```
 
-> **Provisional.** The site list, the parameters and units, the below-detection convention and the replicate and QC
-> rules are still to be confirmed with the lab; each is marked *(to confirm with the lab)* below and listed under
-> [To confirm with the lab](#to-confirm-with-the-lab). Files that follow this page will keep importing, but these
-> rules may change.
-
 ## The file
 
 - **UTF-8 text, comma-separated, with a header row.** In Excel: *File > Save As > CSV UTF-8 (Comma delimited)*.
@@ -43,16 +38,16 @@ python scripts/check_sampling_csv.py ~/WELLAncasterWatershed_May2026.csv
 | `unit` | yes | The parameter's unit from the table below. A different unit is an error, not converted: convert the value first. `uS/cm` is accepted for `µS/cm`. May be left empty on a blank row. |
 | `creek` | no | The creek's name. If given it must be the site's creek (a cross-check against site mix-ups). |
 | `below_detection` | no | `true` if the value is below the detection limit (see below); `false` or empty otherwise. |
-| `qc_flag` | no | `ok`, `suspect` or `rejected` (or empty). `rejected` rows are checked but not imported. *(to confirm with the lab)* |
+| `qc_flag` | no | `ok`, `suspect` or `rejected` (or empty). `rejected` rows are checked but not imported. |
 | `sampler` | no | Who sampled (initials are fine). |
 | `method` | no | Method or instrument. |
 | `notes` | no | Anything else (weather, a missed site, ...). |
 
 `creek`, `below_detection` (beyond what the stored value means), `qc_flag`, `sampler`, `method` and `notes` are
-checked but are **not stored in the dashboard's database yet**; they stay in the uploaded file, which is the archived
+checked but are **not stored in the dashboard's database**; they stay in the uploaded file, which is the archived
 copy.
 
-### Sites *(to confirm with the lab)*
+### Sites
 
 | `site` number | Name | Creek |
 |---|---|---|
@@ -69,7 +64,7 @@ copy.
 There is no site 7. A site that isn't in this list is an error: a new site has to be added to the dashboard (its map
 position and filters) before its data can be imported, so ask the dashboard maintainers.
 
-### Parameters and units *(to confirm with the lab)*
+### Parameters and units
 
 | `parameter` | `unit` | Also accepted as the name |
 |---|---|---|
@@ -86,30 +81,36 @@ position and filters) before its data can be imported, so ask the dashboard main
 | Ammonia nitrogen | mg/L | Ammonia-N, Total ammonia nitrogen |
 
 Negative values are rejected, and pH must be between 0 and 14. Other parameters (e.g. TSS or water temperature) are
-not shown by the dashboard yet, so rows with them are rejected until they are added.
+not shown by the dashboard, so rows with them are rejected.
 
 ### Blanks: a parameter that wasn't measured
 
 Leave the row out, or leave `value` empty (`NA` and `N/A` mean the same). Such rows are skipped, not stored as zero,
 and their `unit` may be empty. Never write `0` for "not measured".
 
-### Below the detection limit *(to confirm with the lab)*
+### Below the detection limit
 
 Write the detection limit with a `<` in front, e.g. `<0.01`, or write the limit and `below_detection` = `true`
 (both together are fine too). The dashboard stores the detection limit itself as the value, so a chart shows an upper
 bound, not a measurement.
 
-Values above an upper limit (`>2420`) are rejected for now: write the number and put the limit in `notes`.
+Values above an upper limit (`>2420`) are rejected: write the number and put the limit in `notes`.
 
-### Duplicates and replicates *(to confirm with the lab)*
+### Duplicates and replicates
 
 Each site, parameter, date and time has **one** value. A second row with the same four is an error, even with the
 same value. For replicates or duplicate samples, report their mean and say so in `notes` (e.g. `mean of 3
 replicates`). Two samples taken at different times on one day are different readings: give each its `time`.
 
-Re-importing a file adds nothing: readings already stored are skipped. A row whose value differs from the stored one
-(a correction) is reported in the import log but **not applied**; the log gives the SQL to delete the old reading,
-after which importing the file again stores the new value.
+Re-importing a file adds nothing: readings already stored with the same value are skipped. A row whose value (or
+unit) differs from the stored one is a **correction and is applied**: the stored reading takes the file's value, and
+the import log has one `[CORRECTED]` line per change with the old and new value. Files are imported oldest first, so
+the newest upload's value is the one kept. A file imported after a newer one (an older upload whose import failed
+and is retried, or one re-imported by hand) doesn't change readings the newer file covers: those differences are
+reported as "corrections not applied" instead. A stored reading that the file covers (same site, parameter and a date
+between the file's first and last) but no longer has is **kept**, not deleted: the log reports "N rows present in
+the DB but not in the latest file" with the rows and an example `DELETE`, so a maintainer can remove them if the
+file withdrew them on purpose.
 
 ## Files uploaded to the dataset
 
@@ -125,23 +126,6 @@ parameter such as `E. coli (CFU/100 mL)`) still import, through the same checks:
 reading. Their known extra columns (`Trip #`, `Year`, `Latitude`, `Longitude`, `Weather`, `Note`, `TSS (mg/L)`,
 `Temp (C)`) are read but not imported. Any other column is an error, and so are two headers that mean the same
 column and a workbook with data on more than one sheet. New files should use the CSV format above.
-
-## To confirm with the lab
-
-These rules were chosen to get imports working and still need the lab's decision. Each is easy to change in
-`dashboard/backend/app/utils/sampling_csv.py` (marked "TO CONFIRM WITH THE LAB" there) and on this page.
-
-1. **Site list.** Sites 1–6 and 8–10 as named on the 2025 field sheet, each on one creek; no site 7. Are these the
-   official names, and will sites be added?
-2. **Parameters and units.** The 11 parameters the dashboard shows, in the units above. The field sheet also
-   records **TSS (mg/L)** and **water temperature (°C)**, which aren't imported: should they be added? Are the
-   units final? Is E. coli ever reported in **MPN/100 mL** (e.g. Colilert) rather than CFU/100 mL?
-3. **Below-detection convention.** A value written `<DL` is stored as the detection limit itself and the flag isn't
-   stored. The 2025 sheet appears to use half the limit (e.g. ammonia 0.005). Options: store the limit, store half
-   of it, or add a flag column so charts can mark these values. Values above an upper limit (`>2420`) are rejected.
-4. **Replicates and QC.** One value per site, parameter, date and time, with replicates averaged before upload;
-   `qc_flag` `rejected` rows are skipped, and `qc_flag`, `sampler`, `method` and `notes` aren't stored. Should any
-   of them be stored, or replicates kept individually?
 
 ## Example
 
@@ -159,7 +143,7 @@ date,time,site,parameter,value,unit,below_detection,qc_flag,sampler,method,notes
   `dashboard/frontend/src/components/config/filters.tsx`, must name the same sites and parameters; change both
   together, and this page.
 - `validate_file(path)` in that module checks a file and returns every problem; it needs no database, so any source of
-  files (the Borealis download in `scripts/download_data.py`, or another later) can use it. `scripts/inject_sampling.py`
+  files (such as the Borealis download in `scripts/download_data.py`) can use it. `scripts/inject_sampling.py`
   imports a file with it, and `scripts/check_sampling_csv.py` only checks.
 - Why one reading per row: the field sheets so far have had different columns from trip to trip (parameters missing
   for a trip, renamed or misspelled headers), and a wide sheet has no room for a per-value detection-limit flag, QC

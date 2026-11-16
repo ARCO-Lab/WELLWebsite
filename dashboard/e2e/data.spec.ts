@@ -17,11 +17,11 @@ const ROWS: Row[] = EXPECTED.rows;
 const NOW = new Date(EXPECTED.browser_now_utc);
 const LOGGER_NAMES: Record<string, string> = { "2577531": "Logger 1" };
 
-// The picked days (Oct 31 and Nov 1, the default) as the charts must ask for them: from Toronto midnight, to no
-// later than the last millisecond before the next Toronto midnight (Nov 1 is 25 hours long). The charts may stop
-// earlier, at "now": the API's end is inclusive, so that range ends 1 ms before now, and never earlier.
-const RANGE_START = "2026-10-31T04:00:00.000Z";
-const RANGE_END_LATEST = "2026-11-02T04:59:59.999Z";
+// The picked days (Oct 31 and Nov 1, the default): from Toronto midnight to the next Toronto midnight (Nov 1 is 25
+// hours long). Each chart starts there, and loads it in fixed tiles of 10-minute buckets that cover it.
+const RANGE_START = Date.parse("2026-10-31T04:00:00.000Z");
+const RANGE_END = Date.parse("2026-11-02T05:00:00.000Z");
+const LADDER = [600, 1800, 3600, 10800, 21600, 43200, 86400];
 
 const key = (r: Pick<Row, "group_type" | "station_id" | "measurement_type" | "unit" | "recorded_at">) =>
   `${r.group_type} | ${r.station_id} | ${r.measurement_type} | ${r.unit} | ${r.recorded_at}`;
@@ -98,19 +98,25 @@ test("the database holds exactly the expected readings", async ({}, testInfo) =>
 
 // --- the dashboard, in each browser time zone ---
 
+// Every /api/series answer the page gets: each chart asks for its own series, in tiles.
+type SeriesAnswer = { url: URL; body: { bucket_seconds: number; aggregated: boolean; series: (Row & { t: number[]; avg: (number | null)[] })[] } };
+
 async function openDashboard(page: Page) {
   await page.clock.setFixedTime(NOW); // Date is frozen; timers still run
-  // The charts' request once all three groups are ticked (each tick before it asks for fewer groups).
-  const series = page.waitForResponse((r) => {
+  const answers: Promise<SeriesAnswer>[] = [];
+  page.on("response", (r) => {
     const url = new URL(r.url());
-    return url.pathname === "/api/series" && ["weather", "quality", "gauges"].every((g) => url.searchParams.get(g) === "true");
+    if (url.pathname === "/api/series" && r.ok()) answers.push(r.json().then((body) => ({ url, body })));
   });
   await page.goto("/");
   for (const group of ["Weather Station", "Water Quality", "Water Loggers"]) {
     await page.getByRole("checkbox", { name: group, exact: true }).click();
   }
-  return series;
+  return answers;
 }
+
+// A chart, by its stable test id (components/graphs: chart-<group>-<panel or station>)
+const chartById = (page: Page, id: string) => page.getByTestId(`chart-${id}`);
 
 // The Latest Data group with this title (a role="group" named by its heading), in the panel.
 const metricGroup = (page: Page, title: string) => page.getByRole("group", { name: title, exact: true }).first();
@@ -124,11 +130,11 @@ function tile(group: Locator, label: string, caption?: string): Locator {
   return t.first();
 }
 
-/** "2026-11-01T02:40:00" -> "2:40 a.m." (today) or "Oct 31, 12:00 p.m.", as the tiles write site times. */
+/** "2026-11-01T02:40:00" -> "02:40" (today) or "Oct 31, 12:00", as the tiles write site times (a 24-hour clock, as
+ *  on the charts). */
 function siteTime(wall: string): RegExp {
   const [date, time] = wall.split("T");
-  const [h, m] = time.split(":").map(Number);
-  const clock = `${h % 12 || 12}:${String(m).padStart(2, "0")}\\s${h < 12 ? "a" : "p"}\\.m\\.`;
+  const clock = time.slice(0, 5);
   const today = torontoWallClock(NOW.getTime()).slice(0, 10);
   if (date === today) return new RegExp(clock);
   const [, month, day] = date.split("-").map(Number);
@@ -137,31 +143,65 @@ function siteTime(wall: string): RegExp {
 }
 
 test("charts, tooltip, Latest Data and download match the vendor data", async ({ page }) => {
-  const seriesResponse = await openDashboard(page);
+  const answers = await openDashboard(page);
 
-  await test.step("the charts ask for Toronto's days and get every reading", async () => {
-    const response = await seriesResponse;
-    const url = new URL(response.url());
-    expect(url.searchParams.get("start")).toBe(RANGE_START);
-    const end = Date.parse(url.searchParams.get("end") ?? "");
-    expect(end).toBeLessThanOrEqual(Date.parse(RANGE_END_LATEST));
-    // The API's end is inclusive, so charts that stop exactly at "now" (on the hour here) ask up to now - 1 ms
-    expect(end).toBeGreaterThanOrEqual(NOW.getTime() - 1);
-    const body = await response.json();
-    expect(body.aggregated).toBe(false); // 10-minute buckets: one point per reading
-    const points = new Map<string, number>();
-    for (const s of body.series) {
-      s.t.forEach((t: number, i: number) => {
-        if (s.avg[i] === null) return;
-        // 10-minute buckets are on real time, so each reading of the repeated hour is its own point
-        points.set(key({ ...s, station_id: String(s.station_id), recorded_at: utcSeconds(t) }), s.avg[i]);
-      });
+  await test.step("every chart starts at Toronto's picked days and gets every reading", async () => {
+    // One chart per card. The picked days run from Toronto midnight on Oct 31 to the next whole hour after now (now
+    // is 03:00 EST on Nov 1), whatever the browser's zone, and each chart opens on where its group has readings within
+    // them: from its first reading's bucket to the end of its last (the fixtures' first and last readings per group).
+    // The loggers only have readings on Nov 1 from 01:00: their chart must not open on the empty day before.
+    const fitted: Record<string, string> = {
+      logger: "Nov 1 01:00 – Nov 1 02:50",
+      weather: "Oct 31 01:00 – Nov 1 02:50",
+      quality: "Oct 31 12:00 – Nov 1 03:00",
+    };
+    for (const [id, label] of Object.entries(fitted)) {
+      const chart = chartById(page, id);
+      await expect(chart.getByTestId("chart-window-label")).toHaveText(label);
+      await expect(chart.getByTestId("chart-resolution")).toHaveText("10-min readings");
     }
-    expectSameValues(points, expectedByInstant(), 1e-4); // the API rounds to 4 decimals
+    // The fitted window holds data: the loggers' chart draws points inside its x-axis range
+    const inView = await page.evaluate(() => {
+      type HChart = { container: HTMLElement; xAxis: { min: number; max: number }[];
+        series: { name: string; points: { x: number; y: number | null }[] }[] };
+      const H = (window as unknown as { _Highcharts?: { charts: (HChart | undefined)[] } })._Highcharts;
+      const chart = H?.charts.find((c) => c?.container.closest('[data-testid="chart-logger"]'));
+      if (!chart) return -1;
+      const { min, max } = chart.xAxis[0];
+      return chart.series.filter((s) => s.name.startsWith("Logger 1 ·"))
+        .flatMap((s) => s.points).filter((p) => p.y !== null && p.x >= min && p.x <= max).length;
+    });
+    expect(inView).toBeGreaterThan(0);
+    await expect(page.getByText("Loading data…")).toHaveCount(0);
+    const all = await Promise.all(answers);
+    // Tiles: whole Toronto days or half days, a bucket size from the ladder, the page's own series only
+    for (const { url, body } of all) {
+      expect(url.searchParams.get("start"), url.search).toMatch(/^\d{4}-\d{2}-\d{2}T(00|12):00:00$/);
+      expect(url.searchParams.get("end"), url.search).toMatch(/^\d{4}-\d{2}-\d{2}T(11|23):59:59$/);
+      expect(LADDER).toContain(Number(url.searchParams.get("bucket")));
+      expect(url.searchParams.getAll("series").length).toBeGreaterThan(0);
+      expect(body.bucket_seconds).toBe(Number(url.searchParams.get("bucket")));
+    }
+    // The 10-minute tiles hold every charted reading of the picked days, once each (tiles don't overlap). Wind
+    // direction isn't charted (the wind rose shows it, from its own route), so the charts don't ask for it.
+    // 10-minute buckets are on real time, so each reading of the repeated fall-back hour is its own point; the
+    // points are keyed by the instant (recorded_at_utc), so the two copies don't collide or look like one point.
+    const points = new Map<string, number>();
+    for (const { body } of all.filter((a) => a.body.bucket_seconds === 600)) {
+      for (const s of body.series) {
+        s.t.forEach((t, i) => {
+          if (s.avg[i] === null || t < RANGE_START || t >= RANGE_END) return;
+          const k = key({ ...s, station_id: String(s.station_id), recorded_at: utcSeconds(t) });
+          expect(points.has(k), `${k} came in two tiles`).toBe(false);
+          points.set(k, s.avg[i] as number);
+        });
+      }
+    }
+    const charted = new Map([...expectedByInstant()].filter(([k]) => !k.includes(" | Wind Direction | ")));
+    expectSameValues(points, charted, 1e-4); // the API rounds to 4 decimals
   });
 
   await test.step("the air temperature tooltip shows Toronto time", async () => {
-    await expect(page.getByText("Loading data…")).toHaveCount(0);
     // Noon in Toronto on Oct 31 (16:00Z, 9.5 °C): its neighbours are hours away, so the tooltip can't snap to
     // another point. A chart in the browser's zone would say 01:00 Nov 1 in Tokyo, 16:00 in London.
     // Highcharts places the point, so this doesn't depend on chart titles, layout or the x-axis range.
@@ -231,7 +271,9 @@ test("charts, tooltip, Latest Data and download match the vendor data", async ({
       header.forEach((name, i) => {
         if (name === "Group") { group = line[i]; station = ""; return; }
         if (name === "Sensor") { station = line[i]; return; }
-        if (!name || name === "ID" || name === "Timestamp" || line[i] === "") return;
+        if (!name || name === "ID" || name.startsWith("Timestamp") || line[i] === "") return;
+        // Keyed by the wall-clock time and its occurrence (#nth): the repeated fall-back hour has two lines reading
+        // 01:xx, in time order, so the EDT copy is #0 and the EST copy #1.
         cells.set(`${group} | ${station} | ${name} | ${line[1]} #${nth}`, Number(line[i]));
       });
     }

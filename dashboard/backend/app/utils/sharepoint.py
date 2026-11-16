@@ -1,4 +1,4 @@
-"""Uploads to a SharePoint document library through Microsoft Graph, for the monthly sensor CSV
+"""Uploads to a SharePoint document library through Microsoft Graph, for the sensor and sampling CSVs
 (scripts/sharepoint_upload.py). Needs only requests.
 
 It signs in as an app (client credentials: an Entra ID app registration with the Graph application permission
@@ -11,7 +11,19 @@ Settings (dashboard/backend/app/.env on the VM). The upload is off while none of
   SHAREPOINT_SITE           the site, e.g. https://mcmaster.sharepoint.com/sites/WELL
   SHAREPOINT_LIBRARY        the document library (default "Documents", which SharePoint shows as Documents or
                             Shared Documents)
-  SHAREPOINT_FOLDER         the folder in it (default "WELL sensor data"); each year gets a subfolder
+  SHAREPOINT_FOLDER         the folder in it (default "WELL sensor data", or the library root with
+                            SHAREPOINT_LAYOUT=cadence)
+  SHAREPOINT_LAYOUT         unset (or "year"): monthly sensor files in <folder>/<year>/.
+                            "cadence": in <folder>,
+                              West Campus/Daily/<year>/<MM>/WELLWestCampus_2026-11-14.csv
+                              West Campus/Weekly/<ISO year>/WELLWestCampus_2026-W46.csv
+                              West Campus/Monthly/<year>/WELLWestCampus_Oct2026.csv
+                              Ancaster Watershed/<year>/WELLAncasterWatershed_Oct2026.csv (creek sampling)
+  SHAREPOINT_CADENCES       with the cadence layout, which of daily, weekly, monthly and sampling to upload,
+                            comma-separated (default all four)
+  SHAREPOINT_SENSOR_FOLDER, SHAREPOINT_SAMPLING_FOLDER
+                            with the cadence layout, the names of those two folders (default "West Campus" and
+                            "Ancaster Watershed")
 
 The client secret and the access token are never logged.
 """
@@ -33,6 +45,13 @@ MAX_RETRY_WAIT_S = 60
 REQUIRED = ("SHAREPOINT_TENANT_ID", "SHAREPOINT_CLIENT_ID", "SHAREPOINT_CLIENT_SECRET", "SHAREPOINT_SITE")
 DEFAULT_LIBRARY = "Documents"
 DEFAULT_FOLDER = "WELL sensor data"
+LAYOUTS = ("year", "cadence")
+CADENCE_FOLDERS = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}
+# What the cadence layout can upload, in the order the scheduler runs them: the sensor periods, then the sampling
+# months
+UPLOADS = (*CADENCE_FOLDERS, "sampling")
+DEFAULT_SENSOR_FOLDER = "West Campus"
+DEFAULT_SAMPLING_FOLDER = "Ancaster Watershed"
 
 
 class SharePointError(Exception):
@@ -56,14 +75,62 @@ def settings(env=None):
     """The SharePoint settings from the environment, with defaults filled in."""
     env = os.environ if env is None else env
     get = lambda name, default="": (env.get(name) or "").strip() or default  # noqa: E731
+    layout = get("SHAREPOINT_LAYOUT", "year").lower()
     return {
         "tenant": get("SHAREPOINT_TENANT_ID"),
         "client_id": get("SHAREPOINT_CLIENT_ID"),
         "secret": get("SHAREPOINT_CLIENT_SECRET"),
         "site": get("SHAREPOINT_SITE"),
         "library": get("SHAREPOINT_LIBRARY", DEFAULT_LIBRARY),
-        "folder": get("SHAREPOINT_FOLDER", DEFAULT_FOLDER).strip("/"),
+        "folder": get("SHAREPOINT_FOLDER", "" if layout == "cadence" else DEFAULT_FOLDER).strip("/"),
+        "layout": layout,
+        "cadences": get("SHAREPOINT_CADENCES").lower(),
+        "sensor_folder": get("SHAREPOINT_SENSOR_FOLDER", DEFAULT_SENSOR_FOLDER).strip("/"),
+        "sampling_folder": get("SHAREPOINT_SAMPLING_FOLDER", DEFAULT_SAMPLING_FOLDER).strip("/"),
     }
+
+
+def cadences(config):
+    """What to upload ("daily", "weekly", "monthly", "sampling", in that order) for `config` (settings()). The year
+    layout has monthly sensor files only. ValueError naming the setting when SHAREPOINT_LAYOUT or SHAREPOINT_CADENCES
+    isn't valid."""
+    if config["layout"] not in LAYOUTS:
+        raise ValueError(f"SHAREPOINT_LAYOUT must be cadence or year (or unset), got {config['layout']!r}")
+    names = [name.strip() for name in config["cadences"].split(",") if name.strip()]
+    unknown = [name for name in names if name not in UPLOADS]
+    if unknown:
+        raise ValueError(f"SHAREPOINT_CADENCES lists {', '.join(unknown)}; use daily, weekly, monthly and/or "
+                         f"sampling")
+    if config["layout"] != "cadence":
+        if set(names) - {"monthly"}:
+            raise ValueError("SHAREPOINT_CADENCES needs SHAREPOINT_LAYOUT=cadence: the year layout has monthly "
+                             "files only")
+        return ["monthly"]
+    return [name for name in UPLOADS if not names or name in names]
+
+
+def period_folder(config, period):
+    """The folder (from the library root) for the sensor file of `period` (a utils.periods.Period)."""
+    year = str(period.start.year)
+    if config["layout"] != "cadence":
+        if period.cadence != "monthly":
+            raise ValueError(f"{period.cadence} files need SHAREPOINT_LAYOUT=cadence")
+        parts = [config["folder"], year]
+    elif period.cadence == "daily":
+        parts = [config["folder"], config["sensor_folder"], CADENCE_FOLDERS["daily"], year,
+                 f"{period.start.month:02d}"]
+    elif period.cadence == "weekly":   # the ISO year, which for a week around New Year isn't always its Monday's
+        parts = [config["folder"], config["sensor_folder"], CADENCE_FOLDERS["weekly"], period.key[:4]]
+    else:
+        parts = [config["folder"], config["sensor_folder"], CADENCE_FOLDERS["monthly"], year]
+    return "/".join(part for part in parts if part)
+
+
+def sampling_folder(config, year):
+    """The folder (from the library root) for the sampling files of `year`; only the cadence layout has one."""
+    if config["layout"] != "cadence":
+        raise ValueError("sampling files need SHAREPOINT_LAYOUT=cadence")
+    return "/".join(part for part in (config["folder"], config["sampling_folder"], str(year)) if part)
 
 
 def status(env=None):
@@ -233,6 +300,8 @@ class SharePoint:
 
 
 def retry_wait(response, attempt):
+    # Seconds to wait before retrying a throttled (429) or unavailable (503/504) call: Graph's Retry-After if given,
+    # else an exponential backoff; at least 1 s and at most MAX_RETRY_WAIT_S (60 s).
     try:
         wait = float(response.headers.get("Retry-After", ""))
     except (TypeError, ValueError):
@@ -249,12 +318,16 @@ def safe_json(response):
 
 
 def upload_month_file(client, name, content, year, log=print):
-    """Put `content` (bytes or text) at <folder>/<year>/<name> in the library. Safe to run again: an identical file
-    (same size and QuickXorHash) is left as it is, and a different one is replaced (the old copy stays in the
-    file's version history). Returns ("added" | "replaced" | "unchanged", the file's web URL)."""
+    """Put `content` at <folder>/<year>/<name> in the library (the year layout), as put_file does."""
+    return put_file(client, f"{client.config['folder']}/{year}".strip("/"), name, content, log)
+
+
+def put_file(client, folder, name, content, log=print):
+    """Put `content` (bytes or text) at <folder>/<name> in the library, creating the folders. Safe to run again: an
+    identical file (same size and QuickXorHash) is left as it is, and a different one is replaced (the old copy stays
+    in the file's version history). Returns ("added" | "replaced" | "unchanged", the file's web URL)."""
     content = content.encode("utf-8") if isinstance(content, str) else content
-    folder = f"{client.config['folder']}/{year}".strip("/")
-    path = f"{folder}/{name}"
+    path = f"{folder}/{name}" if folder else name
     existing = client.item(path)
     if existing and existing.get("size") == len(content) and \
             ((existing.get("file") or {}).get("hashes") or {}).get("quickXorHash") == quick_xor_hash(content):

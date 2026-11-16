@@ -1,7 +1,7 @@
 # This script exports one month of WELL sensor data to CSV and uploads it to Borealis Dataverse, as the off-VM
 # copy that anyone can cite. The CSV has the dashboard's export layout (one row per timestamp: Weather, Quality and
 # one block per logger). The scheduler runs it for each month that has ended (scripts/scheduler_temp.py);
-# scripts/sharepoint_upload.py sends the same file to SharePoint.
+# scripts/sharepoint_upload.py sends the same file to SharePoint, and day and week files built by the same code.
 #   python scripts/upload_data.py --year 2026 --month 10             that month
 #   python scripts/upload_data.py                                    last month
 #   python scripts/upload_data.py --year 2026 --month 10 --dry-run   build the CSV and print its size only
@@ -10,6 +10,8 @@
 # again for a month is safe: an identical file isn't sent twice, and a changed one replaces the old copy.
 # It prints "Successfully uploaded <file> to Borealis" only once the file is in the dataset and published (or left
 # as a draft on purpose, BOREALIS_PUBLISH=0); the scheduler records the month as done only then.
+# It exits SETTINGS_ERROR_EXIT (3) when a Borealis setting is missing or wrong, or Borealis rejects the token: the
+# scheduler then reports its ERROR: line as the problem to fix, since retrying alone won't help.
 
 import sys
 import pathlib
@@ -18,11 +20,14 @@ import argparse
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from config import Config
 import pandas as pd
-import csv
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from api.services.exports import TIMESTAMP_HEADER, SafeCsvWriter
 from dotenv import load_dotenv
-from utils.borealis import Dataverse, DataverseError, base_url, is_demo, upload_file
+from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
+from utils.jobs import NO_DATA_EXIT, SETTINGS_ERROR_EXIT
+from utils.periods import containing
+from utils.periods import file_name as period_file_name
 from utils.timezone import site_to_utc, site_wall_time
 
 load_dotenv()
@@ -133,7 +138,7 @@ def build_csv_frontend_style(data_list, file_obj):
     sections = [(label, keys) for label, keys in
                 (("Weather", weather_keys), ("Quality", quality_keys), ("Logger", logger_keys)) if keys]
 
-    headers = ["ID", "Timestamp"]
+    headers = ["ID", TIMESTAMP_HEADER]
     for section_idx, (label, keys) in enumerate(sections):
         if section_idx != 0:
             headers.append("")  # blank separator between sections
@@ -166,39 +171,52 @@ def build_csv_frontend_style(data_list, file_obj):
                     csv_row += [first_value.get((timestamp, label, site_id, m), "") for m in keys]
         rows.append(csv_row)
 
-    writer = csv.writer(file_obj)
+    # The dashboard download's cell rules: a missing value is an empty field (pandas holds it as NaN, which
+    # csv.writer would write as "nan"), and text that a spreadsheet would run as a formula gets a leading '
+    writer = SafeCsvWriter(file_obj)
     writer.writerow(headers)
     writer.writerows(rows)
     print(f"Built the CSV: {len(rows)} rows, {len(headers)} columns")
 
 
+def stop_for_settings(message):
+    """Print `message` as the ERROR: line the scheduler reports and exit SETTINGS_ERROR_EXIT: a setting has to be
+    fixed before the upload can work, so retrying alone won't help."""
+    print(f"ERROR: {message}")
+    sys.exit(SETTINGS_ERROR_EXIT)
+
+
+# HTTP statuses of a Borealis call that only a settings change can fix: the token is rejected (401), or its account
+# lacks a permission on the dataset (403).
+SETTINGS_STATUSES = (401, 403)
+
+
 def borealis_settings():
-    """(server URL, token, dataset id) for the upload. Exits 1 saying what is missing or wrong."""
+    """(server URL, token, dataset id) for the upload. Exits SETTINGS_ERROR_EXIT saying what is missing or wrong."""
     url, token, pid = Config.BOREALIS_URL, Config.BOREALIS_API_TOKEN, Config.BOREALIS_UPLOAD_PERSISTENT_ID
     missing = [name for name, value in (("BOREALIS_URL", url), ("BOREALIS_API_TOKEN", token),
                                         ("BOREALIS_UPLOAD_PERSISTENT_ID", pid)) if not value]
     if missing:
-        print(f"ERROR: Not uploading to Borealis: {', '.join(missing)} not set (see utils/borealis.py)")
-        sys.exit(1)
+        stop_for_settings(f"Not uploading to Borealis: {', '.join(missing)} not set (see utils/borealis.py)")
     try:
-        server = base_url(url)
+        server = api_base(url)   # logs, once, which server the upload goes to
     except ValueError as e:
-        print(f"ERROR: Not uploading to Borealis: {e}")
-        sys.exit(1)
+        stop_for_settings(f"Not uploading to Borealis: {e}")
     if is_demo(server) != is_demo(persistent_id=pid):
-        print(f"ERROR: Not uploading to Borealis: BOREALIS_URL is {server} but the dataset {pid} is on the "
-              f"{'production' if is_demo(server) else 'demo'} server. Set BOREALIS_UPLOAD_PERSISTENT_ID to the "
-              f"dataset's id on {server}.")
-        sys.exit(1)
+        stop_for_settings(f"Not uploading to Borealis: BOREALIS_URL is {server} but the dataset {pid} is on the "
+                          f"{'production' if is_demo(server) else 'demo'} server. Set BOREALIS_UPLOAD_PERSISTENT_ID "
+                          f"to the dataset's id on {server}.")
     if is_demo(server):
         print(f"WARNING: uploading to the demo server {server}: it is for testing and is reset from time to time, "
               f"so this is not a backup")
     return server, token, pid
 
 
-def upload_to_borealis(csv_content, csv_name, year, client=None):
-    """Upload the CSV to the Borealis dataset and publish it (utils/borealis.upload_file). Exits 1 on failure."""
-    server, token, pid = borealis_settings()
+def upload_to_borealis(csv_content, csv_name, year, client=None, settings=None):
+    """Upload the CSV to the Borealis dataset and publish it (utils/borealis.upload_file). Exits SETTINGS_ERROR_EXIT
+    when Borealis rejects the token or its permissions, and 1 on any other failure. `settings`: borealis_settings()'s
+    answer, if it was already asked."""
+    server, token, pid = settings or borealis_settings()
     client = client or Dataverse(server, token)
     month = csv_name[len("WELLWestCampus_"):-len(".csv")]
     try:
@@ -206,25 +224,35 @@ def upload_to_borealis(csv_content, csv_name, year, client=None):
                                        description=f"WELL West Campus sensor data, {month} (automated monthly export)",
                                        directory=str(year), publish=Config.BOREALIS_PUBLISH)
     except DataverseError as e:
+        if e.status == 401:
+            stop_for_settings(f"Borealis token rejected (HTTP 401): make a new token on {server} (your name > API "
+                              f"Token) and put it in BOREALIS_API_TOKEN.")
+        if e.status in SETTINGS_STATUSES:
+            stop_for_settings(f"Uploading {csv_name} to Borealis: {e}")
         print(f"ERROR: Uploading {csv_name} to Borealis: {e}")
         sys.exit(1)
     state = f"published as version {version}" if version else "no new version published by this run"
     print(f"Successfully uploaded {csv_name} to Borealis ({outcome}, {state})")
 
 
-def export_month_csv(start, end):
-    """(file name, CSV text) for the readings from `start` up to, not including, `end`, or None if there are none.
-    Needs the app context (the database)."""
+def export_csv(start, end):
+    """The CSV text for the readings from `start` up to, not including, `end` (any range: a day, a week, a month),
+    or None if there are none. Needs the app context (the database)."""
     from db.database import db
     from db.models import SensorMeasurement
+    from db.ordering import bytewise
 
+    # A cell holds the first reading of its time and metric, so readings of one time come in a fixed order
+    # (station, then metric), and the same month always gives the same file.
+    dialect = db.engine.dialect.name
     query = db.session.query(SensorMeasurement).filter(
         SensorMeasurement.group_type.in_(["Weather", "Quality", "Logger"]),
-        # The local calendar month as instants. Half-open, so the reading at midnight on the 1st goes in the new
-        # month's file only.
+        # The local calendar month as instants (recorded_at is timestamptz). Half-open, so the reading at midnight
+        # on the 1st goes in the new month's file only.
         SensorMeasurement.recorded_at >= site_to_utc(start),
         SensorMeasurement.recorded_at < site_to_utc(end),
-    ).order_by(SensorMeasurement.recorded_at)
+    ).order_by(SensorMeasurement.recorded_at, bytewise(SensorMeasurement.station_id, dialect),
+               bytewise(SensorMeasurement.measurement_type, dialect))
     data = [
         {
             "station_id": r.station_id,
@@ -241,13 +269,18 @@ def export_month_csv(start, end):
         return None
     csv_buffer = io.StringIO()
     build_csv_frontend_style(data, csv_buffer)
-    return month_file_name(start), csv_buffer.getvalue()
+    return csv_buffer.getvalue()
+
+
+def export_month_csv(start, end):
+    """(file name, CSV text) for the month that starts at `start`, or None if it has no readings. Needs the app."""
+    content = export_csv(start, end)
+    return None if content is None else (month_file_name(start), content)
 
 
 def month_file_name(start):
     """WELLWestCampus_Oct2026.csv for October 2026 (English month names, whatever the locale)."""
-    months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
-    return f"WELLWestCampus_{months[start.month - 1]}{start.year}.csv"
+    return period_file_name(containing("monthly", start.date()))
 
 
 def get_month_range(year: int, month: int):
@@ -277,27 +310,35 @@ def exported_month(args):
         start, end = get_month_range(args.year, args.month)
     else:
         start, end = get_last_month_range()
-    print(f"Exporting sensor data from {start} up to {end}")
-    exported = export_month_csv(start, end)
-    if exported is None:
-        # Exit non-zero: nothing was sent, so the scheduler must not record this month as uploaded
-        # (it tries again the next day, e.g. once a backfill has filled the month in).
-        print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
-        sys.exit(2)
-    csv_name, csv_content = exported
-    print(f"{csv_name}: {len(csv_content.encode('utf-8')):,} bytes")
+    csv_name, csv_content = exported_range(start, end, month_file_name(start))
     return csv_name, csv_content, start.year
+
+
+def exported_range(start, end, csv_name):
+    """(file name, CSV text) for the readings from `start` up to `end`, named `csv_name`. Exits NO_DATA_EXIT (2) when
+    there are none. Needs the app."""
+    print(f"Exporting sensor data from {start} up to {end}")
+    csv_content = export_csv(start, end)
+    if csv_content is None:
+        # Exit non-zero: nothing was sent, so the scheduler must not record this period as uploaded
+        # (it tries again the next day, e.g. once a backfill has filled it in).
+        print(f"ERROR: No sensor data found from {start} to {end}; nothing uploaded.")
+        sys.exit(NO_DATA_EXIT)
+    print(f"{csv_name}: {len(csv_content.encode('utf-8')):,} bytes")
+    return csv_name, csv_content
 
 
 def main():
     args = parse_args()
+    # Checked first, so a missing or wrong setting stops it before the month is read from the database
+    settings = None if args.dry_run else borealis_settings()
     from server import create_app
     with create_app().app_context():
         csv_name, csv_content, year = exported_month(args)
     if args.dry_run:
         print("Dry run: not uploading")
         return
-    upload_to_borealis(csv_content, csv_name, year)
+    upload_to_borealis(csv_content, csv_name, year, settings=settings)
 
 
 if __name__ == "__main__":

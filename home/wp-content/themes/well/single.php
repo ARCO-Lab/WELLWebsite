@@ -1,6 +1,7 @@
 <?php
 // This is the single post template for the WELL WordPress theme.
 // It displays a single news article, its metadata, and related news posts.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 get_header();
 ?>
@@ -13,8 +14,8 @@ if ( have_posts() ) :
 <nav aria-label="breadcrumb" class="breadcrumb-nav">
     <div class="container">
         <ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="<?php echo home_url(); ?>">Home</a></li>
-            <li class="breadcrumb-item"><a href="<?php echo home_url('/news/'); ?>">News</a></li>
+            <li class="breadcrumb-item"><a href="<?php echo esc_url( home_url( '/' ) ); ?>">Home</a></li>
+            <li class="breadcrumb-item"><a href="<?php echo esc_url( home_url( '/news/' ) ); ?>">News</a></li>
             <li class="breadcrumb-item active"><?php the_title(); ?></li>
         </ol>
     </div>
@@ -30,7 +31,28 @@ if ( have_posts() ) :
 
                         <div class="row">
                             <div class="col-12 col-md-9 news-subtitle-container align-self-center">
-                                <p class="news-byline">By <?php the_author(); ?></p>
+                                <p class="news-byline">By <?php
+                                // A post republished from another site stores the journalist's name in
+                                // _original_author (and optionally _original_source / _original_author_url).
+                                // Show that real byline; fall back to the WordPress account for original posts.
+                                $original_author = get_post_meta( get_the_ID(), '_original_author', true );
+                                if ( is_string( $original_author ) && trim( $original_author ) !== '' ) {
+                                    $original_author = trim( $original_author );
+                                    $author_url = get_post_meta( get_the_ID(), '_original_author_url', true );
+                                    $author_url = is_string( $author_url ) ? esc_url( trim( $author_url ) ) : '';
+                                    if ( $author_url !== '' ) {
+                                        echo '<a href="' . $author_url . '" rel="noopener noreferrer">' . esc_html( $original_author ) . '</a>';
+                                    } else {
+                                        echo esc_html( $original_author );
+                                    }
+                                    $original_source = get_post_meta( get_the_ID(), '_original_source', true );
+                                    if ( is_string( $original_source ) && trim( $original_source ) !== '' ) {
+                                        echo ', ' . esc_html( trim( $original_source ) );
+                                    }
+                                } else {
+                                    the_author();
+                                }
+                                ?></p>
                                 <time class="news-date">Posted on <?php echo get_the_date('F j, Y'); ?></time>
                             </div>
                             <div class="col-12 col-md-3 text-md-right align-self-center">
@@ -58,6 +80,13 @@ if ( have_posts() ) :
                             <hr class="news-divider">
                         </div>
 
+                        <?php if ( has_post_thumbnail() ) : ?>
+                        <div class="news-featured-image mb-4">
+                            <?php // Full content width, like the in-body images (img-fluid = max-width:100%). ?>
+                            <?php the_post_thumbnail( 'large', array( 'class' => 'img-fluid' ) ); ?>
+                        </div>
+                        <?php endif; ?>
+
                         <div class="entry-content">
                             <?php the_content(); ?>
                         </div>
@@ -66,20 +95,9 @@ if ( have_posts() ) :
                     </section>
 
                     <?php
-                    // Related Posts Query
-                    $related_args = array(
-                        'post_type' => 'post',
-                        'posts_per_page' => 3,
-                        'post__not_in' => array( get_the_ID() ),
-                        'tax_query' => array(
-                            array(
-                                'taxonomy' => 'category',
-                                'field' => 'slug',
-                                'terms' => 'news',
-                            ),
-                        ),
-                    );
-                    $related_query = new WP_Query( $related_args );
+                    // Related News: the 3 newest other published posts; every post on this site is
+                    // news, see well_news_query() in functions.php.
+                    $related_query = well_news_query( 3, array( get_the_ID() ) );
                     if ( $related_query->have_posts() ) :
                     ?>
                     <section class="section-padding">
@@ -93,6 +111,7 @@ if ( have_posts() ) :
                                         <div class="card card-shadow border-top-0">
                                             <div class="card-main border-top h-100">
                                                 <div class="card border-0 no-shadow card-hover">
+                                                    <?php well_news_card_image(); ?>
                                                     <div class="card-body pb-0">
                                                         <h3 class="card-title">
                                                             <a href="<?php the_permalink(); ?>" target="_self">

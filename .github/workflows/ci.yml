@@ -6,13 +6,20 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Started by hand or by the daily maintainer: a push made with the workflow token starts no workflow, so without
+  # a personal token the maintainer runs CI on its maint/* branch this way. The jobs keep their names, so their
+  # checks on the branch's commit count for main's required checks as a pull_request run's would.
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run. Never on main: deploy.sh --auto deploys a commit only once
+# its checks have passed, and a cancelled run counts as "CI didn't pass", so every push to main runs to the end.
+# Each main commit also gets its own group: in a shared group, a newer run would still replace one that is queued.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   backend:
@@ -20,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Starts while the image builds. The network is --internal: the test containers reach this database and
       # nothing else, so no test can call a vendor API.
@@ -51,15 +58,45 @@ jobs:
             echo "::error::PostgreSQL tests were skipped"; exit 1
           fi
 
-      # A new database as on a fresh VM: the tables the app creates, then every migration, then a second run that
-      # must find nothing left to apply.
-      - name: Migrations on a fresh database
+      # The same PostgreSQL tests as the role the app connects with on the VM (app/db/roles.sql): no superuser, owner
+      # of what it creates. test_db_roles (which creates the roles itself) and test_backup_db (which creates a role
+      # and databases) need the superuser, and ran in the step above.
+      - name: PostgreSQL tests again, as the app's own role (well_app)
         run: |
           set -o pipefail
-          run=(docker run --rm --network ci-db -w /app/app -e DATABASE_URL=postgresql://postgres:ci@ci-postgres/schema
+          for db in app_tests app_migrate_tests; do
+            docker exec ci-postgres psql -U postgres -qc "CREATE DATABASE $db"
+            docker exec -i ci-postgres psql -U postgres -d "$db" -X -q -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql
+          done
+          docker exec ci-postgres psql -U postgres -qc "ALTER ROLE well_app PASSWORD 'ci'"
+          # Test setup only: test_ops builds its tables in a schema of its own, which needs CREATE on the database
+          docker exec ci-postgres psql -U postgres -qc "GRANT CREATE ON DATABASE app_tests TO well_app"
+          modules=$(cd dashboard/backend && grep -lE "TEST_POSTGRES_URL|MIGRATE_TEST_DATABASE_URL" tests/test_*.py \
+                    | grep -v -e test_backup_db -e test_db_roles | sed -e 's#/#.#' -e 's#\.py$##')
+          echo "$modules"
+          # $modules unquoted on purpose: one argument per module
+          docker run --rm --network ci-db -w /app -e TEST_POSTGRES_URL=postgresql://well_app:ci@ci-postgres/app_tests \
+            -e MIGRATE_TEST_DATABASE_URL=postgresql://well_app:ci@ci-postgres/app_migrate_tests \
+            well-backend:ci python -m unittest -v $modules 2>&1 | tee unittest-app.log
+          if grep -E "skipped 'set (TEST_POSTGRES_URL|MIGRATE_TEST_DATABASE_URL)" unittest-app.log; then
+            echo "::error::PostgreSQL tests were skipped"; exit 1
+          fi
+
+      # A new database as on a fresh VM, set up as the backend README's "Database roles" section says: the roles,
+      # then the tables the app creates and every migration as well_app, then the roles again (for welldash²'s
+      # tables), the roles check, and a second migration run that must find nothing left to apply.
+      - name: Migrations on a fresh database, as well_app
+        run: |
+          set -o pipefail
+          roles() { docker exec -i ci-postgres psql -U postgres -d schema -X -q -v ON_ERROR_STOP=1 < "dashboard/backend/app/db/$1"; }
+          roles roles.sql
+          run=(docker run --rm --network ci-db -w /app/app -e DATABASE_URL=postgresql://well_app:ci@ci-postgres/schema
                well-backend:ci)
           "${run[@]}" python db/init_db.py
           "${run[@]}" python scripts/migrate.py
+          roles roles.sql
+          roles roles_check.sql 2>&1 | tee roles-check.log
+          grep -q "roles check passed" roles-check.log
           "${run[@]}" python scripts/migrate.py | tee migrate-again.log
           grep -q "nothing to apply" migrate-again.log
           "${run[@]}" python scripts/migrate.py --status
@@ -79,6 +116,12 @@ jobs:
           docker run --rm --network none -w /app/app/scripts "${env[@]}" well-backend:ci \
             python -c "import scheduler_temp; print('ok: scheduler imports')"
 
+      # backend, worker, export_worker and ops from docker-compose.yml as the VM runs them: each as the configured
+      # unprivileged user with no capabilities, writing its logs, backups and exports, after the one-time ownership
+      # commands from docs/hosting.md.
+      - name: The services start from docker-compose.yml, unprivileged, and can write where they must
+        run: bash .github/scripts/test_compose_runtime.sh
+
   dashboard:
     name: Dashboard build
     runs-on: ubuntu-latest
@@ -87,10 +130,10 @@ jobs:
       run:
         working-directory: dashboard/frontend
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Same Node major as the dashboard image (node:26-alpine in dashboard/frontend/Dockerfile); change both together.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 26
           cache: npm
@@ -102,7 +145,7 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Unit tests (chart zoom helpers)
+      - name: Unit tests (chart helpers, site time, the backend proxy)
         run: npm test
 
       - run: npm run build
@@ -115,7 +158,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # The image the VM builds, base image and all, so a Node or Alpine change is built and started before it ships.
       # The Sentry DSN stays at the Dockerfile's default so the Sentry code path is built as in production, but
@@ -128,7 +171,9 @@ jobs:
       # NEXT_PUBLIC_* values are inlined at build time; the runtime variable is set too in case server code reads it.
       - name: The image starts and serves the dashboard
         run: |
-          docker run -d --name ci-dashboard -p 8081:8081 -e NEXT_PUBLIC_SENTRY_ENVIRONMENT=ci well-dashboard:ci
+          # With the restrictions docker-compose.yml gives it (x-unprivileged): no capabilities, no-new-privileges
+          docker run -d --name ci-dashboard -p 8081:8081 --cap-drop ALL --security-opt no-new-privileges:true \
+            -e NEXT_PUBLIC_SENTRY_ENVIRONMENT=ci well-dashboard:ci
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:8081/ && break; sleep 1; done
           curl -sf http://127.0.0.1:8081/ | grep -q "Watershed and Ecosystems Living Lab" || { docker logs ci-dashboard; exit 1; }
           curl -sf -o logo.out -D logo.headers "http://127.0.0.1:8081/_next/image?url=%2Flogos%2Fmcmaster-logo.png&w=128&q=75" \
@@ -147,7 +192,7 @@ jobs:
       E2E_DATABASE_URL: postgresql://postgres:e2e@127.0.0.1:5432/e2e
       E2E_BASE_URL: http://127.0.0.1:3000
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # America/New_York on the VM; UTC here on purpose, so any dependence on the session zone fails. recorded_at is
       # naive Toronto time, so code that writes it in the session's zone, or compares it with an aware time (which
@@ -157,7 +202,7 @@ jobs:
           docker run -d --name e2e-postgres -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=e2e -e POSTGRES_DB=e2e \
             -e TZ=UTC postgres:13 -c timezone=UTC
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 26
           cache: npm
@@ -217,7 +262,7 @@ jobs:
 
       - name: Keep the Playwright report (traces and screenshots)
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-report
           path: |
@@ -228,17 +273,35 @@ jobs:
   static:
     name: Lint Python, shell and compose
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Pyflakes rules only (F): undefined names, unused imports and variables, and the like. No style rules.
-      - name: ruff (pyflakes rules) on the backend
-        run: pipx run ruff==0.14.0 check --select F --target-version py311 --output-format github dashboard/backend
+      - name: ruff (pyflakes rules) on the backend and the CI scripts
+        run: pipx run ruff==0.14.0 check --select F --target-version py311 --output-format github dashboard/backend .github/scripts
+
+      # Every Python test in .github/scripts, once: the daily maintainer's scripts and the daily Sentry check
+      # (sentry-issues.yml, including its sparse checkout: every file the script loads is listed, and the script runs
+      # from those folders alone). Standard library only, with the GitHub and Sentry APIs and SMTP faked: nothing to
+      # install, no network. A new test_*.py there is picked up without changing this step.
+      - name: Unit tests of the .github/scripts Python scripts
+        run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
 
       # The runner image ships shellcheck.
-      - name: shellcheck on deploy.sh, the CI scripts and the load-test scripts
-        run: shellcheck deploy.sh .github/scripts/*.sh dashboard/loadtest/*.sh
+      - name: shellcheck on deploy.sh, the WordPress backup, the CI scripts, the load-test scripts and the roles steps
+        run: shellcheck deploy.sh wordpress/*.sh .github/scripts/*.sh dashboard/loadtest/*.sh dashboard/backend/app/db/*.sh
+
+      # It only prints the steps; check that it does, and that it refuses a database name that isn't a plain name.
+      - name: roles.sh prints the database roles steps
+        run: |
+          bash dashboard/backend/app/db/roles.sh welldb | grep -q "psql -d welldb -v ON_ERROR_STOP=1 < dashboard/backend/app/db/roles.sql"
+          if bash dashboard/backend/app/db/roles.sh 'welldb; rm -rf /' 2>/dev/null; then exit 1; fi
+
+      # Stub docker and curl first, then a real throwaway MySQL 5.7 with no network: a backup, its restore check, and
+      # the restore steps in wordpress/README.md.
+      - name: wordpress/backup.sh tests
+        run: bash .github/scripts/test_wordpress_backup.sh --real
 
       # The env files compose reads aren't in the repo; placeholders are enough to check the file parses.
       - name: docker compose config
@@ -258,6 +321,16 @@ jobs:
           WORKER_LOG_TO_STDOUT=1
           EOF
           docker compose config -q
+          # WordPress and the dashboard: on every address unless WORDPRESS_BIND / DASHBOARD_BIND name one
+          cat > "$RUNNER_TEMP/ports.py" <<'EOF'
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          print(" ".join(f"{n}={p.get('host_ip', '')}:{p['published']}" for n in ("wordpress", "dashboard")
+                         for p in services[n]["ports"]))
+          EOF
+          ports() { docker compose config --format json | python3 "$RUNNER_TEMP/ports.py"; }
+          test "$(ports)" = "wordpress=:8080 dashboard=:8081"
+          test "$(WORDPRESS_BIND=10.0.0.5 DASHBOARD_BIND=10.0.0.6 ports)" = "wordpress=10.0.0.5:8080 dashboard=10.0.0.6:8081"
 
       # deploy.sh (and its cron run) applies wordpress/*.conf and *.ini by recreating the container, so check them here
       # in the image docker-compose.yml runs: Apache's config test, and PHP must start without an ini warning.
@@ -273,12 +346,28 @@ jobs:
           echo "$out"
           [ "$out" = ok ]
 
+      # The theme is live as soon as deploy.sh pulls it (home/ is bind-mounted), so a syntax error would take the
+      # site down. php -l in the same image, so the PHP version is production's.
+      - name: PHP syntax of the WordPress theme (php -l)
+        run: |
+          image=$(docker compose config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["wordpress"]["image"])')
+          docker run --rm -v "$PWD/home/wp-content/themes/well:/theme:ro" "$image" sh -c '
+            php -v | head -1; n=0; bad=0
+            for f in $(find /theme -name "*.php"); do n=$((n + 1)); php -l "$f" || bad=1; done
+            echo "$n files checked"; exit $bad'
+
+      # A throwaway WordPress install in the compose image, with this commit's home/ and wordpress/ files: the files
+      # Apache refuses, PHP under uploads, the security headers, and the must-use plugin's hiding of account names,
+      # failed-login limit, comments and version.
+      - name: WordPress hardening on a throwaway install
+        run: bash .github/scripts/test_wordpress_hardening.sh
+
   deploy-script:
     name: Deploy script
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: deploy.sh in a sandbox (fake remote, stub docker and curl)
         run: bash .github/scripts/test_deploy.sh

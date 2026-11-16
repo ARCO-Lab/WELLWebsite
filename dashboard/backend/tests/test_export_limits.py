@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import unittest
 import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
@@ -21,6 +20,12 @@ from config import Config  # noqa: E402
 from utils.timezone import est_now  # noqa: E402
 
 SAMPLING = {"domain": "sampling", "start": "2026-11-01T00:00:00", "end": "2026-11-02T00:00:00"}
+
+
+# Job ids are UUIDs, as the job routes require (<uuid:job_id>)
+OOM_ID = "00000000-0000-4000-8000-000000000001"
+ALIVE_ID = "00000000-0000-4000-8000-000000000002"
+SPRING_ID = "00000000-0000-4000-8000-000000000003"
 
 
 class AppTestCase(unittest.TestCase):
@@ -87,6 +92,25 @@ class JobLimitTests(AppTestCase):
         self.assertIn("already have exports being prepared", r.get_json()["error"])
         self.assertEqual(self.delay.call_count, 2)
         self.assertEqual(self.queue("198.51.100.8").status_code, 202)  # someone else is still served
+
+    def test_a_job_that_cant_be_queued_fails_at_once_and_frees_its_place(self):
+        from kombu.exceptions import OperationalError
+        self.delay.side_effect = OperationalError("Error 111 connecting to redis:6379. Connection refused.")
+        r = self.queue()
+        self.assertEqual(r.status_code, 503)
+        body = r.get_json()
+        self.assertIn("unavailable right now", body["error"])
+        self.assertNotIn("redis", body["error"].lower())   # no internals in what the visitor sees
+        job = self.get(body["job_id"])
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error_message, body["error"])
+        self.assertIsNotNone(job.completed_at)
+        # Failed jobs don't count against the limits: once the queue is back, the same visitor gets two jobs again
+        self.queue()
+        self.delay.side_effect = None
+        self.assertEqual(self.queue().status_code, 202)
+        self.assertEqual(self.queue().status_code, 202)
+        self.assertEqual(self.queue().status_code, 429)
 
     def test_the_last_forwarded_hop_identifies_the_visitor(self):
         # The browser can put anything before the address the proxy added: changing it doesn't make a new visitor.
@@ -260,13 +284,13 @@ class TaskTests(AppTestCase):
 
     def test_the_status_route_settles_a_job_whose_worker_died(self):
         from api.services.exports import EXPORT_TOO_SLOW_MESSAGE
-        self.add_job("oom", "running", minutes_ago=40, started_minutes_ago=26)
-        self.add_job("alive", "running", minutes_ago=5, started_minutes_ago=4)
+        self.add_job(OOM_ID, "running", minutes_ago=40, started_minutes_ago=26)
+        self.add_job(ALIVE_ID, "running", minutes_ago=5, started_minutes_ago=4)
         client = self.app.test_client()
-        body = client.get("/api/exports/jobs/oom").get_json()
+        body = client.get(f"/api/exports/jobs/{OOM_ID}").get_json()
         self.assertEqual((body["status"], body["error_message"]), ("failed", EXPORT_TOO_SLOW_MESSAGE))
-        self.assertEqual(self.get("oom").status, "failed")
-        self.assertEqual(client.get("/api/exports/jobs/alive").get_json()["status"], "running")
+        self.assertEqual(self.get(OOM_ID).status, "failed")
+        self.assertEqual(client.get(f"/api/exports/jobs/{ALIVE_ID}").get_json()["status"], "running")
 
 
 class StreamCleanupTests(AppTestCase):
@@ -285,7 +309,7 @@ class StreamCleanupTests(AppTestCase):
             if len(calls) == 2:  # the header is call 1
                 raise OSError("disk full")
 
-        with unittest.mock.patch.object(export_service._SafeCsvWriter, "writerow",
+        with unittest.mock.patch.object(export_service.SafeCsvWriter, "writerow",
                                         side_effect=lambda row: fail_on_a_data_row(row)):
             error = None
             try:
@@ -359,12 +383,12 @@ class JobAgeAcrossDstTests(unittest.TestCase):
 
 class SpringForwardRouteAndCleanupTests(AppTestCase):
     def add_spring_job(self):
-        job = self.ExportJob(id="spring", status="running", domain="sampling", payload=SAMPLING,
+        job = self.ExportJob(id=SPRING_ID, status="running", domain="sampling", payload=SAMPLING,
                              created_at=SPRING_START, started_at=SPRING_START,
                              requester_fingerprint="f")
         self.db.session.add(job)
         self.db.session.commit()
-        folder = os.path.join(self.exports, "spring")
+        folder = os.path.join(self.exports, SPRING_ID)
         os.makedirs(folder)
         pathlib.Path(folder, "x.csv").write_text("being written")
         return folder
@@ -372,19 +396,19 @@ class SpringForwardRouteAndCleanupTests(AppTestCase):
     def test_a_live_job_isnt_settled_or_cleaned_up_after_the_jump(self):
         folder = self.add_spring_job()
         with frozen_clock(dt.datetime(2026, 3, 8, 7, 1, tzinfo=dt.timezone.utc)):  # 03:01 EDT
-            body = self.app.test_client().get("/api/exports/jobs/spring").get_json()
+            body = self.app.test_client().get(f"/api/exports/jobs/{SPRING_ID}").get_json()
             from tasks.exports import cleanup_expired_artifacts
             with unittest.mock.patch("tasks.exports.worker_app", return_value=self.app):
                 cleanup_expired_artifacts()
         self.assertEqual(body["status"], "running")
-        self.assertEqual(self.get("spring").status, "running")
+        self.assertEqual(self.get(SPRING_ID).status, "running")
         self.assertTrue(os.path.isdir(folder))
 
     def test_it_still_counts_against_the_limits(self):
         from api.services.exports import live_jobs
         self.add_spring_job()
         with frozen_clock(dt.datetime(2026, 3, 8, 7, 1, tzinfo=dt.timezone.utc)):
-            self.assertEqual([job.id for job in live_jobs()], ["spring"])
+            self.assertEqual([job.id for job in live_jobs()], [SPRING_ID])
         with frozen_clock(dt.datetime(2026, 3, 8, 7, 16, tzinfo=dt.timezone.utc)):
             self.assertEqual(live_jobs(), [])
 

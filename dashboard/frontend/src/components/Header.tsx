@@ -47,6 +47,15 @@ const Header = () => {
 
   return (
     <>
+      {/* Skip link: the first thing a keyboard reaches, past the logos and navigation to the dashboard (#main-content
+          is its <main>). Hidden until focused. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-white focus:px-4 focus:py-2 focus:font-semibold focus:text-primary focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary"
+      >
+        Skip to dashboard
+      </a>
+
       {/* McMaster Header */}
       <header className="bg-white pt-[1rem] pb-[1rem] lg:pt-[1.25rem] lg:pb-[1rem] relative">
         {/* Left side: McMaster Logo (large screens only) */}

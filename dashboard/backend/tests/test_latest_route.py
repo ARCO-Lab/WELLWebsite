@@ -89,5 +89,11 @@ class EmptyTableTests(unittest.TestCase):
                 db.drop_all()
 
 
+class DisabledAnalysisRouteTests(unittest.TestCase):
+    def test_recent_analysis_route_still_imports(self):
+        # It is switched off, but reuses query_latest_per_series; a rename should fail here, not when it's re-enabled
+        import api.routes.analysis.recent  # noqa: F401
+
+
 if __name__ == "__main__":
     unittest.main()

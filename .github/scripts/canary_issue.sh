@@ -48,8 +48,8 @@ if [ -n "$open" ]; then
 else
   {
     echo
-    echo "This issue is updated by each failing run and closed by the next passing one. See the README's"
-    echo "\"API canary\" section for what each source checks and how to rotate a key."
+    echo "This issue is updated by each failing run and closed by the next passing one. See .github/workflows/README.md,"
+    echo "\"API canary\", for what each source checks and how to rotate a key."
   } >> "$body"
   "$GH" label create "$LABEL" --color D93F0B --description "Opened by the daily API canary" --force > /dev/null
   "$GH" issue create --title "$TITLE" --label "$LABEL" --assignee "$ASSIGNEE" --body-file "$body"

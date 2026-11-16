@@ -1,0 +1,60 @@
+/*
+ * Editor-only shim for the WELL block editor canvas.
+ *
+ * The real site CSS (theme.css, mcm-bw.css, typography.css, btn.css, new-cards.css,
+ * well-patterns.css) is loaded into the editor by add_editor_style() in functions.php,
+ * so headings, paragraphs, links, buttons, cards and the WELL patterns already render
+ * on-brand while you edit. This file only fills the few gaps between the front end and
+ * the editor canvas:
+ *
+ *   1. The brand colour variables (--primary-colour etc.) live on :root / html in
+ *      mcm-bw.css. WordPress rewrites editor-style selectors to sit inside the editor
+ *      iframe, which can stop :root rules reaching the blocks. Re-declaring the same
+ *      variables on `body` (the canvas root in the editor) guarantees every var() in the
+ *      site CSS resolves, so maroon stays maroon and gold stays gold in the editor.
+ *   2. On the front end, page content sits inside .container (max-width + side padding)
+ *      and .section-padding. The editor canvas has no such wrapper, so we give the canvas
+ *      comparable breathing room and a white page background.
+ *
+ * Keep this file small: it is a bridge, not a second stylesheet. Anything that should look
+ * a certain way on the live site belongs in the real CSS files, not here.
+ */
+
+/* 1. Brand variables on the canvas root (see note above). Values mirror css/mcm-bw.css. */
+body {
+    --primary-colour: #7a003c;
+    --secondary-colour: #fdbf57;
+    --primary-colour-light: #ac1455;
+    --primary-colour-dark: #620030;
+    --primary-colour-on-white: #7a003c;
+    --primary-text: #fff;
+    --primary-text-on-white: #fff;
+    --secondary-text: #000;
+    --secondary-text-alt: #222;
+    --grey: #495965;
+    --footer-colour: var(--grey);
+    --footer-text-colour: #fff;
+
+    background-color: #fff;
+    color: var(--grey);
+    font-family: Arial, sans-serif;
+}
+
+/* 2. Give the canvas the same side breathing room the front-end .container provides,
+      so line lengths and spacing read like the live page while editing. */
+.editor-styles-wrapper {
+    padding-left: 12px;
+    padding-right: 12px;
+}
+
+/* Headings already get Poppins and their colours from typography.css (loaded as an editor
+   style), including white reverse text on the hero banner. We deliberately do NOT restate a
+   heading colour here: an editor-only colour would override .banner-text-rev and turn the
+   hero title black in the editor. */
+
+/* A full-width cover/group (hero and CTA patterns) spans the whole canvas in the editor,
+   matching alignfull on the front end. */
+.editor-styles-wrapper .wp-block-cover.alignfull,
+.editor-styles-wrapper .wp-block-group.alignfull {
+    max-width: none;
+}

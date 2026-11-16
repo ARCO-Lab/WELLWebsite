@@ -5,6 +5,7 @@ import React from "react";
 import { Bug, Biohazard, Cloudy, FlaskConical, Zap, Atom, Flame, Leaf } from "lucide-react";
 import { SAMPLING_FILTER_CONFIG, SAMPLING_METRICS } from "@/components/config/filters";
 import MetricGroup, { type MetricSection } from "./MetricList";
+import type { RecentSample } from "@/hooks/useRecentSamples";
 
 // label = the filter's name for the metric, which is also measurement_type in the API
 const metricMap = [
@@ -24,7 +25,7 @@ const metricMap = [
 interface CreekMetricsProps {
   creekKey: keyof typeof SAMPLING_FILTER_CONFIG;
   subFilters: string[];
-  metrics?: any[];
+  metrics?: RecentSample[];
   loading?: boolean;
   inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }

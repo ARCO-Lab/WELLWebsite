@@ -115,8 +115,9 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({
       }
       const json = await res.json();
       setTabAnalysis(prev => ({ ...prev, [tab]: json }));
-    } catch (err: any) {
-      setTabAnalysis(prev => ({ ...prev, [tab]: err.message || "Failed to load analysis." }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      setTabAnalysis(prev => ({ ...prev, [tab]: message || "Failed to load analysis." }));
     } finally {
       setTabLoading(prev => ({ ...prev, [tab]: false }));
     }

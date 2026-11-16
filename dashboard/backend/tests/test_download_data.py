@@ -4,18 +4,20 @@ failure. Run from dashboard/backend: python -m unittest discover -s tests -t .""
 import contextlib
 import datetime as dt
 import io
+import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import types
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "scripts"))
 from scripts import download_data  # noqa: E402
 from utils.sampling_csv import INVALID_FILE_EXIT  # noqa: E402
+from utils.jobs import SETTINGS_ERROR_EXIT  # noqa: E402
 sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
 import scheduler_temp  # noqa: E402
 
@@ -32,18 +34,77 @@ def empty_state():
     return {"processed_files": [], "refused_files": []}
 
 
-class BookkeepingTests(unittest.TestCase):
+class BookkeepingTests(TestCase):
     def test_import_outcome(self):
         self.assertEqual(download_data.import_outcome(0, "[INFO] Inserted 12 new sampling records.\n"), ("processed", 12))
         self.assertEqual(download_data.import_outcome(0, "[INFO] Inserted 0 new sampling records.\n"), ("processed", 0))
         self.assertEqual(download_data.import_outcome(INVALID_FILE_EXIT, REFUSED_OUT), ("refused", 7))
         self.assertEqual(download_data.import_outcome(1, "psycopg2.OperationalError"), ("failed", None))
 
+    def test_import_counts(self):
+        out = ("[INFO] Inserted 2 new sampling records.\n[INFO] Corrected 3 stored sampling records (the file's value "
+               "replaced the stored one).\n[CORRECTED] site 1 E. coli on 2026-10-06 09:40: 1200.0 -> 120.0\n"
+               "[WARN] 4 rows present in the DB but not in the latest file (same sites, ...)\n")
+        self.assertEqual(download_data.import_counts(out), {"inserted": 2, "corrected": 3, "withdrawn": 4, "held": 0})
+        self.assertEqual(download_data.import_counts(""), {"inserted": 0, "corrected": 0, "withdrawn": 0, "held": 0})
+
     def test_run_status(self):
         self.assertEqual(download_data.run_status(2, 0, 0), "PROCESSED_2_FILES")
         self.assertEqual(download_data.run_status(0, 0, 0), "NO_FILES_PROCESSED")
         self.assertEqual(download_data.run_status(3, 1, 1), "REJECTED_1_FILES")
         self.assertEqual(download_data.run_status(3, 0, 2), "FAILED_2_FILES")
+
+    def test_state_is_written_whole_or_not_at_all(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(pathlib.Path(folder, "processed.json"))
+            state = empty_state()
+            download_data.record(state, OLD, "processed", scope={"sites": ["1"]})
+            with mock.patch.object(download_data, "STATE_FILE", path), contextlib.redirect_stdout(io.StringIO()):
+                download_data.save_state(state)
+                self.assertEqual(json.loads(pathlib.Path(path).read_text())["processed_files"][0]["id"], 1)
+                # A write that fails part-way (here an entry that can't be written as JSON) leaves the file as it was
+                download_data.record(state, NEW, "processed", scope={"sites": {"not", "json"}})
+                download_data.save_state(state)
+            self.assertEqual([f["id"] for f in json.loads(pathlib.Path(path).read_text())["processed_files"]], [1])
+
+    def test_a_damaged_state_file_stops_the_run_and_is_kept(self):
+        # Read as empty, every dataset file would be imported again, undoing deletions and held corrections
+        for damaged in ('{"processed_files": [{"id": 1', "", "[]", '{"processed_files": "1,2"}',
+                        b"\xff\xfe not utf-8"):
+            with self.subTest(damaged=damaged), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder, "processed.json")
+                (path.write_bytes if isinstance(damaged, bytes) else path.write_text)(damaged)
+                with mock.patch.object(download_data, "STATE_FILE", str(path)), \
+                        contextlib.redirect_stdout(io.StringIO()), self.assertRaises(download_data.StateFileError) as e:
+                    download_data.load_state()
+                self.assertIn("can't be read", str(e.exception))
+                self.assertIn("processed.json.bad", str(e.exception))
+                bad = pathlib.Path(folder, "processed.json.bad")
+                self.assertEqual(bad.read_bytes(), path.read_bytes())   # the original is left as it was, too
+
+    def test_no_state_file_is_an_empty_state_and_a_good_one_is_read(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder, "processed.json")
+            with mock.patch.object(download_data, "STATE_FILE", str(path)), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(download_data.load_state(), empty_state())
+                path.write_text(json.dumps({"processed_files": [{"id": 1, "filename": "a.csv"}]}))
+                self.assertEqual(download_data.load_state(),
+                                 {"processed_files": [{"id": 1, "filename": "a.csv"}], "refused_files": []})
+
+    def test_a_damaged_state_file_fails_the_run_before_any_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder, "processed.json")
+            path.write_text("{")
+            out = io.StringIO()
+            with mock.patch.object(download_data, "STATE_FILE", str(path)), \
+                    mock.patch.object(download_data, "get_files_from_dataset") as listing, \
+                    mock.patch.object(sys, "argv", ["download_data.py"]), contextlib.redirect_stdout(out), \
+                    self.assertRaises(SystemExit) as exited:
+                download_data.main()
+            self.assertEqual(exited.exception.code, 1)
+            listing.assert_not_called()
+            self.assertIn("can't be read", out.getvalue())
+            self.assertNotIn("OUTPUT:", out.getvalue())
 
     def test_record_moves_a_file_between_lists(self):
         state = empty_state()
@@ -64,21 +125,42 @@ class BookkeepingTests(unittest.TestCase):
         self.assertEqual(choose([NEW, BAD, OLD], state, [OLD["filename"]], force=True), [OLD, NEW])
         self.assertEqual(choose([NEW, BAD, OLD], state, ["2"]), [NEW])        # naming needs --force
 
+    def test_same_day_uploads_are_imported_in_upload_order(self):
+        # Same create_date: the Dataverse id, which only grows, decides (as a number: 9 before 10)
+        first, second, third = dataset_file(9, 4), dataset_file(10, 4), dataset_file(11, 4)
+        self.assertEqual(download_data.choose_files([third, second, first], empty_state()), [first, second, third])
 
-class MainTests(unittest.TestCase):
+    def test_newer_files_are_the_processed_ones_with_a_higher_id(self):
+        state = empty_state()
+        download_data.record(state, OLD, "processed", scope={"sites": ["1"]})
+        download_data.record(state, NEW, "processed", scope={"sites": ["2"]})
+        state["processed_files"].append({"filename": "legacy.csv", "id": 7, "create_date": "2026-05-07T00:00:00"})
+        self.assertEqual(download_data.newer_files(state, BAD), [
+            {"file": "WELLAncasterWatershed_3.csv (ID: 3)", "scope": {"sites": ["2"]}},
+            {"file": "legacy.csv (ID: 7)", "scope": None}])   # recorded before scopes: unknown, covers everything
+        self.assertEqual(download_data.newer_files(state, dataset_file(8, 9)), [])
+
+    def test_import_scope(self):
+        self.assertEqual(download_data.import_scope('[INFO] x\n[SCOPE] {"sites": ["1"]}\n'), {"sites": ["1"]})
+        self.assertIsNone(download_data.import_scope("[INFO] Inserted 1 new sampling records.\n"))
+
+
+class MainTests(TestCase):
     def run_main(self, state, outcomes, *argv, files=(OLD, BAD, NEW)):
         """main() over OLD, BAD and NEW with the given state; outcomes maps file id -> (returncode, stdout)."""
         saved = []
 
         def importer(cmd, **kwargs):
-            file_id = int(pathlib.Path(cmd[-1]).stem)
+            file_id = int(pathlib.Path(cmd[2]).stem)   # python, inject_sampling.py, the file, [--newer ...]
             code, out = outcomes[file_id]
             return subprocess.CompletedProcess(cmd, code, out, "")
 
         with mock.patch.object(sys, "argv", ["download_data.py", *argv]), \
                 mock.patch.object(download_data, "load_state", return_value=state), \
                 mock.patch.object(download_data, "save_state", side_effect=lambda s: saved.append(s)), \
-                mock.patch.object(download_data, "get_files_from_dataset", return_value=list(files)), \
+                mock.patch.object(download_data, "get_files_from_dataset",
+                                  **({"side_effect": files} if isinstance(files, Exception)
+                                     else {"return_value": list(files)})), \
                 mock.patch.object(download_data, "process_single_file", side_effect=lambda f: f"/tmp/{f['id']}.xlsx"), \
                 mock.patch.object(download_data.os, "unlink"), \
                 mock.patch.object(download_data.subprocess, "run", side_effect=importer) as run, \
@@ -125,6 +207,46 @@ class MainTests(unittest.TestCase):
         self.assertEqual((code, run.call_count), (0, 1))
         self.assertEqual(saved[-1]["refused_files"], [])
 
+    def test_corrections_and_withdrawn_rows_are_summed_and_flagged(self):
+        changed = (0, "[INFO] Inserted 1 new sampling records.\n[INFO] Corrected 2 stored sampling records (...)\n"
+                      "[WARN] 3 rows present in the DB but not in the latest file (...)\n")
+        clean = (0, "[INFO] Inserted 4 new sampling records.\n[INFO] Corrected 1 stored sampling records (...)\n")
+        code, out, _, _ = self.run_main(empty_state(), {1: clean, 3: changed}, files=(OLD, NEW))
+        self.assertEqual(code, 0)   # applied corrections and kept rows don't fail the run
+        self.assertIn("OUTPUT: PROCESSED_2_FILES", out)
+        self.assertIn("SUMMARY: 5 new, 3 corrected, 0 corrections not applied (a newer file covers them), 3 rows "
+                      "present in the DB but not in the latest file", out)
+        attention = [line for line in out.splitlines() if line.startswith("ATTENTION:")]
+        self.assertEqual(len(attention), 1, out)
+        self.assertIn("WELLAncasterWatershed_3.csv (ID: 3): 3 rows present in the DB but not in the latest file",
+                      attention[0])
+
+    def test_an_older_file_retried_after_a_newer_one_gets_the_newer_files_scope(self):
+        # OLD's import failed last week; NEW (a higher id) was imported. This week OLD is retried.
+        state = empty_state()
+        scope = {"sites": ["3"], "measurement_types": ["E. coli"], "start": "2026-10-06T00:00:00",
+                 "end": "2026-10-07T00:00:00"}
+        download_data.record(state, NEW, "processed", scope=scope)
+        held = (0, "[INFO] Inserted 0 new sampling records.\n[INFO] Corrected 0 stored sampling records (...)\n"
+                   "[WARN] 1 corrections not applied: a newer file, already imported, covers these readings\n"
+                   '[SCOPE] {"sites": ["3"]}\n')
+        code, out, saved, run = self.run_main(state, {1: held}, files=(OLD, NEW))
+        self.assertEqual(code, 0)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[3], "--newer")
+        self.assertEqual(json.loads(cmd[4]), [{"file": "WELLAncasterWatershed_3.csv (ID: 3)", "scope": scope}])
+        self.assertIn("SUMMARY: 0 new, 0 corrected, 1 corrections not applied", out)
+        self.assertIn("ATTENTION: WELLAncasterWatershed_1.csv (ID: 1): 1 corrections not applied", out)
+        self.assertEqual({f["id"]: f["scope"] for f in saved[-1]["processed_files"]},
+                         {3: scope, 1: {"sites": ["3"]}})
+
+    def test_files_imported_in_order_see_no_newer_file(self):
+        ok = (0, "[INFO] Inserted 1 new sampling records.\n")
+        code, _, _, run = self.run_main(empty_state(), {1: ok, 3: ok}, files=(NEW, OLD))
+        self.assertEqual(code, 0)
+        self.assertEqual([c.args[0][2] for c in run.call_args_list], ["/tmp/1.xlsx", "/tmp/3.xlsx"])
+        self.assertTrue(all(len(c.args[0]) == 3 for c in run.call_args_list))   # no --newer
+
     def test_a_failed_import_is_retried_and_fails_the_run(self):
         code, out, saved, _ = self.run_main(empty_state(), {1: (1, ""), 2: (1, ""), 3: (1, "")})
         self.assertEqual(code, 1)
@@ -143,6 +265,32 @@ class MainTests(unittest.TestCase):
         self.assertEqual((code, run.call_count), (0, 0))
         self.assertIn("OUTPUT: NO_NEW_FILES", out)
 
+    def test_a_never_published_dataset_is_a_warning_not_a_failure(self):
+        for argv in ((), ("--list-files",)):
+            for waiting in ([], ["WELLAncasterWatershed_May2026.csv"]):
+                with self.subTest(argv=argv, waiting=waiting):
+                    code, out, saved, run = self.run_main(empty_state(), {}, *argv,
+                                                          files=download_data.NotPublished(waiting))
+                    self.assertEqual((code, run.call_count, saved), (0, 0, []))
+                    self.assertIn("WARNING: ", out)
+                    self.assertIn("OUTPUT: NOT_PUBLISHED", out)
+                    pending = [line for line in out.splitlines() if line.startswith("PENDING:")]
+                    self.assertEqual(len(pending), len(waiting))
+                    if waiting:
+                        self.assertIn("1 sampling files wait in the unpublished draft", pending[0])
+                        self.assertIn("WELLAncasterWatershed_May2026.csv", pending[0])
+
+    def test_a_setting_to_fix_exits_with_the_settings_code(self):
+        out = io.StringIO()
+        problem = download_data.DownloadSettingsError("BOREALIS_URL is https://borealisdata.ca but the dataset ...")
+        with mock.patch.object(sys, "argv", ["download_data.py"]), \
+                mock.patch.object(download_data, "load_state", return_value=empty_state()), \
+                mock.patch.object(download_data, "get_files_from_dataset", side_effect=problem), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exited:
+            download_data.main()
+        self.assertEqual(exited.exception.code, SETTINGS_ERROR_EXIT)
+        self.assertEqual(out.getvalue().splitlines()[-1], f"ERROR: {problem}")
+
     def test_a_file_name_matching_nothing_is_an_error(self):
         code, out, _, run = self.run_main(empty_state(), {}, "--force", "--file", "99", "--file", "2")
         self.assertNotEqual(code, 0)
@@ -151,20 +299,21 @@ class MainTests(unittest.TestCase):
         self.assertNotIn("OUTPUT:", out)
 
 
-class SchedulerTests(unittest.TestCase):
+class SchedulerTests(TestCase):
     def run_job(self, stdout, code):
         logs, pings = [], []
 
         def run(cmd, timeout):
             if "--list-files" in cmd:
-                raise AssertionError("listed the dataset for a run that only refused a file")
+                raise AssertionError("listed the dataset for a run that only refused a file or needs a setting")
             if code:
                 raise subprocess.CalledProcessError(code, cmd, output=stdout, stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
         with mock.patch.object(scheduler_temp, "run_bounded", side_effect=run), \
                 mock.patch.object(scheduler_temp, "timestamped_print_download", lambda *a: logs.append(" ".join(map(str, a)))), \
-                mock.patch.object(scheduler_temp, "ping_heartbeat", side_effect=lambda *a: pings.append(a)):
+                mock.patch.object(scheduler_temp, "ping_heartbeat",
+                                  side_effect=lambda *a, **k: pings.append(a + tuple(k.values()))):
             scheduler_temp.download_job()
         return "\n".join(logs), pings
 
@@ -173,10 +322,51 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn("[ERROR] download_data.py finished with status REJECTED_1_FILES", logs)
         self.assertEqual(pings, [("download", "fail")])
 
+    def test_attention_lines_go_to_sentry_as_warnings(self):
+        line = "ATTENTION: WELLAncasterWatershed_3.csv (ID: 3): 3 rows present"
+        # Also when another file of the same run was refused (the run then exits 1)
+        for code, status in ((0, "PROCESSED_1_FILES"), (1, "REJECTED_1_FILES")):
+            with self.subTest(code=code), mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+                self.run_job(f"{line}\nOUTPUT: {status}\n", code)
+                warn.assert_called_once_with(line)
+        with mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+            self.assertEqual(self.run_job("OUTPUT: PROCESSED_1_FILES\n", 0)[1], [("download", "success")])
+            warn.assert_not_called()
+
     def test_success_and_nothing_new(self):
         self.assertEqual(self.run_job("OUTPUT: PROCESSED_2_FILES\n", 0)[1], [("download", "success")])
         self.assertEqual(self.run_job("OUTPUT: NO_NEW_FILES\n", 0)[1], [("download", "success")])
 
+    def test_a_never_published_dataset_is_a_logged_success(self):
+        with mock.patch.object(scheduler_temp, "capture_job_error") as error, \
+                mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+            logs, pings = self.run_job("WARNING: doi:x has no published version yet\nOUTPUT: NOT_PUBLISHED\n", 0)
+        error.assert_not_called()
+        warn.assert_not_called()
+        self.assertIn("[WARN] The sampling dataset has no published version yet", logs)
+        self.assertEqual(pings, [("download", "success", scheduler_temp.NOT_PUBLISHED_NOTE)])
+
+    def test_files_waiting_in_an_unpublished_draft_go_to_the_digest_not_sentry(self):
+        pending = "PENDING: 2 sampling files wait in the unpublished draft of doi:x (a.csv, b.csv); ..."
+        with mock.patch.object(scheduler_temp, "capture_job_warning") as warn, \
+                mock.patch.object(scheduler_temp, "record_attention") as record:
+            _, pings = self.run_job(f"{pending}\nOUTPUT: NOT_PUBLISHED\n", 0)
+        warn.assert_not_called()
+        # record_attention keeps only the ATTENTION: lines of what it is given (report_attention passes all)
+        lines = [line for call in record.call_args_list for line in call.args[0] if line.startswith("ATTENTION:")]
+        self.assertEqual(lines, ["ATTENTION: " + pending[len("PENDING: "):]])
+        self.assertEqual(pings, [("download", "success", scheduler_temp.NOT_PUBLISHED_NOTE)])
+
+    def test_a_setting_to_fix_is_reported_as_its_message(self):
+        message = "BOREALIS_URL is https://borealisdata.ca but the dataset doi:10.80240/FK2/X is on the demo server"
+        with mock.patch.object(scheduler_temp, "capture_job_error") as error:
+            logs, pings = self.run_job(f"DEBUG: Starting process...\nERROR: {message}\n", SETTINGS_ERROR_EXIT)
+        reported = error.call_args.args[0]
+        self.assertIsInstance(reported, scheduler_temp.SettingsError)
+        self.assertEqual(str(reported), message)
+        self.assertIn(f"[ERROR] download_data.py stopped: {message}", logs)
+        self.assertEqual(pings, [("download", "fail")])
+
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

@@ -21,6 +21,16 @@ type SensorGroup = keyof typeof SENSOR_FILTER_CONFIG;
 type Creek = keyof typeof SAMPLING_FILTER_CONFIG;
 type FlagSetter<K extends string> = React.Dispatch<React.SetStateAction<Record<K, boolean>>>;
 
+// One filter group as drawn: a sensor group from SENSOR_FILTER_CONFIG, or a creek from SAMPLING_FILTER_CONFIG with
+// the sampling metrics and "All Sites" added. Items are listed by name (items) or by id with a display name (sites).
+interface FilterGroupConfig {
+  label: string;
+  metrics: string[];
+  itemsLabel?: string;
+  items?: string[];
+  sites?: Record<string, string>;
+}
+
 interface FilterPanelProps {
   activeTab: "sensor" | "sampling";
   activeGroups: { [key: string]: boolean };
@@ -36,6 +46,11 @@ interface FilterPanelProps {
   chevronState: { [key: string]: boolean };
   setChevronState: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>;
 }
+
+// A ticked metric or item: the group's maroon box, but with a McMaster Gold tick (about 7.8:1 against the maroon,
+// WCAG 1.4.11 asks 3:1) where a group has a white one. A gold box can't carry a gold tick, and a gold box with a white
+// tick was about 1.4:1, so ticked and unticked metrics looked the same.
+const TICKED_GOLD = "data-[state=checked]:text-accent";
 
 // --- COMPONENT ---
 const FilterPanel: React.FC<FilterPanelProps> = ({
@@ -87,7 +102,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
     // When opening a group, select all metrics and "All Items" (if it exists)
     if (isOpening) {
       const allMetrics = config.metrics || [];
-      const itemsLabel = (config as any).itemsLabel;
+      const itemsLabel = 'itemsLabel' in config ? config.itemsLabel : undefined;
       const allFilters = itemsLabel ? [...allMetrics, itemsLabel] : allMetrics;
       
       setSubs(prev => ({
@@ -114,7 +129,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
           ...SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG], 
           metrics: SAMPLING_METRICS, 
           itemsLabel: "All Sites",
-          items: Object.keys((SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG] as any).sites || {})
+          items: Object.keys(SAMPLING_FILTER_CONFIG[groupKey as keyof typeof SAMPLING_FILTER_CONFIG].sites || {})
         };
 
     setSubs(prev => {
@@ -177,7 +192,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
   };
 
   // Renders a filter group with metrics and item checkboxes
-  const renderFilterGroup = (groupKey: string, config: any, subs: string[]) => {
+  const renderFilterGroup = (groupKey: string, config: FilterGroupConfig, subs: string[]) => {
     // Use type-safe property access
     const items = 'items' in config && config.items 
       ? config.items 
@@ -189,7 +204,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
 
     // Create a unified list of [id, name] pairs for rendering.
     const itemsToRender = 'items' in config && config.items 
-      ? config.items.map((item: string) => [item, item]) 
+      ? config.items.map((item): [string, string] => [item, item]) 
       : 'sites' in config && config.sites
         ? Object.entries(config.sites)
         : [];
@@ -208,10 +223,14 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
             onCheckedChange={() => handleMainToggle(groupKey)}
             className="data-[state=checked]:bg-primary data-[state=checked]:border-primary"
           />
-          {/* At least 40 px tall on phones, for fingers */}
-          <CollapsibleTrigger className="flex items-center space-x-2 flex-1 text-left max-sm:min-h-10">
-            <Label htmlFor={groupKey} className="font-poppins font-semibold text-primary cursor-pointer">{config.label}</Label>
-            {currentChevron ? <ChevronDown className="h-4 w-4 cursor-pointer" /> : <ChevronRight className="h-4 w-4 cursor-pointer" />}
+          {/* The label ticks the group; the chevron beside it only opens or closes its list. (A label inside the
+              open/close button was interactive content nested in a button.) Both at least 40 px tall on phones. */}
+          <Label htmlFor={groupKey} className="flex items-center font-poppins font-semibold text-primary cursor-pointer max-sm:min-h-10">{config.label}</Label>
+          <CollapsibleTrigger
+            aria-label={`${currentChevron ? "Hide" : "Show"} ${config.label} options`}
+            className="flex items-center justify-center rounded text-primary min-h-6 min-w-6 max-sm:min-h-10 max-sm:min-w-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            {currentChevron ? <ChevronDown aria-hidden className="h-4 w-4" /> : <ChevronRight aria-hidden className="h-4 w-4" />}
           </CollapsibleTrigger>
         </div>
         <CollapsibleContent className="ml-6 mt-2 space-y-2 animate-accordion-down">
@@ -219,7 +238,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
           {config.metrics.map((label: string, idx: number) => (
             <FadeAnimation key={label} delay={idx * 30} duration={400} resetKey={open[groupKey]}>
               <div className="flex items-center space-x-2 max-sm:min-h-8">
-                <Checkbox id={`${groupKey}-${label}`} checked={subs.includes(label)} onCheckedChange={() => handleSubToggle(groupKey, label)} className="data-[state=checked]:bg-accent" />
+                <Checkbox id={`${groupKey}-${label}`} checked={subs.includes(label)} onCheckedChange={() => handleSubToggle(groupKey, label)} className={TICKED_GOLD} />
                 <Label htmlFor={`${groupKey}-${label}`} className="mcmaster-body cursor-pointer">{label}</Label>
               </div>
             </FadeAnimation>
@@ -231,7 +250,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
               {/* "All Items" Toggle */}
               <FadeAnimation delay={config.metrics.length * 30} duration={400} resetKey={open[groupKey]}>
                 <div className="flex items-center space-x-2 max-sm:min-h-8">
-                  <Checkbox id={`${groupKey}-${itemsLabel}`} checked={subs.includes(itemsLabel)} onCheckedChange={() => handleSubToggle(groupKey, itemsLabel)} className="data-[state=checked]:bg-accent" />
+                  <Checkbox id={`${groupKey}-${itemsLabel}`} checked={subs.includes(itemsLabel)} onCheckedChange={() => handleSubToggle(groupKey, itemsLabel)} className={TICKED_GOLD} />
                   <Label htmlFor={`${groupKey}-${itemsLabel}`} className="mcmaster-body cursor-pointer">{itemsLabel}</Label>
                 </div>
               </FadeAnimation>
@@ -242,7 +261,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
                   {itemsToRender.map(([id, name]: [string, string], idx: number) => (
                     <FadeAnimation key={id} delay={idx * 30} duration={400} resetKey={!subs.includes(itemsLabel)}>
                       <div className="flex items-center space-x-2 max-sm:min-h-8">
-                        <Checkbox id={`${groupKey}-${id}`} checked={subs.includes(id)} onCheckedChange={() => handleSubToggle(groupKey, id)} className="data-[state=checked]:bg-accent" />
+                        <Checkbox id={`${groupKey}-${id}`} checked={subs.includes(id)} onCheckedChange={() => handleSubToggle(groupKey, id)} className={TICKED_GOLD} />
                         <Label htmlFor={`${groupKey}-${id}`} className="mcmaster-body cursor-pointer text-sm">{name}</Label>
                       </div>
                     </FadeAnimation>

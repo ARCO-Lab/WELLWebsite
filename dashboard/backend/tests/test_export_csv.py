@@ -11,7 +11,6 @@ import pathlib
 import shutil
 import sys
 import tempfile
-import unittest
 import unittest.mock
 from typing import Dict, List
 
@@ -19,11 +18,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "app"))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
 from config import Config  # noqa: E402
+from api.services import catalog  # noqa: E402
 from api.services import exports as export_service  # noqa: E402
 from api.services.exports import (  # noqa: E402
     SENSOR_FILTER_CONFIG,
     _get_logger_label,
     _sensor_query,
+    csv_cell,
     normalize_export_payload,
     safe_csv_cell,
     write_export_csv,
@@ -33,9 +34,9 @@ from db.models import SensorMeasurement  # noqa: E402
 
 def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
     """The sensor export as it was before streaming (every reading loaded with .all()), kept as the reference the
-    streamed output must match. Copied unchanged apart from the def line, this docstring and an unused loop
-    variable renamed to _; with recorded_at as an instant (timestamptz), it keys rows by the instant and writes
-    site wall time, as the sensor export did before streaming."""
+    streamed output must match. Copied unchanged apart from the def line, this docstring, an unused loop variable
+    renamed to _ and the time column's header, which now names the zone. With recorded_at an instant (timestamptz),
+    it keys rows by the instant and writes site wall time, as the sensor export did before streaming."""
     from utils.timezone import site_wall_time
     requested_groups = set(filters.get("group_types", []))
 
@@ -107,7 +108,7 @@ def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
         effective_logger_stations.extend(extras)
 
     # Build header row - ALWAYS include requested groups in the output order: Weather, Quality, Logger
-    headers = ["ID", "Timestamp"]
+    headers = ["ID", export_service.TIMESTAMP_HEADER]
 
     # Weather section: Include if requested (even if no data)
     if include_weather:
@@ -251,6 +252,7 @@ class StreamedCsvMatchesTheOldOne:
         cls.db.session.query(SensorMeasurement).delete()
         cls.db.session.add_all(SensorMeasurement(**r) for r in fixture_readings())
         cls.db.session.commit()
+        catalog.forget()  # another test class may have loaded other readings into this database within REFRESH_S
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="export-csv-test-")
@@ -359,6 +361,13 @@ class FormulaInjectionTests(unittest.TestCase):
     def test_numbers_and_ordinary_text_are_unchanged(self):
         for value in (-3.2, -1, 0, 5.5, None, "", "Logger 1", "2026-11-01T01:30:00", "pH", "Water Level: m"):
             self.assertEqual(safe_csv_cell(value), value)
+
+    def test_a_missing_value_is_an_empty_field(self):
+        # NaN, infinities and the vendors' "no reading" sentinel are stored in some older rows; none is a reading
+        for value in (None, float("nan"), float("inf"), float("-inf"), -100000.0, -99999.0):
+            self.assertEqual(csv_cell(value), "")
+        for value in (0.0, -2.5, -99998.5, "=1+1"):
+            self.assertEqual(csv_cell(value), safe_csv_cell(value))
 
 
 class SamplingExportTests(unittest.TestCase):

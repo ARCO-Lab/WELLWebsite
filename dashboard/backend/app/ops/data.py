@@ -32,6 +32,7 @@ def pick_range(name):
 
 @contextmanager
 def reading(engine):
+    """A connection in a READ ONLY transaction (on PostgreSQL), always rolled back at the end."""
     with engine.connect() as conn:
         if conn.dialect.name == "postgresql":
             conn.execute(text("SET TRANSACTION READ ONLY"))
@@ -58,6 +59,7 @@ def bucket_sql(column):
 
 
 def aware(ts):
+    # The welldash² tables (uptime_probes, request_metrics) use timestamptz, so a naive value is UTC.
     if ts is None:
         return None
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
@@ -73,6 +75,7 @@ def latest_probes(conn):
 
 
 def freshness(conn, now):
+    # The same per-series latest readings as /api/latest and the /health/data check, judged the same way.
     rows = [{"station_id": r.station_id, "group_type": r.group_type, "measurement_type": r.measurement_type,
              "recorded_at": r.recorded_at.isoformat()} for r in conn.execute(LATEST_PER_SERIES_SQL)]
     return assess_freshness(rows, now)
@@ -121,6 +124,7 @@ def deploys(logs_dir, limit=10):
 # --- Uptime ---------------------------------------------------------------------------------------------------
 
 def availability(conn, now):
+    """Per target: the share of successful checks (percent) in the last day, week and 30 days."""
     rows = conn.execute(text("""
         SELECT target,
                count(*) FILTER (WHERE checked_at >= :d1) AS n1, count(*) FILTER (WHERE ok AND checked_at >= :d1) AS ok1,
@@ -139,6 +143,7 @@ def availability(conn, now):
 
 
 def latency_series(conn, now, range_name):
+    """Per target: (bucket start, average latency of the OK checks in ms, checks, OK checks) for the range."""
     period, step, _ = RANGES[range_name]
     rows = conn.execute(text(f"""
         SELECT target, {bucket_sql('checked_at')} AS t, avg(latency_ms) FILTER (WHERE ok) AS avg_ms,
@@ -187,6 +192,8 @@ def traffic_summary(conn, now, range_name):
 
 
 def traffic_series(conn, now, range_name):
+    """The traffic charts' points for the range, one per bucket: requests, server errors, CSV downloads, bytes
+    sent, p95 response time (from the latency histograms) and the busiest single minute."""
     period, _, step = RANGES[range_name]
     params = {"since": now - period, "step": int(step.total_seconds()), "downloads": list(DOWNLOAD_ENDPOINTS)}
     rows = conn.execute(text(f"""

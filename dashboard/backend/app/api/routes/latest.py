@@ -1,10 +1,13 @@
 # This file defines the /api/latest route: the newest reading of every series, where a series is one
 # (station_id, measurement_type) pair. The dashboard's Latest Data panel calls it on every page view and every
 # 10 minutes per open tab, so it has to stay cheap as sensor_measurements grows.
+# A newest reading that is a "no reading" sentinel or isn't finite (stored before ingestion skipped such values) is
+# sent as null, so one bad row can't put a bare NaN in the JSON and break the panel for everyone.
 
 from flask import jsonify
 from db.database import db
 from db.models import Instant
+from utils.parsers import reading_value
 from utils.timezone import site_wall_time
 
 # Walks the (station_id, measurement_type, recorded_at) unique index instead of reading the whole table:
@@ -51,9 +54,11 @@ def latest_rows():
 
 
 def query_latest_per_series():
-    """Newest row of each (station_id, measurement_type), as dicts in the /api/latest response shape, with
-    recorded_at as site wall-clock time without an offset, as it has always been."""
-    return [{**r, "recorded_at": site_wall_time(r["recorded_at"]).isoformat()} for r in latest_rows()]
+    """Newest row of each (station_id, measurement_type), as dicts in the /api/latest response shape: a sentinel or
+    non-finite value is nulled (reading_value), and recorded_at is site wall-clock time without an offset, as it has
+    always been."""
+    return [{**r, "value": reading_value(r["value"]),
+             "recorded_at": site_wall_time(r["recorded_at"]).isoformat()} for r in latest_rows()]
 
 
 def register_latest_route(app):

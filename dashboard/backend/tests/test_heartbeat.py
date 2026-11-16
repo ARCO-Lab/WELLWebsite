@@ -1,12 +1,13 @@
 """Heartbeat pings (utils/heartbeat.py) and where the scheduler sends them.
 Run from dashboard/backend: python -m unittest discover -s tests"""
 import datetime as dt
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import types
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import requests
 
@@ -15,7 +16,10 @@ sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "scripts"))
 sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
 
-from utils.heartbeat import HEARTBEAT_TIMEOUT_S, ping_heartbeat  # noqa: E402
+from utils.heartbeat import (  # noqa: E402
+    HEARTBEAT_TIMEOUT_S, MESSAGE_LIMIT, UNSET_REPORT_EVERY_S, WORKER_HEARTBEATS, first_report_today, heartbeat_setting,
+    ping_heartbeat, unset_heartbeats,
+)
 import scheduler_temp  # noqa: E402
 
 URL = "https://hc-ping.example/0000-test"
@@ -32,7 +36,7 @@ class FakeGet:
         return types.SimpleNamespace(status_code=self.status)
 
 
-class PingHeartbeatTests(unittest.TestCase):
+class PingHeartbeatTests(TestCase):
     def test_unset_is_a_no_op(self):
         get = FakeGet()
         self.assertFalse(ping_heartbeat("ingestion", env={}, get=get))
@@ -65,8 +69,107 @@ class PingHeartbeatTests(unittest.TestCase):
             self.assertFalse(ping_heartbeat("ingestion", env={"HEALTHCHECK_URL_INGESTION": URL}, timeout=2))
         get.assert_called_once_with(URL, timeout=2)
 
+    def test_a_message_is_posted_as_the_body(self):
+        calls = []
 
-class SchedulerHeartbeatTests(unittest.TestCase):
+        def post(url, data, timeout):
+            calls.append((url, data, timeout))
+            return types.SimpleNamespace(status_code=200)
+
+        env = {"HEALTHCHECK_URL_BACKUP": URL}
+        self.assertTrue(ping_heartbeat("backup", "log", env=env, message="still running", post=post))
+        self.assertTrue(ping_heartbeat("backup", "fail", env=env, message="x" * 20_000, post=post))
+        self.assertEqual(calls[0], (URL + "/log", b"still running", HEARTBEAT_TIMEOUT_S))
+        self.assertEqual(calls[1][0], URL + "/fail")
+        self.assertEqual(len(calls[1][1]), MESSAGE_LIMIT)
+
+    def test_unset_heartbeats_are_named(self):
+        everything = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS}
+        self.assertEqual(unset_heartbeats(everything), [])
+        self.assertEqual(unset_heartbeats(everything, sharepoint_on=True), ["HEALTHCHECK_URL_SHAREPOINT"])
+        partial = {**everything, "HEALTHCHECK_URL_RESTORE": " ", "HEALTHCHECK_URL_INGESTION": ""}
+        self.assertEqual(unset_heartbeats(partial), ["HEALTHCHECK_URL_INGESTION", "HEALTHCHECK_URL_RESTORE"])
+        self.assertEqual(len(unset_heartbeats({})), len(WORKER_HEARTBEATS))
+        # With the Borealis upload off, its heartbeat isn't asked for
+        self.assertNotIn("HEALTHCHECK_URL_UPLOAD", unset_heartbeats({}, upload_on=False))
+        self.assertIn("HEALTHCHECK_URL_UPLOAD", unset_heartbeats({}))
+        # With the restore drill off, its heartbeat isn't asked for
+        self.assertNotIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": " OFF "}))
+        self.assertIn("HEALTHCHECK_URL_RESTORE", unset_heartbeats({"RESTORE_CHECK_DAY": "2"}))
+
+
+class WorkerHeartbeatReportTests(TestCase):
+    """A dead worker is only noticed through its heartbeats, so the unset ones are named, and stuck jobs fail them."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.state = os.path.join(directory.name, "unset_heartbeats_reported.json")
+
+    def report(self, logs, warnings, env):
+        return scheduler_temp.report_unset_heartbeats(logs.append, warnings.append, env=env, state_path=self.state)
+
+    def test_startup_names_every_unset_heartbeat(self):
+        logs, warnings = [], []
+        env = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS if name != "backup"}
+        missing = self.report(logs, warnings, env)
+        self.assertEqual(missing, ["HEALTHCHECK_URL_BACKUP"])
+        self.assertEqual(len(logs), 1)
+        self.assertTrue(logs[0].startswith("[WARN] Heartbeats not set: HEALTHCHECK_URL_BACKUP."), logs)
+        self.assertEqual(len(warnings), 1)
+        # SharePoint counts only once it is configured
+        env["SHAREPOINT_TENANT_ID"] = "t"
+        self.assertIn("HEALTHCHECK_URL_SHAREPOINT", self.report(logs, warnings, env))
+        self.assertEqual(len(warnings), 2)   # a different set of names is warned about at once
+        logs.clear()
+        warnings.clear()
+        env = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS}
+        self.assertEqual(self.report(logs, warnings, env), [])
+        self.assertEqual((logs, warnings), ([], []))
+
+    def test_restarts_warn_sentry_once_a_day_and_log_every_time(self):
+        # A deploy restarts the worker several times in a few minutes; each start logs, one sends the warning
+        logs, warnings = [], []
+        env = {heartbeat_setting(name): URL for name in WORKER_HEARTBEATS if name != "restore"}
+        for _ in range(6):
+            self.report(logs, warnings, env)
+        self.assertEqual((len(logs), len(warnings)), (6, 1))
+        self.assertIn("HEALTHCHECK_URL_RESTORE", warnings[0])
+
+    def test_the_daily_limit(self):
+        names = ["HEALTHCHECK_URL_RESTORE"]
+        start = 1_800_000_000
+        self.assertTrue(first_report_today(names, self.state, now=start))
+        self.assertFalse(first_report_today(names, self.state, now=start + UNSET_REPORT_EVERY_S - 1))
+        self.assertTrue(first_report_today(["HEALTHCHECK_URL_UPLOAD"] + names, self.state, now=start + 60))
+        self.assertTrue(first_report_today(names, self.state, now=start + 120))   # the set changed back
+        self.assertTrue(first_report_today(names, self.state, now=start + 120 + UNSET_REPORT_EVERY_S))
+        # A clock that went back, or a damaged record, doesn't silence it
+        self.assertTrue(first_report_today(names, self.state, now=start))
+        with open(self.state, "w") as f:
+            f.write("{not json")
+        self.assertTrue(first_report_today(names, self.state, now=start + 1))
+        # logs/ not writable: warn each time rather than never
+        missing_dir = os.path.join(os.path.dirname(self.state), "missing", "state.json")
+        self.assertTrue(first_report_today(names, missing_dir, now=start))
+        self.assertTrue(first_report_today(names, missing_dir, now=start + 1))
+
+    def test_skips_are_logged_then_fail_the_check_once_stuck(self):
+        pings = []
+        with mock.patch.object(scheduler_temp, "ping_heartbeat",
+                               lambda name, status, message=None: pings.append((name, status, message))), \
+                mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
+            on_skip = scheduler_temp.skip_reporter("ingestion", fail_after=3)
+            for n in range(1, 5):
+                on_skip(n, "api_injection_job is still running (started 25 min ago); skipping this run")
+        self.assertEqual([status for _, status, _ in pings], ["log", "log", "fail", "fail"])
+        self.assertTrue(all(name == "ingestion" for name, _, _ in pings))
+        self.assertIn("(1 in a row)", pings[0][2])
+        self.assertIn("3 runs in a row skipped", pings[2][2])
+        warn.assert_called_once()   # once per stuck run, not on every skip
+
+
+class SchedulerHeartbeatTests(TestCase):
     def setUp(self):
         self.pings = []
         for patch in (
@@ -74,6 +177,7 @@ class SchedulerHeartbeatTests(unittest.TestCase):
             mock.patch.object(scheduler_temp, "print", lambda *a, **k: None, create=True),
             mock.patch.object(scheduler_temp, "timestamped_print_upload", lambda *a: None),
             mock.patch.object(scheduler_temp, "timestamped_print_digest", lambda *a: None),
+            mock.patch.object(scheduler_temp, "borealis_upload_status", lambda env=None: ("on", [])),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -147,4 +251,4 @@ class SchedulerHeartbeatTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

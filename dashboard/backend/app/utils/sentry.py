@@ -29,6 +29,8 @@ _QUERY = re.compile(r"((?:https?://|/)[^\s?#'\"<>]*)\?[^\s#'\"<>]*")
 REPEAT_AFTER_S = 60 * 60
 _last_sent = {}
 _last_sent_lock = threading.Lock()
+# Past this many remembered failures, the ones not seen within REPEAT_AFTER_S are forgotten (bounds the memory).
+MAX_REMEMBERED = 1000
 
 # How much of a failed subprocess's stderr (often a traceback) and of its stdout ERROR: lines goes with the event.
 STDERR_TAIL_CHARS = 2000
@@ -73,12 +75,8 @@ def capture_job_error(exc, source=None):
     `ERROR:` lines go with it. No-op when reporting is off."""
     if getattr(exc, "already_reported", False) or not sentry_sdk.is_initialized():
         return
-    key = (threading.current_thread().name, source, type(exc).__name__, failure_signature(exc))
-    now = time.monotonic()
-    with _last_sent_lock:
-        if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
-            return
-        _last_sent[key] = now
+    if not _first_in_a_while((threading.current_thread().name, source, type(exc).__name__, failure_signature(exc))):
+        return
     with sentry_sdk.new_scope() as scope:
         if source:
             scope.set_tag("source", source)
@@ -97,12 +95,8 @@ def capture_job_warning(message):
     level, at most once per REPEAT_AFTER_S for the same message. No-op when reporting is off."""
     if not sentry_sdk.is_initialized():
         return
-    key = (threading.current_thread().name, "warning", _collapse_numbers(str(message)))
-    now = time.monotonic()
-    with _last_sent_lock:
-        if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
-            return
-        _last_sent[key] = now
+    if not _first_in_a_while((threading.current_thread().name, "warning", _collapse_numbers(str(message)))):
+        return
     sentry_sdk.capture_message(scrub_urls(str(message)), level="warning")
 
 
@@ -189,8 +183,89 @@ def scrub_urls(value):
     return value
 
 
+def _first_in_a_while(key):
+    """Whether `key` wasn't sent in the last REPEAT_AFTER_S; if so, it is remembered as sent now.
+
+    _last_sent holds at most MAX_REMEMBERED keys, in the order they were last sent. Once full, the keys older than
+    REPEAT_AFTER_S are forgotten, and if it is still full (a burst of different failures within the hour), the
+    longest-sent ones too: such a failure can then be sent again within the hour, which is better than unbounded
+    memory."""
+    now = time.monotonic()
+    with _last_sent_lock:
+        if key in _last_sent and now - _last_sent[key] < REPEAT_AFTER_S:
+            return False
+        _last_sent.pop(key, None)   # re-added below, at the end: the newest
+        if len(_last_sent) >= MAX_REMEMBERED:
+            for old in [k for k, at in _last_sent.items() if now - at >= REPEAT_AFTER_S]:
+                del _last_sent[old]
+            while len(_last_sent) >= MAX_REMEMBERED:
+                del _last_sent[next(iter(_last_sent))]
+        _last_sent[key] = now
+    return True
+
+
+def _unhandled_request_error(event):
+    """Whether the event is an error a request raised and nothing caught (reported by Sentry's Flask integration)."""
+    values = (event.get("exception") or {}).get("values") or []
+    return any((value.get("mechanism") or {}).get("type") == "flask" for value in values)
+
+
+# gunicorn's worker signal handlers, which end a worker with sys.exit: handle_abort when the arbiter stops a worker
+# that missed its --timeout heartbeat, handle_quit on SIGQUIT or SIGINT.
+GUNICORN_EXIT_HANDLERS = ("handle_abort", "handle_quit")
+# What a worker stopped by handle_abort is reported as (a warning, at most once per REPEAT_AFTER_S per process)
+WORKER_TIMEOUT_MESSAGE = "gunicorn worker timed out (aborted)"
+
+
+def gunicorn_worker_exit(event, exc=None):
+    """Which of GUNICORN_EXIT_HANDLERS raised the event's SystemExit, or None if it isn't a gunicorn worker's exit.
+
+    It surfaces in whatever the worker was doing. A sync worker caught it while reading a request and logged it as
+    "Error handling request", which the logging integration sent as an error (WELL-BACKEND-2). A stop on request
+    (handle_quit) is a restart, not a problem. An abort is a real worker timeout: under gthread the worker's main loop
+    stopped answering for --timeout seconds, which is worth knowing about, but as a warning, not an error per
+    worker."""
+    if exc is not None and not isinstance(exc, SystemExit):
+        return None
+    for value in (event.get("exception") or {}).get("values") or []:
+        frames = (value.get("stacktrace") or {}).get("frames") or []
+        if value.get("type") == "SystemExit" and frames:
+            innermost = frames[-1]
+            handler = innermost.get("function")
+            if str(innermost.get("module") or "").startswith("gunicorn.workers.") and handler in GUNICORN_EXIT_HANDLERS:
+                return handler
+    return None
+
+
+def _worker_timeout_warning(event):
+    """The aborted worker's event as a WORKER_TIMEOUT_MESSAGE warning, with its stack trace (where the worker was
+    stuck); None when one was already sent in the last REPEAT_AFTER_S."""
+    if not _first_in_a_while(("gunicorn", "handle_abort")):
+        return None
+    event["level"] = "warning"
+    for value in event["exception"]["values"]:
+        if value.get("type") == "SystemExit":
+            value["value"] = WORKER_TIMEOUT_MESSAGE
+    return event
+
+
 def before_send(event, hint=None):
-    """Strip what could identify a visitor or leak a credential before an event leaves the process."""
+    """Strip what could identify a visitor or leak a credential before an event leaves the process, drop a gunicorn
+    worker's stop and turn its abort into a throttled warning (gunicorn_worker_exit), and drop an unhandled request
+    error already sent in the last REPEAT_AFTER_S for the same path, type and message: a client repeating a request
+    that fails would otherwise send an event per request and use up the monthly quota."""
+    exc = ((hint or {}).get("exc_info") or (None, None))[1]
+    handler = gunicorn_worker_exit(event, exc)
+    if handler == "handle_quit":
+        return None
+    if handler == "handle_abort":
+        event = _worker_timeout_warning(event)
+        if event is None:
+            return None
+    if exc is not None and _unhandled_request_error(event):
+        path = str((event.get("request") or {}).get("url", "")).split("?")[0]
+        if not _first_in_a_while(("request", path, type(exc).__name__, failure_signature(exc))):
+            return None
     request = event.get("request")
     if request:
         # Keep only the method and the path, which say which endpoint failed.

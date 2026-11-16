@@ -5,6 +5,7 @@ import React, { useMemo } from "react";
 import { Waves, Thermometer } from "lucide-react";
 import { SENSOR_FILTER_CONFIG } from "@/components/config/filters";
 import MetricGroup, { type MetricSection } from "./MetricList";
+import type { Metric } from "@/hooks/useLatestMetrics";
 
 // key = the filter's name for the metric, which is also measurement_type in the API
 const metricDisplayMap: Record<string, { label: string; icon: React.ElementType; color: string }> = {
@@ -20,7 +21,7 @@ const LoggerMetrics = ({
 }: {
   activeKeys: string[];
   activeGroups?: { weather: boolean; quality: boolean; gauges: boolean };
-  metrics?: any[];
+  metrics?: Metric[];
   loading?: boolean;
   inModal?: boolean; // set by the modal: show every tile at once instead of the scrolling strip
 }) => {

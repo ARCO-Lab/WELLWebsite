@@ -17,7 +17,6 @@ import pathlib
 import shutil
 import sys
 import tempfile
-import unittest
 import unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
@@ -25,6 +24,7 @@ sys.path.insert(0, str(APP))
 os.environ["DATABASE_URL"] = "sqlite://"  # never a real database
 
 from config import Config  # noqa: E402
+from api.services import catalog  # noqa: E402
 from api.services.exports import write_export_csv  # noqa: E402
 from utils.sampling_csv import validate_csv  # noqa: E402
 
@@ -50,18 +50,10 @@ def check_golden(test, name, actual: bytes):
                   f"UPDATE_GOLDEN=1 (tests/golden/README.md).\n{diff}")
 
 
-def ties_sorted(test, text: str, time_column: int) -> bytes:
-    """A sampling CSV with the rows of each timestamp sorted. The export orders rows by time only, so readings
-    taken at the same time (one site's parameters, or sites visited together) come in no defined order, and the
-    order differs between databases. Checks the timestamps never go backwards on the way."""
-    lines = text.split("\r\n")
-    test.assertEqual(lines[-1], "", "the file ends with a line break")
-    header, body = lines[0], lines[1:-1]
-    times = [row[time_column] for row in csv.reader(body)]
-    test.assertEqual(len(times), len(body), "one line per row")
-    test.assertEqual(times, sorted(times), "rows are in time order")
-    ordered = sorted(zip(times, body))
-    return "\r\n".join([header] + [line for _, line in ordered] + [""]).encode("utf-8")
+def sampling_key(row):
+    """The documented order of sampling rows (db/ordering.py): time, site number (shorter ids first, so "2" before
+    "10"), then parameter, text compared byte for byte."""
+    return (row["recorded_at"], len(row["site_id"]), row["site_id"].encode(), row["measurement_type"].encode())
 
 
 def json_bytes(value) -> bytes:
@@ -83,8 +75,8 @@ def json_bytes(value) -> bytes:
 #                     read as wall time (2026-11-02T04:59:59.999Z is Nov 1 23:59:59.999 Toronto)
 #   2026-11-30 23:45  last reading of November
 #   2026-12-01 00:00  in neither file
-# No value is a vendor "no reading" sentinel (e.g. -100000): the export passes values through unfiltered, and these
-# files pin the format, not sentinel handling.
+# No value is a vendor "no reading" sentinel (e.g. -100000): the files write one as an empty cell (csv_cell in
+# api/services/exports.py, tested in test_export_csv.py and test_api_dos.py), and these files pin the format.
 WEATHER, QUALITY = "22051538", "4501"
 WSE, WT = "Water Surface Elevation", "Water Temperature"
 
@@ -223,6 +215,7 @@ class DatabaseCase(unittest.TestCase):
         from db.models import SensorMeasurement
         cls.db.session.add_all(SensorMeasurement(**r) for r in readings)
         cls.db.session.commit()
+        catalog.forget()  # another test class may have loaded other readings into this database within REFRESH_S
 
     def export(self, payload) -> bytes:
         path = os.path.join(self.tmp, "export.csv")
@@ -242,7 +235,7 @@ class SensorExport:
         check_golden(self, "sensor_export_all_groups.csv", data)
         rows = list(csv.reader(io.StringIO(data.decode("utf-8"), newline="")))
         header = rows[0]
-        self.assertEqual(header[:3], ["ID", "Timestamp", "Group"])
+        self.assertEqual(header[:3], ["ID", "Timestamp (America/Toronto)", "Group"])
         self.assertEqual([h for h in header if h == "Group"], ["Group"] * 3)
         self.assertEqual(header.count("Sensor"), 6)  # the five configured loggers, then one seen in the data
         self.assertIn("Turbidity: NTU", header)  # the latest reading's unit names the column
@@ -258,7 +251,7 @@ class SensorExport:
         data = self.export(SENSOR_CHOSEN)
         check_golden(self, "sensor_export_two_loggers.csv", data)
         header = next(csv.reader(io.StringIO(data.decode("utf-8"), newline="")))
-        self.assertEqual(header, ["ID", "Timestamp", "Group", "Sensor", f"{WT}: °C", f"{WSE}: m",
+        self.assertEqual(header, ["ID", "Timestamp (America/Toronto)", "Group", "Sensor", f"{WT}: °C", f"{WSE}: m",
                                   "Sensor", f"{WT}: °C", f"{WSE}: m"])
 
     def test_file_names(self):
@@ -321,7 +314,7 @@ class MonthlyFile:
 
     @classmethod
     def load(cls):
-        cls.add_sensor(sensor_readings())
+        cls.add_sensor(sensor_readings_with_formula())
 
     def month(self, year, month):
         from scripts import upload_data
@@ -350,10 +343,47 @@ class MonthlyFile:
         self.assertIn("Turbidity: FNU", october.splitlines()[0])  # each file names a metric by its own last unit
         self.assertIn("Turbidity: NTU", november.splitlines()[0])
 
+    def test_cells_follow_the_download_rules(self):
+        november = self.month(2026, 11)[1].decode("utf-8")
+        rows = list(csv.reader(io.StringIO(november, newline="")))
+        self.assertEqual(rows[0][:2], ["ID", "Timestamp (America/Toronto)"])
+        # The stored NULL (Logger 1's Water Temperature at Nov 1 00:00) is an empty field, never "nan"
+        self.assertNotIn("nan", [cell.lower() for row in rows for cell in row])
+        self.assertEqual(rows[1][1], "2026-11-01T00:00:00")
+        logger_1 = rows[0].index("Sensor")
+        self.assertEqual(rows[1][logger_1], "Logger 1")
+        self.assertEqual(rows[1][rows[0].index(f"{WT}: °C", logger_1)], "")
+        # A formula-like measurement name gets the apostrophe, as in the dashboard download
+        self.assertIn("'" + FORMULA_METRIC, rows[0])
+        self.assertNotIn(FORMULA_METRIC, rows[0])
+
     def test_a_month_without_readings_exits_2(self):
         with self.assertRaises(SystemExit) as raised:
             self.month(2026, 9)
         self.assertEqual(raised.exception.code, 2)
+
+    def period(self, cadence, key):
+        # The day and week files scripts/sharepoint_upload.py sends, built by the same code as the monthly file
+        from scripts import upload_data
+        from utils import periods
+        period = periods.parse(cadence, key)
+        with contextlib.redirect_stdout(io.StringIO()):
+            name, content = upload_data.exported_range(period.start, period.end, periods.file_name(period))
+        return name, content
+
+    def test_day_and_week_files_are_cut_from_the_same_layout(self):
+        def stamps(text):
+            return [row[1] for row in csv.reader(io.StringIO(text, newline=""))][1:]
+        name, day = self.period("daily", "2026-11-01")   # the DST change: 01:00-02:00 happens twice
+        self.assertEqual(name, "WELLWestCampus_2026-11-01.csv")
+        self.assertEqual(stamps(day), ["2026-11-01T00:00:00", "2026-11-01T01:30:00", "2026-11-01T02:00:00"])
+        name, week = self.period("weekly", "2026-W44")   # Monday 26 October to Monday 2 November
+        self.assertEqual(name, "WELLWestCampus_2026-W44.csv")
+        self.assertEqual(stamps(week), ["2026-10-31T01:00:00", "2026-10-31T23:45:00", "2026-11-01T00:00:00",
+                                        "2026-11-01T01:30:00", "2026-11-01T02:00:00"])
+        self.assertEqual(day.splitlines()[0].split(",")[:2], ["ID", "Timestamp (America/Toronto)"])
+        # A month built this way is byte for byte the monthly file
+        self.assertEqual(self.period("monthly", "2026-11")[1].encode("utf-8"), self.month(2026, 11)[1])
 
 
 class Sampling:
@@ -369,6 +399,24 @@ class Sampling:
         from db.models import SamplingMeasurement
         cls.db.session.add_all(SamplingMeasurement(**r) for r in rows)
         cls.db.session.commit()
+
+    def test_the_sharepoint_month_files_are_standard_sampling_files(self):
+        # scripts/sharepoint_upload.py --sampling: one file per month with readings, in the upload format
+        from scripts import sharepoint_upload
+        self.assertEqual([m.key for m in sharepoint_upload.sampling_months("all")], ["2026-10", "2026-11"])
+        october = sharepoint_upload.sampling_months("2026-10")[0]
+        self.assertEqual(sharepoint_upload.sampling_file_name(october), "WELLAncasterWatershed_Oct2026.csv")
+        content = sharepoint_upload.export_sampling_csv(october.start, october.end).encode("utf-8")
+        check_golden(self, "sharepoint/WELLAncasterWatershed_Oct2026.csv", content)
+        # It reads back as the very readings stored, so the file can be checked and imported again as it is
+        result = validate_csv(content)
+        self.assertTrue(result.ok, [str(e) for e in result.errors])
+        stored = [r for r in sampling_rows() if r["recorded_at"] < dt.datetime(2026, 11, 1)]
+        self.assertEqual(sorted(result.records, key=str), sorted(stored, key=str))
+        # A formula-like value stored some other way gets the download's apostrophe
+        november = sharepoint_upload.sampling_months("2026-11")[0]
+        self.assertIn("'=HYPERLINK", sharepoint_upload.export_sampling_csv(november.start, november.end))
+        self.assertIsNone(sharepoint_upload.export_sampling_csv(dt.datetime(2026, 9, 1), dt.datetime(2026, 10, 1)))
 
     def test_the_upload_is_read_as_documented(self):
         result = validate_csv(GOLDEN / "sampling_upload.csv")
@@ -395,14 +443,18 @@ class Sampling:
     def test_export(self):
         data = self.export(SAMPLING_ALL)
         text = data.decode("utf-8")
-        check_golden(self, "sampling_export.csv", ties_sorted(self, text, time_column=1))
+        check_golden(self, "sampling_export.csv", data)
         rows = list(csv.reader(io.StringIO(text, newline="")))
-        self.assertEqual(rows[0], ["domain", "recorded_at", "group_type", "station_id", "creek_id", "site_id",
+        self.assertEqual(rows[0], ["domain", "recorded_at (America/Toronto)", "group_type", "station_id", "creek_id", "site_id",
                                    "measurement_type", "value", "unit"])
         self.assertEqual(len(rows), 1 + 11)
         # The 2026-11-03 04:30 reading is after the last picked day (Nov 2 in Toronto) though before the end
         # bound read as wall time
         self.assertEqual(max(r[1] for r in rows[1:]), "2026-11-02T15:00:00")
+        # Rows sharing a time: by site, then parameter (site 1's three parameters at 09:40 on Oct 31)
+        self.assertEqual([(r[1], r[5], r[6]) for r in rows[1:4]],
+                         [("2026-10-31T09:40:00", "1", "Ammonia nitrogen"), ("2026-10-31T09:40:00", "1", "E. coli"),
+                          ("2026-10-31T09:40:00", "1", "pH")])
 
     def test_export_routes(self):
         from api.services.exports import default_export_filename, normalize_export_payload
@@ -412,7 +464,7 @@ class Sampling:
         response = client.post("/api/exports/sync", json=SAMPLING_ALL)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["Content-Disposition"], f"attachment; filename={SAMPLING_ALL_NAME}")
-        check_golden(self, "sampling_export.csv", ties_sorted(self, response.data.decode("utf-8"), time_column=1))
+        check_golden(self, "sampling_export.csv", response.data)
         response.close()
 
     def test_samples_route(self):
@@ -422,16 +474,21 @@ class Sampling:
         self.assertEqual(len(every), 11)
         chosen = client.get("/api/samples?start=2026-10-31T00:00:00&end=2026-11-02T23:59:59"
                             "&ancaster=true&coldwater=true").get_json()
-        times = [r["recorded_at"] for r in chosen]
-        self.assertEqual(times, sorted(times))
-        check_golden(self, "samples_ancaster_coldwater.json",
-                     json_bytes(sorted(chosen, key=lambda r: (r["recorded_at"], r["site_id"], r["measurement_type"]))))
+        self.assertEqual(chosen, sorted(chosen, key=sampling_key))
+        check_golden(self, "samples_ancaster_coldwater.json", json_bytes(chosen))
+        self.assertEqual(every, sorted(every, key=sampling_key))
+        # Bounds with an offset are instants: the same three days, sent as the dashboard sends them (in UTC) or
+        # with Toronto's offsets, give the same rows. The 2026-11-03 04:30 reading is after 23:59:59 EST on Nov 2.
+        for start, end in (("2026-10-31T04:00:00.000Z", "2026-11-03T04:59:59.999Z"),
+                           ("2026-10-31T00:00:00-04:00", "2026-11-02T23:59:59-05:00")):
+            with self.subTest(start=start, end=end):
+                self.assertEqual(client.get(f"/api/samples?start={start}&end={end}").get_json(), every)
         self.assertEqual(client.get("/api/samples?start=2026-10-31").status_code, 400)
 
     def test_recent_route(self):
         recent = self.app.test_client().get("/api/recent").get_json()
-        check_golden(self, "recent.json", json_bytes(sorted(recent, key=lambda r: (r["measurement_type"],
-                                                                                    r["site_id"]))))
+        self.assertEqual(recent, sorted(recent, key=sampling_key))
+        check_golden(self, "recent.json", json_bytes(recent))
 
 
 class SqliteSensorExportTests(SensorExport, DatabaseCase):

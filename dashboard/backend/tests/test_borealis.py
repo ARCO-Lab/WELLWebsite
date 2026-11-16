@@ -7,8 +7,7 @@ import json
 import os
 import pathlib
 import sys
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 from urllib.parse import urlsplit
 
 os.environ["DATABASE_URL"] = "sqlite://"  # config is read once on first import; never a real database
@@ -16,6 +15,7 @@ APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
 from utils import borealis  # noqa: E402
 from scripts import borealis_check, download_data, upload_data  # noqa: E402
+from utils.jobs import SETTINGS_ERROR_EXIT  # noqa: E402
 
 TOKEN = "SECRET-TOKEN-123"
 PID = "doi:10.5683/SP3/WELLUP"
@@ -149,7 +149,7 @@ CSV = b"ID,Timestamp\n1,2026-10-01T00:00:00\n"
 NAME = "WELLWestCampus_Oct2026.csv"
 
 
-class UploadFileTests(unittest.TestCase):
+class UploadFileTests(TestCase):
     def upload(self, server, content=CSV, publish=True):
         return borealis.upload_file(client(server), PID, NAME, content, "October", directory="2026", publish=publish,
                                     log=lambda *a: None)
@@ -291,7 +291,24 @@ class UploadFileTests(unittest.TestCase):
             self.upload(server)
 
 
-class PublishedFilesTests(unittest.TestCase):
+class DatasetAs(FakeDataverse):
+    """A dataset whose latest version is in `state` (e.g. DEACCESSIONED), with `publication_date` (None: never
+    published), and no published version (:latest-published is 404)."""
+
+    def __init__(self, state, publication_date, files=()):
+        super().__init__(published=None, draft=list(files) if state == "DRAFT" else None)
+        self.state, self.publication_date, self.files = state, publication_date, list(files)
+
+    def route(self, method, path, params, files, data, token):
+        if path == "datasets/:persistentId":
+            body = {"latestVersion": self.version_json(self.state, self.files)}
+            if self.publication_date:
+                body["publicationDate"] = self.publication_date
+            return Response(200, {"status": "OK", "data": body})
+        return super().route(method, path, params, files, data, token)
+
+
+class PublishedFilesTests(TestCase):
     def test_reads_only_the_published_version_and_mentions_a_waiting_draft(self):
         published = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a")]
         server = FakeDataverse(published=published, draft=published + [file_entry(2, "WELLAncasterWatershed_Jun2026.csv", b"b")])
@@ -300,10 +317,20 @@ class PublishedFilesTests(unittest.TestCase):
         self.assertEqual([f["dataFile"]["id"] for f in files], [1])
         self.assertIn("unpublished draft", logs[0])
 
-    def test_never_published_is_empty(self):
+    def test_never_published_is_none(self):
+        # Told apart from a published dataset without files: the download reports NOT_PUBLISHED for it
         logs = []
-        self.assertEqual(borealis.published_files(client(FakeDataverse(published=None, draft=[])), PID, log=logs.append), [])
+        never = client(FakeDataverse(published=None, draft=[]))
+        self.assertIsNone(borealis.published_files(never, PID, log=logs.append))
         self.assertIn("never been published", logs[-1])
+        self.assertEqual(borealis.published_files(client(FakeDataverse(published=[])), PID, log=logs.append), [])
+
+    def test_a_deaccessioned_dataset_is_not_taken_for_a_new_one(self):
+        # Dataverse 6.1+ answers :latest-published with 404 for these too, so the dataset itself tells them apart
+        for state, date in (("DEACCESSIONED", "2026-01-05"), ("DEACCESSIONED", None), ("DRAFT", "2026-01-05")):
+            with self.subTest(state=state, date=date):
+                with self.assertRaisesRegex(borealis.NoPublishedVersion, "deaccessioned.*publish a new version"):
+                    borealis.published_files(client(DatasetAs(state, date)), PID, log=lambda *a: None)
 
     def test_a_guest_can_read_a_published_dataset_and_gets_a_useful_401_otherwise(self):
         guest = borealis.Dataverse(SERVER, None, session=FakeDataverse(published=[file_entry(1, "x.csv", b"a")]))
@@ -313,7 +340,7 @@ class PublishedFilesTests(unittest.TestCase):
             borealis.published_files(guest, PID, log=lambda *a: None)
 
 
-class DownloadTests(unittest.TestCase):
+class DownloadTests(TestCase):
     def test_the_download_lists_only_published_sampling_files(self):
         published = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a"),
                      file_entry(2, "WELLAncasterWatershed_SAMPLE.csv", b"t"), file_entry(3, "README.md", b"r")]
@@ -328,18 +355,50 @@ class DownloadTests(unittest.TestCase):
     def test_a_demo_dataset_with_the_production_server_is_refused(self):
         with mock.patch.multiple(download_data, BOREALIS_URL="https://borealisdata.ca/dataverse/WELL",
                                  BOREALIS_API_TOKEN=None, BOREALIS_AW_PERSISTENT_ID="doi:10.80240/FK2/JER05H"), \
-                self.assertRaisesRegex(ValueError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
+                self.assertRaisesRegex(download_data.DownloadSettingsError, "BOREALIS_SAMPLING_PERSISTENT_ID"):
             quiet(download_data.get_files_from_dataset, client=client(FakeDataverse(published=[])))
 
-    def test_a_rejected_token_fails_the_download_with_the_reason(self):
+    def test_a_rejected_token_is_a_setting_to_fix(self):
         server = FakeDataverse(published=[])
         with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN="old",
-                                 BOREALIS_AW_PERSISTENT_ID=PID), self.assertRaises(borealis.DataverseError):
-            _, out = quiet(download_data.get_files_from_dataset,
-                           client=borealis.Dataverse(SERVER, "old", session=server))
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                self.assertRaisesRegex(download_data.DownloadSettingsError, "HTTP 401.*BOREALIS_API_TOKEN"):
+            quiet(download_data.get_files_from_dataset, client=borealis.Dataverse(SERVER, "old", session=server))
+
+    def settings_problem(self, dataverse, pattern):
+        with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN=dataverse.token,
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                self.assertRaisesRegex(download_data.DownloadSettingsError, pattern):
+            quiet(download_data.get_files_from_dataset, client=dataverse)
+
+    def test_a_forbidden_or_unknown_dataset_is_a_setting_to_fix(self):
+        forbidden = FakeDataverse(published=[])
+        forbidden.fail[("GET", "datasets/:persistentId")] = 403
+        self.settings_problem(client(forbidden), "HTTP 403.*Curator")
+        # A guest can't read an unpublished dataset: Borealis answers 401
+        self.settings_problem(borealis.Dataverse(SERVER, None, session=FakeDataverse(published=None)),
+                              "HTTP 401.*only published datasets")
+        # No such dataset on this server (the right server, a wrong id)
+        self.settings_problem(client(FakeDataverse(published=None)), "HTTP 404.*persistent id")
+
+    def test_a_deaccessioned_dataset_is_a_setting_to_fix(self):
+        self.settings_problem(client(DatasetAs("DEACCESSIONED", "2026-01-05")),
+                              "deaccessioned.*BOREALIS_SAMPLING_PERSISTENT_ID")
+
+    def test_a_never_published_dataset_names_its_waiting_sampling_files(self):
+        draft = [file_entry(1, "WELLAncasterWatershed_May2026.csv", b"a"),
+                 file_entry(2, "WELLAncasterWatershed_SAMPLE.csv", b"t"), file_entry(3, "README.md", b"r")]
+        with mock.patch.multiple(download_data, BOREALIS_URL=SERVER, BOREALIS_API_TOKEN=TOKEN,
+                                 BOREALIS_AW_PERSISTENT_ID=PID), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                self.assertRaises(download_data.NotPublished) as caught:
+            download_data.get_files_from_dataset(client=client(FakeDataverse(published=None, draft=draft)))
+        self.assertEqual(caught.exception.waiting, ["WELLAncasterWatershed_May2026.csv"])
+        # Expected every week until the first publish, so it logs no ERROR: line
+        self.assertNotIn("ERROR:", out.getvalue())
 
 
-class SettingsTests(unittest.TestCase):
+class SettingsTests(TestCase):
     def test_urls(self):
         self.assertEqual(borealis.base_url("https://borealisdata.ca/dataverse/WELL"), "https://borealisdata.ca")
         self.assertEqual(borealis.collection_alias("https://borealisdata.ca/dataverse/WELL/"), "WELL")
@@ -347,13 +406,36 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             borealis.base_url("borealisdata.ca")
 
+    def test_the_server_used_is_logged_once(self):
+        logged = []
+        with mock.patch.object(borealis, "_logged_servers", set()):
+            for url in ("https://borealisdata.ca/dataverse/WELL", "https://borealisdata.ca/",
+                        "https://demo.borealisdata.ca"):
+                self.assertEqual(borealis.api_base(url, log=logged.append), borealis.base_url(url))
+            borealis.api_base("https://borealisdata.ca/dataverse/WELL", log=logged.append)
+        self.assertEqual(logged, [
+            ("Borealis: using the API at https://borealisdata.ca (BOREALIS_URL is the page of collection WELL; "
+             "the API is at the server root)"),
+            "Borealis: using the API at https://demo.borealisdata.ca",
+        ])
+
+    def test_the_upload_uses_the_server_root_of_a_collection_url(self):
+        with mock.patch.multiple(upload_data.Config, BOREALIS_URL="https://borealis.example/dataverse/WELL",
+                                 BOREALIS_API_TOKEN=TOKEN, BOREALIS_UPLOAD_PERSISTENT_ID=PID), \
+                mock.patch.object(borealis, "_logged_servers", set()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            url, _, _ = upload_data.borealis_settings()
+        self.assertEqual(url, SERVER)
+        self.assertIn(f"Borealis: using the API at {SERVER}", out.getvalue())
+        self.assertNotIn(TOKEN, out.getvalue())
+
     def test_demo(self):
         self.assertTrue(borealis.is_demo("https://demo.borealisdata.ca"))
         self.assertTrue(borealis.is_demo(persistent_id="doi:10.80240/FK2/WHEXLR"))
         self.assertFalse(borealis.is_demo("https://borealisdata.ca", "doi:10.5683/SP3/ABC"))
 
 
-class UploadScriptTests(unittest.TestCase):
+class UploadScriptTests(TestCase):
     def settings(self, **overrides):
         values = {"BOREALIS_URL": "https://borealis.example/dataverse/WELL", "BOREALIS_API_TOKEN": TOKEN,
                   "BOREALIS_UPLOAD_PERSISTENT_ID": PID, "BOREALIS_PUBLISH": True, **overrides}
@@ -368,22 +450,68 @@ class UploadScriptTests(unittest.TestCase):
 
     def test_a_failure_exits_1_without_reporting_success(self):
         server = FakeDataverse(published=[])
-        server.fail[("POST", "/add")] = 403
-        with self.settings(), self.assertRaises(SystemExit) as caught:
-            _, out = quiet(upload_data.upload_to_borealis, CSV.decode(), NAME, 2026, client=client(server))
+        server.fail[("POST", "/add")] = 503
+        with self.settings(), contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as caught:
+            upload_data.upload_to_borealis(CSV.decode(), NAME, 2026, client=client(server))
         self.assertEqual(caught.exception.code, 1)
+        self.assertNotIn("Successfully uploaded", out.getvalue())
+
+    def upload_refused(self, status):
+        """The exit code and output of an upload that Borealis answers with `status`."""
+        server = FakeDataverse(published=[])
+        server.fail[("POST", "/add")] = status
+        with self.settings(), contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as caught:
+            upload_data.upload_to_borealis(CSV.decode(), NAME, 2026, client=client(server))
+        return caught.exception.code, out.getvalue()
+
+    def test_a_rejected_token_stops_with_one_actionable_line(self):
+        code, out = self.upload_refused(401)
+        self.assertEqual(code, SETTINGS_ERROR_EXIT)
+        errors = [line for line in out.splitlines() if line.startswith("ERROR:")]
+        self.assertEqual(errors, [f"ERROR: Borealis token rejected (HTTP 401): make a new token on {SERVER} (your "
+                                  f"name > API Token) and put it in BOREALIS_API_TOKEN."])
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn("Successfully uploaded", out)
+
+    def test_a_missing_permission_is_a_settings_problem(self):
+        code, out = self.upload_refused(403)
+        self.assertEqual(code, SETTINGS_ERROR_EXIT)
+        self.assertIn("Curator role", out)
 
     def test_a_demo_dataset_on_the_production_server_is_refused(self):
         with self.settings(BOREALIS_UPLOAD_PERSISTENT_ID="doi:10.80240/FK2/WHEXLR"), \
-                contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+                contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as caught:
             upload_data.borealis_settings()
         self.assertIn("demo server", out.getvalue())
+        self.assertEqual(caught.exception.code, SETTINGS_ERROR_EXIT)
 
     def test_missing_settings_are_named(self):
         with self.settings(BOREALIS_API_TOKEN=None), contextlib.redirect_stdout(io.StringIO()) as out, \
-                self.assertRaises(SystemExit):
+                self.assertRaises(SystemExit) as caught:
             upload_data.borealis_settings()
         self.assertIn("BOREALIS_API_TOKEN", out.getvalue())
+        self.assertEqual(caught.exception.code, SETTINGS_ERROR_EXIT)
+
+    def test_upload_status(self):
+        everything = {"BOREALIS_URL": "https://borealisdata.ca", "BOREALIS_API_TOKEN": "t",
+                      "BOREALIS_UPLOAD_PERSISTENT_ID": PID}
+        self.assertEqual(borealis.upload_status(everything), ("on", []))
+        # Off: nothing set at all, or turned off on purpose whatever else is set
+        self.assertEqual(borealis.upload_status({}), ("off", []))
+        for off in ("off", "0", " OFF ", "false", "no"):
+            self.assertEqual(borealis.upload_status({**everything, "BOREALIS_UPLOAD": off}), ("off", []), off)
+        self.assertEqual(borealis.upload_status({**everything, "BOREALIS_UPLOAD": "on"}), ("on", []))
+        # A token set but the DOI forgotten (or blank) is incomplete, not off
+        self.assertEqual(borealis.upload_status({**everything, "BOREALIS_UPLOAD_PERSISTENT_ID": " "}),
+                         ("incomplete", ["BOREALIS_UPLOAD_PERSISTENT_ID"]))
+        self.assertEqual(borealis.upload_status({"BOREALIS_API_TOKEN": "t"}),
+                         ("incomplete", ["BOREALIS_URL", "BOREALIS_UPLOAD_PERSISTENT_ID"]))
+        self.assertEqual(borealis.upload_status({"BOREALIS_UPLOAD_DATAVERSE": "WELL-sensors"})[0], "incomplete")
+        # The older demo names still count
+        self.assertEqual(borealis.upload_status({"DEMO_BOREALIS_URL": "https://demo.borealisdata.ca",
+                                                 "BOREALIS_API_TOKEN": "t",
+                                                 "DEMO_BOREALIS_WC_PERSISTENT_ID": "doi:10.80240/FK2/WHEXLR"}),
+                         ("on", []))
 
     def test_month_file_name(self):
         import datetime as dt
@@ -402,16 +530,38 @@ class UploadScriptTests(unittest.TestCase):
         ]
         out = io.StringIO()
         quiet(upload_data.build_csv_frontend_style, rows, out)
-        header = ("ID,Timestamp,Group,Latitude,Longitude,Rain: mm,,Group,Sensor,Latitude,Longitude,"
-                  "Water Temperature: C,Sensor,Latitude,Longitude,Water Temperature: C")
+        header = ("ID,Timestamp (America/Toronto),Group,Latitude,Longitude,Rain: mm,,Group,Sensor,Latitude,"
+                  "Longitude,Water Temperature: C,Sensor,Latitude,Longitude,Water Temperature: C")
         row1 = ("1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,1.5,,Logger,Logger 1,43.2671,-79.92883,8.25,"
                 "Logger 2,43.26639,-79.9294,")
         row2 = ("2,2026-10-01T00:10:00,Weather,43.26611,-79.92866,,,Logger,Logger 1,43.2671,-79.92883,,"
                 "Logger 2,43.26639,-79.9294,9.0")
         self.assertEqual(out.getvalue().splitlines(), [header, row1, row2])
 
+    def test_csv_has_no_nan_and_neutralizes_formulas(self):
+        # A missing value (None from the database, NaN once in pandas) is an empty field, not "nan", and text a
+        # spreadsheet would run gets a leading apostrophe, as in the dashboard download
+        rows = [
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "Rain", "value": None,
+             "unit": "mm", "recorded_at": "2026-10-01T00:00:00"},
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "Rain", "value": 0.5,
+             "unit": "mm", "recorded_at": "2026-10-01T00:10:00"},
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "=1+2",
+             "value": float("nan"), "unit": "", "recorded_at": "2026-10-01T00:10:00"},
+            {"station_id": "Weather Station", "group_type": "Weather", "measurement_type": "-Wind", "value": -3.0,
+             "unit": "", "recorded_at": "2026-10-01T00:10:00"},
+        ]
+        out = io.StringIO()
+        quiet(upload_data.build_csv_frontend_style, rows, out)
+        self.assertNotIn("nan", out.getvalue().lower())
+        self.assertEqual(out.getvalue().splitlines(), [
+            "ID,Timestamp (America/Toronto),Group,Latitude,Longitude,'-Wind,'=1+2,Rain: mm",
+            "1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,,,",
+            "2,2026-10-01T00:10:00,Weather,43.26611,-79.92866,-3.0,,0.5",
+        ])
 
-class PreflightTests(unittest.TestCase):
+
+class PreflightTests(TestCase):
     SETTINGS = {"url": "https://borealis.example/dataverse/WELL", "token": TOKEN, "upload_pid": PID,
                 "sampling_pid": "doi:10.5683/SP3/WELLSAMPLE", "upload_alias": "WELL-sensors",
                 "sampling_alias": "WELL-sampling"}
@@ -451,4 +601,4 @@ class PreflightTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

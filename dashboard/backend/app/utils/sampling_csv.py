@@ -13,9 +13,8 @@ them the same way, so both layouts end up as identical rows.
 The site and parameter lists below are the only place they are defined for imports; the dashboard's own lists are in
 dashboard/frontend/src/components/config/filters.tsx and must name the same sites and parameters.
 
-Provisional, to confirm with the lab (each is marked "TO CONFIRM WITH THE LAB" where it is decided below, and listed in
-the format page's "To confirm with the lab" section): the site list, the parameter list and units, the below-detection
-convention, and the replicate and QC-flag rules.
+Decision points are marked "TO CONFIRM WITH THE LAB" below: the site list, the parameter list and units, the
+below-detection convention, and the replicate and QC-flag rules.
 """
 import csv
 import difflib
@@ -174,6 +173,8 @@ def parse_site(text):
 
 
 def parse_date(text):
+    """A sampling date, accepted only as YYYY-MM-DD: 03/04/2025 could be either day/month or month/day, so it is
+    refused rather than guessed."""
     text = str(text).strip()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         try:
@@ -462,6 +463,7 @@ def _cell_text(value):
 
 
 def _cell_time(value):
+    # The HH:MM of an Excel date cell that has a time, or "" for a date alone (read as midnight).
     if hasattr(value, "to_pydatetime"):
         value = value.to_pydatetime()
     return value.strftime("%H:%M") if isinstance(value, datetime) and value.time() != time(0, 0) else ""
@@ -542,3 +544,39 @@ def is_excel(path):
 def validate_file(path):
     """validate_wide_excel() for an Excel file, validate_csv() for anything else."""
     return validate_wide_excel(path) if is_excel(path) else validate_csv(path)
+
+
+# The columns write_standard_csv() fills: the ones the stored readings can give back (the import doesn't keep
+# below_detection, qc_flag, sampler, method or notes).
+EXPORT_COLUMNS = ("date", "time", "site", "creek", "parameter", "value", "unit")
+
+
+def standard_value(value):
+    """A stored value as the format's plain number: 48.0 -> "48", 0.015 -> "0.015" (the shortest exact form)."""
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def write_standard_csv(readings, file_obj):
+    """Write stored sampling readings (dicts with site_id, measurement_type, value, unit and recorded_at as a naive
+    local datetime) to `file_obj` in the standard format, one reading per row, in the order given, so the file passes
+    validate_csv() and can be imported again as it is. A site is written by name with its creek (by number if it
+    isn't in SITES); a below-detection reading is its detection limit, as stored. Readings without a value are left
+    out. Text that a spreadsheet would run as a formula gets a leading ', as in the dashboard download (possible only
+    for rows stored some other way than the import). Returns the number of rows written."""
+    from api.services.exports import safe_csv_cell   # here, so importing this module stays free of the database
+    sites = {site.id: site for site in SITES}
+    writer = csv.writer(file_obj)
+    writer.writerow(EXPORT_COLUMNS)
+    written = 0
+    for r in readings:
+        if r["value"] is None:
+            continue
+        site = sites.get(str(r["site_id"]))
+        when = r["recorded_at"]
+        text = [site.name if site else str(r["site_id"]), CREEKS[site.creek][0] if site else "",
+                r["measurement_type"] or ""]
+        writer.writerow([when.strftime("%Y-%m-%d"), when.strftime("%H:%M"), *map(safe_csv_cell, text),
+                         standard_value(r["value"]), safe_csv_cell(r["unit"] or "")])
+        written += 1
+    return written

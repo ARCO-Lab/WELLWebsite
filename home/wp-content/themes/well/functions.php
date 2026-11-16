@@ -1,6 +1,7 @@
 <?php
 // This file contains theme setup, asset loading, widget registration, and helper functions for the WELL WordPress theme.
 // It registers navigation menus, enqueues CSS/JS, sets up widget areas, and provides utility functions.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 /**
  * Register navigation menus and load the Navwalker.
@@ -9,6 +10,10 @@
 function well_theme_setup() {
     // 1. Load the Bootstrap Navwalker file.
     require_once get_template_directory() . '/inc/class-wp-bootstrap-navwalker.php';
+
+    // WordPress prints the page's <title> in wp_head(), e.g. "News – McMaster Watershed Ecosystems
+    // Living Lab" (see well_document_title_parts() below for the home page).
+    add_theme_support('title-tag');
 
     add_theme_support('post-thumbnails');
 
@@ -21,6 +26,37 @@ function well_theme_setup() {
     // 2. Register the menu location.
     register_nav_menus( array(
         'primary' => __( 'Primary Menu', 'well' ),
+    ) );
+
+    // 3. Block editor support. The theme stays a classic PHP theme; these just make the
+    // block editor (used to edit Pages and Posts in wp-admin) behave and look like the live
+    // site, so non-technical editors see real WELL styling while they work.
+    add_theme_support( 'align-wide' );   // allow full-/wide-width blocks (hero, CTA banners)
+    add_theme_support( 'editor-styles' ); // load the stylesheets below into the editor canvas
+    add_theme_support( 'wp-block-styles' ); // core block default styles
+
+    // Group the theme's patterns under a "WELL" heading in the inserter
+    // (Inserter > Patterns > WELL). The pattern files live in patterns/ and are
+    // auto-registered by WordPress (6.0+); this only names their category.
+    register_block_pattern_category( 'well', array(
+        'label' => __( 'WELL', 'well' ),
+    ) );
+
+    // Load the site's real stylesheets into the block editor canvas, so blocks, legacy
+    // content and the WELL patterns preview on-brand (maroon, gold, Poppins headings, card
+    // and button styles) instead of in generic editor styling. The iframed editor (WP 5.9+)
+    // only picks up CSS added here, not the front-end wp_enqueue_style calls below.
+    // editor.css is a small editor-only shim (brand variables + canvas padding); see the
+    // file header for why it is needed.
+    add_editor_style( array(
+        'https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap',
+        'css/theme.css',
+        'css/mcm-bw.css',
+        'css/typography.css',
+        'css/btn.css',
+        'css/new-cards.css',
+        'css/well-patterns.css',
+        'css/editor.css',
     ) );
 }
 // This hook runs our setup function as WordPress loads.
@@ -128,7 +164,8 @@ function well_theme_enqueue_assets() {
     // We list 'well-google-fonts' as a dependency to ensure fonts load first.
     $css_files = [
         'theme', 'mcm-bw', 'typography', 'btn', 'footer', 'new-cards',
-        'dynamic-filters', 'element-left-nav', 'aoda', 'ldap', 'loader'
+        'dynamic-filters', 'element-left-nav', 'aoda', 'ldap', 'loader',
+        'well-patterns'
     ];
 
     foreach ($css_files as $file) {
@@ -146,8 +183,13 @@ function well_theme_enqueue_assets() {
     // We list 'jquery' as a dependency since many old themes use it.
     // js/video_slider.js is not loaded: it is for YouTube hero videos this site doesn't have, and
     // it loaded the YouTube player API on every page before stopping with an error.
+    // bootstrap.min is Bootstrap 4.6.2, the unmodified dist/js/bootstrap.min.js from the bootstrap npm
+    // package (needs jQuery 1.9.1-3.x and popper.min, Popper 1.16). theme.min used to bundle Bootstrap 4.1.0,
+    // which has XSS bugs in data-target, data-parent and tooltip templates (CVE-2018-14040/14041/14042,
+    // CVE-2019-8331).
     $js_files = [
-        'popper.min', 'theme.min', 'ekko-lightbox.min', 'header_footer',
+        'popper.min', 'bootstrap.min', 'theme.min', 'ekko-lightbox.min',
+        // 'header_footer', // off: it reads a directory_uri variable the theme never sets (an error on every page), and working it would load hfcopy.js twice and add McMaster header markup the site has never shown.
         'hfcopy', 'mcmaster', 'countdown-timer',
         'wp-form-name-fields', 'comm100-wrapper'
     ];
@@ -194,24 +236,166 @@ function well_widgets_init() {
 }
 add_action( 'widgets_init', 'well_widgets_init' );
 
+/**
+ * Subresource Integrity hashes for the files the theme loads from other sites. The browser hashes
+ * what it downloads and refuses to use it if the hash differs, so a changed or compromised CDN file
+ * cannot run on this site. A new version of a file needs its new hash here: cdnjs lists them on
+ * each library's page, or run
+ *   curl -s URL | openssl dgst -sha384 -binary | openssl base64 -A
+ * Without crossorigin="anonymous" the browser cannot check the hash; these hosts allow it.
+ */
+function well_sri_hashes() {
+    return array(
+        'https://cdnjs.cloudflare.com/ajax/libs/flickity/2.2.2/flickity.min.css'
+            => 'sha384-xL/0pqATwGQBGyuGdRokLTr+LmGNiNzkLIxAd40+SONQ3sktxNVO34FmH9TyuaA1',
+        'https://cdnjs.cloudflare.com/ajax/libs/flickity/2.2.2/flickity.pkgd.min.js'
+            => 'sha384-OW/MpA/eUcocgSx/2522xqT7O7iP71hd4PSjNqf/9dTp0oyjWeBlkuSzYwOtZS5c',
+    );
+}
+
+/**
+ * Add integrity and crossorigin to the <script> or <link> tag WordPress prints for a URL listed in
+ * well_sri_hashes().
+ */
+function well_add_sri_attributes($tag, $handle, $src) {
+    $hashes = well_sri_hashes();
+    $url = is_string($src) ? strtok($src, '?') : false;
+    if ($url === false || !isset($hashes[$url]) || false !== strpos($tag, ' integrity=')) {
+        return $tag;
+    }
+    $attrs = ' integrity="' . esc_attr($hashes[$url]) . '" crossorigin="anonymous"';
+    return preg_replace('/^(\s*<(?:script|link)\b)/', '$1' . $attrs, $tag, 1);
+}
+add_filter('script_loader_tag', 'well_add_sri_attributes', 10, 3);
+add_filter('style_loader_tag', 'well_add_sri_attributes', 10, 3);
+
 function well_enqueue_flickity_assets() {
-    // Flickity CSS
+    // Flickity, for the home page and Dashboard page carousels. CSS and JS are the same version.
+    // The version is in the URL itself, so null keeps WordPress from adding ?ver= to it.
     wp_enqueue_style(
         'flickity-css',
-        'https://cdnjs.cloudflare.com/ajax/libs/flickity/2.1.1/flickity.min.css',
+        'https://cdnjs.cloudflare.com/ajax/libs/flickity/2.2.2/flickity.min.css',
         [],
-        '2.1.1'
+        null
     );
-    // Flickity JS
     wp_enqueue_script(
         'flickity-js',
         'https://cdnjs.cloudflare.com/ajax/libs/flickity/2.2.2/flickity.pkgd.min.js',
         [],
-        '2.2.2',
+        null,
         true
     );
 }
 add_action('wp_enqueue_scripts', 'well_enqueue_flickity_assets');
+
+/**
+ * The home page's <title> is the site name alone; WordPress would add the tagline, which is a whole
+ * sentence. Other pages get "Page title – Site name".
+ */
+function well_document_title_parts($parts) {
+    if (is_front_page()) {
+        unset($parts['tagline']);
+    }
+    return $parts;
+}
+add_filter('document_title_parts', 'well_document_title_parts');
+
+/**
+ * One sentence about the page being shown, for the meta description and link previews.
+ * A post uses its excerpt; the theme's own pages, whose text is in their templates, have one each
+ * here; anything else uses the site's tagline (Settings > General).
+ */
+function well_page_description() {
+    $pages = array(
+        'about'     => 'About the Watershed and Ecosystems Living Lab (WELL) at McMaster University: real-time environmental sensors on West Campus, sampling across the Ancaster Creek watershed, and the team behind them.',
+        'dashboard' => 'Live and historical WELL data on weather, water quality and sampling, from McMaster\'s West Campus and the Ancaster Creek watershed.',
+        'news'      => 'News from the Watershed and Ecosystems Living Lab (WELL) at McMaster University.',
+    );
+    $id   = get_queried_object_id();
+    $text = '';
+    if (is_singular('post')) {
+        $text = get_the_excerpt($id);
+    } elseif (is_page()) {
+        $slug = get_post_field('post_name', $id);
+        if (isset($pages[$slug])) {
+            $text = $pages[$slug];
+        } elseif (has_excerpt($id)) {
+            $text = get_the_excerpt($id);
+        }
+    }
+    if (trim(wp_strip_all_tags($text)) === '') {
+        $text = get_bloginfo('description');
+    }
+    return wp_trim_words(wp_strip_all_tags($text), 40);
+}
+
+/**
+ * The address this page is known by, for og:url; '' when it has none (search results, a 404,
+ * page 2 and later of a list). WordPress prints <link rel="canonical"> itself for posts and pages;
+ * the home page shows sections, not a post, so well_meta_tags() prints its canonical link.
+ */
+function well_page_url() {
+    if (is_404() || is_search() || is_paged()) {
+        return '';
+    }
+    if (is_front_page()) {
+        return home_url('/');
+    }
+    if (is_singular()) {
+        $url = wp_get_canonical_url(get_queried_object_id());
+        return $url ? $url : '';
+    }
+    return '';
+}
+
+/**
+ * Meta description and Open Graph tags (the title, text and picture a shared link shows),
+ * printed by wp_head() in header.php.
+ */
+function well_meta_tags() {
+    $description = well_page_description();
+    $url         = well_page_url();
+    // og:site_name already names the site, so a post or page's preview title is its own title.
+    if (is_front_page()) {
+        $title = get_bloginfo('name');
+    } elseif (is_singular()) {
+        $title = wp_strip_all_tags(get_the_title(get_queried_object_id()));
+    } else {
+        $title = wp_get_document_title();
+    }
+
+    // A post's featured image; otherwise the photo of the WELL installation from the home page.
+    $image = array(get_template_directory_uri() . '/img/media/hero-installation-1080.webp', 1080, 463);
+    if (is_singular('post') && has_post_thumbnail(get_queried_object_id())) {
+        $thumb = wp_get_attachment_image_src(get_post_thumbnail_id(get_queried_object_id()), 'large');
+        if ($thumb) {
+            $image = array($thumb[0], (int) $thumb[1], (int) $thumb[2]);
+        }
+    }
+
+    if ($description !== '') {
+        echo '<meta name="description" content="' . esc_attr($description) . '">' . "\n";
+    }
+    if (is_front_page() && !is_singular() && $url !== '') {
+        echo '<link rel="canonical" href="' . esc_url($url) . '">' . "\n";
+    }
+    echo '<meta property="og:site_name" content="' . esc_attr(get_bloginfo('name')) . '">' . "\n";
+    echo '<meta property="og:type" content="' . (is_singular('post') ? 'article' : 'website') . '">' . "\n";
+    echo '<meta property="og:title" content="' . esc_attr($title) . '">' . "\n";
+    if ($description !== '') {
+        echo '<meta property="og:description" content="' . esc_attr($description) . '">' . "\n";
+    }
+    if ($url !== '') {
+        echo '<meta property="og:url" content="' . esc_url($url) . '">' . "\n";
+    }
+    echo '<meta property="og:image" content="' . esc_url($image[0]) . '">' . "\n";
+    if ($image[1] > 0 && $image[2] > 0) {
+        echo '<meta property="og:image:width" content="' . (int) $image[1] . '">' . "\n";
+        echo '<meta property="og:image:height" content="' . (int) $image[2] . '">' . "\n";
+    }
+    echo '<meta name="twitter:card" content="summary_large_image">' . "\n";
+}
+add_action('wp_head', 'well_meta_tags', 5);
 
 /**
  * Open the connections to Google Fonts early. The Poppins stylesheet comes from fonts.googleapis.com
@@ -271,6 +455,55 @@ function well_media_img($name, $widths, $size, $attrs = array()) {
         }
     }
     echo $html . '>';
+}
+
+/**
+ * The query behind every list of news on the site: the home page's "Latest News" carousel,
+ * the News page and the "Related News" list under a post. A news item is any published post,
+ * newest first, whatever its category, so a post shows up in all three places as soon as it
+ * is published (scheduled posts appear on their date, drafts never do).
+ *
+ * $count:   how many posts to show (per page, when $paged is given).
+ * $exclude: post IDs to leave out, e.g. the post being read.
+ * $paged:   page number for a paginated list such as the News page; 0 for a single block of
+ *           posts. With a page number WordPress also counts all posts, so max_num_pages is set.
+ */
+function well_news_query($count, $exclude = array(), $paged = 0) {
+    $args = array(
+        'post_type'           => 'post',
+        'post_status'         => 'publish',
+        'posts_per_page'      => (int) $count,
+        'post__not_in'        => array_map('intval', (array) $exclude),
+        'ignore_sticky_posts' => true,
+    );
+    if ($paged > 0) {
+        $args['paged'] = (int) $paged;
+    } else {
+        $args['no_found_rows'] = true; // no pagination, so skip counting every post
+    }
+    return new WP_Query($args);
+}
+
+/**
+ * Print the current post's featured image at the top of a news card, cropped to 16:9 by the
+ * card-img-mask classes. Prints nothing when the post has no featured image, so the card
+ * keeps its text-only layout. The image is decorative: the card's title link right below it
+ * names the post, so it gets an empty alt and screen readers skip it.
+ *
+ * Uses the media library's copies (srcset and sizes), so a phone downloads a small one.
+ */
+function well_news_card_image() {
+    if (!has_post_thumbnail()) {
+        return;
+    }
+    echo '<div class="card-img-mask card-img-mask-top">';
+    the_post_thumbnail('medium_large', array(
+        'alt'     => '',
+        'class'   => 'card-img-top',
+        'sizes'   => '(min-width: 992px) 350px, (min-width: 768px) 50vw, 100vw',
+        'loading' => 'lazy',
+    ));
+    echo '</div>';
 }
 
 /**
@@ -343,5 +576,31 @@ function well_remove_auto_sizes_from_content_images($content) {
     return $content;
 }
 add_filter('the_content', 'well_remove_auto_sizes_from_content_images', 20);
+
+/**
+ * Count page views with GoatCounter (https://www.goatcounter.com): no cookies, nothing stored in the browser, and
+ * GoatCounter keeps only aggregated counts. The site shares one GoatCounter site with the dashboard, so each path is
+ * counted with the host in front ("well.mcmaster.ca/news/"), which keeps the two sites' "/" apart. Query strings are
+ * left out of the path. Nothing is counted for logged-in users (editors checking their pages), in previews, or on
+ * any host other than well.mcmaster.ca (count.js also skips localhost and pages shown inside a frame).
+ */
+function well_goatcounter_script() {
+    if (is_admin() || is_user_logged_in() || is_preview() || is_customize_preview()) {
+        return;
+    }
+    ?>
+<script>
+window.goatcounter = {
+    path: function (p) {
+        var host = location.hostname.replace(/^www\./, '');
+        return host === 'well.mcmaster.ca' ? host + p.split(/[?#]/)[0] : null;
+    }
+};
+</script>
+<?php // count.v5.js is a fixed version, so its hash (published at goatcounter.com/help/countjs-versions) never changes; count.js changes without notice. ?>
+<script data-goatcounter="https://well.goatcounter.com/count" async src="https://gc.zgo.at/count.v5.js" integrity="sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ" crossorigin="anonymous"></script>
+    <?php
+}
+add_action('wp_footer', 'well_goatcounter_script');
 
 ?>

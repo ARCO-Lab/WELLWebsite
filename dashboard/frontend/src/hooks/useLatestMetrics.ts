@@ -1,5 +1,5 @@
 // This file defines the useLatestMetrics React hook for fetching the latest sensor metrics from the API.
-// It auto-refreshes every 10 minutes and manages loading state.
+// It auto-refreshes every 10 minutes and reports loading, error and retrying state, with a retry().
 
 import { useCallback, useEffect, useRef, useState }  from "react";
 
@@ -12,6 +12,10 @@ export interface Metric {
     recorded_at: string;
 }
 
+/** The newest reading of every series (/api/latest), refetched every 10 minutes. `loading` is true only until the
+ *  first reply; `error` is set while the last fetch failed (the previous values stay); `retry` fetches again now,
+ *  and `retrying` is true until that fetch settles. `recorded_at` is site (America/Toronto) wall time without a
+ *  zone. */
 export default function useLatestMetrics() {
     const [metrics, setMetrics] = useState<Metric[]>([]);
     const [loading, setLoading] = useState(true);

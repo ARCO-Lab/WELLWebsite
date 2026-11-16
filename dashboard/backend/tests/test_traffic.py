@@ -6,7 +6,6 @@ import datetime as dt
 import os
 import pathlib
 import sys
-import unittest
 import unittest.mock
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"

@@ -1,23 +1,33 @@
-# This file defines the /api/data route for retrieving raw sensor measurements for the dashboard's charts.
-# A range with more readings than the charts can handle is refused with a 413 instead of being loaded.
+# This file defines the /api/data route: raw sensor readings for a range. The dashboard no longer calls it (charts use
+# /api/series, the wind rose /api/windrose), but it stays available. A range longer than MAX_DAYS is refused with a
+# 400 before anything is counted, and one with more than MAX_ROWS readings with a 413 instead of being loaded.
 # A request can't notice that the browser left: once it passes the count, its gunicorn thread stays busy until
 # the query and jsonify finish, even if nobody is waiting for the answer. The row cap bounds that time, along
 # with DB_STATEMENT_TIMEOUT_MS (config.py), which cancels any one query that runs too long.
+# Values are sent as stored, except that a "no reading" sentinel (utils/parsers.SENTINEL_MAX) or a value that isn't
+# finite (rows stored before ingestion skipped them) is null: a bare NaN would make the whole answer invalid JSON.
 
 import logging
 import os
+from datetime import timedelta
 
 from flask import request, jsonify
 
+from api.validation import bad_text
 from db.database import db
 from db.models import SensorMeasurement
+from utils.parsers import reading_value
 from utils.timezone import parse_instant, site_wall_time
 
 log = logging.getLogger(__name__)
 
-# More readings than this make a JSON payload of ~50 MB and take the browser too long to draw; about 90 days
-# of every sensor group. Larger ranges get a 413 that tells the user to narrow the range or use Download.
-DEFAULT_MAX_ROWS = 300_000
+# More readings than this are refused with a 413 that tells the user to narrow the range or use Download. 100,000
+# readings are about 17 MB of JSON and a few hundred MB of Python objects while they are serialised: about a month of
+# every sensor group.
+DEFAULT_MAX_ROWS = 100_000
+# The longest range one request may ask for. Without it, counting the readings of any range (the whole history, say)
+# could keep a thread and the database busy for the whole statement timeout.
+MAX_DAYS = 31
 
 
 def parse_max_rows(value):
@@ -48,13 +58,19 @@ def register_data_route(app):
 
         if not start or not end or not group_types:
             return jsonify({"error": "Missing required parameters"}), 400
+        if any(bad_text(g) for g in group_types):
+            return jsonify({"error": "group_type values may not contain control characters"}), 400
 
         try:
-            # Real instants: the dashboard sends ...Z; a time without an offset is site wall time, as before
+            # Real instants (recorded_at is timestamptz): the dashboard sends ...Z; a time without an offset is
+            # site wall time, as before. Bound as instants, so the session's TimeZone doesn't matter.
             start_dt = parse_instant(start)
             end_dt = parse_instant(end)
         except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
+        if end_dt - start_dt > timedelta(days=MAX_DAYS):  # both aware UTC instants now
+            return jsonify({"error": f"Pick a range of at most {MAX_DAYS} days, or use Download for longer ones.",
+                            "max_days": MAX_DAYS}), 400
 
         filters = (
             SensorMeasurement.group_type.in_(group_types),
@@ -92,7 +108,7 @@ def register_data_route(app):
                 "station_id": r.station_id,
                 "group_type": r.group_type,
                 "measurement_type": r.measurement_type,
-                "value": r.value,
+                "value": reading_value(r.value),
                 "unit": r.unit,
                 "recorded_at": site_wall_time(r.recorded_at).isoformat(),   # site wall time, without an offset, as always
             }

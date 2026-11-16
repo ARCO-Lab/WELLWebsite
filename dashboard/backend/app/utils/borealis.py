@@ -9,7 +9,9 @@ Settings (dashboard/backend/app/.env on the VM; config.py reads them):
   BOREALIS_API_TOKEN               the API token of the account that uploads and publishes
   BOREALIS_UPLOAD_PERSISTENT_ID    the sensor dataset the monthly upload adds files to, e.g. doi:10.5683/SP3/ABCDEF
   BOREALIS_SAMPLING_PERSISTENT_ID  the sampling dataset the weekly download imports from
-  BOREALIS_UPLOAD_DATAVERSE, BOREALIS_SAMPLING_DATAVERSE   the aliases of the collections holding them (preflight only)
+  BOREALIS_UPLOAD_DATAVERSE, BOREALIS_SAMPLING_DATAVERSE   the aliases of the collections holding them (preflight only).
+                                   They don't default to BOREALIS_URL's alias: the datasets sit in sub-collections of
+                                   it, and the preflight already checks that alias as the parent collection.
 The older DEMO_BOREALIS_URL, DEMO_BOREALIS_WC_PERSISTENT_ID and DEMO_BOREALIS_AW_PERSISTENT_ID are still read when
 the new names are unset.
 
@@ -25,6 +27,8 @@ Dataverse rules this module follows:
 """
 import hashlib
 import json
+import os
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -83,12 +87,54 @@ def base_url(url):
     return f"{parts.scheme}://{parts.netloc}"
 
 
+_logged_servers = set()
+
+
+def api_base(url, log=print):
+    """base_url(url), and the first time each server is used in this process, a log line naming it (and saying when
+    a collection page's path was dropped), so a job's log shows which Borealis host its calls go to."""
+    server = base_url(url)
+    if server not in _logged_servers:
+        _logged_servers.add(server)
+        alias = collection_alias(url)
+        note = f" (BOREALIS_URL is the page of collection {alias}; the API is at the server root)" if alias else ""
+        log(f"Borealis: using the API at {server}{note}")
+    return server
+
+
 def collection_alias(url):
     """The collection alias in a BOREALIS_URL like https://borealisdata.ca/dataverse/WELL ("WELL"), else None."""
     segments = [s for s in urlsplit((url or "").strip()).path.split("/") if s]
     if len(segments) >= 2 and segments[0] == "dataverse":
         return segments[1]
     return None
+
+
+# The settings the monthly upload needs, each with the older name still read when it is unset.
+UPLOAD_SETTINGS = (("BOREALIS_URL", "DEMO_BOREALIS_URL"), ("BOREALIS_API_TOKEN", None),
+                   ("BOREALIS_UPLOAD_PERSISTENT_ID", "DEMO_BOREALIS_WC_PERSISTENT_ID"))
+OFF_VALUES = ("0", "off", "false", "no")
+
+
+def upload_status(env=None):
+    """Whether the monthly upload is set up, like utils/sharepoint.status():
+    ("off", []) when BOREALIS_UPLOAD is off (0, off, false or no), or when no Borealis setting is set at all (none
+    of UPLOAD_SETTINGS, nor BOREALIS_UPLOAD_DATAVERSE): the scheduler skips it quietly.
+    ("incomplete", missing names) when some are set but not all, e.g. a token without the dataset's DOI: the
+    scheduler reports it once a day, naming them.
+    ("on", []) otherwise."""
+    env = os.environ if env is None else env
+
+    def value(name, older=None):
+        return (env.get(name) or (env.get(older) if older else "") or "").strip()
+
+    if value("BOREALIS_UPLOAD").lower() in OFF_VALUES:
+        return "off", []
+    values = {name: value(name, older) for name, older in UPLOAD_SETTINGS}
+    if not any(values.values()) and not value("BOREALIS_UPLOAD_DATAVERSE"):
+        return "off", []
+    missing = [name for name, v in values.items() if not v]
+    return ("incomplete", missing) if missing else ("on", [])
 
 
 def is_demo(url=None, persistent_id=None):
@@ -204,6 +250,7 @@ class Dataverse:
     # ---- changing
 
     def add_file(self, persistent_id, name, content, description, directory=None):
+        """Add a CSV file to the dataset's draft (made if there is none). Returns Dataverse's dataFile record."""
         meta = file_metadata(description, directory)
         body = self.pid_call("POST", "/add", persistent_id, f"Adding {name} to {persistent_id}",
                              files={"file": (name, content, "text/csv")}, data={"jsonData": json.dumps(meta)},
@@ -236,6 +283,7 @@ class Dataverse:
 
 
 def file_metadata(description, directory):
+    # tabIngest "false": keep the CSV as uploaded, instead of Dataverse converting it to its own tabular format.
     meta = {"description": description, "categories": ["Data"], "tabIngest": "false"}
     if directory:
         meta["directoryLabel"] = directory
@@ -341,9 +389,22 @@ def upload_file(client, persistent_id, name, content, description, directory=Non
     return ("unchanged" if outcome == "pending" else outcome), version
 
 
+class NoPublishedVersion(DataverseError):
+    """The dataset was published once but has no published version now (it was deaccessioned): unlike a dataset
+    never published yet, waiting won't help."""
+
+    def __init__(self, persistent_id):
+        self.action, self.status, self.server_message = f"Reading the published version of {persistent_id}", None, ""
+        Exception.__init__(self, f"{persistent_id} was published but has no published version now (deaccessioned): "
+                                 f"publish a new version, or point BOREALIS_SAMPLING_PERSISTENT_ID at the current "
+                                 f"dataset")
+
+
 def published_files(client, persistent_id, log=print):
-    """The files of the dataset's latest published version, or [] if it was never published. Logs it when there is
-    also an unpublished draft (files there are imported once it is published)."""
+    """The files of the dataset's latest published version, or None if it was never published (no publicationDate
+    and only a draft), so it has no files anyone can import yet. Raises NoPublishedVersion for a dataset published
+    once whose versions are all deaccessioned (Dataverse then answers :latest-published with 404 too). Logs it when
+    there is also an unpublished draft (files there are imported once it is published)."""
     dataset = client.dataset(persistent_id)
     latest = dataset.get("latestVersion") or {}
     if latest.get("versionState") == "RELEASED":
@@ -354,6 +415,26 @@ def published_files(client, persistent_id, log=print):
             f"the dataset is published: publish the draft on Borealis.")
     published = client.published_version(persistent_id)
     if published is None:
+        if dataset.get("publicationDate") or latest.get("versionState") != "DRAFT":
+            raise NoPublishedVersion(persistent_id)
         log(f"WARNING: {persistent_id} has never been published, so there is nothing to import yet")
-        return []
+        return None
     return published.get("files") or []
+
+
+def is_sampling_file(datafile):
+    """Whether a dataset file is one the sampling download imports: an unrestricted WELLAncasterWatershed_*.xlsx,
+    .tab (how Dataverse lists an ingested table) or .csv, other than the template (WELLAncasterWatershed_SAMPLE)."""
+    filename = datafile.get("filename") or ""
+    return (filename.lower().startswith("wellancasterwatershed_") and not datafile.get("restricted", False)
+            and not re.match(r"WELLAncasterWatershed_SAMPLE\.(xlsx|tab|csv)", filename, re.IGNORECASE)
+            and filename.lower().endswith((".xlsx", ".tab", ".csv")))
+
+
+def draft_sampling_files(client, persistent_id):
+    """The names of the sampling files (is_sampling_file) in the dataset's draft, [] if it has no draft."""
+    latest = client.dataset(persistent_id).get("latestVersion") or {}
+    if latest.get("versionState") != "DRAFT":
+        return []
+    return [f["dataFile"]["filename"] for f in latest.get("files") or []
+            if is_sampling_file(f.get("dataFile") or {})]

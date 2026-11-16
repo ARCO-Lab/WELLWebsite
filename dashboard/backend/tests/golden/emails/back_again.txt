@@ -1,0 +1,22 @@
+Subject: [WELL] Back again: WQData API not responding — check vendor status
+
+1 back again. Open right now: 1.
+
+## Back again
+
+- **WQData API**: not responding
+  Back since Thu Nov 12, 07:30 (33 min); first seen Thu Nov 12, 07:20
+  To do: Check vendor status.
+  Details: The WQData API call has failed on the last 3 ingestion runs, since Thu Nov 12, 07:20 (last error: HTTPError (HTTP 503)). The last successful call was at Thu Nov 12, 07:10. Check the vendor's status page or support; our sensors may be fine. Ingestion catches up on missed readings by itself once the API answers (up to 14 days back).
+  Dashboard: https://welldash.mcmaster.ca/
+
+## Open right now
+
+- **WQData API**: not responding. Since Thu Nov 12, 07:20 (43 min)
+
+---
+
+Dashboard: https://welldash.mcmaster.ca/
+Health JSON: https://welldash.mcmaster.ca/api/health/data
+Why did I get this? https://github.com/ARCO-Lab/WELLWebsite/blob/main/dashboard/backend/README.md#why-did-i-get-this-email
+Checked Thu Nov 12, 08:03 (Toronto time).

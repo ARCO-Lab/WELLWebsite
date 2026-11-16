@@ -1,6 +1,7 @@
 <?php
 // This is the "About Us" page template for the WELL WordPress theme.
 // It displays information about WELL, its team, and its activities.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 get_header();
 
@@ -123,8 +124,7 @@ get_header();
       </div>
     </div>
   </section>
-</main>
-<main>
+
   <section class="dynamic-content people white my-5">
     <div class="container">
       <h2 class="text-left">Our Team</h2>
@@ -146,16 +146,13 @@ get_header();
                 </div>
                 <div class="modal-body p-0">
                   <div class="row row-cols-2 m-0">
-                    <a class="dropdown-item px-3 py-2 col-sm-6 col-12" href="tel:+19055259140,12345" style="overflow: hidden; white-space: initial;">
-                      <i class="fa fa-phone mr-2"></i>(905) 525-9140 x12345
-                    </a>
                     <a class="dropdown-item px-3 py-2 col-sm-6 col-12" href="mailto:papangee@mcmaster.ca" style="overflow: hidden; white-space: initial;">
                       <i class="fa fa-envelope mr-2"></i>papangee@mcmaster.ca
                     </a>
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -175,9 +172,6 @@ get_header();
                     <p class="mb-0"><strong>Director</strong></p>
                   </div>
                   <div class="list-group list-group-flush small mt-2">
-                    <a href="tel:+19055259140,12345" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0" aria-label="Primary phone number for Dr. John Smith">
-                      <i class="fa fa-phone mr-2 text-muted"></i><strong>(905) 525-9140 x12345</strong>
-                    </a>
                     <a href="mailto:papangee@mcmaster.ca" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0">
                       <i class="fa fa-envelope mr-2 text-muted"></i><strong>papangee@mcmaster.ca</strong>
                     </a>
@@ -218,7 +212,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -277,7 +271,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -336,7 +330,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -395,7 +389,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -454,7 +448,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://sees.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -516,7 +510,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://biology.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://biology.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -536,7 +530,7 @@ get_header();
                     <p class="mb-0"><strong>Collaborator</strong></p>
                   </div>
                   <div class="list-group list-group-flush small mt-2">
-                    <a href="tel:+19055259140,27338" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0" aria-label="Primary phone number for Dr. Jane Doe">
+                    <a href="tel:+19055259140,27338" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0" aria-label="Primary phone number for Dr. Chow-Fraser">
                       <i class="fa fa-phone mr-2 text-muted"></i><strong>(905) 525-9140 x27338</strong>
                     </a>
                     <a href="mailto:chowfras@mcmaster.ca" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0">
@@ -572,16 +566,13 @@ get_header();
                 </div>
                 <div class="modal-body p-0">
                   <div class="row row-cols-2 m-0">
-                    <a class="dropdown-item px-3 py-2 col-sm-6 col-12" href="tel:+19055259140,67890" style="overflow: hidden; white-space: initial;">
-                      <i class="fa fa-phone mr-2"></i>(905) 525-9140 x67890
-                    </a>
                     <a class="dropdown-item px-3 py-2 col-sm-6 col-12" href="mailto:giamoum@mcmaster.ca" style="overflow: hidden; white-space: initial;">
                       <i class="fa fa-envelope mr-2"></i>giamoum@mcmaster.ca
                     </a>
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://www.eng.mcmaster.ca/cas/faculty/matthew-giamou/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://www.eng.mcmaster.ca/cas/faculty/matthew-giamou/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -601,9 +592,6 @@ get_header();
                     <p class="mb-0"><strong>Collaborator</strong></p>
                   </div>
                   <div class="list-group list-group-flush small mt-2">
-                    <a href="tel:+19055259140,67890" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0" aria-label="Primary phone number for Dr. Jane Doe">
-                      <i class="fa fa-phone mr-2 text-muted"></i><strong>(905) 525-9140 x67890</strong>
-                    </a>
                     <a href="mailto:giamoum@mcmaster.ca" class="list-group-item list-group-item-action pt-0 pb-1 px-0 border-0 m-0">
                       <i class="fa fa-envelope mr-2 text-muted"></i><strong>giamoum@mcmaster.ca</strong>
                     </a>
@@ -646,7 +634,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://biology.mcmaster.ca/people/faculty/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://biology.mcmaster.ca/people/faculty/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>
@@ -708,7 +696,7 @@ get_header();
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <a class="btn-link-label btn btn-primary mr-auto" href="https://linkedin.com/in/lukhsaan/" target="_blank">More Information</a>
+                  <a class="btn-link-label btn btn-primary mr-auto" href="https://linkedin.com/in/lukhsaan/" target="_blank" rel="noopener noreferrer">More Information</a>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
                 </div>
               </div>

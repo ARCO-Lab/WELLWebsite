@@ -13,8 +13,9 @@ const eslintConfig = defineConfig([
   globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "public/maplibre/**"]),
   {
     rules: {
-      // Temporary rule adjustments
-      "@typescript-eslint/no-explicit-any": "off",
+      // Use real types (or unknown and narrow it) instead of any, so the compiler checks what the data looks like.
+      "@typescript-eslint/no-explicit-any": "error",
+      // Temporary rule adjustment
       "@typescript-eslint/no-unused-vars": "off",
       // New in eslint-plugin-react-hooks 7 (with eslint-config-next 16). They flag existing code that works
       // (setState at the top of an effect, refs read during render), so they warn rather than fail the lint

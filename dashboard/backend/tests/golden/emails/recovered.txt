@@ -1,0 +1,20 @@
+Subject: [WELL] Recovered: Weather station 22051538 rain (6 h)
+
+1 recovered. Open right now: 0.
+
+## Recovered
+
+- **Weather station 22051538 rain**: reporting again
+  Thu Nov 12, 01:40 → Thu Nov 12, 07:50 (6 h)
+  Dashboard: https://welldash.mcmaster.ca/
+
+## Open right now
+
+- None
+
+---
+
+Dashboard: https://welldash.mcmaster.ca/
+Health JSON: https://welldash.mcmaster.ca/api/health/data
+Why did I get this? https://github.com/ARCO-Lab/WELLWebsite/blob/main/dashboard/backend/README.md#why-did-i-get-this-email
+Checked Thu Nov 12, 08:03 (Toronto time).

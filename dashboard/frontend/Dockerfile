@@ -22,6 +22,10 @@ ARG NEXT_PUBLIC_SENTRY_DSN=https://dee04106f585f2535a092c4693fddb4a@o45124103539
 # Environment the dashboard's Sentry events are filed under; build with --build-arg
 # NEXT_PUBLIC_SENTRY_ENVIRONMENT=development (for example) for a local image, so its errors aren't filed as production.
 ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
+# GoatCounter endpoint page views are counted at (src/components/VisitorCount.tsx). Counting happens only when the
+# page is served from welldash.mcmaster.ca, so other builds of this image send nothing; build with
+# --build-arg NEXT_PUBLIC_GOATCOUNTER_ENDPOINT= to leave counting out entirely.
+ARG NEXT_PUBLIC_GOATCOUNTER_ENDPOINT=https://well.goatcounter.com/count
 
 # Set environment variables for the build process
 ENV FLASK_API_URL=${FLASK_API_URL}
@@ -29,6 +33,7 @@ ENV NEXT_PUBLIC_FLASK_API_URL=${NEXT_PUBLIC_FLASK_API_URL}
 ENV NEXT_PUBLIC_WP_HOME=${NEXT_PUBLIC_WP_HOME}
 ENV NEXT_PUBLIC_SENTRY_DSN=${NEXT_PUBLIC_SENTRY_DSN}
 ENV NEXT_PUBLIC_SENTRY_ENVIRONMENT=${NEXT_PUBLIC_SENTRY_ENVIRONMENT}
+ENV NEXT_PUBLIC_GOATCOUNTER_ENDPOINT=${NEXT_PUBLIC_GOATCOUNTER_ENDPOINT}
 
 RUN npm run build
 

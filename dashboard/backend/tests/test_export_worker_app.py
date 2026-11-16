@@ -6,7 +6,6 @@ import pathlib
 import sys
 import shutil
 import tempfile
-import unittest
 import unittest.mock
 import uuid
 

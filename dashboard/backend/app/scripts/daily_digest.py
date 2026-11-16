@@ -1,9 +1,15 @@
-# Builds the daily plain-text digest of the sensor data: the open email alerts (scripts/check_alerts.py), stale
-# series, implausible values, readings and gaps per group over the last 24 h, the newest reading of every series,
-# the WQData device's primary power and last contact, and yesterday's API traffic (request_metrics, utils/traffic.py). scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
+# Builds the daily digest of the sensor data: the open email alerts (scripts/check_alerts.py) and those that cleared
+# in the last 24 h (including low-priority recoveries that weren't emailed on their own, and older recoveries the
+# alert emails never managed to send), the sampling download's rows needing a decision (ATTENTION: lines), stale
+# series, implausible values, readings and gaps per group (and per station within a group) over the last 24 h, the
+# newest reading of every series, the WQData device's primary power and last contact, yesterday's API traffic
+# (request_metrics, utils/traffic.py), and first of all the worker's heartbeat URLs (HEALTHCHECK_URL_*) that aren't
+# set, if any. scripts/scheduler_temp.py runs it once a day (DIGEST_HOUR, default 07:00 Toronto time).
 #
+# The digest is Markdown text, sent with the same content as HTML (utils/email_format.py), like the alert emails.
 # It emails the digest to ALERT_EMAILS when SMTP_HOST and SMTP_PORT are set (SMTP_USER, SMTP_PASSWORD and
-# SMTP_FROM are optional), and otherwise prints it. It reads the database only, and makes at most one WQData
+# SMTP_FROM are optional), and otherwise prints it. It only reads the database, except to mark the recoveries it
+# emailed and the alert emails hadn't (older ones, low-priority ones) as reported, and makes at most one WQData
 # request, since WQData's hourly request quota is shared with the 10-minute ingestion.
 #
 #   python scripts/daily_digest.py               build it, then email or print it
@@ -23,11 +29,14 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 import requests  # noqa: E402
 
-from utils.digest import anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings  # noqa: E402
+from utils.digest import (anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings,  # noqa: E402
+                          station_gaps)
+from utils.email_format import markdown_to_html  # noqa: E402
 from utils.monitoring import age_minutes, assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
 
 WINDOW = timedelta(hours=24)
+MISSED_LOOKBACK = timedelta(days=14)   # how far back to look for recoveries the alert emails never sent
 WQ_POWER_PARAMETER = 115219   # WQData's Primary Power (V); not stored, so it is read from the API here
 WQ_FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -41,14 +50,15 @@ ORDER BY recorded_at
 def read_groups(db, freshness, now):
     """Rows, time slots, gaps and anomaly findings of the 24 h before `now` (aware) for every checked (not
     excluded) series. Slots and gaps are worked out in UTC, on the stored instants: on DST days the wall clock
-    skips or repeats an hour, which would look like a gap or a shortfall."""
+    skips or repeats an hour, which would look like a gap or a shortfall. Gaps are found for the group's time
+    slots and for each station's, so one logger's silence shows while the others report."""
     from db.models import Instant
     since_utc = now.astimezone(timezone.utc) - WINDOW
     # Typed both ways, so the bound instant and the result are aware UTC on any database (SQLite in the tests)
     query = db.text(SERIES_SQL).bindparams(db.bindparam("since", type_=Instant)).columns(recorded_at=Instant)
     groups, findings = {}, []
     for group, info in freshness["groups"].items():
-        slots, rows, count = set(), 0, 0
+        slots, rows, count, by_station = set(), 0, 0, {}
         for s in info["series"]:
             if s["status"] == "excluded":
                 continue
@@ -56,13 +66,18 @@ def read_groups(db, freshness, now):
             readings = db.session.execute(query, {"station": s["station_id"], "measurement": s["measurement_type"],
                                                   "since": since_utc}).all()
             rows += len(readings)
-            slots.update(r.recorded_at for r in readings)
+            # recorded_at is already an aware UTC instant (the Instant column type), so slots are those instants
+            times = {r.recorded_at for r in readings}
+            slots.update(times)
+            by_station.setdefault(s["station_id"], set()).update(times)
             findings += anomalies(group, s["station_id"], s["measurement_type"],
                                   [r.value for r in readings if r.value is not None])
         if count:
-            timestamps = sorted(slots)
-            groups[group] = {"rows": rows, "series": count, "timestamps": timestamps,
-                             "gaps": find_gaps(timestamps, since_utc, now.astimezone(timezone.utc))}
+            timestamps, end = sorted(slots), now.astimezone(timezone.utc)
+            gaps = find_gaps(timestamps, since_utc, end)
+            groups[group] = {"rows": rows, "series": count, "timestamps": timestamps, "gaps": gaps,
+                             "station_gaps": station_gaps(gaps, {st: sorted(t) for st, t in by_station.items()},
+                                                          since_utc, end)}
     return groups, findings
 
 
@@ -75,6 +90,23 @@ def read_traffic(db, now):
     except Exception as e:   # the type only: a connection error's text can include the database URL
         db.session.rollback()
         return {"error": type(e).__name__}
+
+
+def read_restore_leftovers(db):
+    """The restore drill databases on the server (utils/backup.py), or [] while a drill is running (its database
+    isn't left behind) or if they can't be listed."""
+    from utils.backup import leftover_restore_databases, restore_lock
+    try:
+        with restore_lock() as free:
+            if not free:
+                return []
+            names = db.session.execute(db.text("SELECT datname FROM pg_database")).scalars().all()
+            current = db.session.execute(db.text("SELECT current_database()")).scalar()
+        return leftover_restore_databases(names, {current})
+    except Exception as e:   # the digest still goes out
+        db.session.rollback()
+        print(f"[WARN] could not list the restore drill databases: {type(e).__name__}: {e}")
+        return []
 
 
 def read_wqdata(config, now):
@@ -98,7 +130,7 @@ def read_wqdata(config, now):
                 try:
                     power.append(float(v["value"]))
                 except (TypeError, ValueError, KeyError):
-                    pass
+                    pass   # a reading without a numeric value is left out of the power range
     result = {"power_min": min(power, default=None), "power_max": max(power, default=None),
               "power_readings": len(power), "last_point": None, "last_point_age_minutes": None}
     if newest:   # WQData timestamps are UTC without an offset
@@ -110,10 +142,16 @@ def read_wqdata(config, now):
     return result
 
 
-def send_email(settings, recipients, subject, body):
+def send_email(settings, recipients, subject, body, html=None, message_id=None):
+    """Send one email: `body` as the text part and, if given, `html` as its HTML alternative (multipart), and
+    `message_id` as its Message-ID (otherwise the relay sets one)."""
     message = EmailMessage()
     message["From"], message["To"], message["Subject"] = settings["from"], ", ".join(recipients), subject
+    if message_id:
+        message["Message-ID"] = message_id
     message.set_content(body)
+    if html:
+        message.add_alternative(html, subtype="html")
     context = ssl.create_default_context()
     if settings["port"] == 465:
         server = smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=30, context=context)
@@ -145,26 +183,74 @@ def main(argv=None):
     from server import create_app
     from api.routes.latest import latest_rows
 
+    from utils.alerts import RECOVERY_WINDOW, Settings, settings_from_env
+    from utils.alert_state import alerts_report, mark_recoveries_reported, missed_recoveries, recent_recoveries
+
+    try:
+        alert_settings = settings_from_env()
+    except ValueError as e:   # a bad ALERT_* setting fails the alert check; the digest still goes out
+        print(f"[WARN] {e}; the digest uses the default alert settings")
+        alert_settings = Settings()
     now = datetime.now(timezone.utc)
-    with create_app().app_context():
+    app = create_app()
+    with app.app_context():
         freshness = assess_freshness(latest_rows(), now)
         groups, findings = read_groups(db, freshness, now)
         try:
-            from utils.alert_state import alerts_report
             incidents = alerts_report()["open"]
+            recoveries = recent_recoveries(now - WINDOW)
+            # Recoveries the alert check stopped retrying (an SMTP outage of a day or more): listed here instead.
+            missed = missed_recoveries(now - MISSED_LOOKBACK, now - RECOVERY_WINDOW, alert_settings.quiet_kinds)
         except Exception as e:   # e.g. the alert tables' migration hasn't run yet
             db.session.rollback()
-            incidents = {"error": type(e).__name__}
+            incidents = recoveries = {"error": type(e).__name__}
+            missed = []
         traffic = read_traffic(db, now)
+        leftovers = read_restore_leftovers(db)
+    attention = read_attention(now)
     wqdata = None if args.no_wqdata else read_wqdata(Config, now)
+    from utils import sharepoint
+    from utils.borealis import upload_status
+    from utils.heartbeat import unset_heartbeats
+    upload_on = upload_status()[0] != "off"
+    unset = unset_heartbeats(sharepoint_on=sharepoint.status()[0] != "off", upload_on=upload_on)
+    copies_off = [] if upload_on else ["Borealis upload: off (`BOREALIS_UPLOAD=off`, or no `BOREALIS_*` settings)"]
     subject, body = build_digest(now.astimezone(EST_TZ).date().isoformat(), freshness, groups, findings, wqdata,
-                                 incidents, traffic)
-    return deliver(subject, body, args.dry_run)
+                                 incidents=incidents, traffic=traffic, recoveries=recoveries,
+                                 dashboard_url=alert_settings.dashboard_url, quiet_kinds=alert_settings.quiet_kinds,
+                                 missed=missed, attention=attention, unset_heartbeats=unset,
+                                 leftover_databases=leftovers, copies_off=copies_off)
+
+    def reported():   # what it listed has now been told: neither the alert emails nor the next digest repeat it
+        with app.app_context():
+            mark_recoveries_reported(reported_ids(recoveries, missed, alert_settings.quiet_kinds), now)
+
+    return deliver(subject, body, args.dry_run, html=markdown_to_html(body, subject), on_sent=reported)
 
 
-def deliver(subject, body, dry_run, env=None, send=send_email):
-    """Email the digest, or print it when --dry-run or SMTP isn't set up. The exit code: 1 when it should have
-    been emailed and wasn't (bad settings, no recipients, sending failed), so the digest heartbeat reports /fail."""
+def reported_ids(recoveries, missed, quiet_kinds):
+    """The incidents whose recovery an emailed digest reports: the older recoveries it listed (`missed`), and the
+    low-priority (quiet kind) recoveries of its last 24 h not emailed yet. Not the other unsent recoveries of the
+    last 24 h: the alert check is still retrying their email."""
+    ids = [r["id"] for r in missed]
+    if isinstance(recoveries, list):
+        ids += [r["id"] for r in recoveries if not r["recovery_emailed"] and r["kind"] in quiet_kinds]
+    return ids
+
+
+def read_attention(now):
+    """The sampling download's ATTENTION: entries of the last 24 h (utils/jobs.recent_attention), or {"error"}."""
+    from utils.jobs import recent_attention
+    try:
+        return recent_attention(now - WINDOW)
+    except (OSError, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def deliver(subject, body, dry_run, env=None, send=send_email, html=None, on_sent=None):
+    """Email the digest, or print it when --dry-run or SMTP isn't set up; `on_sent()` is called once it has been
+    emailed. The exit code: 1 when it should have been emailed and wasn't (bad settings, no recipients, sending
+    failed), so the digest heartbeat reports /fail."""
     env = os.environ if env is None else env
     recipients, invalid = parse_alert_emails(env.get("ALERT_EMAILS"))
     if invalid:
@@ -186,12 +272,17 @@ def deliver(subject, body, dry_run, env=None, send=send_email):
         print(f"Subject: {subject}\n\n{body}")
         return 1
     try:
-        send(settings, recipients, subject, body)
+        send(settings, recipients, subject, body, html)
     except Exception as e:   # the type and message only; smtplib errors don't include the password
         print(f"[ERROR] Emailing the digest failed: {type(e).__name__}: {e}; the digest was:\n")
         print(f"Subject: {subject}\n\n{body}")
         return 1
     print(f"[INFO] Digest emailed to {len(recipients)} recipient(s): {subject}")
+    if on_sent:
+        try:
+            on_sent()
+        except Exception as e:   # the digest went out; at worst the next one lists the same recoveries again
+            print(f"[WARN] Couldn't record what the digest reported: {type(e).__name__}")
     return 0
 
 

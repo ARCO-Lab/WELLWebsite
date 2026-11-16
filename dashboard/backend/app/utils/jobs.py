@@ -6,13 +6,35 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime, timedelta
 
 import sentry_sdk
 
 from utils.sentry import capture_job_error
 
+# The exit code of a script the scheduler runs (scripts/upload_data.py) when its settings stop it: a setting is
+# missing or wrong, or the server rejected its credentials. Retrying won't help until someone changes a setting, so
+# the scheduler reports it as a SettingsError carrying the script's own message (settings_error), not as a
+# CalledProcessError.
+SETTINGS_ERROR_EXIT = 3
+# The exit code of an upload script when its period has no readings at all, so nothing was sent.
+NO_DATA_EXIT = 2
 
-def run_in_background(job, log=print, name=None):
+
+class SettingsError(RuntimeError):
+    """A job can't run until a setting is fixed. The message says which, and what to do."""
+
+
+def settings_error(exc):
+    """The SettingsError for a script that exited SETTINGS_ERROR_EXIT (a CalledProcessError): its last stdout line
+    starting with ERROR:, without that prefix, or a general message if it printed none."""
+    lines = [line.strip()[len("ERROR:"):].strip() for line in (exc.output or "").splitlines()
+             if line.strip().startswith("ERROR:")]
+    script = os.path.basename(str(exc.cmd[1])) if isinstance(exc.cmd, (list, tuple)) and len(exc.cmd) > 1 else "job"
+    return SettingsError(lines[-1] if lines else f"{script} stopped: its settings need fixing (see its log)")
+
+
+def run_in_background(job, log=print, name=None, on_skip=None):
     """Wrap `job` so each call starts it in its own thread and returns at once.
 
     If the previous run of the same job is still going, the call is skipped and logged instead,
@@ -21,17 +43,28 @@ def run_in_background(job, log=print, name=None):
     timeouts), since a run that never returns keeps the lock. Returning at once matters too: the
     `schedule` library only moves a job's next run time after the scheduled callable returns, so a
     job that blocks the loop looks "still due" to anything else polling the scheduler meanwhile.
+    `on_skip(skips, message)`, if given, is called after each skip with the number of runs skipped in a row (back
+    to 0 once a run starts), so the scheduler can report a job that stays stuck (scripts/scheduler_temp.py).
     """
     lock = threading.Lock()
     started_at = [None]
+    skipped = [0]
     label = name or getattr(job, "__name__", "job")
 
     def start():
         if not lock.acquire(blocking=False):
             minutes = (time.monotonic() - started_at[0]) / 60 if started_at[0] else 0
-            log(f"[WARN] {label} is still running (started {minutes:.0f} min ago); skipping this run")
+            skipped[0] += 1
+            message = f"{label} is still running (started {minutes:.0f} min ago); skipping this run"
+            log(f"[WARN] {message}")
+            if on_skip:
+                try:
+                    on_skip(skipped[0], message)
+                except Exception as e:   # reporting a skip must never stop the scheduler loop
+                    log(f"[ERROR] reporting the skipped {label} run failed: {e}")
             return None
         started_at[0] = time.monotonic()
+        skipped[0] = 0
 
         def target():
             # Errors reported to Sentry during this run (utils/sentry.py; a no-op when it is off) carry the job name.
@@ -50,6 +83,7 @@ def run_in_background(job, log=print, name=None):
         return thread
 
     start.__name__ = f"run_{label}"
+    start.is_running = lock.locked   # read by the scheduler's shutdown, to wait for the job to finish
     return start
 
 
@@ -67,8 +101,20 @@ def run_bounded(cmd, timeout, grace=10):
     as its own traceback and as the scheduler's CalledProcessError.
     """
     env = {**os.environ, "SENTRY_DSN": ""}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-                            env=env)
+    with _groups_lock:
+        if _stopping.is_set():   # the worker is shutting down (stop_subprocesses): start nothing new
+            raise RuntimeError(f"not running {' '.join(map(str, cmd))}: the worker is shutting down")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True, env=env)
+        _groups.add(proc.pid)
+    try:
+        return _wait_bounded(proc, cmd, timeout, grace)
+    finally:
+        with _groups_lock:
+            _groups.discard(proc.pid)
+
+
+def _wait_bounded(proc, cmd, timeout, grace):
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -85,6 +131,34 @@ def run_bounded(cmd, timeout, grace=10):
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
+# Process groups of the commands run_bounded is running now, so a worker that is stopping can end them
+_groups = set()
+_groups_lock = threading.Lock()
+_stopping = threading.Event()
+
+
+def stop_subprocesses(grace=10):
+    """For a worker that is shutting down: refuse new run_bounded commands, send SIGTERM to the process group of
+    each one running now, and SIGKILL any group still there after `grace` seconds. The jobs that ran them see
+    them fail (CalledProcessError with exit code -15) and log it. Returns how many groups were signalled."""
+    with _groups_lock:
+        _stopping.set()
+        groups = list(_groups)
+    for pgid in groups:
+        _signal_group(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        with _groups_lock:
+            if not _groups:
+                break
+        time.sleep(0.2)
+    with _groups_lock:
+        left = list(_groups)
+    for pgid in left:
+        _signal_group(pgid, signal.SIGKILL)
+    return len(groups)
+
+
 def _signal_group(pgid, sig):
     try:
         os.killpg(pgid, sig)
@@ -94,7 +168,8 @@ def _signal_group(pgid, sig):
 
 def download_status(stdout):
     """The status download_data.py reports on its last `OUTPUT: <status>` line, e.g. "PROCESSED_2_FILES",
-    "NO_NEW_FILES", "NO_FILES", "NO_FILES_PROCESSED", or REJECTED_<n>_FILES / FAILED_<n>_FILES (then it exits 1).
+    "NO_NEW_FILES", "NO_FILES", "NO_FILES_PROCESSED", "NOT_PUBLISHED" (the dataset was never published), or
+    REJECTED_<n>_FILES / FAILED_<n>_FILES (then it exits 1).
     None if it printed no status.
 
     download_data.py imports every file it downloads itself, so this is a status, never a file path.
@@ -143,23 +218,84 @@ def parse_month_key(text):
     return int(match.group(1)), int(match.group(2))
 
 
-def load_uploaded_months(path):
-    """The months recorded in `path` as uploaded; empty if the file doesn't exist yet.
+def load_record(path, field):
+    """The keys listed under `field` in the JSON record `path` (e.g. "uploaded_months"); empty if the file doesn't
+    exist yet.
 
     A file that can't be read raises instead of counting as empty, so a damaged record can't cause every
-    month to be uploaded again.
+    period to be uploaded again.
     """
     try:
         with open(path) as f:
-            return set(json.load(f).get("uploaded_months", []))
+            return set(json.load(f).get(field, []))
     except FileNotFoundError:
         return set()
 
 
-def record_uploaded_month(path, year, month):
-    """Add (year, month) to the record in `path`, written atomically so a crash can't leave half a file."""
-    months = load_uploaded_months(path) | {month_key(year, month)}
+def add_to_record(path, field, key):
+    """Add `key` to the list `field` of the record in `path`, keeping its other lists; written atomically so a crash
+    can't leave half a file."""
+    try:
+        with open(path) as f:
+            record = json.load(f)
+    except FileNotFoundError:
+        record = {}
+    record[field] = sorted(set(record.get(field, [])) | {key})
     tmp = f"{path}.tmp"
     with open(tmp, "w") as f:
-        json.dump({"uploaded_months": sorted(months)}, f, indent=2)
+        json.dump(record, f, indent=2)
     os.replace(tmp, path)
+
+
+def load_uploaded_months(path):
+    """The months recorded in `path` as uploaded, e.g. {"2026-10"}; empty if the file doesn't exist yet."""
+    return load_record(path, "uploaded_months")
+
+
+def record_uploaded_month(path, year, month):
+    """Add (year, month) to the record in `path`."""
+    add_to_record(path, "uploaded_months", month_key(year, month))
+
+
+# download_data.py's ATTENTION: lines (sampling rows a newer file no longer has, corrections held back), kept for the
+# daily digest, which lists those of its 24 h; with the logs, so they survive a worker restart.
+ATTENTION_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs",
+                              "sampling_attention.json")
+ATTENTION_KEEP = timedelta(days=14)
+
+
+def load_attention(path=ATTENTION_PATH):
+    """The recorded ATTENTION: lines, [{"at": aware ISO time, "text": the line without "ATTENTION: "}], oldest first;
+    empty if none were recorded. A damaged file raises ValueError."""
+    try:
+        with open(path) as f:
+            entries = json.load(f)
+    except FileNotFoundError:
+        return []
+    if not isinstance(entries, list) or not all(isinstance(e, dict) and "at" in e and "text" in e for e in entries):
+        raise ValueError(f"{path} isn't a list of ATTENTION: entries")
+    return entries
+
+
+def record_attention(lines, now, path=ATTENTION_PATH):
+    """Add the ATTENTION: lines among `lines` to `path` with the time `now` (aware), dropping entries older than
+    ATTENTION_KEEP; written atomically. A damaged file is replaced (its lines were in the log and Sentry already).
+    Returns how many were added. Raises OSError if it can't be written."""
+    new = [{"at": now.isoformat(timespec="seconds"), "text": line[len("ATTENTION:"):].strip()}
+           for line in lines if line.startswith("ATTENTION:")]
+    if not new:
+        return 0
+    try:
+        kept = [e for e in load_attention(path) if datetime.fromisoformat(e["at"]) >= now - ATTENTION_KEEP]
+    except ValueError:
+        kept = []
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(kept + new, f, indent=2)
+    os.replace(tmp, path)
+    return len(new)
+
+
+def recent_attention(since, path=ATTENTION_PATH):
+    """The ATTENTION: entries recorded since `since` (aware), oldest first."""
+    return [e for e in load_attention(path) if datetime.fromisoformat(e["at"]) >= since]

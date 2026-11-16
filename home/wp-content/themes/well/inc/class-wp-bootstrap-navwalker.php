@@ -16,6 +16,7 @@
  * License: GPL-3.0+
  * License URI: http://www.gnu.org/licenses/gpl-3.0.txt
  */
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 // Check if Class Exists.
 if ( ! class_exists( 'WP_Bootstrap_Navwalker' ) ) :

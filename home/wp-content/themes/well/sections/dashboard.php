@@ -1,6 +1,7 @@
 <?php
 // This section renders the "WELL Dashboard" card for the WELL WordPress theme.
 // It provides an overview and preview image of the dashboard, with a link to access it.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 ?>
 <section class="thumbnail-cards white my-5">
   <div class="container">

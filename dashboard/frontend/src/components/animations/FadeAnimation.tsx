@@ -13,7 +13,7 @@ interface FadeAnimationProps {
   delay?: number;
   initialOpacity?: number;
   className?: string;
-  resetKey?: any; // fade in again when this changes
+  resetKey?: unknown; // fade in again when this changes (compared by identity, as an effect dependency)
 }
 
 // Set once the page's first render has committed: anything mounted before that is part of the initial layout.

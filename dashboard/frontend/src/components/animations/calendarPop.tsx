@@ -1,5 +1,5 @@
 // This file defines a Calendar component and a custom CalendarDayButton for date selection UI.
-// It customizes the appearance and behavior of react-day-picker using Radix UI and Lucide icons.
+// It customizes the appearance and behavior of react-day-picker, with the app's Button styles and Lucide icons.
 
 import * as React from "react"
 import {
@@ -85,7 +85,6 @@ function Calendar({
             : "rounded-md pl-2 pr-1 flex items-center gap-1 text-sm h-8 [&>svg]:text-muted [&>svg]:size-3.5",
           defaultClassNames.caption_label
         ),
-        table: "w-full border-collapse",
         weekdays: cn("flex", defaultClassNames.weekdays),
         weekday: cn(
           "text-muted rounded-md flex-1 font-normal text-[0.8rem] select-none",

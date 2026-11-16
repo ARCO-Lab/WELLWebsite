@@ -23,10 +23,12 @@ function normalize(address: string): string {
   return trimmed.toLowerCase().startsWith("::ffff:") && trimmed.includes(".") ? trimmed.slice(7) : trimmed;
 }
 
+// The addresses in TRUSTED_PROXY_IPS (or `value`), normalized.
 export function trustedProxies(value = process.env.TRUSTED_PROXY_IPS || ""): Set<string> {
   return new Set(value.split(",").map(normalize).filter(Boolean));
 }
 
+// The visitor's address for this request, by the rules at the top of this file.
 export function clientIp(req: Request, trusted: Set<string> = trustedProxies()): string {
   const peer = normalize(req.socket?.remoteAddress || "");
   if (!trusted.has(peer)) return peer;

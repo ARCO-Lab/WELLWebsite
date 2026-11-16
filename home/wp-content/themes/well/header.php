@@ -1,6 +1,24 @@
 <?php
 // This file renders the HTML <head> and site header for the WELL WordPress theme.
 // It includes meta tags, favicon links, accessibility skip links, McMaster and site navigation menus.
+defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
+
+// Cross-domain canonical for republished News posts. A post brought over from another site
+// (e.g. McMaster Daily News) keeps the original article's address in the `_canonical_url`
+// custom field. When that is set on a single post, point rel=canonical at the original so
+// search engines credit the source rather than treating this copy as the original. We also
+// turn off WordPress's default self-referential canonical for these posts, so there is exactly
+// one canonical tag. All other posts and pages are unchanged.
+$well_canonical_url = '';
+if ( is_singular( 'post' ) ) {
+    $well_canonical_meta = get_post_meta( get_queried_object_id(), '_canonical_url', true );
+    if ( is_string( $well_canonical_meta ) && trim( $well_canonical_meta ) !== '' ) {
+        $well_canonical_url = esc_url( trim( $well_canonical_meta ) );
+    }
+}
+if ( $well_canonical_url !== '' ) {
+    remove_action( 'wp_head', 'rel_canonical' );
+}
 ?>
 <!DOCTYPE html>
 <html <?php language_attributes(); ?>>
@@ -12,10 +30,12 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="<?php bloginfo( 'name' ); ?>">
     <link rel="profile" href="https://gmpg.org/xfn/11">
-    <link rel="pingback" href="<?php bloginfo( 'pingback_url' ); ?>">
     <?php // The favicon and app icons come from wp_head() below (the Site Icon set in Appearance > Customize). ?>
     <meta name="msapplication-TileColor" content="#7a003c">
     <meta name="theme-color" content="#ffffff">
+    <?php if ( $well_canonical_url !== '' ) : ?>
+    <link rel="canonical" href="<?php echo $well_canonical_url; ?>">
+    <?php endif; ?>
     <?php wp_head(); ?>
 </head>
 <body <?php body_class(); ?>>
@@ -27,7 +47,7 @@
         </div>
         <div class="header__inner">
             <a href="https://www.mcmaster.ca" id="mcmaster-brand" class="nav-item" style="float:left; display:block; z-index:1000; position:relative; padding-top: 8px;">
-                <img src="<?php echo get_template_directory_uri(); ?>/img/logo.svg" style="height: auto; margin: 0 12px 0 -12px;" alt="McMaster logo" />
+                <img src="<?php echo esc_url( get_template_directory_uri() . '/img/logo.svg' ); ?>" style="height: auto; margin: 0 12px 0 -12px;" alt="McMaster logo" />
                 <span class="sr-only">McMaster logo</span>
             </a>
             <div id="mcmaster-header__title">
@@ -37,7 +57,7 @@
         </div>
         <div id="navLinks" style="display: flex; align-items: center; width: auto; z-index:1200; transition: width 0s; margin-top: 16px; justify-content: flex-end;">
             <a href="<?php echo esc_url( home_url( '/' ) ); ?>" id="well-home-logo" class="nav-item" aria-label="WELL Home">
-                <img src="<?php echo get_template_directory_uri(); ?>/img/welllogo.svg" alt="WELL logo" />
+                <img src="<?php echo esc_url( get_template_directory_uri() . '/img/welllogo.svg' ); ?>" alt="WELL logo" />
             </a>
         </div>
     </header>
@@ -48,7 +68,7 @@
             <button class="search-close" aria-label="Close search">&times;</button>
             <h2>Search McMaster</h2>
             <form role="search" method="get" action="<?php echo esc_url( home_url( '/' ) ); ?>">
-                <input type="search" name="s" class="search-input" placeholder="Search for pages, people, or resources..." value="<?php echo get_search_query(); ?>" />
+                <input type="search" name="s" class="search-input" placeholder="Search for pages, people, or resources..." value="<?php echo esc_attr( get_search_query( false ) ); ?>" />
                 <button type="submit" class="search-submit">Search</button>
             </form>
             <div class="search-results"></div>
@@ -114,7 +134,7 @@
                     'container_id'    => 'siteMenu',
                     'menu_class'      => 'navbar-nav',
                     'fallback_cb'     => '',
-                    'menu_id'         => 'navbar-nav,mr-auto',
+                    'menu_id'         => 'site-menu-list',
                     'depth'           => 3,
                     'walker'          => new WP_Bootstrap_Navwalker(),
                 )

@@ -40,6 +40,37 @@ class RunInBackgroundTests(unittest.TestCase):
         second.join(5)
         self.assertEqual(len(runs), 2)
 
+    def test_each_skip_is_reported_with_the_number_in_a_row(self):
+        release, started, skips = threading.Event(), threading.Event(), []
+
+        def slow():
+            started.set()
+            release.wait(5)
+
+        def broken_report(n, message):
+            skips.append((n, message))
+            raise RuntimeError("heartbeat down")   # a failing report must not stop the scheduler loop
+
+        logs = []
+        start = run_in_background(slow, log=logs.append, name="backup", on_skip=broken_report)
+        first = start()
+        self.assertTrue(started.wait(5))
+        self.assertIsNone(start())
+        self.assertIsNone(start())
+        self.assertEqual([n for n, _ in skips], [1, 2])
+        self.assertIn("backup is still running", skips[0][1])
+        self.assertTrue(any("reporting the skipped backup run failed" in line for line in logs), logs)
+        release.set()
+        first.join(5)
+        started.clear()
+        release.clear()
+        second = start()   # a run that starts resets the count
+        self.assertTrue(started.wait(5))
+        self.assertIsNone(start())
+        self.assertEqual(skips[-1][0], 1)
+        release.set()
+        second.join(5)
+
     def test_a_failing_run_is_logged_and_frees_the_job(self):
         logs = []
 

@@ -22,20 +22,27 @@ Settings (environment):
                               doubling with each further return, up to 12 h)
   ALERT_EXCLUDED_SERIES       series to mute, like HEALTH_EXCLUDED_SERIES ("station:measurement" or "station:*")
   ALERT_DASHBOARD_URL         dashboard link in the emails (default https://welldash.mcmaster.ca/)
+  ALERT_QUIET_KINDS           kinds whose recovery gets no email of its own (default SUSPECT_VALUES; "none" emails
+                              every recovery). Such a recovery goes in the next email sent anyway, and in the digest.
 The quiet hours and excluded series of /health/data (HEALTH_QUIET_HOURS_<GROUP>, HEALTH_EXCLUDED_SERIES) apply
 here too, so the water quality sonde's usual night-time silence isn't an alert.
 """
 import os
+import re
 import statistics
+from collections import namedtuple
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import requests
 
+from utils.email_format import (
+    aware, duration, footer, markdown_to_html, section, since, span, what, when,
+)
 from utils.digest import (DEPTH_NEAR_ZERO, FLATLINE_MIN_READINGS, FLATLINE_TYPES, FLATLINE_ZERO_OK, LOGGER_SENSORS,
                           ODO_NEAR_ZERO, PLAUSIBLE_RANGES)
+from utils.fetching import WRONG_UNITS
 from utils.monitoring import DEFAULT_EXCLUDED_SERIES, as_site_time, env_key, parse_excluded_series, parse_hours
-from utils.timezone import EST_TZ
 
 STALE_SENSOR, VENDOR_DOWN, SUSPECT_VALUES = "STALE_SENSOR", "VENDOR_DOWN", "SUSPECT_VALUES"
 KIND_ORDER = {VENDOR_DOWN: 0, STALE_SENSOR: 1, SUSPECT_VALUES: 2}
@@ -59,11 +66,15 @@ DEFAULT_REOPEN_HOURS = 6.0
 DEFAULT_DASHBOARD_URL = "https://welldash.mcmaster.ca/"
 DEFAULT_FLAP_CLEAR_MINUTES = 180.0
 FLAP_CLEAR_CAP = timedelta(hours=12)
-RECOVERY_WINDOW = timedelta(hours=24)   # a recovery that couldn't be emailed for this long is dropped
+RECOVERY_WINDOW = timedelta(hours=24)   # a recovery not emailed for this long is left to the daily digest
+# Low-severity kinds: their recovery waits for the next email that goes out anyway (or the daily digest, which lists
+# every recovery of the last 24 h), rather than sending one of its own. New alerts of these kinds are still emailed.
+DEFAULT_QUIET_KINDS = frozenset({SUSPECT_VALUES})
 
 
 @dataclass
 class Settings:
+    """The alert settings (see the list at the top of this file); settings_from_env() reads them."""
     vendor_failures: int = DEFAULT_VENDOR_FAILURES
     reminder: timedelta = timedelta(hours=DEFAULT_REMINDER_HOURS)
     suspect_window: timedelta = timedelta(hours=DEFAULT_SUSPECT_HOURS)
@@ -73,10 +84,13 @@ class Settings:
     reopen_within: timedelta = timedelta(hours=DEFAULT_REOPEN_HOURS)
     flap_clear_after: timedelta = timedelta(minutes=DEFAULT_FLAP_CLEAR_MINUTES)
     muted: frozenset = frozenset()   # (station_id, measurement_type or "*") from ALERT_EXCLUDED_SERIES
+    quiet_kinds: frozenset = DEFAULT_QUIET_KINDS   # ALERT_QUIET_KINDS
 
 
 @dataclass
 class Condition:
+    """One problem found by this check. `key` identifies it across runs (e.g. "vendor:LI-COR",
+    "stale:LI-COR:2577531"), so an open incident is matched to the same condition next time."""
     key: str
     kind: str
     title: str          # the email subject, without "[WELL] "
@@ -98,6 +112,7 @@ class Plan:
     absent: list = field(default_factory=list)        # open incidents whose condition is gone, not cleared yet
     steady: list = field(default_factory=list)        # flapped before, now present ALERT_REOPEN_HOURS: undamp
     recovered: list = field(default_factory=list)     # emailed incidents that cleared, recovery not yet emailed
+    renotified: list = field(default_factory=list)    # (reopened coarser incident, newer last email of its finer ones)
 
 
 def parse_positive(text, name, unit):
@@ -112,6 +127,8 @@ def parse_positive(text, name, unit):
 
 
 def settings_from_env(env=None):
+    """Settings from the ALERT_* environment variables; unset ones take the defaults. A bad value raises
+    ValueError naming the variable."""
     env = os.environ if env is None else env
     failures = (env.get("ALERT_VENDOR_FAILURES") or "").strip()
     if failures and (not failures.isdigit() or int(failures) < 1):
@@ -128,6 +145,7 @@ def settings_from_env(env=None):
         raise ValueError(f"ALERT_EXCLUDED_SERIES entries must look like 4501:ODO or 2577533:*, got {muted_text!r}") from None
     clear = (env.get("ALERT_CLEAR_MINUTES") or "").strip()
     flap_clear = (env.get("ALERT_FLAP_CLEAR_MINUTES") or "").strip()
+    quiet_kinds = parse_quiet_kinds(env.get("ALERT_QUIET_KINDS"))
     suspect = (env.get("ALERT_SUSPECT_VALUES") or "on").strip().lower()
     if suspect not in ("on", "off", "1", "0", "true", "false", "yes", "no"):
         raise ValueError(f"ALERT_SUSPECT_VALUES must be on or off, got {suspect!r}")
@@ -143,7 +161,24 @@ def settings_from_env(env=None):
         flap_clear_after=timedelta(minutes=parse_positive(flap_clear, "ALERT_FLAP_CLEAR_MINUTES", "minutes")
                                    if flap_clear else DEFAULT_FLAP_CLEAR_MINUTES),
         muted=muted,
+        quiet_kinds=quiet_kinds,
     )
+
+
+def parse_quiet_kinds(text):
+    """ALERT_QUIET_KINDS: alert kinds, comma-separated, any case; unset or blank is the default, "none" is no kind.
+    ValueError naming the variable for an unknown kind."""
+    text = (text or "").strip()
+    if not text:
+        return DEFAULT_QUIET_KINDS
+    if text.lower() == "none":
+        return frozenset()
+    kinds = {part.strip().upper() for part in re.split(r"[,;\s]+", text) if part.strip()}
+    unknown = sorted(kinds - set(KIND_ORDER))
+    if unknown:
+        raise ValueError(f"ALERT_QUIET_KINDS must list alert kinds ({', '.join(KIND_ORDER)}) or be none, "
+                         f"got {text!r}")
+    return frozenset(kinds)
 
 
 def freshness_env(env=None):
@@ -174,7 +209,7 @@ def freshness_env(env=None):
 def describe_vendor_error(error):
     """(kind, HTTP status or None, text) for a failed vendor call. The text is the error type and status only (or
     the message of our own BadVendorResponse): requests' messages include the URL, which holds WQData's key."""
-    from utils.fetching import BadVendorResponse
+    from utils.fetching import BadVendorResponse, UnreadableRecords
     status = getattr(getattr(error, "response", None), "status_code", None)
     if status in (401, 403):
         kind = "auth"
@@ -188,6 +223,8 @@ def describe_vendor_error(error):
         kind = "timeout"
     elif isinstance(error, requests.exceptions.ConnectionError):
         kind = "network"
+    elif isinstance(error, UnreadableRecords):
+        kind = "unreadable"
     elif isinstance(error, ValueError):
         kind = "bad_response"
     else:
@@ -199,25 +236,9 @@ def describe_vendor_error(error):
     return kind, status, text
 
 
-def aware(ts):
-    """A database time as an aware datetime: PostgreSQL's timestamptz already is; SQLite (tests) returns naive UTC."""
-    if ts is None or ts.tzinfo:
-        return ts
-    return ts.replace(tzinfo=timezone.utc)
-
-
 def site_time(ts):
-    return aware(ts).astimezone(EST_TZ).strftime("%Y-%m-%d %H:%M")
-
-
-def duration(delta):
-    """A rounded, readable length of time: "45 min", "3 h", "2.5 days"."""
-    minutes = max(0, int(delta.total_seconds() // 60))
-    if minutes < 120:
-        return f"{minutes} min"
-    if minutes < 48 * 60:
-        return f"{round(minutes / 60)} h"
-    return f"{minutes / 1440:.1f} days"
+    # A database time in Toronto time, written like everywhere else in the emails: "Wed Nov 11, 12:00".
+    return when(ts)
 
 
 def station_label(group, station_id):
@@ -256,6 +277,23 @@ def vendor_conditions(vendors, now, settings):
                       f"{site_time(since)}. {last_ok} WQData's hourly quota is shared by the 10-minute ingestion, the "
                       f"daily digest, the API canary and scripts/wqdata_backfill.py: stop any backfill that is "
                       f"running. Ingestion catches up by itself once the quota resets; the sensors may be fine.")
+        elif kind == "unreadable" and WRONG_UNITS in (row.get("last_error") or ""):
+            # It answers, but every record is in a unit we don't expect: a sensor was swapped or the account's unit
+            # system changed. The fix is a setting in utils/parsers.py (and maybe a conversion), not in the field.
+            title = f"{source} sends readings in an unexpected unit (×{failures}) — check the ingestion log"
+            detail = (f"{source} has answered on the last {failures} ingestion runs, since {site_time(since)}, but "
+                      f"its records are in units we don't expect (last error: {row.get('last_error')}). {last_ok} "
+                      f"Check whether a sensor was swapped or the account's unit setting changed, then update "
+                      f"WEATHER_UNITS/LOGGER_UNITS in utils/parsers.py (converting if needed) and refill the period "
+                      f"with scripts/licor_backfill.py. No {source} data is being stored until then.")
+        elif kind == "unreadable":
+            # It answers, but none of its records could be read: most likely its format changed, so the fix is in
+            # our parser, not at the vendor or in the field.
+            title = f"{source} sends records we can't read (×{failures}) — check the ingestion log"
+            detail = (f"{source} has answered on the last {failures} ingestion runs, since {site_time(since)}, but "
+                      f"none of its records could be read (last error: {row.get('last_error') or 'unknown'}). "
+                      f"{last_ok} The vendor may have changed its format: see the worker's ingestion log and "
+                      f"utils/parsers.py. No {source} data is being stored until then; the sensors may be fine.")
         else:
             title = f"{source} API not responding since {site_time(since)} ({count}) — check vendor status"
             detail = (f"The {source} API call has failed on the last {failures} ingestion runs, since "
@@ -295,37 +333,63 @@ def stale_conditions(freshness, vendors, now):
         else:
             vendor_ok = f"{vendor}'s latest call isn't recorded yet, so this may also be a vendor problem"
         fix = "Check the sensor, its power and its telemetry in the field."
+        # Records of the vendor's latest answer that couldn't be read (vendor_status.last_skipped) may be the missing
+        # readings: then the title points at the ingestion log, not the field.
+        unread = row.get("last_skipped") if row else None
+        unreadable = (f"{vendor} sends readings in an unexpected unit, check the ingestion log"
+                      if unread and WRONG_UNITS in unread
+                      else f"{vendor} sent unreadable records, check the ingestion log")
+        check_site, check_sensor = (unreadable, unreadable) if unread else ("vendor OK, check the site",
+                                                                         "vendor OK, check the sensor")
+        note = (f" {vendor}'s latest answer also had records we couldn't read ({unread}); check the worker's "
+                f"ingestion log before going to the field." if unread else "")
         everything = [s for series in stations.values() for s in series]
         if len(stations) > 1 and all(s["status"] == "stale" for s in everything):
             newest = max(as_site_time(s["newest"]) for s in everything)
             names = ", ".join(station_label(g, st) for g, st in sorted(stations))
-            title = f"Every {vendor} station silent for {duration(now - newest)} — vendor OK, check the site"
+            title = f"Every {vendor} station silent for {duration(now - newest)} — {check_site}"
             detail = (f"{vendor_ok}, but none of its stations ({names}) has sent anything since "
                       f"{site_time(newest)} ({duration(now - newest)}). The water level loggers report through the "
-                      f"weather station, so check the weather station's power, cellular modem and data plan first.")
+                      f"weather station, so check the weather station's power, cellular modem and data plan "
+                      f"first.{note}")
             key = f"stale:{vendor}"
             found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
             continue
         for (group, station), series in sorted(stations.items()):
+            label = station_label(group, station)
+            for s in series:
+                if s["status"] != "future":
+                    continue
+                # Its newest reading is dated ahead of now (a device clock that jumped ahead), so it can't be judged
+                # stale: say so, under the series' own key, until the row is gone.
+                key = f"stale:{vendor}:{station}:{s['measurement_type']}"
+                newest = as_site_time(s["newest"])
+                title = (f"{label} {s['measurement_type']} newest reading dated {site_time(newest)}, in the future — "
+                         f"check the device clock")
+                detail = (f"The newest stored {label} {s['measurement_type']} reading is dated {site_time(newest)}, "
+                          f"ahead of now, so whether it is still reporting can't be told. Ingestion now skips such "
+                          f"records; this one was stored before. Check the device's clock, then delete the row(s) "
+                          f"dated in the future from sensor_measurements.{note}")
+                found[key] = Condition(key, STALE_SENSOR, title, detail, now)
             stale = [s for s in series if s["status"] == "stale"]
             if not stale:
                 continue
-            label = station_label(group, station)
             if len(stale) == len(series):
                 newest = max(as_site_time(s["newest"]) for s in series)
                 key = f"stale:{vendor}:{station}"
-                title = f"{label} silent for {duration(now - newest)} — vendor OK, check the sensor"
-                detail = f"{vendor_ok}; {label} has sent nothing since {site_time(newest)} ({duration(now - newest)}). {fix}"
+                title = f"{label} silent for {duration(now - newest)} — {check_sensor}"
+                detail = (f"{vendor_ok}; {label} has sent nothing since {site_time(newest)} "
+                          f"({duration(now - newest)}). {fix}{note}")
                 found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
                 continue
             for s in stale:
                 newest = as_site_time(s["newest"])
                 key = f"stale:{vendor}:{station}:{s['measurement_type']}"
                 title = (f"{label} {s['measurement_type']} silent for {duration(now - newest)} — "
-                         f"vendor OK, check the sensor")
+                         + check_sensor)
                 detail = (f"{vendor_ok} and {label}'s other sensors are reporting, but {s['measurement_type']} has "
                           f"sent nothing since {site_time(newest)} ({duration(now - newest)}). Check that sensor and "
-                          f"its cable in the field.")
+                          f"its cable in the field.{note}")
                 found[key] = Condition(key, STALE_SENSOR, title, detail, newest)
     return found, held
 
@@ -390,13 +454,14 @@ def suspect_conditions(freshness, recent, settings):
 
 
 def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, now, settings,
-         muted=lambda key: False):
+         muted=lambda key: False, superseded=None):
     """Compare the conditions found now with the incidents and decide what to store and email.
 
     conditions: {key: Condition}. held: key prefixes that can't be judged this run; their open incidents are left
     exactly as they are. open_incidents: incidents with resolved_at NULL. recently_closed: {key: incident} closed
     within ALERT_REOPEN_HOURS, newest per key. pending_recoveries: cleared, emailed incidents whose recovery email
-    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES).
+    hasn't gone out. muted(key): whether the key's series is muted (ALERT_EXCLUDED_SERIES). superseded: {key:
+    incident} closed as superseded, newest per key (utils/alert_state.superseded_incidents).
 
     - An incident clears (and its recovery is emailed) once its condition has been gone for ALERT_CLEAR_MINUTES.
       A condition that comes back within ALERT_REOPEN_HOURS of clearing reopens the same incident; if its recovery
@@ -410,21 +475,49 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
       conditions replace a coarser one, the replaced incidents close as superseded, without a recovery email, and a
       new finer incident takes over its coarser incident's notification state, so nothing already reported is
       emailed as new. A muted series' incidents close the same way.
+    - A coarser incident replaced by finer ones reopens when its condition comes back while those finer incidents
+      are still open (at any time, not only within ALERT_REOPEN_HOURS): its problem never went away, so it isn't
+      new, and its reminders and flap damping carry on. E.g. loggers silent all winter and the weather station
+      missing uploads now and then: each miss reopens "every LI-COR station silent" rather than emailing it as new.
+      It takes the newest email time of the finer incidents it replaces again, so its next reminder is counted from
+      the last email about the problem, not from its own.
+    - A suspect-values incident whose series has gone silent is replaced by the silence alert (superseded, no
+      "recovered" email): its readings can't be judged any more, and the silence is what needs acting on. If the
+      readings then come back still wrong, it reopens (no second "new") when it closed within ALERT_REOPEN_HOURS or
+      the silence alert that replaced it is open or cleared within ALERT_REOPEN_HOURS (handed_to_silence).
     """
     result = Plan()
     open_by_key = {i.incident_key: i for i in open_incidents}
     present = set(conditions)
     reopened = set()
+    renotified = {}   # id(incident) -> the newer email time it takes from its finer incidents
+    superseded = superseded or {}
 
     def is_held(key):
         return any(is_under(key, prefix) for prefix in held)
 
     for key, condition in conditions.items():
         incident = open_by_key.get(key)
-        if incident is None and key in recently_closed:
-            incident = recently_closed[key]
-            result.reopen.append(incident)
-            reopened.add(id(incident))
+        if incident is None:
+            replaced = superseded.get(key)
+            if replaced is not None and not (carried_on(replaced, open_incidents) or handed_to_silence(
+                    replaced, open_by_key, recently_closed, now, settings)):
+                replaced = None
+            candidates = [i for i in (recently_closed.get(key), replaced) if i is not None]
+            if candidates:   # the newest, if it both cleared and was superseded lately
+                incident = max(candidates, key=lambda i: aware(i.resolved_at))
+                result.reopen.append(incident)
+                reopened.add(id(incident))
+                if incident is replaced:
+                    # Emailed about through its finer incidents meanwhile: the next reminder counts from then.
+                    latest = max((aware(i.last_notified_at) for i in open_incidents
+                                  if i.incident_key.startswith(key + ":") and i.last_notified_at is not None),
+                                 default=None)
+                    # Not if it was never emailed itself: then it is still "new".
+                    last = aware(incident.last_notified_at)
+                    if latest is not None and last is not None and latest > last:
+                        result.renotified.append((incident, latest))
+                        renotified[id(incident)] = latest
         if incident is None:
             parent = next((i for k, i in open_by_key.items() if k not in present and key.startswith(k + ":")), None)
             result.open_new.append((condition, parent))
@@ -433,18 +526,20 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
         if (incident.flaps and id(incident) not in reopened and incident.present_since is not None
                 and now - aware(incident.present_since) >= settings.reopen_within):
             result.steady.append(incident)   # steady for hours: its real recovery is reported after the usual delay
-        if incident.last_notified_at is None:
+        last_email = renotified.get(id(incident)) or aware(incident.last_notified_at)
+        if last_email is None:
             result.notify_new.append(incident)
         elif (incident.reopened_at is not None or id(incident) in reopened) and incident.recovery_notified_at is not None:
             # Back after an emailed recovery: the next email about it is "back again", never a reminder.
             if incident.reopened_at is not None and now - aware(incident.reopened_at) >= settings.clear_after:
                 result.back_again.append(incident)
-        elif now - aware(incident.last_notified_at) >= settings.reminder:
+        elif now - last_email >= settings.reminder:
             result.remind.append(incident)
     for key, incident in open_by_key.items():
-        if key in present or is_held(key):
+        silenced = silence_covers(key, present)
+        if key in present or (is_held(key) and not silenced):
             continue
-        if muted(key) or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
+        if muted(key) or silenced or any(key.startswith(k + ":") or k.startswith(key + ":") for k in present):
             result.supersede.append(incident)
         elif now - aware(incident.last_seen_at) >= clear_window(incident, settings):
             result.resolve.append(incident)
@@ -455,6 +550,41 @@ def plan(conditions, held, open_incidents, recently_closed, pending_recoveries, 
     result.recovered += [i for i in pending_recoveries
                          if id(i) not in reopened and now - aware(i.resolved_at) <= RECOVERY_WINDOW]
     return result
+
+
+def carried_on(incident, open_incidents):
+    """Whether a superseded incident's problem has been carried on by finer incidents ever since: one of them, keyed
+    under it, is open and was opened no later than the incident was closed (when the finer ones took over)."""
+    return any(i.incident_key.startswith(incident.incident_key + ":")
+               and aware(i.opened_at) <= aware(incident.resolved_at) for i in open_incidents)
+
+
+def handed_to_silence(incident, open_by_key, recently_closed, now, settings):
+    """Whether a superseded suspect-values incident should reopen when its condition is back: it closed within
+    ALERT_REOPEN_HOURS, or a silence incident covering its series, opened no later than it closed (the one that
+    replaced it), is open or cleared within ALERT_REOPEN_HOURS (recently_closed)."""
+    if incident.kind != SUSPECT_VALUES:
+        return False
+    if now - aware(incident.resolved_at) <= settings.reopen_within:
+        return True
+    covering = [open_by_key.get(k) or recently_closed.get(k) for k in silence_keys(incident.incident_key)]
+    return any(i is not None and aware(i.opened_at) <= aware(incident.resolved_at) for i in covering)
+
+
+def silence_keys(key):
+    """The silence keys covering a suspect-values key's series ("suspect:<vendor>:<station>:<measurement>"): the
+    series, its station and the vendor's whole site; empty for any other key."""
+    parts = key.split(":", 3)
+    if parts[0] != "suspect" or len(parts) < 4:
+        return []
+    vendor, station, measurement = parts[1:]
+    return [f"stale:{vendor}", f"stale:{vendor}:{station}", f"stale:{vendor}:{station}:{measurement}"]
+
+
+def silence_covers(key, present):
+    """Whether a suspect-values key ("suspect:<vendor>:<station>:<measurement>") is about a series that a silence
+    alert found now covers: the series itself, its station or the vendor's whole site."""
+    return any(k in present for k in silence_keys(key))
 
 
 def clear_window(incident, settings):
@@ -480,57 +610,119 @@ def sort_key(item):
     return KIND_ORDER.get(item.kind, 9), item.title
 
 
-def build_email(new, reminders, recovered, open_count, now, settings, back_again=()):
-    """(subject, body) of one batched email; items have kind, title, detail, started_at (recovered ones also
-    resolved_at). None when there is nothing to send."""
-    new, reminders, recovered = sorted(new, key=sort_key), sorted(reminders, key=sort_key), sorted(recovered, key=sort_key)
-    back_again = sorted(back_again, key=sort_key)
-    if not (new or reminders or recovered or back_again):
-        return None
-    if new or back_again:
-        lead = new or back_again
-        subject = ((lead[0].title if new else f"Back again: {lead[0].title}") if len(lead) == 1
-                   else f"{len(lead)} {'new alerts' if new else 'alerts back again'}: {lead[0].title} "
-                        f"(+{len(lead) - 1} more)")
-        extra = [f"{len(x)} {w}" for x, w in ((back_again if new else (), "back again"), (recovered, "recovered"),
-                                              (reminders, "still ongoing")) if x]
-        subject += f"; {', '.join(extra)}" if extra else ""
-    elif recovered and not reminders:
-        subject = (f"Recovered: {recovered[0].title}" if len(recovered) == 1
-                   else f"{len(recovered)} alerts recovered")
-    elif reminders and not recovered:
-        subject = (f"Still ongoing: {reminders[0].title}" if len(reminders) == 1
-                   else f"{len(reminders)} alerts still ongoing")
-    else:
-        subject = f"{len(recovered)} alerts recovered, {len(reminders)} still ongoing"
+# One email: its subject and two bodies with the same content, Markdown text and the HTML rendered from it.
+Email = namedtuple("Email", "subject text html")
 
-    lines = [f"WELL dashboard alerts, checked {site_time(now)} (Toronto time).", ""]
-    for heading, items in (("NEW", new),
-                           ("BACK AGAIN (after the recovery emailed earlier; it now has to stay clear longer, "
-                            "see below, before it is reported recovered again)", back_again),
-                           (f"STILL ONGOING (reminder, at most every {duration(settings.reminder)})", reminders)):
-        if not items:
-            continue
-        lines += [heading, ""]
-        for n, item in enumerate(items, 1):
-            lines += [f"{n}. {item.title}", f"   {item.detail}",
-                      f"   Since {site_time(item.started_at)} ({duration(now - aware(item.started_at))} ago).", ""]
-    if recovered:
-        lines += ["RECOVERED", ""]
-        for item in recovered:
-            lines.append(f"- {item.title}: recovered at {site_time(item.resolved_at)}, after "
-                         f"{duration(aware(item.resolved_at) - aware(item.started_at))} "
-                         f"(from {site_time(item.started_at)}).")
-        lines.append("")
+# What an alert's problem is, shortest form, for the subject and the cards; and what "recovered" means for it.
+RECOVERED_AS = {VENDOR_DOWN: "API answering again", STALE_SENSOR: "reporting again",
+                SUSPECT_VALUES: "readings back to normal"}
+SILENT_RE = re.compile(r"silent for (.+?)(?: —|$)")
+
+
+def status(item, now):
+    """The problem in a few words: "silent 4 h", "readings look wrong", "API not responding". From the kind, and
+    for silences and vendor errors from the title, which every check refreshes (utils/alerts.py writes both)."""
+    title = item.title or ""
+    if item.kind == STALE_SENSOR:
+        if "in the future" in title:
+            return "dated in the future"
+        found = SILENT_RE.search(title)
+        return f"silent {found.group(1) if found else duration(now - aware(item.started_at))}"
+    if item.kind == SUSPECT_VALUES:
+        return "readings look wrong"
+    if item.kind == VENDOR_DOWN:
+        for words, text in (("credentials", "rejects our credentials"), ("quota", "request quota exceeded"),
+                            ("can't read", "sends records we can't read"),
+                            ("unexpected unit", "sends readings in an unexpected unit")):
+            if words in title:
+                return text
+        return "not responding"
+    return title.split(" — ")[0]
+
+
+def action(item):
+    """What to do, one line: the part of the title after " — " ("vendor OK, check the sensor"), capitalized."""
+    text = (item.title or "").split(" — ", 1)[1] if " — " in (item.title or "") else "see the dashboard"
+    return text[:1].upper() + text[1:]
+
+
+def short_action(item):
+    # The subject's version: the vendor is fine whenever "vendor OK" is said, so the subject leaves it out. The first
+    # letter is lowercased only when it starts an ordinary word ("Check ..."), never a name ("LI-COR", "WQData").
+    text = action(item)
+    if text.startswith("Vendor OK, "):
+        return text[len("Vendor OK, "):]
+    return text[:1].lower() + text[1:] if text[1:2].islower() else text
+
+
+def is_quiet(item, settings):
+    """Whether this recovery waits for an email that goes out anyway (ALERT_QUIET_KINDS)."""
+    return item.kind in settings.quiet_kinds
+
+
+def needs_email(new, reminders, recovered, back_again, settings):
+    """Whether this check has anything worth an email of its own: any problem (new, still open, back again), or a
+    recovery of a kind not in ALERT_QUIET_KINDS. Quiet recoveries alone wait (their recovery stays unsent, so the
+    next check offers them again, for up to RECOVERY_WINDOW; the daily digest lists them either way)."""
+    return bool(new or reminders or back_again or any(not is_quiet(r, settings) for r in recovered))
+
+
+def problem_card(item, now, base):
+    back = getattr(item, "reopened_at", None)   # back after an emailed recovery: say since when it is back
+    return [f"**{what(key_of(item))}**: {status(item, now)}",
+            f"Back {since(back, now)[0].lower()}{since(back, now)[1:]}; first seen {when(item.started_at)}"
+            if back is not None else since(item.started_at, now),
+            f"To do: {action(item)}.",
+            f"Details: {item.detail}",
+            f"Dashboard: {base}/"]
+
+
+def key_of(item):
+    # Incidents (db/models.py) have incident_key; Conditions (new this run, not stored yet) have key.
+    return getattr(item, "incident_key", None) or item.key
+
+
+def build_email(new, reminders, recovered, open_items, now, settings, back_again=()):
+    """The Email for one alert check, or None when there is nothing worth sending (see needs_email). new,
+    reminders, back_again, recovered: incidents (kind, incident_key, title, detail, started_at; recovered ones also
+    resolved_at). open_items: every incident open after this check, for the "Open right now" list."""
+    new, reminders, recovered = sorted(new, key=sort_key), sorted(reminders, key=sort_key), sorted(recovered, key=sort_key)
+    back_again, open_items = sorted(back_again, key=sort_key), sorted(open_items, key=sort_key)
+    if not needs_email(new, reminders, recovered, back_again, settings):
+        return None
     base = settings.dashboard_url.rstrip("/")
-    lines += [f"Open alerts now: {open_count}. You get one email per new problem, a reminder at most every "
-              f"{duration(settings.reminder)} while it lasts, and one when it has been clear for "
-              f"{duration(settings.clear_after)}. If it comes back within {duration(settings.reopen_within)}, you get "
-              f"a \"back again\" email once it has stayed back {duration(settings.clear_after)}, and from then on it "
-              f"has to stay clear for "
-              f"{duration(settings.flap_clear_after)} (doubling with each return, up to {duration(FLAP_CLEAR_CAP)}) "
-              f"before it is reported recovered.",
-              f"Dashboard: {base}/",
-              f"Data freshness and open alerts (JSON): {base}/api/health/data",
-              "What each alert means and how to tune it: the README's Monitoring section."]
-    return "[WELL] " + subject, "\n".join(lines) + "\n"
+    counts = [(len(new), "new"), (len(reminders), "still open"), (len(back_again), "back again"),
+              (len(recovered), "recovered")]
+    if sum(n for n, _ in counts) == 1:
+        if new or back_again:
+            item = (new or back_again)[0]
+            subject = (f"{'New' if new else 'Back again'}: {what(key_of(item))} {status(item, now)} — "
+                       f"{short_action(item)}")
+        elif reminders:
+            item = reminders[0]
+            subject = f"Still open: {what(key_of(item))} {status(item, now)}"
+            if item.kind != STALE_SENSOR:   # a silence already says how long
+                subject += f" ({duration(now - aware(item.started_at))})"
+        else:
+            item = recovered[0]
+            subject = f"Recovered: {what(key_of(item))} ({duration(aware(item.resolved_at) - aware(item.started_at))})"
+    else:
+        subject = ", ".join(f"{n} {word}" for n, word in counts if n)
+
+    words = {"new": lambda n: f"{n} new problem{'s' if n > 1 else ''}"}
+    summary = ", ".join(words.get(word, lambda n, w=word: f"{n} {w}")(n) for n, word in counts if n)
+    lines = [f"{summary[:1].upper()}{summary[1:]}. Open right now: {len(open_items)}.", ""]
+    for heading, items in (("New problems", new), ("Still open (reminder)", reminders), ("Back again", back_again)):
+        if items:
+            lines += section(heading, [problem_card(i, now, base) for i in items])
+    if recovered:
+        lines += section("Recovered", [
+            [f"**{what(key_of(i))}**: {RECOVERED_AS.get(i.kind, 'recovered')}",
+             span(i.started_at, i.resolved_at),
+             f"Dashboard: {base}/"] for i in recovered])
+    lines += section("Open right now", [
+        [f"**{what(key_of(i))}**: {status(i, now)}. {since(i.started_at, now)}"] for i in open_items] or [["None"]])
+    lines += footer(settings.dashboard_url, now)
+    text = "\n".join(lines) + "\n"
+    subject = "[WELL] " + subject
+    return Email(subject, text, markdown_to_html(text, subject))

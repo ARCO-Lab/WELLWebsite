@@ -2,24 +2,34 @@
 # Borealis sampling download (Sundays 00:00) and the monthly Borealis upload (02:00 Toronto time: each
 # month that has ended and isn't uploaded yet, so last month goes up on the 1st and a failed one is retried daily),
 # followed by the same month's upload to SharePoint when SHAREPOINT_* is set (scripts/sharepoint_upload.py), with
-# its own record of months, so either copy can fail and be retried without the other.
+# its own record of months, so either copy can fail and be retried without the other. With SHAREPOINT_LAYOUT=cadence
+# that SharePoint run copies each ended day, ISO week and month instead, and the creek sampling readings of each
+# month (sharepoint_cadence_check).
 # It also builds the daily digest (scripts/daily_digest.py) at DIGEST_HOUR (default 07:00 Toronto time), and
 # pings a Healthchecks.io check after each ingestion run, sampling download, monthly upload (Borealis and
 # SharePoint each have their own) and digest (utils/heartbeat.py). Every night at 03:15 Toronto time it backs up
-# the database with pg_dump (scripts/backup_db.py) and pings the backup check. After every ingestion run it checks for
-# sensor and vendor problems and emails new ones (scripts/check_alerts.py).
+# the database with pg_dump (scripts/backup_db.py) and pings the backup check, and once a month (RESTORE_CHECK_DAY,
+# default the 2nd, 05:30) it runs the restore drill (scripts/restore_check.py) and pings the restore check. After every
+# ingestion run it checks for sensor and vendor problems and emails new ones (scripts/check_alerts.py).
 # One scheduler loop starts each job in its own thread, and a job that is still running is never
-# started again, so every job runs once per slot. It logs to files under logs/.
+# started again, so every job runs once per slot; each skipped run is logged in the job's heartbeat check, and
+# SKIPS_BEFORE_FAIL in a row fail it. At start-up it names every heartbeat URL that isn't set. It logs to files
+# under logs/.
 # When SENTRY_DSN is set, every failure it logs is also reported to Sentry, tagged with the job (utils/sentry.py).
+# On SIGTERM (docker compose stop, or a deploy recreating the worker) it starts nothing new, gives running jobs
+# STOP_WAIT_S to finish, then stops their subprocesses and exits (shut_down).
 
 import schedule
 import time
 import sys
 import builtins
+import signal
 import subprocess
+import math
 import os
 import pathlib
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -32,11 +42,15 @@ if __name__ == "__main__":
 
 from inject_from_api import inject_all_new_data  # noqa: E402
 from utils.jobs import (  # noqa: E402
-    run_in_background, run_bounded, download_status,
+    run_in_background, run_bounded, download_status, stop_subprocesses,
     load_uploaded_months, record_uploaded_month, months_due_for_upload, month_key, parse_month_key, UPLOAD_HOUR,
+    record_attention, SETTINGS_ERROR_EXIT, SettingsError, settings_error, load_record, add_to_record, NO_DATA_EXIT,
 )
-from utils.heartbeat import ping_heartbeat  # noqa: E402
-from utils import sharepoint  # noqa: E402
+from utils.heartbeat import ping_heartbeat, unset_heartbeats, first_report_today  # noqa: E402
+from utils.worklog import file_logger  # noqa: E402
+from utils import periods, sharepoint  # noqa: E402
+from utils.borealis import upload_status as borealis_upload_status  # noqa: E402
+from utils.sentry_poller import SentryPoller  # noqa: E402
 import check_alerts  # noqa: E402
 
 log_file_path = "logs/db_injections.log"
@@ -45,6 +59,7 @@ upload_log_file_path = "logs/db_uploads.log"
 digest_log_file_path = "logs/daily_digest.log"
 alerts_log_file_path = "logs/alerts.log"
 backup_log_file_path = "logs/backup.log"
+sentry_github_log_file_path = "logs/sentry_github.log"
 # Months already uploaded to Borealis, e.g. {"uploaded_months": ["2026-10"]}. It sits with the logs (a volume
 # on the host), so it survives restarts and rebuilds.
 uploaded_months_path = "logs/uploaded_months.json"
@@ -54,6 +69,32 @@ UPLOAD_FIRST_MONTH = os.getenv("BOREALIS_UPLOAD_FIRST_MONTH", "2026-10")
 # The same for the SharePoint copy, which has its own record. Override with SHAREPOINT_UPLOAD_FIRST_MONTH=YYYY-MM.
 sharepoint_uploaded_months_path = "logs/sharepoint_uploaded_months.json"
 SHAREPOINT_FIRST_MONTH = os.getenv("SHAREPOINT_UPLOAD_FIRST_MONTH", UPLOAD_FIRST_MONTH)
+# The cadence layout (SHAREPOINT_LAYOUT=cadence) keeps one record per cadence, e.g. {"uploaded": ["2026-11-14"],
+# "empty": ["2025-05-03"]}, apart from the year layout's, since its files go to other folders. Each cadence starts at
+# SHAREPOINT_DAILY_FIRST_DAY (YYYY-MM-DD) / SHAREPOINT_WEEKLY_FIRST_WEEK (YYYY-Www), by default the day and the week
+# of the 1st of SHAREPOINT_FIRST_MONTH, so a new library gets the whole history.
+sharepoint_period_records = {cadence: f"logs/sharepoint_{cadence}.json" for cadence in periods.CADENCES}
+SHAREPOINT_FIRST_PERIODS = {"daily": os.getenv("SHAREPOINT_DAILY_FIRST_DAY", ""),
+                            "weekly": os.getenv("SHAREPOINT_WEEKLY_FIRST_WEEK", ""), "monthly": ""}
+# At most this many files per cadence each night, oldest first, so a backfill of a year and a half of days is
+# spread over about two weeks instead of holding the 02:00 run for hours (SHAREPOINT_FILES_PER_RUN).
+SHAREPOINT_FILES_PER_RUN = os.getenv("SHAREPOINT_FILES_PER_RUN", "40").strip()
+# A cadence stops for the night after this many failed files: the cause is then likely a setting or SharePoint
+# itself, and trying the rest would only repeat it.
+SHAREPOINT_FAILURES_PER_RUN = 3
+# A day or week file is small; a run that takes longer than this is stuck. A month keeps UPLOAD_TIMEOUT_S.
+PERIOD_TIMEOUT_S = 15 * 60
+# The sampling files are small too, but one run sends all of them (sharepoint_upload.py --sampling all)
+SAMPLING_TIMEOUT_S = 30 * 60
+# Readings can arrive after their day has ended (a logger that uploads late, a backfill after an outage), so a day
+# or week is uploaded again every night until it ended this long ago (an unchanged file isn't sent again), and only
+# then recorded. A period with no readings at all is tried again each night the same way, then recorded as empty and
+# skipped; a month is recorded once it goes up, like the Borealis one.
+SETTLE_AFTER = timedelta(days=7)
+# A cadence-layout night starts no new SharePoint file after this long, and a file started before then is stopped
+# PERIOD_TIMEOUT_S after it at the latest (budget_timeout), so the whole SharePoint part ends within
+# SHAREPOINT_NIGHT_BUDGET_S + PERIOD_TIMEOUT_S. What's left goes up the next night.
+SHAREPOINT_NIGHT_BUDGET_S = int(2.5 * 60 * 60)
 
 # Site time. Monthly uploads cover Toronto calendar months (the CSV shows Toronto time), so months start and end there, not in UTC
 # (the container's clock).
@@ -63,13 +104,37 @@ SITE_TZ = ZoneInfo("America/Toronto")
 # job's lock (see utils.jobs.run_in_background) and block every later run.
 DOWNLOAD_TIMEOUT_S = 2 * 60 * 60
 UPLOAD_TIMEOUT_S = 2 * 60 * 60
+# The longest an upload run (Borealis, then SharePoint) can take: a month to Borealis under UPLOAD_TIMEOUT_S, then
+# either one SharePoint month under UPLOAD_TIMEOUT_S (year layout) or a cadence night. Its stuck detection uses this.
+UPLOAD_RUN_MAX_S = UPLOAD_TIMEOUT_S + max(UPLOAD_TIMEOUT_S, SHAREPOINT_NIGHT_BUDGET_S + PERIOD_TIMEOUT_S)
 LIST_FILES_TIMEOUT_S = 5 * 60
 DIGEST_TIMEOUT_S = 10 * 60
 BACKUP_TIMEOUT_S = 2 * 60 * 60   # backup_db.py bounds its own steps to 80 + 10 + 15 min (DUMP_TIMEOUT_S etc.)
+RESTORE_TIMEOUT_S = 4 * 60 * 60  # restore_check.py stops pg_restore after 3 h; counting both databases is the rest
+LEFTOVERS_TIMEOUT_S = 5 * 60     # restore_check.py --drop-leftovers: a few DROP DATABASE statements
 
 # The nightly backup runs at BACKUP_HOUR:15 Toronto time: after the 02:00 uploads, before the working day, and an
 # hour that happens exactly once on DST change days (02:00 is skipped or repeated, 03:00 never is).
 BACKUP_HOUR = 3
+
+# The monthly restore drill (scripts/restore_check.py) runs at RESTORE_HOUR:30 Toronto time on RESTORE_CHECK_DAY
+# (1-28, default the 2nd; "off" turns it off): after that night's backup has finished (it is stopped after 2 h, so
+# by 05:15), and away from the 1st, when the monthly uploads run.
+RESTORE_HOUR = 5
+RESTORE_CHECK_DAY = os.getenv("RESTORE_CHECK_DAY", "2").strip()
+
+# A job whose runs are skipped this many times in a row (the previous run is still going) pings its heartbeat with
+# /fail and is reported to Sentry: it is stuck, not just slow (skip_reporter). Fewer skips are only logged there.
+# For ingestion (every 10 minutes, its requests bounded on their own) 3 skips is half an hour, its check's grace. The
+# jobs run under a time limit get one more skip than a run can last (skips_before_fail), so a slow run that is still
+# within its limit is never reported as stuck.
+SKIPS_BEFORE_FAIL = 3
+
+
+def skips_before_fail(timeout_s, interval_s):
+    """How many skipped runs in a row mean a job is stuck: one more than a run within `timeout_s` can cover when the
+    job is started every `interval_s`."""
+    return math.ceil(timeout_s / interval_s) + 1
 
 # The hour (site time, 0-23) the daily digest is built and sent; checked when it is due, so a bad value is
 # logged there instead of stopping the scheduler. Not 1 or 2: clocks change at 02:00, so on those days 01:00
@@ -80,65 +145,105 @@ DIGEST_HOUR = os.getenv("DIGEST_HOUR", "7").strip()
 # Set WORKER_LOG_TO_STDOUT=1|true to enable
 LOG_TO_STDOUT = os.getenv("WORKER_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on")
 
-# Override print to add timestamps for API scheduler (file; optional stdout)
-def timestamped_print(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    # Always write to file
-    with open(log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    # Optionally mirror to stdout for debugging/visibility
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+# One print-like function per log file: a timestamp on each line, rotation by size (5 MB, 3 older copies kept), and
+# a line that can't be written is dropped rather than stopping the job (utils/worklog.py).
+timestamped_print = file_logger(log_file_path, LOG_TO_STDOUT)                    # API ingestion (and plain print)
+timestamped_print_download = file_logger(download_log_file_path, LOG_TO_STDOUT)  # weekly Borealis download
+timestamped_print_upload = file_logger(upload_log_file_path, LOG_TO_STDOUT)      # monthly Borealis/SharePoint upload
+timestamped_print_digest = file_logger(digest_log_file_path, LOG_TO_STDOUT)      # daily digest
+timestamped_print_alerts = file_logger(alerts_log_file_path, LOG_TO_STDOUT)      # alert check
+timestamped_print_backup = file_logger(backup_log_file_path, LOG_TO_STDOUT)      # nightly backup
+timestamped_print_sentry = file_logger(sentry_github_log_file_path, LOG_TO_STDOUT)  # Sentry issues to GitHub
 
-# Override print for download scheduler
-def timestamped_print_download(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(download_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+# Touched by the scheduler loop every ALIVE_EVERY_S; docker-compose.yml's healthcheck reports the worker unhealthy
+# when it is older than a few minutes (the loop has stopped or hangs). Outside logs/, so nothing on the host sees it.
+ALIVE_PATH = os.getenv("WORKER_ALIVE_PATH", "/tmp/well-scheduler.alive")
+ALIVE_EVERY_S = 30
 
-# Override print for upload scheduler
-def timestamped_print_upload(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(upload_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+# On SIGTERM, how long running jobs get to finish before their subprocesses are stopped, and how long those get to
+# exit after SIGTERM. Together with a few seconds for the jobs to log it, under docker-compose.yml's
+# stop_grace_period for the worker (60 s), after which Docker kills everything.
+STOP_WAIT_S = 40
+STOP_SUBPROCESS_GRACE_S = 10
+STOP_FINAL_WAIT_S = 5
 
-# Override print for the daily digest
-def timestamped_print_digest(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(digest_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+stopping = threading.Event()   # set by the SIGTERM handler; the loop then starts nothing new
 
-# Override print for the alert check
-def timestamped_print_alerts(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(alerts_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
 
-# Override print for the nightly backup
-def timestamped_print_backup(*args, **kwargs):
-    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    with open(backup_log_file_path, "a") as f:
-        builtins._original_print(timestamp, *args, file=f, **kwargs)
-        f.flush()
-    if LOG_TO_STDOUT:
-        builtins._original_print(timestamp, *args, **kwargs)
+def request_stop(signum, frame):
+    """SIGTERM/SIGINT handler: only sets `stopping`, so the loop ends after its current one-second sleep."""
+    stopping.set()
+
+
+def touch_alive(path=None):
+    """Update the alive file's time (creating it if needed). Never raises: the healthcheck reports a failure."""
+    try:
+        with open(path or ALIVE_PATH, "a"):
+            pass
+        os.utime(path or ALIVE_PATH)
+    except OSError:
+        # the file then goes stale and the healthcheck reports the worker unhealthy, as it should
+        pass
+
+
+def shut_down(jobs, log, wait_s=STOP_WAIT_S, grace_s=STOP_SUBPROCESS_GRACE_S, final_wait_s=STOP_FINAL_WAIT_S):
+    """Let the running jobs in `jobs` (run_in_background wrappers) finish within `wait_s` seconds. Any still going
+    are abandoned: their subprocesses (backup, upload, download, digest) get SIGTERM, then SIGKILL after `grace_s`,
+    and the jobs get `final_wait_s` more to log the result and ping their heartbeat. Ingestion runs in this process,
+    so an unfinished run simply ends with it; its next run starts from the newest stored reading. Returns the labels
+    of the jobs that were still running at the end."""
+    def running():
+        return [job.__name__.removeprefix("run_") for job in jobs if job.is_running()]
+
+    deadline = time.monotonic() + wait_s
+    if running():
+        log(f"[shutdown] Waiting up to {wait_s} s for: {', '.join(running())}")
+    while running() and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if running():
+        log(f"[shutdown] Still running after {wait_s} s, stopping: {', '.join(running())}")
+        stopped = stop_subprocesses(grace_s)
+        log(f"[shutdown] Sent SIGTERM to {stopped} subprocess group(s)")
+        deadline = time.monotonic() + final_wait_s
+        while running() and time.monotonic() < deadline:
+            time.sleep(0.5)
+    left = running()
+    log(f"[shutdown] Exiting{'; abandoned: ' + ', '.join(left) if left else ''}")
+    return left
+
+def report_attention(stdout):
+    """Send download_data.py's ATTENTION: lines (stored rows a newer file no longer has, kept for a person to
+    decide) to Sentry as warnings, and record them for the daily digest (utils/jobs.record_attention), which lists
+    them; the run itself still succeeded."""
+    lines = (stdout or "").splitlines()
+    for line in lines:
+        if line.startswith("ATTENTION:"):
+            capture_job_warning(line)
+    try:
+        record_attention(lines, datetime.now(SITE_TZ))
+    except OSError as e:   # they are in this log and in Sentry still
+        timestamped_print_download(f"[WARN] Couldn't record the ATTENTION: lines for the daily digest: {e}")
+
+# What the download check's ping says when the sampling dataset has never been published (a success: nothing to do)
+NOT_PUBLISHED_NOTE = ("The sampling dataset has no published version yet, so there was nothing to import. Files are "
+                      "imported on the first run after a curator publishes it.")
+
+
+def report_pending(stdout):
+    """Record download_data.py's PENDING: lines (sampling files waiting in an unpublished draft) for the daily digest,
+    which lists them with the ATTENTION: lines. Not sent to Sentry: nothing is broken, a curator has to publish. The
+    download runs weekly, so the digest shows it once a week while the draft waits."""
+    lines = ["ATTENTION: " + line[len("PENDING:"):].strip() for line in (stdout or "").splitlines()
+             if line.startswith("PENDING:")]
+    try:
+        record_attention(lines, datetime.now(SITE_TZ))
+    except OSError as e:   # still in this log
+        timestamped_print_download(f"[WARN] Couldn't record the PENDING: lines for the daily digest: {e}")
+
 
 def run_download_data():
     """Run download_data.py. It downloads every new Borealis file and imports each one itself
-    (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES or NO_NEW_FILES."""
+    (via inject_sampling.py), then reports a status such as PROCESSED_2_FILES, NO_NEW_FILES or NOT_PUBLISHED."""
     cmd = [sys.executable, "scripts/download_data.py"]
     timestamped_print_download(f"Running command: {' '.join(cmd)}")
     try:
@@ -146,8 +251,12 @@ def run_download_data():
         timestamped_print_download(f"download_data.py stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_download(f"download_data.py stderr: {result.stderr}")
+        report_attention(result.stdout)
         status = download_status(result.stdout)
         timestamped_print_download(f"download_data.py finished with status {status or 'none reported'}")
+        if status == "NOT_PUBLISHED":
+            timestamped_print_download(f"[WARN] {NOT_PUBLISHED_NOTE}")
+            report_pending(result.stdout)
         return status
     except subprocess.TimeoutExpired as e:
         timestamped_print_download(f"[ERROR] download_data.py was stopped after {DOWNLOAD_TIMEOUT_S // 60} min without finishing")
@@ -157,6 +266,7 @@ def run_download_data():
     except subprocess.CalledProcessError as e:
         status = download_status(e.stdout)
         timestamped_print_download(f"download_data.py stdout: {e.stdout}")
+        report_attention(e.stdout)
         if e.stderr:
             timestamped_print_download(f"download_data.py stderr: {e.stderr}")
         if status and status.startswith(("REJECTED_", "FAILED_")):
@@ -165,6 +275,13 @@ def run_download_data():
                                        f"listed above. A refused file is imported once a corrected file is uploaded.")
             capture_job_error(e)
             return status
+        if e.returncode == SETTINGS_ERROR_EXIT:
+            # A setting to fix, named in its ERROR: line: reported as that message rather than as a
+            # CalledProcessError, and without --list-files, which would stop on the same setting
+            error = settings_error(e)
+            timestamped_print_download(f"[ERROR] download_data.py stopped: {error}")
+            capture_job_error(error)
+            return None
         timestamped_print_download(f"[ERROR] download_data.py failed with exit code {e.returncode}: {e}")
         capture_job_error(e)
         # Run --list-files to debug dataset issues
@@ -189,31 +306,48 @@ def run_download_data():
 def run_upload_script(script, year, month):
     """Run an upload script (scripts/<script>) for one month. True only if it exited 0 and reported the file as
     uploaded."""
+    return run_script(script, ["--year", str(year), "--month", str(month)]) == "uploaded"
+
+
+def run_script(script, args, timeout=UPLOAD_TIMEOUT_S, no_data_ok=False):
+    """Run an upload script (scripts/<script> with `args`) under `timeout`. "uploaded" only if it exited 0 and
+    reported the file as uploaded; with `no_data_ok`, "empty" when it exited NO_DATA_EXIT (the period has no readings,
+    which is logged but not reported to Sentry); else "failed"."""
     try:
-        cmd = [sys.executable, f"scripts/{script}", "--year", str(year), "--month", str(month)]
+        cmd = [sys.executable, f"scripts/{script}", *args]
         timestamped_print_upload(f"Running command: {' '.join(cmd)}")
-        result = run_bounded(cmd, UPLOAD_TIMEOUT_S)
+        result = run_bounded(cmd, timeout)
         timestamped_print_upload(f"{script} stdout: {result.stdout}")
         if result.stderr:
             timestamped_print_upload(f"{script} stderr: {result.stderr}")
         if "Successfully uploaded" not in result.stdout:
             timestamped_print_upload(f"[ERROR] {script} finished but didn't report an upload")
-            return False
+            return "failed"
         timestamped_print_upload(f"Success: {script} completed")
-        return True
+        return "uploaded"
     except subprocess.TimeoutExpired as e:
-        timestamped_print_upload(f"[ERROR] {script} was stopped after {UPLOAD_TIMEOUT_S // 60} min without finishing")
+        timestamped_print_upload(f"[ERROR] {script} was stopped after {timeout // 60} min without finishing")
         capture_job_error(e)
         timestamped_print_upload(f"{script} stdout so far: {e.stdout}")
     except subprocess.CalledProcessError as e:
-        timestamped_print_upload(f"[ERROR] {script} failed with exit code {e.returncode}: {e}")
-        capture_job_error(e)
+        if no_data_ok and e.returncode == NO_DATA_EXIT:
+            timestamped_print_upload(f"{script} found no readings: {e.stdout}")
+            return "empty"
+        if e.returncode == SETTINGS_ERROR_EXIT:
+            # A setting or credential to fix (e.g. the token was rejected): reported as that message, which says
+            # what to do, rather than as a CalledProcessError
+            error = settings_error(e)
+            timestamped_print_upload(f"[ERROR] {script} stopped: {error}")
+            capture_job_error(error)
+        else:
+            timestamped_print_upload(f"[ERROR] {script} failed with exit code {e.returncode}: {e}")
+            capture_job_error(e)
         timestamped_print_upload(f"{script} stdout: {e.stdout}")
         timestamped_print_upload(f"{script} stderr: {e.stderr}")
     except Exception as e:
         timestamped_print_upload(f"[ERROR] Unexpected error running {script}: {e}")
         capture_job_error(e)
-    return False
+    return "failed"
 
 
 def run_upload_data(year, month):
@@ -230,7 +364,10 @@ def download_job():
     timestamped_print_download("========== DOWNLOAD JOB STARTED ==========")
     status = run_download_data()
     ok = status is not None and not status.startswith(("REJECTED_", "FAILED_"))
-    ping_heartbeat("download", "success" if ok else "fail")
+    if status == "NOT_PUBLISHED":
+        ping_heartbeat("download", "success", message=NOT_PUBLISHED_NOTE)
+    else:
+        ping_heartbeat("download", "success" if ok else "fail")
     timestamped_print_download("========== DOWNLOAD JOB COMPLETED ==========")
 
 def upload_job(year, month, target="Borealis", run=None):
@@ -258,7 +395,16 @@ def upload_due_months(now, target, record_path, first_month_text, first_month_se
     failed = 0
     for year, month in due:
         if upload_job(year, month, target, run):
-            record_uploaded_month(record_path, year, month)
+            try:
+                record_uploaded_month(record_path, year, month)
+            except Exception as e:
+                # The month went up, but unrecorded it is tried again tomorrow (an identical file isn't sent
+                # again, so that is harmless); a full or read-only logs/ still has to reach someone.
+                failed += 1
+                timestamped_print_upload(f"[ERROR] {month_key(year, month)} was uploaded to {target}, but recording "
+                                         f"it in {record_path} failed: {type(e).__name__}: {e}")
+                capture_job_error(e)
+                continue
             timestamped_print_upload(f"Recorded {month_key(year, month)} as uploaded in {record_path}")
         else:
             failed += 1
@@ -268,9 +414,139 @@ def upload_due_months(now, target, record_path, first_month_text, first_month_se
         ping_heartbeat(heartbeat, "fail" if failed else "success")
 
 
+def files_per_run():
+    """SHAREPOINT_FILES_PER_RUN as a whole number of at least 1. ValueError otherwise."""
+    if not SHAREPOINT_FILES_PER_RUN.isdigit() or int(SHAREPOINT_FILES_PER_RUN) < 1:
+        raise ValueError(f"SHAREPOINT_FILES_PER_RUN must be a whole number of at least 1, got "
+                         f"{SHAREPOINT_FILES_PER_RUN!r}")
+    return int(SHAREPOINT_FILES_PER_RUN)
+
+
+def budget_timeout(timeout, deadline, clock):
+    """`timeout`, cut so that a file started before `deadline` (a `clock` time) is stopped PERIOD_TIMEOUT_S after it
+    at the latest."""
+    return int(min(timeout, max(0, deadline - clock()) + PERIOD_TIMEOUT_S))
+
+
+def upload_due_periods(now, cadence, limit, deadline, clock=time.monotonic):
+    """Upload to SharePoint the periods of `cadence` that have ended since its first period and aren't in its record:
+    up to `limit` of those that ended SETTLE_AFTER ago or more, oldest first, recording each (as uploaded, or as empty
+    when it has no readings), then, for days and weeks, the more recent ones, which are refreshed every night and not
+    recorded yet, nor counted in `limit`. Starts no file after `deadline` (a `clock` time), and stops after
+    SHAREPOINT_FAILURES_PER_RUN failures. Returns (True if nothing failed, a one-line summary)."""
+    record_path = sharepoint_period_records[cadence]
+    try:
+        first = periods.first_period(cadence, SHAREPOINT_FIRST_PERIODS[cadence], SHAREPOINT_FIRST_MONTH)
+        done = load_record(record_path, "uploaded") | load_record(record_path, "empty")
+    except Exception as e:
+        setting = {"daily": "SHAREPOINT_DAILY_FIRST_DAY, ", "weekly": "SHAREPOINT_WEEKLY_FIRST_WEEK, "}.get(cadence, "")
+        timestamped_print_upload(f"[ERROR] Not uploading {cadence} files to SharePoint: {type(e).__name__}: {e} "
+                                 f"(check {setting}SHAREPOINT_UPLOAD_FIRST_MONTH and {record_path})")
+        capture_job_error(e)
+        return False, f"{cadence}: not run ({e})"
+    site_now = now.replace(tzinfo=None)   # periods are in naive Toronto wall-clock time
+    due = [period for period in periods.ended(cadence, now, first) if period.key not in done]
+    recent = {period.key for period in due if cadence != "monthly" and site_now - period.end < SETTLE_AFTER}
+    settled = [period for period in due if period.key not in recent]
+    uploaded = empty = refreshed = failed = 0
+    out_of_time = False
+    for period in settled[:limit] + [period for period in due if period.key in recent]:
+        if clock() >= deadline:
+            out_of_time = True
+            timestamped_print_upload(f"The SharePoint time limit for tonight is reached; the other {cadence} files "
+                                     f"go up tomorrow")
+            break
+        if cadence == "monthly":
+            args = ["--year", str(period.start.year), "--month", str(period.start.month)]
+        else:
+            args = ["--day" if cadence == "daily" else "--week", period.key]
+        timestamped_print_upload(f"========== SHAREPOINT {cadence.upper()} UPLOAD STARTED ({period.key}) ==========")
+        timeout = budget_timeout(UPLOAD_TIMEOUT_S if cadence == "monthly" else PERIOD_TIMEOUT_S, deadline, clock)
+        outcome = run_script("sharepoint_upload.py", args, timeout, no_data_ok=True)
+        timestamped_print_upload(f"========== SHAREPOINT {cadence.upper()} UPLOAD {outcome.upper()} ==========")
+        if outcome == "failed":
+            failed += 1
+            timestamped_print_upload(f"{period.key} was not uploaded to SharePoint; trying again tomorrow at 02:00")
+            if failed >= SHAREPOINT_FAILURES_PER_RUN:
+                timestamped_print_upload(f"[ERROR] Stopping the {cadence} SharePoint files for tonight after "
+                                         f"{failed} failures")
+                break
+            continue
+        if period.key in recent or (outcome == "empty" and site_now - period.end < SETTLE_AFTER):
+            refreshed += outcome == "uploaded"
+            timestamped_print_upload(f"{period.key} {'is up to date' if outcome == 'uploaded' else 'has no readings yet'}"
+                                     f"; it is uploaded again each night until {SETTLE_AFTER.days} days after it ended, "
+                                     f"in case more readings come in")
+            continue
+        field = "uploaded" if outcome == "uploaded" else "empty"
+        try:
+            add_to_record(record_path, field, period.key)
+        except Exception as e:
+            # Unrecorded, it is tried again tomorrow (an identical file isn't sent again), but a full or read-only
+            # logs/ still has to reach someone
+            failed += 1
+            timestamped_print_upload(f"[ERROR] Recording {period.key} as {field} in {record_path} failed: "
+                                     f"{type(e).__name__}: {e}")
+            capture_job_error(e)
+            continue
+        if field == "uploaded":
+            uploaded += 1
+            timestamped_print_upload(f"Recorded {period.key} as uploaded in {record_path}")
+        else:
+            empty += 1
+            timestamped_print_upload(f"[WARN] {period.key} has no readings, {SETTLE_AFTER.days} days or more after it "
+                                     f"ended: recorded as empty in {record_path} and skipped from now on. Upload it "
+                                     f"by hand with sharepoint_upload.py if its data is filled in later.")
+    left = len(settled) - uploaded - empty
+    summary = "".join([f"{cadence}: {uploaded} uploaded", f", {empty} recorded empty" if empty else "",
+                       f", {refreshed} recent refreshed" if refreshed else "", f", {failed} failed" if failed else "",
+                       f", {left} still to do" if left else "", ", stopped at the time limit" if out_of_time else ""])
+    timestamped_print_upload(f"SharePoint {summary}")
+    return not failed, summary
+
+
+def upload_sampling_files(deadline, clock=time.monotonic):
+    """The cadence layout's sampling copy: the file of every month with sampling readings, rebuilt each night
+    (sharepoint_upload.py --sampling all). Samples arrive late and are sometimes corrected, so nothing is recorded:
+    a month whose readings changed is replaced, and an unchanged one isn't sent again. Not started after `deadline`.
+    Returns (True unless it failed, a one-line summary)."""
+    if clock() >= deadline:
+        timestamped_print_upload("The SharePoint time limit for tonight is reached; the sampling files go up tomorrow")
+        return True, "sampling: not run tonight (time limit)"
+    timestamped_print_upload("========== SHAREPOINT SAMPLING UPLOAD STARTED ==========")
+    outcome = run_script("sharepoint_upload.py", ["--sampling", "all"],
+                         budget_timeout(SAMPLING_TIMEOUT_S, deadline, clock), no_data_ok=True)
+    timestamped_print_upload(f"========== SHAREPOINT SAMPLING UPLOAD {outcome.upper()} ==========")
+    summary = {"uploaded": "sampling: every month with readings is up to date",
+               "empty": "sampling: no readings yet"}.get(outcome, "sampling: failed")
+    timestamped_print_upload(f"SharePoint {summary}")
+    return outcome != "failed", summary
+
+
+def sharepoint_cadence_check(now, cadences, clock=time.monotonic):
+    """The cadence layout's SharePoint copy (SHAREPOINT_LAYOUT=cadence): for each of `cadences`, the sensor periods
+    that have ended and aren't uploaded yet (upload_due_periods), then the sampling months (upload_sampling_files),
+    within SHAREPOINT_NIGHT_BUDGET_S. Pings the SharePoint heartbeat every night, with /fail if any file failed, and a
+    line per cadence saying how many went up and how many are still to do."""
+    try:
+        limit = files_per_run()
+    except ValueError as e:
+        timestamped_print_upload(f"[ERROR] Not uploading to SharePoint: {e}")
+        capture_job_error(e)
+        ping_heartbeat("sharepoint", "fail", message=str(e))
+        return
+    deadline = clock() + SHAREPOINT_NIGHT_BUDGET_S
+    results = [upload_sampling_files(deadline, clock) if cadence == "sampling" else
+               upload_due_periods(now, cadence, limit, deadline, clock) for cadence in cadences]
+    ok = all(result[0] for result in results)
+    ping_heartbeat("sharepoint", "success" if ok else "fail", message="; ".join(result[1] for result in results))
+
+
 def sharepoint_upload_check(now):
-    """The SharePoint copy of each month, after the Borealis one. Does nothing while no SHAREPOINT_* setting is
-    set; with some but not all, logs which are missing and reports a failure (once a day, at 02:00)."""
+    """The SharePoint copy, after the Borealis upload. Does nothing while no SHAREPOINT_* setting is set; with some
+    but not all, or an invalid SHAREPOINT_LAYOUT or SHAREPOINT_CADENCES, logs the problem and reports a failure (once
+    a day, at 02:00). The year layout copies each month (upload_due_months); the cadence layout each day, week and
+    month (sharepoint_cadence_check)."""
     state, missing = sharepoint.status()
     if state == "off":
         return
@@ -280,21 +556,64 @@ def sharepoint_upload_check(now):
         capture_job_error(error)
         ping_heartbeat("sharepoint", "fail")
         return
+    config = sharepoint.settings()
+    try:
+        cadences = sharepoint.cadences(config)
+    except ValueError as e:
+        timestamped_print_upload(f"[ERROR] Not uploading to SharePoint: {e}")
+        capture_job_error(e)
+        ping_heartbeat("sharepoint", "fail")
+        return
+    if config["layout"] == "cadence":
+        sharepoint_cadence_check(now, cadences)
+        return
     upload_due_months(now, "SharePoint", sharepoint_uploaded_months_path, SHAREPOINT_FIRST_MONTH,
                       "SHAREPOINT_UPLOAD_FIRST_MONTH", run_sharepoint_upload, "sharepoint")
 
 
-def monthly_upload_check():
-    """Runs every hour and acts only at 02:00 Toronto time. It uploads to Borealis, oldest first, each month from
-    UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
-    goes up; then does the same for SharePoint (sharepoint_upload_check). So a missed slot (the worker was down) or
-    a failed upload is retried the next day, a month that went up is never sent again, and errors are logged once
-    a day, not every hour."""
-    now = datetime.now(SITE_TZ)
-    if now.hour != UPLOAD_HOUR:
+def borealis_upload_check(now):
+    """The Borealis upload of each month (utils/borealis.upload_status). Does nothing while it is off
+    (BOREALIS_UPLOAD=off, or no Borealis setting at all); with some settings but not all (e.g. a token without the
+    dataset's DOI), logs which are missing and reports them as one SettingsError (once a day, at 02:00)."""
+    state, missing = borealis_upload_status()
+    if state == "off":
+        return
+    if state == "incomplete":
+        error = SettingsError(f"Not uploading to Borealis: {', '.join(missing)} not set (set it, or set "
+                              f"BOREALIS_UPLOAD=off to turn the monthly upload off)")
+        timestamped_print_upload(f"[ERROR] {error}")
+        capture_job_error(error)
+        ping_heartbeat("upload", "fail")
         return
     upload_due_months(now, "Borealis", uploaded_months_path, UPLOAD_FIRST_MONTH, "BOREALIS_UPLOAD_FIRST_MONTH",
                       run_upload_data, "upload")
+
+
+def upload_slot(now):
+    """Whether `now` (site time) is in the nightly upload's hour: UPLOAD_HOUR, or the hour after it on the night
+    clocks spring forward, when UPLOAD_HOUR never happens (02:00 becomes 03:00)."""
+    if now.hour == UPLOAD_HOUR:
+        return True
+    # UPLOAD_HOUR:30 today, there and back through UTC: on the spring-forward day it comes back an hour later
+    slot = datetime(now.year, now.month, now.day, UPLOAD_HOUR, 30, tzinfo=SITE_TZ)
+    missing = slot.astimezone(timezone.utc).astimezone(SITE_TZ).hour != UPLOAD_HOUR
+    return missing and now.hour == UPLOAD_HOUR + 1
+
+
+def monthly_upload_check():
+    """Runs every hour and acts only at 02:00 Toronto time (03:00 on the night clocks spring forward, upload_slot).
+    It uploads to Borealis, oldest first, each month from
+    UPLOAD_FIRST_MONTH on that has ended and isn't recorded in uploaded_months_path, and records each one that
+    goes up (borealis_upload_check); then does the same for SharePoint (sharepoint_upload_check). So a missed slot
+    (the worker was down) or a failed upload is retried the next day, a month that went up is never sent again, and
+    errors are logged once a day, not every hour. A Borealis failure never stops the SharePoint copy: both checks
+    catch their own errors."""
+    now = datetime.now(SITE_TZ)
+    if not upload_slot(now):
+        return
+    # As the slot's time, so the checks that look at the hour (months_due_for_upload) count it as the 02:00 run
+    now = now.replace(hour=UPLOAD_HOUR)
+    borealis_upload_check(now)
     sharepoint_upload_check(now)
 
 def digest_hour():
@@ -354,7 +673,7 @@ def nightly_backup_check(log=None, run=None):
         if result.stderr:
             log(f"backup_db.py stderr: {result.stderr}")
         for line in (result.stderr or "").splitlines():
-            if line.startswith("WARNING:"):   # the backup worked, but deleting old dumps didn't
+            if line.startswith("WARNING:"):   # the backup worked, but e.g. deleting old dumps didn't
                 capture_job_warning(line)
         ok = True
     except subprocess.TimeoutExpired as e:
@@ -375,6 +694,117 @@ def nightly_backup_check(log=None, run=None):
     ping_heartbeat("backup", "success" if ok else "fail")
     log(f"========== DATABASE BACKUP {'COMPLETED' if ok else 'FAILED'} ==========")
     return ok
+
+
+def restore_check_day():
+    """RESTORE_CHECK_DAY as a day of the month (1-28, so every month has it), or None when it is "off".
+    ValueError otherwise."""
+    if RESTORE_CHECK_DAY.lower() == "off":
+        return None
+    if not RESTORE_CHECK_DAY.isdigit() or not 1 <= int(RESTORE_CHECK_DAY) <= 28:
+        raise ValueError(f"RESTORE_CHECK_DAY must be a day from 1 to 28, or off, got {RESTORE_CHECK_DAY!r}")
+    return int(RESTORE_CHECK_DAY)
+
+
+def monthly_restore_check(log=None, run=None):
+    """Runs every hour at :30 and acts only at RESTORE_HOUR:30 Toronto time on RESTORE_CHECK_DAY: the restore drill
+    (scripts/restore_check.py) restores the newest dump into a throwaway database, compares its row counts with
+    those recorded when the dump was taken and with the live ones, and drops it. Pings the restore check (/start,
+    then success or /fail). Returns True/False when it ran, None otherwise."""
+    log = log or timestamped_print_backup
+    run = run or run_bounded
+    now = datetime.now(SITE_TZ)
+    try:
+        day = restore_check_day()
+    except ValueError as e:
+        if now.hour == RESTORE_HOUR:   # once a day, not every hour
+            log(f"[ERROR] No restore drill: {e}")
+            capture_job_error(e)
+            ping_heartbeat("restore", "fail")
+        return None
+    if day is None or now.day != day or now.hour != RESTORE_HOUR:
+        return None
+    cmd = [sys.executable, "scripts/restore_check.py"]
+    log("========== RESTORE DRILL STARTED ==========")
+    ping_heartbeat("restore", "start")
+    try:
+        result = run(cmd, RESTORE_TIMEOUT_S)
+        log(f"restore_check.py stdout: {result.stdout}")
+        if result.stderr:
+            log(f"restore_check.py stderr: {result.stderr}")
+        ok = True
+    except subprocess.TimeoutExpired as e:
+        log(f"[ERROR] restore_check.py was stopped after {RESTORE_TIMEOUT_S // 60} min without finishing")
+        capture_job_error(e)
+        log(f"restore_check.py stdout so far: {e.stdout}")
+        ok = False
+    except subprocess.CalledProcessError as e:
+        log(f"[ERROR] restore_check.py failed with exit code {e.returncode}")
+        capture_job_error(e)
+        log(f"restore_check.py stdout: {e.stdout}")
+        log(f"restore_check.py stderr: {e.stderr}")
+        ok = False
+    except Exception as e:
+        log(f"[ERROR] Unexpected error running restore_check.py: {e}")
+        capture_job_error(e)
+        ok = False
+    if not ok:   # a drill that was killed can't drop its own database, and it is a full copy of the live one
+        drop_restore_leftovers(log, run)
+    ping_heartbeat("restore", "success" if ok else "fail")
+    log(f"========== RESTORE DRILL {'PASSED' if ok else 'FAILED'} ==========")
+    return ok
+
+
+def drop_restore_leftovers(log=None, run=None):
+    """Drop the restore drill databases left by drills that didn't finish (scripts/restore_check.py
+    --drop-leftovers; never one a running drill holds). At start-up and after a failed drill; the nightly backup
+    does it too. A failure is logged and reported, and changes no heartbeat. True if it worked."""
+    log = log or timestamped_print_backup
+    run = run or run_bounded
+    try:
+        result = run([sys.executable, "scripts/restore_check.py", "--drop-leftovers"], LEFTOVERS_TIMEOUT_S)
+        log(f"restore_check.py --drop-leftovers: {result.stdout.strip()}")
+        return True
+    except subprocess.CalledProcessError as e:
+        log(f"[ERROR] Dropping leftover restore drill databases failed: {(e.stderr or '').strip()}")
+        capture_job_error(e)
+    except Exception as e:   # TimeoutExpired and anything unexpected
+        log(f"[ERROR] Dropping leftover restore drill databases failed: {type(e).__name__}: {e}")
+        capture_job_error(e)
+    return False
+
+
+def skip_reporter(heartbeat, fail_after=SKIPS_BEFORE_FAIL):
+    """An on_skip callback for run_in_background (utils/jobs.py): each run skipped because the previous one is still
+    going is logged in the job's heartbeat check (/log, which changes nothing there), and from `fail_after` skips in
+    a row on, the check gets /fail and Sentry a warning (once per stuck run), since the job is then stuck rather than
+    slow. A job that starts again resets the count."""
+    def on_skip(skips, message):
+        if skips < fail_after:
+            ping_heartbeat(heartbeat, "log", message=f"{message} ({skips} in a row)")
+            return
+        ping_heartbeat(heartbeat, "fail", message=f"{message}: {skips} runs in a row skipped, so it looks stuck")
+        if skips == fail_after:
+            capture_job_warning(f"{message}: {skips} runs in a row skipped, so it looks stuck")
+    return on_skip
+
+
+def report_unset_heartbeats(log, sentry_warning=None, env=None, state_path=None):
+    """At start-up: name every HEALTHCHECK_URL_* of the worker's jobs that isn't set, in the log (and so, with
+    WORKER_LOG_TO_STDOUT, in docker logs) and as a Sentry warning. Without them, a worker that stops, or a job
+    that stops running, reports nothing anywhere. The warning goes at most once a day for the same names
+    (utils/heartbeat.first_report_today, remembered in `state_path`, by default in logs/), since a deploy restarts
+    the worker several times; the log line is written at every start. Returns the names."""
+    state, _ = sharepoint.status(env)
+    # Leaves out the drill's heartbeat while the drill is off, and the upload's while the Borealis upload is off
+    missing = unset_heartbeats(env, sharepoint_on=state != "off", upload_on=borealis_upload_status(env)[0] != "off")
+    if missing:
+        message = (f"Heartbeats not set: {', '.join(missing)}. Those jobs report nothing if they stop or keep "
+                   f"failing (README, Monitoring).")
+        log(f"[WARN] {message}")
+        if first_report_today(missing, state_path):
+            (sentry_warning or capture_job_warning)(message)
+    return missing
 
 def api_injection_job():
     """Every 10 minutes: fetch new vendor API data and store it, ping the ingestion heartbeat (success, or /fail
@@ -405,7 +835,7 @@ def alert_check_job():
         from inject_from_api import app as ingestion_app   # its app (and connection pool) is reused, not rebuilt
         with ingestion_app.app_context():
             summary = check_alerts.run(log=timestamped_print_alerts)
-        ok = summary["email"] != "failed"
+        ok = summary["email"] not in ("failed", "waiting")   # waiting: an earlier send failed, retried later
     except Exception as e:
         timestamped_print_alerts(f"[ERROR] The alert check failed: {type(e).__name__}: {e}")
         capture_job_error(e)
@@ -414,10 +844,16 @@ def alert_check_job():
 
 if __name__ == "__main__":
     # Main entry point: one scheduler loop for all jobs
-    # Ensure log directories exist
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-    os.makedirs(os.path.dirname(download_log_file_path), exist_ok=True)
-    os.makedirs(os.path.dirname(upload_log_file_path), exist_ok=True)
+    # Ensure the log folder exists; if it can't be made, the jobs still run and their lines are dropped
+    try:
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+    except OSError as e:
+        sys.stderr.write(f"[scheduler] can't create {os.path.dirname(log_file_path)}: {e}\n")
+
+    # docker compose stop (and every deploy that recreates the worker) sends SIGTERM; Ctrl-C sends SIGINT
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    touch_alive()
 
     # Save original print and override for API scheduler
     builtins._original_print = builtins.print
@@ -430,12 +866,31 @@ if __name__ == "__main__":
     else:
         builtins._original_print("[scheduler] Logs are written to /app/app/logs/*. Set WORKER_LOG_TO_STDOUT=1 to mirror to stdout.")
 
-    # Each job starts in its own thread and is skipped while its previous run is still going.
-    api_run = run_in_background(api_injection_job, log=print)
-    download_run = run_in_background(download_job, log=timestamped_print_download)
-    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload)
-    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest)
-    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup)
+    # A dead worker can only be noticed through the heartbeats, so the unset ones are named in docker logs too
+    def log_everywhere(line):
+        print(line)
+        if not LOG_TO_STDOUT:
+            builtins._original_print(f"[scheduler] {line}")
+    report_unset_heartbeats(log_everywhere)
+
+    # Each job starts in its own thread and is skipped while its previous run is still going; a skip is logged in
+    # the job's heartbeat check, and several in a row fail it (skip_reporter).
+    hour, week = 60 * 60, 7 * 24 * 60 * 60
+    api_run = run_in_background(api_injection_job, log=print, on_skip=skip_reporter("ingestion"))
+    download_run = run_in_background(download_job, log=timestamped_print_download,
+                                     on_skip=skip_reporter("download", skips_before_fail(DOWNLOAD_TIMEOUT_S, week)))
+    # An upload run sends a month to Borealis, then to SharePoint; it can last up to UPLOAD_RUN_MAX_S
+    upload_run = run_in_background(monthly_upload_check, log=timestamped_print_upload,
+                                   on_skip=skip_reporter("upload", skips_before_fail(UPLOAD_RUN_MAX_S, hour)))
+    digest_run = run_in_background(daily_digest_check, log=timestamped_print_digest,
+                                   on_skip=skip_reporter("digest", skips_before_fail(DIGEST_TIMEOUT_S, hour)))
+    backup_run = run_in_background(nightly_backup_check, log=timestamped_print_backup,
+                                   on_skip=skip_reporter("backup", skips_before_fail(BACKUP_TIMEOUT_S, hour)))
+    restore_run = run_in_background(monthly_restore_check, log=timestamped_print_backup,
+                                    on_skip=skip_reporter("restore", skips_before_fail(RESTORE_TIMEOUT_S, hour)))
+    # A drill killed with the last worker (or out of memory) left its database behind: drop it now, in the
+    # background so ingestion catches up at once
+    run_in_background(drop_restore_leftovers, log=timestamped_print_backup)()
 
     scheduler = schedule.Scheduler()
     scheduler.every(10).minutes.do(api_run)
@@ -443,12 +898,22 @@ if __name__ == "__main__":
     scheduler.every().hour.at(":00").do(upload_run)  # acts only at 02:00 Toronto time (monthly_upload_check)
     scheduler.every().hour.at(":00").do(digest_run)  # acts only at DIGEST_HOUR Toronto time (daily_digest_check)
     scheduler.every().hour.at(":15").do(backup_run)  # acts only at 03:15 Toronto time (nightly_backup_check)
+    scheduler.every().hour.at(":30").do(restore_run)  # acts only at 05:30 on RESTORE_CHECK_DAY (monthly_restore_check)
+
+    # New Sentry errors as GitHub issues every SENTRY_SYNC_INTERVAL_S, when SENTRY_API_TOKEN and GITHUB_ISSUES_TOKEN
+    # are set (utils/sentry_poller.py); one start-up line either way. A poll never raises and bounds its requests.
+    sentry_poller = SentryPoller(log=timestamped_print_sentry, warn=capture_job_warning)
+    log_everywhere(sentry_poller.describe())
+    sentry_jobs = []
+    if sentry_poller.enabled:
+        sentry_jobs.append(run_in_background(sentry_poller.poll, log=timestamped_print_sentry, name="sentry_github"))
+        scheduler.every(sentry_poller.interval_s).seconds.do(sentry_jobs[0])
 
     print("Schedule: API injection every 10 minutes, each followed by the alert check; Borealis download Sundays 00:00; "
           "Borealis upload (then SharePoint, if configured) at 02:00 Toronto time of each ended month not yet "
           "uploaded; "
           f"daily digest at {DIGEST_HOUR}:00 Toronto time; database backup at {BACKUP_HOUR:02d}:15 Toronto time "
-          f"(logs/backup.log).")
+          f"and restore drill at {RESTORE_HOUR:02d}:30 on day {RESTORE_CHECK_DAY} of each month (logs/backup.log).")
     timestamped_print_download("Download scheduler ready: Sundays at 00:00. Nothing runs at startup; "
                                "run `python scripts/download_data.py` by hand to fetch now.")
     timestamped_print_upload("Upload scheduler ready: at 02:00 Toronto time, each month from "
@@ -456,19 +921,32 @@ if __name__ == "__main__":
                              "is uploaded (so last month goes up on the 1st, and a failed month is retried daily). "
                              "Nothing runs at startup; run `python scripts/upload_data.py --year Y --month M` by hand "
                              "to upload a month.")
+    borealis_state, borealis_missing = borealis_upload_status()
+    timestamped_print_upload({
+        "off": "Borealis upload: off (BOREALIS_UPLOAD=off, or no BOREALIS_* settings); the 02:00 run skips it.",
+        "on": "Borealis upload: on.",
+    }.get(borealis_state, f"[ERROR] Borealis upload: settings incomplete, {', '.join(borealis_missing)} not set."))
     sharepoint_state, sharepoint_missing = sharepoint.status()
     timestamped_print_upload({
         "off": "SharePoint copy: off (no SHAREPOINT_* settings).",
         "on": f"SharePoint copy: on, after Borealis, each month from {SHAREPOINT_FIRST_MONTH} not recorded in "
               f"{sharepoint_uploaded_months_path}.",
     }.get(sharepoint_state, f"[ERROR] SharePoint copy: settings incomplete, {', '.join(sharepoint_missing)} not set."))
+    if sharepoint_state == "on" and sharepoint.settings()["layout"] == "cadence":
+        timestamped_print_upload(f"SharePoint layout: cadence, instead of the months above: each ended day, week "
+                                 f"and month not in logs/sharepoint_<cadence>.json (at most {SHAREPOINT_FILES_PER_RUN} "
+                                 f"files per cadence a night), and every month of sampling readings.")
 
     # Catch up on vendor data right away after a restart; the Borealis jobs wait for their slots.
     api_run()
 
-    try:
-        while True:
-            scheduler.run_pending()
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Shutting down the scheduler...")
+    last_alive = time.monotonic()
+    while not stopping.is_set():
+        scheduler.run_pending()
+        if time.monotonic() - last_alive >= ALIVE_EVERY_S:
+            touch_alive()
+            last_alive = time.monotonic()
+        time.sleep(1)
+
+    print("Shutting down the scheduler (stop requested); starting no new jobs")
+    shut_down([api_run, download_run, upload_run, digest_run, backup_run, restore_run, *sentry_jobs], print)

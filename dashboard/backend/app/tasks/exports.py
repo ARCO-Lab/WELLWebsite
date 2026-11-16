@@ -1,3 +1,6 @@
+# This file defines the export worker's Celery tasks: building one queued CSV export (generate_export_job), and
+# the hourly cleanup of expired, stuck and orphaned exports. Job times (created_at, expires_at...) are naive
+# America/Toronto wall time, from utils/timezone.py.
 import os
 import shutil
 import time
@@ -11,7 +14,10 @@ from sqlalchemy import or_
 from api.services.exports import (
     EXPORT_FAILED_MESSAGE,
     EXPORT_TOO_SLOW_MESSAGE,
+    ExportAborted,
+    ExportValidationError,
     default_export_filename,
+    disk_space_error,
     settle_if_stuck,
     write_export_csv,
 )
@@ -24,9 +30,9 @@ from utils.timezone import est_after, est_now
 
 logger = get_task_logger(__name__)
 
-# EXPORT_FAILED_MESSAGE and EXPORT_TOO_SLOW_MESSAGE (api/services/exports.py) are the other failure messages.
-# For a job whose task was started before and didn't finish (its worker process died, most likely of running out
-# of memory). It isn't run again, since it would likely die the same way.
+# The error_message for a job whose task was started before and didn't finish (its worker process died, most likely
+# of running out of memory). It isn't run again, since it would likely die the same way. The other failure messages
+# are EXPORT_FAILED_MESSAGE and EXPORT_TOO_SLOW_MESSAGE (api/services/exports.py).
 EXPORT_INTERRUPTED_MESSAGE = "This export was interrupted. Try a shorter date range."
 
 # The Flask app the tasks of this worker process run in, made on its first task and kept. Each app has its own
@@ -63,19 +69,25 @@ def close_worker_connections(**kwargs):
 
 
 def user_facing_error(exc: Exception) -> str:
-    """The error_message to store for a failed job. The job status API returns it to the browser, so only a plain
-    ValueError (the payload validation messages, written for the user) is kept. Anything else, a database error
-    for one, can hold SQL, parameters or server paths: it gets a generic message and is logged in full instead.
-    Subclasses such as JSONDecodeError are not validation messages and get the generic one too."""
+    """The error_message to store for a failed job. The job status API returns it to the browser, so only the
+    messages written for the user are kept: a validation message (ExportValidationError) or why the writer stopped
+    (ExportAborted). Anything else, a database error or the driver's ValueError for one, can hold SQL, parameters or
+    server paths: it gets a generic message and is logged in full instead."""
     if isinstance(exc, SoftTimeLimitExceeded):
         return EXPORT_TOO_SLOW_MESSAGE
-    if type(exc) is ValueError and str(exc):
+    if isinstance(exc, (ExportValidationError, ExportAborted)) and str(exc):
         return str(exc)
     return EXPORT_FAILED_MESSAGE
 
 
-@celery_app.task(bind=True, name="exports.generate_export_job")
+# ignore_result: the job's state is in export_jobs, and nothing reads Celery's copy. It also keeps the API's
+# delay() from subscribing to the result in Redis: with Redis down that retried for over two minutes before failing,
+# while the publish alone fails within seconds, so the API can mark the job failed and answer 503 at once.
+@celery_app.task(bind=True, name="exports.generate_export_job", ignore_result=True)
 def generate_export_job(self, job_id: str):
+    """Writes a queued job's CSV to EXPORTS_DIR/<job id>/, updating its progress as it goes, and marks it ready
+    (downloadable for EXPORT_FILE_TTL_MINUTES) or failed. Errors are re-raised so Celery and Sentry see them, except
+    an export stopped by its size limit (ExportAborted), which is only logged."""
     with worker_app().app_context():
         job = db.session.get(ExportJob, job_id)
         if not job:
@@ -97,6 +109,17 @@ def generate_export_job(self, job_id: str):
                 logger.info("Export job %s is already %s; not running it", job_id, job.status)
             return
 
+        # The disk may have filled since the job was queued (the route checked then): fail the job rather than
+        # fill the disk the database shares. Not an error to report: the route already logs low space.
+        no_room = disk_space_error(job.estimated_rows or 0, job.payload)
+        if no_room:
+            logger.warning("Export job %s not run: the exports disk is below EXPORT_MIN_FREE_MB", job_id)
+            job.status = "failed"
+            job.error_message = no_room
+            job.completed_at = est_now()
+            db.session.commit()
+            return
+
         artifact_path = None  # set once known, so a failed export can delete what it wrote
         try:
             job.status = "running"
@@ -109,6 +132,7 @@ def generate_export_job(self, job_id: str):
             # (cleaning up one job would delete the other's download).
             artifact_path = os.path.join(Config.EXPORTS_DIR, job_id, artifact_name)
 
+            # Called by write_export_csv as it writes, so the page's progress bar moves.
             def on_progress(produced_rows: int, total_rows: int):
                 progress = 100.0 if total_rows <= 0 else min(100.0, (produced_rows / total_rows) * 100.0)
                 progress_job = db.session.get(ExportJob, job_id)
@@ -139,7 +163,11 @@ def generate_export_job(self, job_id: str):
             db.session.commit()
 
         except Exception as exc:
-            logger.exception("Export job failed: %s", job_id)
+            if isinstance(exc, ExportAborted):
+                # The file outgrew what the disk can spare (or EXPORT_MAX_FILE_MB): a limit doing its job, not a bug
+                logger.warning("Export job %s stopped: %s", job_id, exc)
+            else:
+                logger.exception("Export job failed: %s", job_id)
             # The failure may have left the session's transaction broken (a database error, or the time limit
             # landing mid-commit); start a fresh one so the job can still be marked failed.
             db.session.rollback()
@@ -158,7 +186,8 @@ def generate_export_job(self, job_id: str):
                 failed_job.error_message = user_facing_error(exc)
                 failed_job.completed_at = est_now()
                 db.session.commit()
-            raise
+            if not isinstance(exc, ExportAborted):
+                raise
 
 
 # Expiry times are naive local wall-clock times, compared here in SQL, and a wall time is never more than an hour
@@ -199,6 +228,7 @@ def cleanup_expired_artifacts():
 
 
 def _fail_stuck_jobs():
+    # Step 1 of the cleanup: settle_if_stuck() decides, and marks the job failed.
     candidates = db.session.query(ExportJob).filter(ExportJob.status.in_(("queued", "running"))).all()
     stuck = [job for job in candidates if settle_if_stuck(job)]
     for job in stuck:
@@ -210,6 +240,7 @@ def _fail_stuck_jobs():
 
 
 def _expire_artifacts():
+    # Step 2 of the cleanup.
     cutoff = est_now() - DELETE_GRACE
     candidates = (
         db.session.query(ExportJob)
@@ -318,6 +349,7 @@ def _remove_job_folder(job_id):
 
 
 def _remove_empty_job_folder(path):
+    # Remove the job folder that held `path`, if it is now empty.
     folder = os.path.dirname(path)
     if os.path.abspath(folder) == os.path.abspath(Config.EXPORTS_DIR):
         return  # an older export stored directly in EXPORTS_DIR

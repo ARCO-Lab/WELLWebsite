@@ -5,6 +5,25 @@ from zoneinfo import ZoneInfo
 
 EST_TZ = ZoneInfo("America/Toronto")
 
+# The years a request's start and end may fall in. There are no readings outside them, and near datetime's limits
+# (year 1 or 9999) adding a tile or a second to a time overflows, which was a 500.
+FIRST_YEAR, LAST_YEAR = 1970, 2100
+
+
+def check_site_years(*times: datetime) -> None:
+    """ValueError unless every time falls in FIRST_YEAR to LAST_YEAR."""
+    if any(not FIRST_YEAR <= t.year <= LAST_YEAR for t in times):
+        raise ValueError(f"Dates must be between {FIRST_YEAR} and {LAST_YEAR}")
+
+
+def iso_time(value: str) -> datetime:
+    """A request's ISO time (a trailing Z allowed) as a datetime; ValueError for anything else. Text with a control
+    character is refused first: Python's parser stops at a NUL, so it would read "2026-11-01T00:00:00" followed by a
+    NUL as that time."""
+    if not (value.isascii() and value.isprintable()):
+        raise ValueError("not an ISO time")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
 
 def est_now() -> datetime:
     # Store as naive datetime in local EST/EDT wall time to match existing DB column types.
@@ -60,3 +79,25 @@ def parse_instant(value: str) -> datetime:
     """An ISO time from a request as an aware UTC datetime: with an offset (the dashboard sends ...Z) it is that
     instant; without one it is site wall time, as before."""
     return as_utc(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+
+
+def site_range(start: str, end: str):
+    """ISO start and end times from a request as naive local wall times, to compare with naive columns that stay
+    local wall time, such as sampling_measurements.recorded_at (the way /api/samples reads its range).
+
+    A time with an offset ("...Z", "...-04:00") is a real instant and is converted to America/Toronto; one without
+    is taken as local wall time already. Bound as aware values instead, PostgreSQL would read recorded_at in the
+    session's TimeZone, so the answer would depend on a database setting (SQLite would drop the offset). When both
+    are instants, their wall times can run backwards inside the hour repeated when clocks fall back (05:30Z is
+    01:30 EDT, 06:10Z is 01:10 EST), so the two are put in the instants' order: forwards for a range, backwards
+    (matching nothing, as a backwards range of naive times does) when end is before start.
+    Raises ValueError for text that isn't an ISO time or a year outside FIRST_YEAR to LAST_YEAR, and OverflowError
+    for one with no local time (e.g. 0001-01-01T00:00+05:00).
+    """
+    start_in, end_in = (iso_time(v) for v in (start, end))
+    start_dt, end_dt = (v.astimezone(EST_TZ).replace(tzinfo=None) if v.tzinfo else v for v in (start_in, end_in))
+    check_site_years(start_dt, end_dt)
+    if start_in.tzinfo and end_in.tzinfo:
+        low, high = min(start_dt, end_dt), max(start_dt, end_dt)
+        return (low, high) if start_in <= end_in else (high, low)
+    return start_dt, end_dt

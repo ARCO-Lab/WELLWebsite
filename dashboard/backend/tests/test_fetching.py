@@ -84,5 +84,13 @@ class Times(unittest.TestCase):
         newest = dt.datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
         self.assertEqual(fetching.start_from_newest(newest, newest), dt.datetime(2026, 11, 1, 5, 30, tzinfo=UTC))
 
+
+class PageRecordsTests(unittest.TestCase):
+    def test_a_full_reply_counts_as_capped_without_the_flag(self):
+        from api.services.weather import page_records
+        self.assertEqual(page_records({"data": [{}] * 3}), ([{}] * 3, False))
+        self.assertTrue(page_records({"data": [{}] * 3, "max_results": True})[1])
+        self.assertTrue(page_records({"data": [{}] * fetching.MAX_RECORDS})[1])   # flag renamed or dropped
+
 if __name__ == "__main__":
     unittest.main()

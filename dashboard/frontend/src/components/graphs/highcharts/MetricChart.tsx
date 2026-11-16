@@ -1,91 +1,128 @@
-// This file defines the MetricChart component: one West Campus sensor chart (a group, or one water logger),
-// drawn with Highcharts from the series /api/series returns (see hooks/useChartSeries). It has one Y-axis per unit,
-// shown in the cards too (small labels there), and each axis scales on its own (alignTicks off), so one unit's
-// outlier doesn't squash the others. Each measurement keeps its own colour wherever it appears.
+// This file defines the MetricChart component: a card's one chart (the water loggers, the weather station or the
+// water quality probe), holding every series its sub-filters select, drawn with Highcharts Stock. Its window and data
+// come from its controller (hooks/useChartWindow, lib/chartController): the visible window is loaded at the bucket its
+// width needs, down to raw 10-minute readings, from cached tiles (lib/seriesLoader), and the navigator below covers
+// exactly the picked range.
 //
-// Averaged buckets are drawn at their middle; the tooltip names the span they cover and the resolution
-// ("Oct 1, 2026 18:00–24:00 · 6-h mean"), with the smallest and largest reading in it. Points the line alone
-// wouldn't show get a marker: a filled dot for a reading with no neighbour on either side (between two gaps), a
-// hollow one for a bucket holding under half the readings that series usually has there (an outage starts or ends
-// in it; see typicalCounts in utils/chartWindow), whose average is less reliable.
+// Drawing: one y-axis per unit, each scaled to its own data (alignTicks off); the cards hide the axes (the tooltip
+// gives values, the legend units), the larger view shows them. A colour per measurement (per logger on the loggers'
+// chart, temperature dashed); rain as bars of totals, one per bucket; wind direction as points; in the larger
+// view a band from the smallest to the largest reading behind each averaged line. Averaged buckets sit at their middle
+// and the tooltip names the span they cover. Points the line alone wouldn't show get a marker: filled for a reading
+// between two gaps, hollow for a bucket with under half the readings its series usually has at that time of day.
+// Stock's data grouping and ordinal axis are off: the server's buckets are drawn as they are, and gaps stay gaps.
 //
-// Zoom is shared: every chart shows the page's one view window (ChartView.viewWindow). Dragging across a chart
-// (or pinching on a touch screen) asks for a new window instead of zooming this chart alone, and the window bar
-// above the charts moves, widens or resets it. The mouse wheel and one-finger touch still scroll the page.
+// The range bar (Stock's navigator, without its line of data or its scrollbar): an invisible series spans the picked
+// range, so the bar (and how far the chart can be moved) covers that range and not just where the data is. Dragging
+// it is handled here, not by Highcharts, so it redraws at the same pace as any other drag; a slider laid over it
+// gives it to the keyboard.
 //
-// Options are applied to the chart in three separate steps, so each change redraws only what it touches: data
-// (series and axes), layout (height, legend, title) and the window (x-axis extremes).
+// Input (handled here, with Stock's own wheel zoom and panning off, so each gesture means one thing):
+// - mouse wheel: a plain (vertical) wheel always scrolls the page, and now and then shows a hint. Ctrl/⌘ + wheel or
+//   a trackpad pinch zooms around the pointer; Shift + wheel or a sideways swipe pans.
+// - drag in the plot pans; Shift + drag selects a span to zoom to; the range bar's ends resize the window, its middle
+//   slides it.
+// - touch: one finger moving up or down scrolls the page (the plot is touch-action: pan-y), sideways pans the chart, a
+//   tap shows the tooltip; two fingers pinch to zoom and move to pan.
+// - keyboard, once the chart has focus: ← → pan, + − zoom, 0 resets.
+// The chart redraws at a pace its own redraw cost allows, once per turn for new data and the window together. During a
+// gesture the bands and the accessibility layer are off and requests wait for its end. Screen readers get the chart's
+// description and, from the toolbar, the window once it settles, rather than a description of every point.
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { guarded } from '@/lib/guarded';
+import { MIN_GRAB_PX, barPart, grabSpan, handleAt } from '@/lib/rangeBar';
 import Highcharts from 'highcharts';
-import HighchartsReact from 'highcharts-react-official';
-// Screen-reader descriptions and keyboard navigation for every chart (Highcharts warns without it).
+import 'highcharts/modules/stock'; // the navigator, which is the range bar
+import 'highcharts/highcharts-more'; // arearange, for the min-max bands
+// Screen-reader descriptions for every chart (Highcharts warns without it)
 import 'highcharts/modules/accessibility';
-import { seriesKey, useChartView } from '@/hooks/useChartSeries';
-import {
-  MIN_RANGE_MS, TIME_ZONE, bucketSpanLabel, composePoints, resolutionBadge, shortBucket, valueDecimals,
-  type PointInfo, type Range,
-} from '@/utils/chartWindow';
+import HighchartsReact from 'highcharts-react-official';
+import { bitmapPreview, canvasPreview, noPreview, warmCanvas, type GesturePreview, type PaintSeries } from './gesturePreview';
+import ChartToolbar, { windowLabel } from '@/components/graphs/ChartToolbar';
+import { retryAllCharts, useChartWindow } from '@/hooks/useChartWindow';
+import type { ChartController, ChartSnapshot, ComposedData } from '@/lib/chartController';
+import { POINTS_PER_PX, POINTS_PER_PX_PHONE, RAW_S } from '@/lib/seriesTiles';
+import { MIN_RANGE_MS, TIME_ZONE, bucketSpanLabel, shortBucket, valueDecimals, type PointInfo, type Range } from '@/utils/chartWindow';
+import { compassLabel, seriesType, type Agg } from '@/utils/chartStyle';
+import type { AxisSpec, SeriesSpec } from '@/utils/cardSeries';
 
-interface MetricChartProps {
+export interface MetricChartProps {
+  id: string; // stable for this chart: "logger", "weather", "quality"
   title: string;
-  groupType: 'Weather' | 'Quality' | 'Logger';
-  stationId?: string; // only this station's series (the water loggers)
-  measurements: string[]; // measurement_type values to show
+  series: SeriesSpec[];
+  axes: AxisSpec[];
   height?: number;
   modalOpen?: boolean;
-  showLegend?: boolean;
-  // Small multiples (the logger charts) show one error message and one resolution badge for the group instead.
-  showErrorBanner?: boolean;
-  showBadge?: boolean;
 }
 
-// One colour per measurement, the same in every chart, so air temperature, dew point and soil temperature (all °C,
-// on one axis) can be told apart. A measurement not listed gets one from the fallback palette, by its name.
-const MEASUREMENT_COLORS: Record<string, string> = {
-  'Air Temperature': '#D62728', 'Dew Point': '#0866AB', 'Soil Temperature': '#8C564B',
-  'Relative Humidity': '#50B748', 'Pressure': '#7F488D', 'Rain': '#17BECF', 'Solar Radiation': '#E0A800',
-  'Water Content': '#6B8E23', 'Wind Speed': '#4B5563', 'Gust Speed': '#E90D8B', 'Wind Direction': '#F79425',
-  'Water Temperature': '#D62728', 'Water Surface Elevation': '#0866AB',
-  'Conductivity': '#0866AB', 'Salinity': '#17BECF', 'TDS': '#7F488D', 'ODO': '#50B748', 'ODOSat': '#2E7D32',
-  'Turbidity': '#8C564B', 'TSS': '#F79425',
-};
-const FALLBACK_COLORS = ['#0866AB', '#50B748', '#F79425', '#E90D8B', '#7F488D', '#CB2027', '#17BECF', '#8C564B'];
-function measurementColor(name: string): string {
-  if (MEASUREMENT_COLORS[name]) return MEASUREMENT_COLORS[name];
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return FALLBACK_COLORS[h % FALLBACK_COLORS.length];
-}
 const FONT = 'Poppins, Arial, sans-serif';
+const ZOOM_PER_WHEEL_PX = 1.0018; // a 100 px wheel step zooms by ~20 %
+const WHEEL_SETTLE_MS = 300; // a burst of wheel events is one gesture until none has come for this long
+const HINT_EVERY_MS = 30_000; // the zoom hint shows at most this often per chart (not over every chart a page scroll passes)
+const TOUCH_SLOP_PX = 6; // a finger must move this far before its direction decides what it does
+const LEGEND_ROWS = 3, LEGEND_ROW_PX = 24; // a phone's legend page: whole rows, each a comfortable tap target
+// What a gesture shows (gesturePreview.ts). canvas (the default): painted from the loaded data, one Highcharts redraw
+// when the gesture ends; bitmap: a copy of the drawn series, redrawn when a gesture pauses; redraw: a real redraw at
+// every paced frame. NEXT_PUBLIC_CHART_PREVIEW picks another at build time, to compare them.
+const PREVIEW = process.env.NEXT_PUBLIC_CHART_PREVIEW ?? 'canvas';
+const PREVIEW_IDLE_MS = 180; // with the bitmap preview, a gesture still for this long gets a real redraw
+// A window only a few pixels wide on the range bar is drawn MIN_GRAB_PX wide around its middle, with its handles just
+// outside that, matching where presses slide or resize it (lib/rangeBar.ts): Stock drew both handles on top of it.
+// Positions here are in the navigator's own pixels, from 0 to its size (the bar's length).
+type NavigatorDraw = { size: number; zoomedMin: number; zoomedMax: number };
+const navProto = (Highcharts as unknown as { Navigator?: { prototype: Record<string, unknown> & { __wellGrab?: boolean } } }).Navigator?.prototype;
+if (navProto && !navProto.__wellGrab) {
+  navProto.__wellGrab = true;
+  for (const name of ['drawMasks', 'drawOutline']) {
+    Highcharts.wrap(navProto, name, function (this: NavigatorDraw, proceed: (...a: unknown[]) => void, min: number, max: number, ...rest: unknown[]) {
+      const [a, b] = grabSpan(min, max, 0, this.size); // kept on the bar at its ends
+      proceed.call(this, a, b, ...rest);
+    });
+  }
+  Highcharts.wrap(navProto, 'drawHandle', function (this: NavigatorDraw, proceed: (...a: unknown[]) => void, x: number, index: number, ...rest: unknown[]) {
+    const min = Math.round(this.zoomedMin), max = Math.round(this.zoomedMax);
+    if (max - min >= MIN_GRAB_PX) return proceed.call(this, x, index, ...rest);
+    return proceed.call(this, handleAt(index === 0 ? 0 : 1, min, max, 0, this.size), index, ...rest);
+  });
+}
 
-// What a series is, for the tooltip.
-interface SeriesInfo { measurement: string; unit: string; agg: 'mean' | 'sum' | 'vector_mean' }
+// Axis dates on the 24-hour clock, like the rest of the dashboard (Highcharts would follow the browser locale: 1 PM)
+const DATE_FORMATS: Highcharts.AxisDateTimeLabelFormatsOptions = {
+  millisecond: '%H:%M:%S', second: '%H:%M:%S', minute: '%H:%M', hour: '%H:%M', day: '%b %e', week: '%b %e',
+  month: "%b '%y", year: '%Y',
+};
+const EXTENT_ID = 'picked-range'; // the invisible series that spans the picked range
 
-// A value at its unit's decimals; one that rounds to zero is shown as 0, not -0.00.
+// What a series is, for the tooltip and legend.
+// `at`: each drawn bucket's details (span, range of readings, count), by its x. The chart gets plain [x, y] pairs,
+// the fastest form Highcharts takes; the tooltip looks the rest up here.
+interface SeriesInfo { label: string; unit: string; agg: Agg; note?: string; at: Map<number, PointInfo> }
+
 const fmt = (v: number, unit: string) => {
   const d = valueDecimals(unit);
   const rounded = Number(v.toFixed(d));
   return Highcharts.numberFormat(rounded === 0 ? 0 : rounded, d, '.', ',');
 };
 const muted = (text: string) => `<span style="color:#6b7280">${text}</span>`;
+const isCoarse = () => typeof window !== 'undefined' && (window.matchMedia?.('(pointer: coarse)').matches ?? false);
 
-// The shared tooltip: the span and resolution once, then a line per series with its value, the range of readings in
-// the bucket (averages only: rain's min/max are single readings, not totals, and wind direction has none) and, for a
-// partial bucket, how many readings it holds.
+// The shared tooltip: the span and resolution once, then a line per series: its value, the range of readings in the
+// bucket (averages only), and for a partial bucket how many readings it holds.
 function tooltipText(this: Highcharts.Point): string {
-  const points = this.points ?? [this];
-  const first = points[0]?.options.custom as PointInfo | undefined;
-  if (!first) return '';
+  const points = (this.points ?? [this]).filter((p) => (p.series.options.custom as SeriesInfo | undefined)?.label);
   const infos = points.map((p) => p.series.options.custom as SeriesInfo);
-  const aggregated = first.bucketS > 600;
+  const first = points.length ? infos[0].at.get(points[0].x) : undefined;
+  if (!first) return '';
+  const aggregated = first.bucketS > RAW_S;
   const kind = !aggregated ? 'reading' : infos.every((i) => i.agg === 'sum') ? 'total' : 'mean';
   const lines = points.map((p, i) => {
     const info = infos[i];
-    const c = p.options.custom as PointInfo | undefined;
+    const c = info.at.get(p.x);
     if (p.y === null || p.y === undefined || !c) return '';
     const dot = `<span style="color:${p.color}">●</span>`;
-    let line = `${dot} ${info.measurement}: <b>${fmt(p.y, info.unit)} ${info.unit}</b>`;
+    const value = info.agg === 'vector_mean' ? compassLabel(p.y) : `${fmt(p.y, info.unit)} ${info.unit}`;
+    let line = `${dot} ${info.label}: <b>${value}</b>`;
     if (aggregated && info.agg === 'sum' && kind !== 'total') line += ' total';
     if (aggregated && info.agg === 'mean' && c.lo !== null && c.hi !== null && c.lo !== c.hi) {
       line += ` ${muted(`(${fmt(c.lo, info.unit)}–${fmt(c.hi, info.unit)})`)}`;
@@ -93,267 +130,831 @@ function tooltipText(this: Highcharts.Point): string {
     if (c.partial && c.n !== null && c.typical !== null) {
       line += ` ${muted(`· fewer readings than usual: ${c.n} (usually ${c.typical})`)}`;
     }
-    // Near where finer detail meets the overview, a point can stand for another span than the header's: say which.
+    // Where finer detail meets coarser data, a point can stand for another span than the header's: say which.
     if (c.start !== first.start || c.bucketS !== first.bucketS) {
       line += ` ${muted(`· ${bucketSpanLabel(c.start, c.bucketS)}, ${shortBucket(c.bucketS)}`)}`;
     }
+    if (info.note) line += ` ${muted(`· ${info.note}`)}`;
     return line;
   }).filter(Boolean);
-  const span = `${bucketSpanLabel(first.start, first.bucketS)} · ${shortBucket(first.bucketS)} ${kind}`;
-  const header = `<span style="font-size:11px">${span}</span>`;
+  const header = `<span style="font-size:11px">${bucketSpanLabel(first.start, first.bucketS)} · ${shortBucket(first.bucketS)} ${kind}</span>`;
   return [header, ...lines].join('<br/>');
 }
 
-const MetricChart: React.FC<MetricChartProps> = ({
-  title,
-  groupType,
-  stationId,
-  measurements,
-  height = 500,
-  modalOpen = false,
-  showLegend = true,
-  showErrorBanner = true,
-  showBadge = true,
-}) => {
-  const view = useChartView();
-  const chartRef = useRef<HighchartsReact.RefObject>(null);
-  const [resolvedHeight, setResolvedHeight] = useState(height);
-  // How many y-axes fit beside the plot: each takes ~35 px, so on a phone seven (Quality) would leave no plot at all.
-  // Axes past this are hidden but still scale their series; the tooltip gives those values.
-  const [maxAxes, setMaxAxes] = useState(Infinity);
+/** One value of a chart's state, re-rendering only when it changes (not on every frame of a drag). */
+function useChartValue<T>(controller: ChartController, pick: (s: ChartSnapshot) => T): T {
+  return useSyncExternalStore(controller.subscribe, () => pick(controller.snapshot()), () => pick(controller.snapshot()));
+}
 
-  useEffect(() => {
-    const resolveHeight = () => {
-      const w = window.innerWidth;
-      setMaxAxes(w < 480 ? 2 : w < 768 ? 4 : w < 1024 ? 6 : Infinity);
-      if (modalOpen) {
-        setResolvedHeight(height);
-        return;
-      }
-      const viewportWidth = window.innerWidth;
-      if (viewportWidth < 480) setResolvedHeight(Math.min(height, 280));
-      else if (viewportWidth < 768) setResolvedHeight(Math.min(height, 340));
-      else if (viewportWidth < 1024) setResolvedHeight(Math.min(height, 420));
-      else setResolvedHeight(height);
+// The picked range as two empty points: what the navigator and the x-axis span
+const extentData = (e: Range): [number, null][] => [[e.start, null], [e.end, null]];
+
+function buildOptions(title: string, specs: SeriesSpec[], axisSpecs: AxisSpec[], controller: ChartController, height: number, axes: boolean): Highcharts.Options {
+  const coarse = isCoarse();
+  const yAxis: Highcharts.YAxisOptions[] = axisSpecs.map((a, n) => {
+    const own = specs.filter((s) => s.axis === n);
+    const color = own.length === 1 ? own[0].color : '#4b5563';
+    const style = { fontFamily: FONT, fontSize: '10px', color, whiteSpace: 'nowrap' as const };
+    const axis: Highcharts.YAxisOptions = {
+      visible: axes, // hidden, an axis still scales its series
+      opposite: n % 2 === 1,
+      title: { text: a.unit === '°' ? 'Direction' : a.unit, margin: 4, style },
+      labels: { style, align: n % 2 === 1 ? 'left' : 'right', x: n % 2 === 1 ? 4 : -4 },
+      gridLineWidth: n === 0 ? 1 : 0, // one set of grid lines: the axes' ticks don't line up
+      gridLineColor: '#eef0f3',
+      lineWidth: 1,
+      showLastLabel: true,
     };
-    resolveHeight();
-    window.addEventListener('resize', resolveHeight);
-    return () => window.removeEventListener('resize', resolveHeight);
-  }, [height, modalOpen]);
-
-  // The chart's event handlers are bound once, so they reach the latest zoomTo through a ref.
-  const zoomRef = useRef(view.zoomTo);
-  zoomRef.current = view.zoomTo;
-  // A pinch in progress: only this chart follows the fingers; the shared window is set once, when they lift.
-  const pinchRef = useRef<Range | null>(null);
-  const layoutRef = useRef({ showLegend });
-  layoutRef.current = { showLegend };
-
-  // Created once; everything that changes later goes through chart.update / setExtremes below.
-  const [initialOptions] = useState<Highcharts.Options>(() => {
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    return {
-      time: { timezone: TIME_ZONE },
-      chart: {
-        height: resolvedHeight,
-        animation: !reducedMotion,
-        style: { fontFamily: FONT },
-        // Drag (mouse) and pinch (touch) pick a range; the selection handler turns it into the shared window.
-        alignTicks: false, // each axis fits its own data, rather than all lining up their ticks with the widest one
-        zooming: { type: 'x', pinchType: 'x', resetButton: { theme: { style: { display: 'none' } } } },
-        events: {
-          selection(e) {
-            if (e.resetSelection) zoomRef.current(null);
-            else if (e.xAxis?.[0]) zoomRef.current({ start: e.xAxis[0].min, end: e.xAxis[0].max });
-            return false; // don't zoom this chart on its own: the window comes back as xAxis min/max
-          },
-        },
-      },
-      title: { text: title, style: { fontFamily: FONT, fontSize: '16px', color: '#333' } },
-      subtitle: { text: undefined, style: { fontFamily: FONT, fontSize: '11px', color: '#4b5563' } },
-      credits: { enabled: false },
-      legend: { enabled: false, itemStyle: { fontFamily: FONT } },
-      tooltip: { shared: true, followPointer: true, formatter: tooltipText, style: { fontFamily: FONT } },
-      plotOptions: {
-        series: {
-          animation: !reducedMotion,
-          connectNulls: false,
-          turboThreshold: 0, // points are objects (they carry their bucket for the tooltip), so allow any number
-          marker: { enabled: false, radius: 2.5, symbol: 'circle' }, // enabled per point where needed (see above)
-        },
-      },
-      xAxis: {
-        type: 'datetime',
-        minRange: MIN_RANGE_MS,
-        title: { text: null },
-        labels: { style: { fontFamily: FONT, fontSize: '10px' } },
-        events: {
-          // A pinch sets this chart's extremes with a trigger ('touchmove', on every move: kept until the
-          // fingers lift, so the other charts don't redraw each frame). Programmatic changes (the window, data
-          // updates) have no trigger and are ignored, so charts never feed back into each other.
-          afterSetExtremes(e) {
-            if (e.trigger === 'touchmove') pinchRef.current = { start: e.min, end: e.max };
-            else if (e.trigger) zoomRef.current({ start: e.min, end: e.max });
-          },
-        },
-      },
-      yAxis: [],
-      series: [],
-    };
-  });
-
-  // Data: this chart's series, overview outside the detail range and detail inside it.
-  const { series, yAxes, hasData, hasTotals } = useMemo(() => {
-    const ov = view.overview;
-    if (!ov) return { series: [], yAxes: [], hasData: false, hasTotals: false };
-    const unitIndex = new Map<string, number>();
-    const picked = ov.series.filter((s) => s.group_type === groupType
-      && (stationId === undefined || String(s.station_id) === stationId)
-      && measurements.includes(s.measurement_type));
-    const detail = view.detail;
-    const unitColors = new Map<string, string[]>();
-    const built = picked.map((s) => {
-      if (!unitIndex.has(s.unit)) unitIndex.set(s.unit, unitIndex.size);
-      const key = seriesKey(s);
-      const color = measurementColor(s.measurement_type);
-      unitColors.set(s.unit, [...(unitColors.get(s.unit) ?? []), color]);
-      const points = composePoints(s, ov.bucketS, detail
-        ? { values: detail.byKey.get(key), bucketS: detail.bucketS, range: detail.range }
-        : undefined);
-      const info: SeriesInfo = { measurement: s.measurement_type, unit: s.unit, agg: s.agg };
-      return {
-        id: key,
-        type: 'line' as const,
-        name: `${s.measurement_type} (${s.unit})`,
-        custom: info,
-        data: points.map((p) => {
-          const c = p.custom;
-          if (!c || p.y === null || !(c.partial || c.isolated)) return p;
-          // hollow: a partial bucket; filled: a lone reading
-          const marker = c.partial
-            ? { enabled: true, fillColor: '#ffffff', lineColor: color, lineWidth: 1.5 }
-            : { enabled: true };
-          return { ...p, marker };
-        }),
-        color,
-        yAxis: unitIndex.get(s.unit)!,
-      };
-    });
-    // Each axis names its unit once, in a title along it, so the labels stay narrow; both are in the colour of the
-    // axis' only series (grey when it has several) and small in the cards. Only the first axis draws grid lines: with
-    // ticks no longer aligned, more would criss-cross. Past maxAxes (narrow screens) axes are hidden.
-    const axes = Array.from(unitIndex.keys()).map((unit, index) => {
-      const colors = unitColors.get(unit) ?? [];
-      const color = colors.length === 1 ? colors[0] : '#4b5563';
-      const style = { fontFamily: FONT, fontSize: modalOpen ? '11px' : '9px', color, whiteSpace: 'nowrap' };
-      return {
-        title: { text: unit, margin: 4, style },
-        labels: { style },
-        gridLineWidth: index === 0 ? 1 : 0,
-        visible: index < maxAxes,
-        opposite: index % 2 === 1,
-      };
-    });
-    return {
-      series: built,
-      yAxes: axes,
-      hasData: built.some((s) => s.data.length > 0),
-      hasTotals: picked.some((s) => s.agg === 'sum'),
-    };
-  }, [view.overview, view.detail, groupType, stationId, measurements, modalOpen, maxAxes]);
-
-  useEffect(() => {
-    const chart = chartRef.current?.chart;
-    if (!chart) return;
-    const { showLegend: legend } = layoutRef.current;
-    // A tooltip left open would describe points that are no longer there.
-    chart.tooltip?.hide(0);
-    chart.pointer?.reset(false, 0);
-    chart.update({
-      yAxis: yAxes,
-      series,
-      legend: { enabled: legend && series.length > 1 },
-    }, true, true, false); // one-to-one: series and axes that went away are removed; no animation on updates
-  }, [series, yAxes]);
-
-  // Layout: never touches the data.
-  useEffect(() => {
-    const chart = chartRef.current?.chart;
-    if (!chart) return;
-    chart.update({
-      chart: { height: resolvedHeight },
-      title: { text: title },
-      legend: { enabled: showLegend && chart.series.length > 1 },
-    }, false, false, false);
-    chart.redraw(false);
-  }, [resolvedHeight, title, showLegend]);
-
-  // The window: the shared view, or the whole picked range.
-  const win: Range | null = view.viewWindow ?? view.range;
-  const winRef = useRef(win);
-  winRef.current = win;
-  useEffect(() => {
-    const axis = chartRef.current?.chart?.xAxis[0];
-    // Not while this chart is being pinched: new data arriving mid-pinch would snap it back to the old window.
-    // The pinch ends by setting the window, which runs this again.
-    if (!axis || !win || pinchRef.current) return;
-    axis.chart.tooltip?.hide(0); // it would point at where the data was before the window moved
-    axis.setExtremes(win.start, win.end, true, false); // no trigger: afterSetExtremes ignores it
-  }, [win, series]);
-
-  const isEmpty = !view.loading && !view.error && view.overview !== null && !hasData;
-
-  // The resolution badge ("12-hour averages") as the chart's subtitle, so it never covers the title.
-  const badge = showBadge ? resolutionBadge(view.shownBucketS, view.shownAggregated, hasTotals) : null;
-  useEffect(() => {
-    chartRef.current?.chart?.setSubtitle({ text: badge ?? '' });
-  }, [badge]);
-
-  // A drag that zooms ends in a click; the card around the chart (ExpandableCard) ignores clicks that moved, so it
-  // doesn't open the larger view. A pinch commits the shared window once the fingers lift.
-  const onTouchEnd = (e: React.TouchEvent) => {
-    if (pinchRef.current && e.touches.length < 2) {
-      zoomRef.current(pinchRef.current);
-      pinchRef.current = null;
-      // If the window didn't change (e.g. pinched out past the picked days, which stays unzoomed), nothing re-runs
-      // the window effect: put this chart back on the window once React has rendered.
-      requestAnimationFrame(() => {
-        const w = winRef.current;
-        if (w) chartRef.current?.chart?.xAxis[0]?.setExtremes(w.start, w.end, true, false);
+    if (own.length && own.every((s) => s.agg === 'vector_mean')) {
+      Object.assign(axis, {
+        min: 0, max: 360, tickPositions: [0, 90, 180, 270, 360],
+        labels: { ...axis.labels, formatter(this: { value: number }) { return ['N', 'E', 'S', 'W', 'N'][this.value / 90] ?? ''; } },
       });
     }
+    if (own.length && own.every((s) => s.agg === 'sum')) axis.min = 0;
+    return axis;
+  });
+  const series: Highcharts.SeriesOptionsType[] = [];
+  for (const s of specs) {
+    const info: SeriesInfo = { label: s.name.replace(/ \([^)]*\)$/, ''), unit: s.unit, agg: s.agg, note: s.note, at: new Map() };
+    if (axes && s.agg === 'mean') { // bands in the larger view only: on a card with many series they hide the lines
+      series.push({
+        id: `${s.key}#band`, type: 'arearange', linkedTo: s.key, yAxis: s.axis, color: s.color, fillOpacity: 0.14,
+        lineWidth: 0, enableMouseTracking: false, marker: { enabled: false }, data: [], zIndex: 0, visible: !s.hidden,
+        accessibility: { enabled: false }, showInNavigator: false, // never the navigator's base (Stock's default is series 0)
+      } as Highcharts.SeriesArearangeOptions);
+    }
+    const type = seriesType(s.agg);
+    series.push({
+      id: s.key, type, name: s.name, custom: info, yAxis: s.axis, color: s.color, data: [], zIndex: 1, visible: !s.hidden,
+      showInNavigator: false, // the navigator's base is the extent series (below)
+      ...(s.dash ? { dashStyle: s.dash } : {}),
+      ...(type === 'line' ? { lineWidth: 1.5 } : {}),
+      // Bars a bucket wide, touching (no padding or grouping), from 0; the legend keeps the rectangle swatch
+      ...(type === 'column' ? { pointPadding: 0, groupPadding: 0, borderWidth: 0, grouping: false, threshold: 0, minPointLength: 0, legendSymbol: 'rectangle' } : {}),
+      ...(type === 'scatter' ? { marker: { enabled: true, radius: 2, symbol: 'circle' }, findNearestPointBy: 'x' } : {}),
+    } as Highcharts.SeriesOptionsType);
+    if (type === 'line') {
+      // Markers, as series of their own so every series keeps plain [x, y] data: hollow for a bucket with fewer
+      // readings than usual, filled for a reading between two gaps (a line can't show a single point)
+      const marks = (id: string, fill: string) => series.push({
+        id: `${s.key}#${id}`, type: 'scatter', linkedTo: s.key, yAxis: s.axis, color: s.color, data: [], zIndex: 2,
+        visible: !s.hidden, enableMouseTracking: false, showInNavigator: false, accessibility: { enabled: false },
+        marker: { enabled: true, radius: 3, symbol: 'circle', fillColor: fill, lineColor: s.color, lineWidth: 1.5 },
+      } as Highcharts.SeriesScatterOptions);
+      marks('partial', '#ffffff');
+      marks('isolated', s.color);
+    }
+  }
+  const ext = controller.extent, w = controller.window;
+  series.push({
+    id: EXTENT_ID, type: 'line', data: extentData(ext), yAxis: 0, enableMouseTracking: false, showInLegend: false,
+    includeInDataExport: false, accessibility: { enabled: false }, lineWidth: 0,
+    // Exactly one series carries the navigator (Stock otherwise adds a navigator series per series it is given): this
+    // one, which the legend can't hide. It draws nothing there: it only spans the picked range.
+    showInNavigator: true,
+    navigatorOptions: { type: 'line', lineWidth: 0, enableMouseTracking: false, data: [], dataGrouping: { enabled: false } },
+  } as Highcharts.SeriesLineOptions);
+  return {
+    time: { timezone: TIME_ZONE },
+    chart: {
+      height,
+      animation: false,
+      alignTicks: false, // each axis fits its own data
+      spacing: [6, 4, 4, 2],
+      style: { fontFamily: FONT },
+      // The plain wheel scrolls the page; Ctrl + wheel zooms (below). pinchType '': Stock's default ('x') runs its own
+      // touch pan and pinch, a redraw per touchmove; this chart's own (below) paces them
+      zooming: { mouseWheel: { enabled: false }, pinchType: '' as unknown as Highcharts.OptionsPinchTypeValue },
+      panning: { enabled: false }, // drag-panning is ours (mouse only), so one finger still scrolls the page
+      events: {
+        render(this: Highcharts.Chart) { controller.setPlotWidth(this.plotWidth); },
+      },
+    },
+    title: { text: undefined },
+    credits: { enabled: false },
+    rangeSelector: { enabled: false },
+    // The range bar: Stock's navigator, reduced to one control. Its track is the picked range (with its dates), the
+    // shaded part is the window: drag an end to resize it, the middle to slide it. No line of data in it (nobody could
+    // tell what it showed) and no separate scrollbar (it did the same as the bar). Its keyboard control is the
+    // range-bar element in the JSX below (Stock's own handles aren't keyboard controls).
+    navigator: {
+      enabled: true,
+      accessibility: { enabled: false }, // its handles were tab stops named "Start, percent"
+      height: coarse ? 26 : 22,
+      margin: 6,
+      adaptToUpdatedData: false, // its extent is the picked range, not wherever data happens to be
+      maskFill: 'rgba(122, 0, 60, 0.22)',
+      outlineColor: '#9ca3af',
+      outlineWidth: 1,
+      handles: { backgroundColor: '#ffffff', borderColor: '#7a003c', height: coarse ? 22 : 18, width: coarse ? 12 : 9, lineWidth: 1.5 },
+      xAxis: {
+        dateTimeLabelFormats: DATE_FORMATS, gridLineColor: '#e5e7eb',
+        labels: { style: { fontFamily: FONT, fontSize: '9px', color: '#4b5563' } },
+      },
+    },
+    scrollbar: { enabled: false },
+    accessibility: {
+      description: `${title}. Use the buttons above the chart, or the arrow, plus and minus keys, to move and zoom.`,
+      // The summary read before the chart names its series, not Highcharts' count (which includes the helper series
+      // for markers, bands and the navigator: "33 series" for 11)
+      screenReaderSection: {
+        beforeChartFormat: `<div>${title}: a time chart of ${specs.length} series: ${specs.map((sp) => sp.name).join(', ')}.</div><div>{chartLongdesc}</div>`,
+      },
+      // Keyboard: Tab reaches the legend (arrow keys move along it, Enter shows or hides a series); moving and zooming
+      // are the chart's own keys on the plot (see above)
+      keyboardNavigation: { enabled: true, order: ['legend'] },
+      // No hidden description per point: the chart is described as a whole, and the toolbar announces its window.
+      // 0, not 1 or false: below the threshold the module adds invisible markers, and as an empty series fills it
+      // updates every series' markers with a redraw each, so a chart was drawn as many times as it has series.
+      series: { pointDescriptionEnabledThreshold: 0 },
+      point: { describeNull: false },
+    },
+    responsive: {
+      rules: [
+        // Narrow (a phone's larger view): one y-axis, the first; nine side by side left the plot 30 px wide
+        { condition: { maxWidth: 640 }, chartOptions: { yAxis: axisSpecs.map((_, n) => ({ visible: axes && n === 0 })) } },
+        // On a phone the legend is a column of names: past LEGEND_ROWS whole rows it pages, with arrows big enough to tap
+        {
+          condition: { maxWidth: 480 },
+          chartOptions: {
+            legend: {
+              maxHeight: LEGEND_ROWS * LEGEND_ROW_PX + 8, itemMarginTop: 0, itemMarginBottom: LEGEND_ROW_PX - 16, // + its padding
+              navigation: { arrowSize: 16, style: { fontSize: '13px' } },
+            },
+          },
+        },
+      ],
+    },
+    legend: {
+      enabled: true,
+      margin: 2, padding: 2, itemDistance: 12,
+      symbolRadius: 2, // rain's rectangle swatch stays a rectangle (Highcharts rounds it to a dot by default)
+      itemStyle: { fontFamily: FONT, fontSize: '11px', fontWeight: 'normal' },
+      labelFormatter(this: Highcharts.Series | Highcharts.Point) {
+        const info = (this as Highcharts.Series).options?.custom as SeriesInfo | undefined;
+        const name = (this as Highcharts.Series).name;
+        return info?.note ? `${name} <span style="color:#9a3412">· ${info.note}</span>` : name;
+      },
+    },
+    // followTouchMove off: a finger moving over the chart scrolls the page (Highcharts would otherwise hold the touch
+    // for its tooltip and cancel touchend mid-scroll); a tap still shows the tooltip
+    // outside on a card (so a narrow chart doesn't clip it), inside in the larger view: an outside tooltip lives in the
+    // page body, beneath the dialog's overlay, and never showed there
+    tooltip: { shared: true, split: false, followTouchMove: false, formatter: tooltipText, style: { fontFamily: FONT, fontSize: '12px' }, outside: !axes },
+    plotOptions: {
+      series: {
+        animation: false,
+        connectNulls: false,
+        turboThreshold: 0, // points are objects (they carry their bucket for the tooltip)
+        dataGrouping: { enabled: false }, // the server's buckets, as they are
+        states: { inactive: { opacity: 1 } },
+        marker: { enabled: false, radius: 2.5, symbol: 'circle' },
+      },
+    },
+    xAxis: {
+      type: 'datetime',
+      ordinal: false, // time is time: a gap in the data is a gap on the axis
+      min: w.start,
+      max: w.end,
+      minRange: MIN_RANGE_MS,
+      crosshair: { width: 1, color: '#9ca3af' },
+      title: { text: null },
+      dateTimeLabelFormats: DATE_FORMATS,
+      labels: { style: { fontFamily: FONT, fontSize: '10px' } },
+      events: {
+        // Should Highcharts move the axis itself (its navigator or the plot), tell the controller, which loads that
+        // window (programmatic changes, which carry no trigger, come from the controller and are ignored)
+        afterSetExtremes(e) {
+          if (!e.trigger || e.min === undefined || e.max === undefined) return;
+          controller.setWindow({ start: e.min, end: e.max }, e.trigger === 'navigator' ? 'slider' : 'drag');
+        },
+      },
+    } as Highcharts.XAxisOptions,
+    // At least one axis, hidden when the card has none: the extent series (on axis 0) would otherwise throw error #18
+    yAxis: yAxis.length ? yAxis : [{ visible: false }],
+    series,
   };
+}
+
+const MetricChart: React.FC<MetricChartProps> = (props) => {
+  // Taller with more series, whose legend takes rows from the plot (up to ten series' worth)
+  const { id, title, series: specs, axes, height = 280 + 16 * Math.min(props.series.length, 10), modalOpen = false } = props;
+  const structure = JSON.stringify({ specs, axes });
+  const keys = useMemo(() => (JSON.parse(structure).specs as SeriesSpec[]).map((s) => s.key), [structure]);
+  const controller = useChartWindow(modalOpen ? `${id}:modal` : id, keys);
+  const chartRef = useRef<HighchartsReact.RefObject>(null);
+  const plotRef = useRef<HTMLDivElement>(null);
+  const hintRef = useRef<HTMLDivElement>(null);
+  const selectRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null); // the range bar's keyboard control
+  const navDragRef = useRef(false); // a navigator drag is on (the canvas preview leaves the chart its pointer events)
+  const [, setCrash] = useState<null>(null); // rethrows a callback's exception during render (see guarded below)
+
+  const chartHeight = modalOpen ? Math.round(height * 1.5) : height;
+  // Rebuilt (a new chart) only when what is drawn changes: other series, height or the larger view
+  const options = useMemo(() => {
+    const s = JSON.parse(structure) as { specs: SeriesSpec[]; axes: AxisSpec[] };
+    return buildOptions(title, s.specs, s.axes, controller, chartHeight, modalOpen);
+  }, [title, structure, controller, chartHeight, modalOpen]);
+
+  const error = useChartValue(controller, (s) => s.error);
+  const firstLoad = useChartValue(controller, (s) => s.shownBucket === null && !s.error);
+  const settled = useChartValue(controller, (s) => s.settled);
+  const windowEmpty = useChartValue(controller, (s) => s.windowEmpty && s.shownBucket !== null && !s.loading);
+  const noData = useChartValue(controller, (s) => s.hasData === false);
+  const extentStart = useChartValue(controller, (s) => s.extent.start);
+  const extentEnd = useChartValue(controller, (s) => s.extent.end);
+
+  // Data and window into the chart: data is set without drawing, and the paced redraw (onRedraw, right after) draws
+  // it and the window in one go.
+  useEffect(() => {
+    const chart = chartRef.current?.chart;
+    if (!chart) return;
+    let dirty = false;
+    const apply = (d: ComposedData) => {
+      dirty = true;
+      chart.tooltip?.hide(0); // it would describe points that are no longer there
+      for (const key of keys) {
+        const s = chart.get(key) as Highcharts.Series | undefined;
+        if (!s) continue;
+        // Only the picked range: tiles reach past its ends, and points there would stretch the axis and navigator
+        const e = controller.extent;
+        const pts = (d.series.get(key) ?? []).filter((p) => p.x >= e.start && p.x <= e.end);
+        const info = s.options.custom as SeriesInfo;
+        const unit = controller.meta(key)?.unit;
+        if (unit && unit !== info.unit) {
+          info.unit = unit;
+          s.update({ name: unit === '°' ? info.label : `${info.label} (${unit})` } as Highcharts.SeriesOptionsType, false);
+        }
+        info.at = new Map();
+        const partial: [number, number][] = [], isolated: [number, number][] = [];
+        s.setData(pts.map((p) => {
+          const c = p.custom;
+          if (c && p.y !== null) {
+            info.at.set(p.x, c);
+            if (c.partial) partial.push([p.x, p.y]);
+            else if (c.isolated) isolated.push([p.x, p.y]);
+          }
+          return [p.x, p.y];
+        }), false, false, false);
+        (chart.get(`${key}#partial`) as Highcharts.Series | undefined)?.setData(partial, false, false, false);
+        (chart.get(`${key}#isolated`) as Highcharts.Series | undefined)?.setData(isolated, false, false, false);
+        const band = chart.get(`${key}#band`) as Highcharts.Series | undefined;
+        band?.setData(pts.map((p) => {
+          const c = p.custom;
+          return c && p.y !== null && c.bucketS > RAW_S && c.lo !== null && c.hi !== null ? [p.x, c.lo, c.hi] : [p.x, null, null];
+        }), false, false, false);
+      }
+      navigator();
+    };
+    // The range bar (the navigator) spans the picked range: its base series holds just the range's two ends
+    let navShown = '';
+    const navigator = () => {
+      const nav = (chart as Highcharts.Chart & { navigator?: { series?: Highcharts.Series[] } }).navigator?.series?.[0];
+      if (!nav) return;
+      const e = controller.extent;
+      const sig = `${e.start}|${e.end}`;
+      if (sig === navShown) return;
+      navShown = sig;
+      nav.setData(extentData(e), false, false, false); // the range bar spans the picked range; it draws no data
+      (chart.get(EXTENT_ID) as Highcharts.Series | undefined)?.setData(extentData(e), false, false, false);
+      dirty = true;
+    };
+    // With a preview (gesturePreview.ts), a gesture moves the copy rather than redrawing the chart, unless its data
+    // changed; the chart is redrawn for real PREVIEW_IDLE_MS after the last move (the next move copies it again, with
+    // no redraw) and when the gesture ends. Without one, every paced frame is a real redraw.
+    const paintSeries = (): PaintSeries[] => specs.map((sp) => ({
+      id: sp.key, points: controller.lastData.series.get(sp.key) ?? [],
+      kind: sp.agg === 'sum' ? 'bars' : sp.agg === 'vector_mean' ? 'dots' : 'line',
+    }));
+    const preview: GesturePreview = PREVIEW === 'canvas' ? canvasPreview(chart, chart.container, paintSeries, () => navDragRef.current)
+      : PREVIEW === 'bitmap' ? bitmapPreview(chart, chart.container) : noPreview;
+    if (PREVIEW === 'canvas') warmCanvas();
+    let idle = 0;
+    const place = (w: { start: number; end: number }, gesture = false) => {
+      window.clearTimeout(idle);
+      if (PREVIEW !== 'redraw' && gesture && !dirty) {
+        preview.move(w);
+        if (PREVIEW === 'bitmap') idle = window.setTimeout(() => place(controller.window), PREVIEW_IDLE_MS);
+        return;
+      }
+      if (preview.active) {
+        preview.end();
+        dirty = true; // the series are still drawn for the preview's wider span
+      }
+      const axis = chart.xAxis[0];
+      if (Math.abs((axis.min ?? 0) - w.start) > 1 || Math.abs((axis.max ?? 0) - w.end) > 1) {
+        chart.tooltip?.hide(0);
+        axis.setExtremes(w.start, w.end, false, false);
+        dirty = true;
+      }
+      if (dirty) {
+        dirty = false;
+        chart.redraw(false);
+      }
+    };
+    // The bands go during a gesture and come back, in one redraw, when it ends (hidden-by-default series stay hidden)
+    const bands = (show: boolean) => {
+      for (const s of chart.series) {
+        if (s.type !== 'arearange') continue;
+        const line = chart.get(String(s.options.id).replace(/#band$/, '')) as Highcharts.Series | undefined;
+        const want = show && (line?.visible ?? true);
+        if (s.visible !== want) {
+          s.setVisible(want, false);
+          dirty = true;
+        }
+      }
+    };
+    apply(controller.lastData);
+    place(controller.window);
+    // After every redraw: the range bar's keyboard element sits over the bar, and the bar still spans the range
+    const placeBar = () => {
+      const n = (chart as Highcharts.Chart & { navigator?: { top: number; height: number; left: number; size: number } }).navigator;
+      const bar = barRef.current;
+      if (!n || !bar) return;
+      Object.assign(bar.style, { top: `${n.top - 2}px`, left: `${n.left - 2}px`, width: `${n.size + 4}px`, height: `${n.height + 4}px` });
+    };
+    placeBar();
+    const offLegend = Highcharts.addEvent(chart, 'redraw', () => {
+      placeBar();
+      const before = navShown;
+      navigator();
+      if (navShown !== before) chart.redraw(false);
+    });
+    // These run from animation frames and fetch replies, outside React: an exception in them goes to the card's
+    // error boundary (rethrown in a state update) instead of leaving the chart half drawn
+    const crash = (err: unknown) => setCrash(() => { throw err; });
+    const offData = controller.onData(guarded(apply, crash));
+    const offRedraw = controller.onRedraw(guarded(place, crash));
+    // Between the paced redraws of a gesture, the navigator's window and handles follow every frame (cheap: no series
+    // are drawn), so they track the finger even when the chart can only redraw a few times a second
+    const offFrame = controller.onFrame(guarded((w: { start: number; end: number }) => {
+      if (controller.inGesture && !preview.active) (chart as Highcharts.Chart & { navigator?: { render(a: number, b: number): void } }).navigator?.render(w.start, w.end);
+    }, crash));
+    // Accessibility repositions its hidden buttons (forcing a page layout) on every redraw: off while the window
+    // moves, back 300 ms after (the toolbar's live region still announces where the gesture ended)
+    let a11yTimer = 0;
+    const a11y = (on: boolean) => chart.update({ accessibility: { enabled: on } }, false);
+    const offGesture = controller.onGesture(guarded((active: boolean) => {
+      bands(!active);
+      window.clearTimeout(a11yTimer);
+      if (active) a11y(false);
+      else {
+        if (preview.active) place(controller.window);
+        a11yTimer = window.setTimeout(guarded(() => { a11y(true); chart.redraw(false); }, crash), 300);
+      }
+    }, crash));
+    return () => {
+      offData(); offRedraw(); offFrame(); offGesture(); offLegend();
+      window.clearTimeout(a11yTimer);
+      window.clearTimeout(idle);
+      preview.end();
+    };
+  }, [controller, keys, options]);
+
+  // A new picked range (or the hour moving on): the navigator and the x-axis span it
+  useEffect(() => {
+    const chart = chartRef.current?.chart;
+    if (!chart) return;
+    (chart.get(EXTENT_ID) as Highcharts.Series | undefined)?.setData(extentData({ start: extentStart, end: extentEnd }), true, false, false);
+  }, [extentStart, extentEnd, options]);
+
+  // About one point per pixel on phones (each costs more to draw there), 1.5 elsewhere
+  useEffect(() => {
+    const coarse = window.matchMedia?.('(pointer: coarse)');
+    const set = () => controller.setDensity(coarse?.matches || window.innerWidth < 640 ? POINTS_PER_PX_PHONE : POINTS_PER_PX);
+    set();
+    window.addEventListener('resize', set);
+    return () => window.removeEventListener('resize', set);
+  }, [controller]);
+
+  // Charts off screen load after the ones on screen
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver(([entry]) => controller.setVisible(entry.isIntersecting), { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [controller]);
+
+  // Wheel, drag, touch and keys
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const chart = () => chartRef.current?.chart;
+    let hintTimer = 0;
+    let hintShown = -Infinity;
+    let wheelEnd = 0;
+    let lastWheel = 0;
+    let settleFrame = 0;
+    const wheelGesture = () => { // a burst of wheel events is one gesture: it ends when they pause
+      controller.beginGesture();
+      lastWheel = performance.now();
+      if (wheelEnd) return;
+      // Ends WHEEL_SETTLE_MS after the last event (checked when the timer fires, so a long burst sets one timer at a
+      // time), at the next frame, after events already queued behind a slow redraw
+      const settle = () => {
+        const left = WHEEL_SETTLE_MS - (performance.now() - lastWheel);
+        if (left > 0) { wheelEnd = window.setTimeout(settle, left); return; }
+        wheelEnd = 0;
+        settleFrame = requestAnimationFrame(() => { if (performance.now() - lastWheel >= WHEEL_SETTLE_MS) controller.endGesture(); else wheelGesture(); });
+      };
+      wheelEnd = window.setTimeout(settle, WHEEL_SETTLE_MS);
+    };
+    const showHint = () => {
+      if (performance.now() - hintShown < HINT_EVERY_MS) return;
+      hintShown = performance.now();
+      hintRef.current?.classList.add('opacity-100');
+      window.clearTimeout(hintTimer);
+      hintTimer = window.setTimeout(() => hintRef.current?.classList.remove('opacity-100'), 1200);
+    };
+    const timeAt = (clientX: number) => {
+      const c = chart();
+      if (!c) return (controller.window.start + controller.window.end) / 2;
+      return c.xAxis[0].toValue(clientX - c.container.getBoundingClientRect().left);
+    };
+    const inPlot = (clientX: number, clientY: number) => {
+      const c = chart();
+      if (!c) return false;
+      const box = c.container.getBoundingClientRect();
+      const x = clientX - box.left, y = clientY - box.top;
+      return x >= c.plotLeft && x <= c.plotLeft + c.plotWidth && y >= c.plotTop && y <= c.plotTop + c.plotHeight;
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      const c = chart();
+      if (!c) return;
+      const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 800 : 1;
+      const w = controller.window;
+      if (sideways && !ctrl) {
+        e.preventDefault();
+        wheelGesture();
+        const delta = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
+        controller.pan(delta / Math.max(c.plotWidth, 1), 'wheel');
+        return;
+      }
+      if (!ctrl) {
+        showHint(); // and let the page scroll
+        return;
+      }
+      e.preventDefault();
+      wheelGesture();
+      const factor = Math.min(2, Math.max(0.5, Math.pow(ZOOM_PER_WHEEL_PX, e.deltaY * unit)));
+      const at = Math.min(Math.max(timeAt(e.clientX), w.start), w.end);
+      controller.zoom(factor, at, 'wheel');
+    };
+
+    // A drag in the plot. With a finger (or pen) it waits until it has moved TOUCH_SLOP_PX: sideways it pans, up or down
+    // it is the browser's page scroll (which cancels it)
+    let drag: { x0: number; y0: number; w0: { start: number; end: number }; mode: 'pan' | 'select'; moved: boolean; id: number; touch: boolean } | null = null;
+    // On the range bar (Stock puts the legend below it, which is not part of it)
+    const belowPlot = (clientY: number) => {
+      const c = chart() as (Highcharts.Chart & { navigator?: { top: number; height: number } }) | undefined;
+      const n = c?.navigator;
+      if (!c || !n) return false;
+      const y = clientY - c.container.getBoundingClientRect().top;
+      return y >= n.top - 4 && y <= n.top + n.height + 2; // the legend starts just below
+    };
+    // The range bar (the navigator), below the plot, is driven here rather than by Highcharts (whose mouse and touch
+    // handling there is stopped, onNavPress): Highcharts redrew the chart on every move of a navigator drag, at up to
+    // 150 ms a frame, and moved the window as soon as a finger landed on the track, so a page scroll starting there
+    // jumped the chart. Here a drag moves the window (or the handle it started on) through the controller, which paces
+    // the redraws like any other drag. A finger waits until it has moved TOUCH_SLOP_PX: sideways it drags, up or down
+    // it is the page's scroll. A click or tap on the track centres the window there.
+    let nav: { x0: number; y0: number; w0: { start: number; end: number }; part: 'start' | 'end' | 'window' | 'track'; moved: boolean; id: number; mouse: boolean } | null = null;
+    const navAxis = () => (chart() as (Highcharts.Chart & { navigator?: { xAxis?: Highcharts.Axis } }) | undefined)?.navigator?.xAxis;
+    const navDown = (e: PointerEvent) => {
+      const c = chart(), axis = navAxis();
+      if (!c || !axis) return;
+      const x = e.clientX - c.container.getBoundingClientRect().left;
+      const w = controller.window;
+      const a = axis.toPixels(w.start, false), b = axis.toPixels(w.end, false);
+      // A tiny window still has a slide area, and handle zones outside it, all kept on the bar (its ends: the range's)
+      const ext = controller.extent;
+      const part = barPart(x, a, b, axis.toPixels(ext.start, false), axis.toPixels(ext.end, false));
+      nav = { x0: e.clientX, y0: e.clientY, w0: { ...w }, part, moved: false, id: e.pointerId, mouse: e.pointerType === 'mouse' };
+      // A mouse press is captured at once, so its release is heard wherever it happens (a finger's waits for its
+      // direction: up or down is the page's scroll)
+      if (nav.mouse) el.setPointerCapture(e.pointerId);
+    };
+    const navMove = (e: PointerEvent) => {
+      const axis = navAxis(), c = chart();
+      if (!nav || e.pointerId !== nav.id || !axis) return;
+      if (nav.mouse && e.buttons === 0) { // the button was released where we didn't hear it
+        navUp(e);
+        return;
+      }
+      const dx = e.clientX - nav.x0;
+      if (!nav.moved) {
+        const dy = e.clientY - nav.y0;
+        if (nav.mouse) {
+          if (Math.abs(dx) < 3) return;
+        } else {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
+          if (Math.abs(dy) >= Math.abs(dx)) { nav = null; return; } // the page's scroll
+        }
+        nav.moved = true;
+        navDragRef.current = true;
+        el.setPointerCapture(e.pointerId);
+        c?.tooltip?.hide(0);
+        controller.beginGesture();
+      }
+      const ext = controller.extent;
+      const dt = (dx / Math.max(axis.len, 1)) * (ext.end - ext.start);
+      const { start, end } = nav.w0;
+      if (nav.part === 'start') controller.setWindow({ start: Math.min(start + dt, end), end }, 'slider', 'end');
+      else if (nav.part === 'end') controller.setWindow({ start, end: Math.max(end + dt, start) }, 'slider', 'start');
+      else controller.setWindow({ start: start + dt, end: end + dt }, 'slider');
+    };
+    const navUp = (e: PointerEvent) => {
+      const axis = navAxis(), c = chart();
+      if (!nav || e.pointerId !== nav.id) return;
+      const done = nav;
+      navDragRef.current = false;
+      nav = null;
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      if (done.moved) controller.endGesture();
+      else if (done.part === 'track' && axis && c && e.type === 'pointerup') {
+        const x = e.clientX - c.container.getBoundingClientRect().left;
+        const ext = controller.extent;
+        const at = Math.min(Math.max(axis.toValue(x, false), ext.start), ext.end); // a tap just past the track's ends
+        const span = done.w0.end - done.w0.start;
+        controller.setWindow({ start: at - span / 2, end: at + span / 2 }, 'slider');
+      }
+    };
+    // Presses below the plot don't reach Highcharts' navigator and scrollbar (see nav above); not cancelled, so focus
+    // and text selection behave as usual
+    const onNavPress = (e: MouseEvent) => {
+      if (belowPlot(e.clientY)) e.stopPropagation();
+    };
+    const onDown = (e: PointerEvent) => {
+      if (belowPlot(e.clientY)) {
+        if (e.button === 0) navDown(e);
+        return;
+      }
+      if (e.button !== 0 || !inPlot(e.clientX, e.clientY)) return;
+      if (e.pointerType === 'mouse') el.focus({ preventScroll: true }); // for the keys
+      drag = {
+        x0: e.clientX, y0: e.clientY, w0: { ...controller.window }, mode: e.shiftKey ? 'select' : 'pan', moved: false,
+        id: e.pointerId, touch: e.pointerType !== 'mouse',
+      };
+    };
+    const onMove = (e: PointerEvent) => {
+      if (nav) navMove(e);
+      if (!drag || e.pointerId !== drag.id) return;
+      if (e.buttons === 0) { // the button was released where we didn't hear it (outside the window, say)
+        onUp(e);
+        return;
+      }
+      const c = chart();
+      if (!c) return;
+      const dx = e.clientX - drag.x0;
+      if (!drag.moved) {
+        if (drag.touch) {
+          const dy = e.clientY - drag.y0;
+          if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return;
+          if (Math.abs(dy) >= Math.abs(dx)) { drag = null; return; } // the page's scroll
+        } else if (Math.abs(dx) < TOUCH_SLOP_PX) return; // a click, not a pan
+        drag.moved = true;
+        el.setPointerCapture(e.pointerId);
+        c.tooltip?.hide(0);
+        if (drag.mode === 'pan') controller.beginGesture();
+      }
+      if (drag.mode === 'pan') {
+        const dt = (-dx / Math.max(c.plotWidth, 1)) * (drag.w0.end - drag.w0.start);
+        controller.setWindow({ start: drag.w0.start + dt, end: drag.w0.end + dt }, 'drag');
+      } else if (selectRef.current) {
+        const box = c.container.getBoundingClientRect();
+        const lo = Math.max(Math.min(drag.x0, e.clientX) - box.left, c.plotLeft);
+        const hi = Math.min(Math.max(drag.x0, e.clientX) - box.left, c.plotLeft + c.plotWidth);
+        Object.assign(selectRef.current.style, {
+          display: 'block', left: `${lo}px`, width: `${Math.max(hi - lo, 0)}px`, top: `${c.plotTop}px`, height: `${c.plotHeight}px`,
+        });
+      }
+    };
+    const onUp = (e: PointerEvent) => {
+      if (nav) navUp(e);
+      if (!drag || e.pointerId !== drag.id) return;
+      if (drag.mode === 'select' && drag.moved) {
+        const a = timeAt(drag.x0), b = timeAt(e.clientX);
+        if (b !== a) controller.setWindow({ start: Math.min(a, b), end: Math.max(a, b) }, 'select');
+      }
+      if (selectRef.current) selectRef.current.style.display = 'none';
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      drag = null;
+      controller.endGesture();
+    };
+    // Capture lost (e.g. the window lost focus mid-drag): end the drag where it is; a selection is dropped
+    const onLost = (e: PointerEvent) => {
+      // A finger's implicit capture by the element it landed on ends when the drag takes the capture: not this chart's
+      if (e.target !== el) return;
+      if (nav?.id === e.pointerId) {
+        if (nav.moved) controller.endGesture();
+        nav = null;
+        navDragRef.current = false;
+      }
+      if (!drag || e.pointerId !== drag.id) return;
+      if (selectRef.current) selectRef.current.style.display = 'none';
+      drag = null;
+      controller.endGesture();
+    };
+
+    // The plot's left edge and width are measured once per pinch: reading them on every move forced a layout of the
+    // whole page each time (the page doesn't scroll during a pinch). Two-finger events stop here, before Highcharts'
+    // own touch handling (which measured the page again for its tooltip), since they are this chart's pinch.
+    let pinch: { d0: number; t0: number; span0: number; left: number; width: number } | null = null;
+    const touchState = (e: TouchEvent) => {
+      const [a, b] = [e.touches[0], e.touches[1]];
+      return { d: Math.max(20, Math.abs(a.clientX - b.clientX)), cx: (a.clientX + b.clientX) / 2 };
+    };
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        // Below the plot: kept from Highcharts' navigator and scrollbar (see nav), and not cancelled, so the page can
+        // still scroll
+        if (belowPlot(e.touches[0].clientY)) e.stopPropagation();
+        return;
+      }
+      if (e.touches.length !== 2) return;
+      // Fingers more above each other than side by side: not a time zoom (the chart's pinch measures the sideways
+      // spread, which barely changes); left to the browser, which zooms the page
+      const [ta, tb] = [e.touches[0], e.touches[1]];
+      if (Math.abs(ta.clientY - tb.clientY) > Math.abs(ta.clientX - tb.clientX)) {
+        if (drag?.touch) { // the first finger's pan ends here too
+          if (drag.moved) controller.endGesture();
+          drag = null;
+        }
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const c = chart();
+      if (!c) return;
+      const { d, cx } = touchState(e);
+      const w = controller.window;
+      const left = c.container.getBoundingClientRect().left + c.plotLeft;
+      if (drag?.touch) { // a second finger: the one-finger pan becomes this pinch
+        if (drag.moved) controller.endGesture();
+        drag = null;
+      }
+      pinch = { d0: d, t0: timeAt(cx), span0: w.end - w.start, left, width: Math.max(c.plotWidth, 1) };
+      chart()?.tooltip?.hide(0);
+      controller.beginGesture();
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const { d, cx } = touchState(e);
+      const span = Math.max(pinch.span0 * (pinch.d0 / d), MIN_RANGE_MS);
+      const share = (cx - pinch.left) / pinch.width;
+      const start = pinch.t0 - share * span;
+      controller.setWindow({ start, end: start + span }, 'pinch');
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2 && pinch) {
+        pinch = null;
+        controller.endGesture();
+      }
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target !== el) return; // keys on the legend (inside the chart) are the legend's
+      const acts: Record<string, () => void> = {
+        ArrowLeft: () => controller.pan(-0.1, 'key'),
+        ArrowRight: () => controller.pan(0.1, 'key'),
+        '+': () => controller.zoom(2 / 3, undefined, 'key'),
+        '=': () => controller.zoom(2 / 3, undefined, 'key'),
+        '-': () => controller.zoom(1.5, undefined, 'key'),
+        '_': () => controller.zoom(1.5, undefined, 'key'),
+        '0': () => controller.reset(),
+        Home: () => controller.reset(),
+      };
+      const act = acts[e.key];
+      if (act) {
+        e.preventDefault();
+        act();
+      }
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
+    el.addEventListener('lostpointercapture', onLost);
+    el.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+    el.addEventListener('touchend', onTouchEnd);
+    el.addEventListener('touchcancel', onTouchEnd);
+    el.addEventListener('keydown', onKey);
+    el.addEventListener('mousedown', onNavPress, { capture: true });
+    return () => {
+      el.removeEventListener('mousedown', onNavPress, { capture: true });
+      window.clearTimeout(hintTimer);
+      window.clearTimeout(wheelEnd);
+      cancelAnimationFrame(settleFrame);
+      controller.endGesture();
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+      el.removeEventListener('lostpointercapture', onLost);
+      el.removeEventListener('touchstart', onTouchStart, { capture: true });
+      el.removeEventListener('touchmove', onTouchMove, { capture: true });
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+      el.removeEventListener('keydown', onKey);
+    };
+  }, [controller]);
+
+  const kind = specs.length > 0 && specs.every((s) => s.agg === 'sum') ? 'totals' : 'means';
+  // The range bar's keys: arrows move the window by a tenth of its length; Shift + arrows move its end, making it longer
+  // (right) or shorter (left) by a tenth
+  const onBarKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = e.key === 'ArrowLeft' ? -1 : 1;
+    if (!e.shiftKey) { controller.pan(dir * 0.1, 'key'); return; }
+    const w = controller.window, step = (w.end - w.start) * 0.1;
+    controller.setWindow({ start: w.start, end: Math.max(w.start + MIN_RANGE_MS, w.end + dir * step) }, 'key', 'start');
+  };
+  const plotId = `plot-${id}${modalOpen ? '-modal' : ''}`;
   return (
-    <div className="relative" onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
-      <HighchartsReact
-        highcharts={Highcharts}
-        options={initialOptions}
-        allowChartUpdate={false}
-        ref={chartRef}
-        containerProps={{ style: { height: `${resolvedHeight}px` } }}
-      />
-      {/* While a new range loads, the previous chart stays visible under a spinner. It is announced once for all
-          charts (ChartWindowBar), not by each chart. */}
-      {view.loading && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center rounded bg-white/70" aria-hidden="true">
-          <div className="flex items-center gap-2 text-sm text-gray-700">
-            <span className="h-4 w-4 motion-safe:animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
-            Loading data…
+    <div className="min-w-0" data-testid={`chart-${id}`}>
+      <ChartToolbar controller={controller} title={title} kind={kind} headingLevel="h3" />
+      <div
+        ref={plotRef}
+        id={plotId}
+        tabIndex={0}
+        role="group"
+        aria-label={`${title} chart. Arrow keys move it, plus and minus zoom, 0 resets.`}
+        className="well-chart relative [contain:layout_paint] cursor-grab touch-pan-y touch-pinch-zoom rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary active:cursor-grabbing"
+        style={{ height: chartHeight }}
+      >
+        <HighchartsReact
+          key={structure}
+          highcharts={Highcharts}
+          options={options}
+          allowChartUpdate={false}
+          ref={chartRef}
+          containerProps={{ style: { height: `${chartHeight}px` } }}
+        />
+        <div ref={selectRef} className="pointer-events-none absolute hidden bg-primary/10 outline outline-1 outline-primary/50" />
+        {/* The range bar from the keyboard: over the bar (placed after each redraw), letting the pointer through to it */}
+        {/* A slider over the picked days: its value is where the window starts (percent of the range), its value text
+            the window itself, so a screen reader announces each move and arrow keys reach it in browse mode */}
+        <div ref={barRef} tabIndex={0} role="slider" data-testid="chart-range-bar"
+          aria-label={`${title}: time window within the picked days. Left and right arrows move it; with Shift, they make it longer or shorter.`}
+          aria-valuemin={0} aria-valuemax={100}
+          aria-valuenow={Math.round(((settled.start - extentStart) / Math.max(extentEnd - extentStart, 1)) * 100)}
+          aria-valuetext={windowLabel(settled, extentEnd)}
+          aria-orientation="horizontal"
+          onKeyDown={onBarKey}
+          className="pointer-events-none absolute rounded outline-none focus-visible:ring-2 focus-visible:ring-primary" />
+        <div ref={hintRef} aria-hidden="true" data-testid="chart-wheel-hint"
+          className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-900/55 px-4 text-center text-sm text-white opacity-0 transition-opacity duration-200">
+          Hold Ctrl (⌘ on a Mac) and scroll to zoom
+        </div>
+        {firstLoad && (
+          // A skeleton of the chart while its first data loads: the plot's place, faint lines, the range bar and the
+          // legend, so the card keeps its size and nothing jumps when the chart draws
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col gap-2 rounded bg-white p-2" data-testid="chart-skeleton">
+            <span className="sr-only" role="status">Loading data…</span>
+            <div className="relative flex-1 overflow-hidden rounded bg-gray-100 motion-safe:animate-pulse">
+              <div className="absolute inset-x-3 top-1/4 h-px bg-gray-200" />
+              <div className="absolute inset-x-3 top-1/2 h-px bg-gray-200" />
+              <div className="absolute inset-x-3 top-3/4 h-px bg-gray-200" />
+            </div>
+            <div className="h-5 rounded bg-gray-100 motion-safe:animate-pulse" />
+            <div className="flex flex-wrap justify-center gap-2">
+              {specs.slice(0, 6).map((sp) => <div key={sp.key} className="h-3 w-24 rounded bg-gray-100 motion-safe:animate-pulse" />)}
+            </div>
           </div>
-        </div>
-      )}
-      {/* A chart with nothing to draw says so instead of showing empty axes (e.g. Logger 5, whose water sensor is dead) */}
-      {isEmpty && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <p className="rounded-md bg-white/90 px-3 py-1.5 text-sm text-muted">No readings in this period</p>
-        </div>
-      )}
-      {/* Announced once for all charts by the window bar's live region, so hidden from screen readers here */}
-      {view.error && !view.loading && showErrorBanner && (
-        <div className="absolute inset-x-4 top-12 z-10 mx-auto max-w-xl rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm" aria-hidden="true">
-          {view.error.message}
-        </div>
-      )}
+        )}
+        {!firstLoad && !error && (noData || windowEmpty) && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <p className="rounded-md bg-white/90 px-3 py-1.5 text-sm text-muted">
+              {noData ? `No readings between ${windowLabel({ start: extentStart, end: extentEnd }, extentEnd)}` : 'No readings in this part of the range'}
+            </p>
+          </div>
+        )}
+        {error && (
+          <div role="alert" className="absolute inset-x-4 top-6 z-10 mx-auto max-w-md rounded border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-700 shadow-sm">
+            {error.message}{' '}
+            {/* One click retries every chart that failed (a server error usually hits them all at once) */}
+            <button type="button" onClick={() => { controller.retry(); retryAllCharts(); }}
+              className="font-medium underline underline-offset-2 hover:text-red-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
