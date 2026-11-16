@@ -24,8 +24,7 @@ from config import Config  # noqa: E402
 
 Config.SQLALCHEMY_DATABASE_URI = "sqlite://"   # another test module may have imported Config first
 
-from utils.fetching import BadVendorResponse, UnreadableRecords, to_local  # noqa: E402
-from utils.timezone import EST_TZ  # noqa: E402
+from utils.fetching import BadVendorResponse, UnreadableRecords  # noqa: E402
 
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 11, 11, 19, 0, tzinfo=UTC)
@@ -60,12 +59,12 @@ class IngestionTestCase(unittest.TestCase):
         self.ctx.pop()
 
     def add(self, group, newest, station=None, measurement="m"):
-        """One stored reading of the group at `newest` (aware), stored as site wall-clock time like ingestion does.
+        """One stored reading of the group at `newest` (aware), stored as the instant like ingestion does.
         Without `station` it is the group's own stand-in station, which no answer in these tests mentions."""
         from db.models import SensorMeasurement
         self.db.session.add(SensorMeasurement(station_id=station or group, group_type=group,
                                               measurement_type=measurement, value=1.0, unit="u",
-                                              recorded_at=to_local(newest, EST_TZ)))
+                                              recorded_at=newest))
         self.db.session.commit()
 
     def mark(self, until):
@@ -82,7 +81,7 @@ class IngestionTestCase(unittest.TestCase):
 
 class LicorStartTests(IngestionTestCase):
     def start(self):
-        return self.ingest.licor_start(EST_TZ, NOW)
+        return self.ingest.licor_start(NOW)
 
     def test_without_a_mark_the_older_group_sets_the_start_as_before(self):
         self.add("Weather", NOW - 10 * dt.timedelta(minutes=1))
@@ -143,7 +142,7 @@ class LicorStartTests(IngestionTestCase):
     def test_a_future_dated_reading_cant_push_the_start_past_now(self):
         # Stored before such records were skipped: every WQData request would start after it ends.
         self.add("Quality", NOW + 30 * D)
-        self.assertEqual(self.ingest.run_start("Quality", EST_TZ, NOW), NOW - H)
+        self.assertEqual(self.ingest.run_start("Quality", NOW), NOW - H)
         self.add("Weather", NOW + 30 * D)
         self.add("Logger", NOW - 20 * M)
         self.assertEqual(self.start(), NOW - 80 * M)   # no mark: the older group's start, and never after now
@@ -177,7 +176,7 @@ class LicorRunTests(IngestionTestCase):
                 mock.patch.object(self.ingest.weather_service, "get_logger_id", return_value=WEATHER), \
                 contextlib.redirect_stdout(out):
             try:
-                self.ingest.inject_licor(EST_TZ, NOW)
+                self.ingest.inject_licor(NOW)
             finally:
                 self.output = out.getvalue()
         return stored
@@ -429,7 +428,7 @@ class LicorRunTests(IngestionTestCase):
         self.mark(NOW - H)
         with mock.patch.object(self.ingest, "fetch_range", side_effect=BadVendorResponse("LI-COR reply has no data")), \
                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(BadVendorResponse):
-            self.ingest.inject_licor(EST_TZ, NOW)
+            self.ingest.inject_licor(NOW)
         self.assertEqual(self.status("LI-COR")["last_error_kind"], "bad_response")
         self.assertEqual(fetched_until("LI-COR"), NOW - H)
 
@@ -447,7 +446,7 @@ class QualityRunTests(IngestionTestCase):
                 mock.patch.object(self.ingest, "store", side_effect=lambda rows: stored.extend(rows) or len(rows)), \
                 mock.patch.object(self.ingest.Config, "WQ_DEVICE_ID", WQ), \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.ingest.inject_quality(EST_TZ, NOW)
+            self.ingest.inject_quality(NOW)
         return stored
 
     def test_a_paging_stall_is_a_failed_call(self):
@@ -468,7 +467,7 @@ class QualityRunTests(IngestionTestCase):
                 mock.patch.object(self.ingest, "store", side_effect=lambda rows: stored.extend(rows) or len(rows)), \
                 mock.patch.object(self.ingest.Config, "WQ_DEVICE_ID", WQ), \
                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
-            self.ingest.inject_quality(EST_TZ, NOW)
+            self.ingest.inject_quality(NOW)
         self.assertEqual([(r["measurement_type"], r["value"]) for r in stored], [("Water Temperature", 8.5)])
 
     def test_a_future_point_is_skipped(self):
@@ -503,11 +502,11 @@ class FailureReportTests(IngestionTestCase):
         does) and WQData answering, or failing the way inject_quality does. Returns the errors sent to Sentry."""
         from utils.alert_state import record_vendor_result
 
-        def failing_licor(tz, now):
+        def failing_licor(now):
             record_vendor_result("LI-COR", licor_error)
             raise licor_error
 
-        def quality(tz, now):
+        def quality(now):
             record_vendor_result("WQData", wq_error)
             if wq_error is not None:
                 raise RuntimeError("WQData request failed") from wq_error
@@ -572,7 +571,7 @@ class FailureReportTests(IngestionTestCase):
                 return [licor("22168654-3", 4.4, "2026-11-11 18:40:00Z")]
             raise http_error(503)
 
-        def quality(tz, now):
+        def quality(now):
             from utils.alert_state import record_vendor_result
             record_vendor_result("WQData")
 

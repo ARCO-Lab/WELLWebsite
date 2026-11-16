@@ -164,7 +164,7 @@ class BadRecords(unittest.TestCase):
                    licor("21948438-2", 80.0, kind="RH", unit="%", ts="garbled"),
                    licor("22168653-3", 4.4, kind="Water Temperature", ts="2026-11-10 04:00:00"),   # no offset
                    "not a record", licor("22168654-3", 4.4, kind="Water Temperature")]
-        rows, skipped, out = self.rows(parsers.licor_rows, records, {"Weather", "Logger"}, STATION, UTC, "LI-COR")
+        rows, skipped, out = self.rows(parsers.licor_rows, records, {"Weather", "Logger"}, STATION, "LI-COR")
         self.assertEqual(sorted((k[0], k[1]) for k in rows),
                          [("22051538", "Soil Temperature"), ("2577532", "Water Temperature")])
         self.assertEqual(skipped.count, 4)
@@ -179,7 +179,7 @@ class BadRecords(unittest.TestCase):
         import io
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rows = parsers.licor_rows([licor("21948438-1", 5.0, ts="2026-11-10 04:00:00")], {"Weather"}, STATION, UTC)
+            rows = parsers.licor_rows([licor("21948438-1", 5.0, ts="2026-11-10 04:00:00")], {"Weather"}, STATION)
         self.assertEqual(rows, {})
         self.assertIn("has no UTC offset", out.getvalue())
 
@@ -188,7 +188,7 @@ class BadRecords(unittest.TestCase):
         entries = [{"timestamp": None, "values": []}, {"timestamp": "yesterday", "values": []},
                    {"timestamp": "2026-11-09 02:10:00", "values": [{"value": "1.0"}]},   # no parameterId
                    {"values": []}, {"timestamp": "2026-11-09 02:20:00", "values": None}, good]
-        rows, skipped, out = self.rows(parsers.quality_rows, entries, "4501", UTC, "WQData")
+        rows, skipped, out = self.rows(parsers.quality_rows, entries, "4501", "WQData")
         self.assertEqual([(k[1], r["value"]) for k, r in rows.items()], [("Water Temperature", 8.5)])
         self.assertEqual(skipped.count, 5)
         self.assertIn("e.g. malformed record (TypeError) at None", skipped.summary())
@@ -199,7 +199,7 @@ class BadRecords(unittest.TestCase):
         entry = {"timestamp": "2026-11-09 02:00:00", "values": [
             {"parameterId": 125001, "value": "8.5"}, {"value": "1.0"}, "garbage", {"parameterId": [1], "value": "2"},
             {"parameterId": 125008, "value": "1.5"}]}
-        rows, skipped, out = self.rows(parsers.quality_rows, [entry], "4501", UTC, "WQData")
+        rows, skipped, out = self.rows(parsers.quality_rows, [entry], "4501", "WQData")
         self.assertEqual(sorted((k[1], r["value"]) for k, r in rows.items()),
                          [("Turbidity", 1.5), ("Water Temperature", 8.5)])
         self.assertEqual(skipped.count, 3)   # each bad reading counted

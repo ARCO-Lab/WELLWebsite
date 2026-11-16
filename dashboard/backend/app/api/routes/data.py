@@ -68,7 +68,9 @@ def register_data_route(app):
             end_dt = parse_instant(end)
         except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
-        if end_dt - start_dt > timedelta(days=MAX_DAYS):  # both aware UTC instants now
+        # MAX_DAYS counts the picked calendar range on the wall clock, so a 31-day range that spans the 25-hour
+        # fall-back day isn't refused for the extra real hour.
+        if site_wall_time(end_dt) - site_wall_time(start_dt) > timedelta(days=MAX_DAYS):
             return jsonify({"error": f"Pick a range of at most {MAX_DAYS} days, or use Download for longer ones.",
                             "max_days": MAX_DAYS}), 400
 

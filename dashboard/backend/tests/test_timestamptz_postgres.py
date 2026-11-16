@@ -36,6 +36,10 @@ CREATE TABLE sensor_measurements (
     UNIQUE (station_id, measurement_type, recorded_at)
 );
 CREATE INDEX ix_sensor_measurements_group_type_recorded_at ON sensor_measurements (group_type, recorded_at);
+-- Production already has 0004's covering index when 0002 runs (0004 was applied online earlier), so the fixture
+-- has it too: the ALTER rebuilds it as a fourth index, and migrate's 0004 then skips it (IF NOT EXISTS).
+CREATE INDEX ix_sensor_measurements_series_time
+    ON sensor_measurements (group_type, station_id, measurement_type, recorded_at) INCLUDE (value);
 """
 
 # (naive Toronto wall time as stored before, the instant it must become)

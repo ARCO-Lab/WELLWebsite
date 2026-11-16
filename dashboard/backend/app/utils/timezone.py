@@ -77,8 +77,9 @@ def site_wall_time(ts: datetime) -> datetime:
 
 def parse_instant(value: str) -> datetime:
     """An ISO time from a request as an aware UTC datetime: with an offset (the dashboard sends ...Z) it is that
-    instant; without one it is site wall time, as before."""
-    return as_utc(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+    instant; without one it is site wall time, as before. Text with a control character (e.g. a NUL) is refused by
+    iso_time, as on every route."""
+    return as_utc(iso_time(value.strip()))
 
 
 def site_range(start: str, end: str):

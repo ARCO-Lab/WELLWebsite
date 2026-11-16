@@ -74,8 +74,9 @@ def known_series():
 
 
 def earliest_readings():
-    """{group_type: its earliest recorded_at} (naive Toronto wall time) for every group with a reading. A reading
-    stored earlier than that since the last refresh (a backfill) shows within REFRESH_S, like a new series."""
+    """{group_type: its earliest recorded_at} (an instant, aware UTC: recorded_at is timestamptz) for every group
+    with a reading. A reading stored earlier than that since the last refresh (a backfill) shows within REFRESH_S,
+    like a new series."""
     return _state()[2]
 
 

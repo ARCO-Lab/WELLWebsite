@@ -19,13 +19,17 @@
 --    names how many; nothing is changed then. (PostgreSQL would read 02:30 as 07:30 UTC, i.e. 03:30 EDT.)
 -- The site zone is named, so the result doesn't depend on the database's TimeZone setting.
 --
--- The unique constraint and the indexes on recorded_at (the constraint's index and
--- ix_sensor_measurements_group_type_recorded_at from 0001) are rebuilt by the ALTER and keep their names.
+-- The unique constraint and every index on recorded_at are rebuilt by the ALTER and keep their names: the
+-- constraint's index, ix_sensor_measurements_group_type_recorded_at from 0001, and, where it has already been
+-- created (production, applied online by 0004), the covering index ix_sensor_measurements_series_time. On a fresh
+-- database 0002 runs before 0004, so it rebuilds three; on production, where 0004 is already in place, it rebuilds
+-- four.
 --
 -- Locking: ALTER ... TYPE rewrites the table and its indexes under an ACCESS EXCLUSIVE lock: nothing can read
--- or write sensor_measurements until it commits. On a table of 1.46 M rows (131 MB plus its three indexes,
--- PostgreSQL 13 on the production VM) it took 9.4 seconds; it scales with the table, so at production's 2.4 M rows
--- (November 2026) expect about 15-25 s. Stop the worker, the backend, the export worker and ops first (the deploy
+-- or write sensor_measurements until it commits. On a table of 1.46 M rows (131 MB plus three indexes,
+-- PostgreSQL 13 on the production VM) it took 9.4 seconds; it scales with the table and the number of indexes, so
+-- at production's 2.4 M rows (November 2026) with 0004's covering index rebuilt as a fourth, expect about 20-35 s.
+-- Stop the worker, the backend, the export worker and ops first (the deploy
 -- steps say how), so nothing queues behind the lock; lock_timeout makes the migration
 -- fail rather than wait if something still holds the table.
 --

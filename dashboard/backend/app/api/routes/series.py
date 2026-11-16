@@ -265,7 +265,9 @@ def tile_answer(bucket, start, end, series, now):
         t += size
     # A tile that ends before its group's earliest reading, or starts after now, can hold nothing: it is answered
     # empty, with no query and no cache entry, so asking for years without data costs nothing and fills nothing.
-    earliest = earliest_readings()
+    # earliest_readings() holds instants (recorded_at is timestamptz); the tiles are on the wall clock, so compare
+    # it on the wall clock too.
+    earliest = {g: site_wall_time(t) for g, t in earliest_readings().items()}
     parts = {(tile, s): [] for tile in tiles for s in series
              if s[0] not in earliest or tile + size - ONE_SECOND < earliest[s[0]] or tile > now}
     keys = {(tile, s): tile_cache_key(bucket, tile, s) for tile in tiles for s in series if (tile, s) not in parts}
