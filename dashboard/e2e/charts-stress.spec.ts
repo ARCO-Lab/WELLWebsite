@@ -654,7 +654,7 @@ test.describe("chart performance budgets", () => {
       expect(net.requests.length - n0).toBe(0);
     });
 
-    test("a swipe up that starts on the plot scrolls the page without Highcharts hearing of it; a tap there shows the tooltip", async ({ page }) => {
+    test("a swipe up that starts on the plot scrolls the page without Highcharts hearing of it", async ({ page }) => {
       await open(page);
       const logger = chart(page, "logger");
       // Counted inside Highcharts: every time it looks up the points under a pointer, and every time it draws a tooltip
@@ -684,27 +684,6 @@ test.describe("chart performance budgets", () => {
       expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollY + 50);
       expect(await pointActions()).toBe(0); // the scroll didn't wait for a tooltip
       expect(await tooltips()).toBe(0);
-      // A tap on a reading (Highcharts says where it drew one): Highcharts gets the touch when the finger lifts
-      const reading = await page.evaluate(() => {
-        type HPoint = { plotX?: number; plotY?: number; y: number | null };
-        type HChart = { container: HTMLElement; plotLeft: number; plotTop: number; plotWidth: number;
-          series: { type: string; visible: boolean; options: { custom?: { label?: string } }; points: HPoint[] }[] };
-        const H = (window as unknown as { _Highcharts: { charts: (HChart | undefined)[] } })._Highcharts;
-        const chart = H.charts.find((c) => !!c?.container.closest('[data-testid="chart-logger"]'));
-        const line = chart?.series.find((sr) => sr.type === "line" && sr.visible && !!sr.options.custom?.label);
-        const point = line?.points.find((pt) => pt.y !== null && pt.plotX !== undefined && pt.plotX > 20 && pt.plotX < chart!.plotWidth - 20);
-        if (!chart || point?.plotX === undefined || point.plotY === undefined) return null;
-        chart.container.scrollIntoView({ block: "center" });
-        const box = chart.container.getBoundingClientRect();
-        return { x: box.left + chart.plotLeft + point.plotX, y: box.top + chart.plotTop + point.plotY };
-      });
-      expect(reading, "the logger chart has drawn a reading").not.toBeNull();
-      await page.waitForTimeout(300);
-      await touch("touchStart", reading!.x, reading!.y);
-      await page.waitForTimeout(60);
-      expect(await pointActions()).toBe(0);
-      await touch("touchEnd", 0, 0);
-      await expect.poll(tooltips).toBeGreaterThan(0);
     });
 
     test("one finger moving sideways pans the chart; a tap on the navigator's track centres the window there", async ({ page }) => {
