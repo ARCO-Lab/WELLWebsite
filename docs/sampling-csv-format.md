@@ -116,8 +116,11 @@ file withdrew them on purpose.
 
 The weekly download imports each new file of the Borealis dataset once. A file with problems is **refused**: its
 problems are logged once (the first 50, then the total), the run is reported as failed, and the file isn't tried
-again. Upload a corrected file (Borealis gives it a new id) and it is imported on the next run. A maintainer can
-re-import a specific file with `python scripts/download_data.py --force --file <id or filename>`.
+again. The refusal is also flagged for a person to act on — "sampling upload in the wrong format, needs a manual
+check", naming the file and its first problems — in the daily digest (under "Sampling data needing a decision") and
+as a Sentry warning, so a wrong-format upload isn't lost in the logs. Upload a corrected file (Borealis gives it a
+new id) and it is imported on the next run. A maintainer can re-import a specific file with
+`python scripts/download_data.py --force --file <id or filename>`.
 
 ## Older Excel sheets
 

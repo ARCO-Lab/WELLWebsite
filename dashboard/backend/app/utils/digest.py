@@ -268,7 +268,8 @@ def build_digest(day, freshness, groups, findings, wqdata, incidents=None, traff
             lines += [f"  {when(a['at'])}: {a['text']}" for a in attention] or ["  none"]
             if attention:
                 problems += len(attention)
-                lines += ["", "The [WARN] lines they refer to are in the worker's logs/download_injections.log."]
+                lines += ["", "The [WARN] and [ERROR] lines they refer to are in the worker's "
+                          "logs/download_injections.log."]
         lines.append("")
     subject = f"[WELL] Daily digest {day}: " + ("all OK" if not problems else f"{problems} to check")
 
