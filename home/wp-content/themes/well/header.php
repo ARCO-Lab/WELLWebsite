@@ -2,6 +2,23 @@
 // This file renders the HTML <head> and site header for the WELL WordPress theme.
 // It includes meta tags, favicon links, accessibility skip links, McMaster and site navigation menus.
 defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
+
+// Cross-domain canonical for republished News posts. A post brought over from another site
+// (e.g. McMaster Daily News) keeps the original article's address in the `_canonical_url`
+// custom field. When that is set on a single post, point rel=canonical at the original so
+// search engines credit the source rather than treating this copy as the original. We also
+// turn off WordPress's default self-referential canonical for these posts, so there is exactly
+// one canonical tag. All other posts and pages are unchanged.
+$well_canonical_url = '';
+if ( is_singular( 'post' ) ) {
+    $well_canonical_meta = get_post_meta( get_queried_object_id(), '_canonical_url', true );
+    if ( is_string( $well_canonical_meta ) && trim( $well_canonical_meta ) !== '' ) {
+        $well_canonical_url = esc_url( trim( $well_canonical_meta ) );
+    }
+}
+if ( $well_canonical_url !== '' ) {
+    remove_action( 'wp_head', 'rel_canonical' );
+}
 ?>
 <!DOCTYPE html>
 <html <?php language_attributes(); ?>>
@@ -16,6 +33,9 @@ defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct req
     <?php // The favicon and app icons come from wp_head() below (the Site Icon set in Appearance > Customize). ?>
     <meta name="msapplication-TileColor" content="#7a003c">
     <meta name="theme-color" content="#ffffff">
+    <?php if ( $well_canonical_url !== '' ) : ?>
+    <link rel="canonical" href="<?php echo $well_canonical_url; ?>">
+    <?php endif; ?>
     <?php wp_head(); ?>
 </head>
 <body <?php body_class(); ?>>
