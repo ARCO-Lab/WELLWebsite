@@ -58,7 +58,7 @@
         return;
       }
       if (file.size > MAX_BYTES) {
-        reject(new Error('That file is larger than 2 MB. A sampling CSV is normally far smaller — check that you '
+        reject(new Error('That file is larger than 2 MB. A sampling CSV is normally far smaller, so check that you '
           + 'picked the right file.'));
         return;
       }
@@ -72,7 +72,7 @@
   function renderProblems(problems) {
     var rows = problems.map(function (p) {
       var where = p.row ? ('Row ' + esc(p.row)) : 'Whole file';
-      return '<tr><td>' + where + '</td><td>' + esc(p.column || '—') + '</td><td>' + esc(p.message) + '</td></tr>';
+      return '<tr><td>' + where + '</td><td>' + esc(p.column || '') + '</td><td>' + esc(p.message) + '</td></tr>';
     }).join('');
     return '<table class="table table-sm sampling-problems"><thead><tr><th>Where</th><th>Column</th>'
       + '<th>What to fix</th></tr></thead><tbody>' + rows + '</tbody></table>';
