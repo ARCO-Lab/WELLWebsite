@@ -31,7 +31,28 @@ if ( have_posts() ) :
 
                         <div class="row">
                             <div class="col-12 col-md-9 news-subtitle-container align-self-center">
-                                <p class="news-byline">By <?php the_author(); ?></p>
+                                <p class="news-byline">By <?php
+                                // A post republished from another site stores the journalist's name in
+                                // _original_author (and optionally _original_source / _original_author_url).
+                                // Show that real byline; fall back to the WordPress account for original posts.
+                                $original_author = get_post_meta( get_the_ID(), '_original_author', true );
+                                if ( is_string( $original_author ) && trim( $original_author ) !== '' ) {
+                                    $original_author = trim( $original_author );
+                                    $author_url = get_post_meta( get_the_ID(), '_original_author_url', true );
+                                    $author_url = is_string( $author_url ) ? esc_url( trim( $author_url ) ) : '';
+                                    if ( $author_url !== '' ) {
+                                        echo '<a href="' . $author_url . '" rel="noopener noreferrer">' . esc_html( $original_author ) . '</a>';
+                                    } else {
+                                        echo esc_html( $original_author );
+                                    }
+                                    $original_source = get_post_meta( get_the_ID(), '_original_source', true );
+                                    if ( is_string( $original_source ) && trim( $original_source ) !== '' ) {
+                                        echo ', ' . esc_html( trim( $original_source ) );
+                                    }
+                                } else {
+                                    the_author();
+                                }
+                                ?></p>
                                 <time class="news-date">Posted on <?php echo get_the_date('F j, Y'); ?></time>
                             </div>
                             <div class="col-12 col-md-3 text-md-right align-self-center">
@@ -58,6 +79,13 @@ if ( have_posts() ) :
                         <div>
                             <hr class="news-divider">
                         </div>
+
+                        <?php if ( has_post_thumbnail() ) : ?>
+                        <div class="news-featured-image mb-4">
+                            <?php // Full content width, like the in-body images (img-fluid = max-width:100%). ?>
+                            <?php the_post_thumbnail( 'large', array( 'class' => 'img-fluid' ) ); ?>
+                        </div>
+                        <?php endif; ?>
 
                         <div class="entry-content">
                             <?php the_content(); ?>
