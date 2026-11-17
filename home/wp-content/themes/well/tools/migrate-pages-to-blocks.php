@@ -61,6 +61,21 @@ function well_migration_targets() {
             },
             'content' => 'well_blocks_front_page',
         ),
+        array(
+            // The Sampling Data Upload Guide: found by its page template, not a fixed slug/id.
+            'label'   => 'Sampling Data Upload Guide',
+            'find'    => function () {
+                $pages = get_posts( array(
+                    'post_type'   => 'page',
+                    'post_status' => 'any',
+                    'numberposts' => 1,
+                    'meta_key'    => '_wp_page_template',
+                    'meta_value'  => 'template-sampling-upload.php',
+                ) );
+                return ! empty( $pages ) ? $pages[0] : null;
+            },
+            'content' => 'well_blocks_sampling',
+        ),
     );
 }
 
