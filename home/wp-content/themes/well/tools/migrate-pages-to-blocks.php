@@ -47,12 +47,18 @@ function well_migration_targets() {
             'find'    => function () { return get_page_by_path( 'about' ); },
             'content' => 'well_blocks_about',
         ),
+        array(
+            'label'   => 'Dashboard (/dashboard/)',
+            'find'    => function () { return get_page_by_path( 'dashboard' ); },
+            'content' => 'well_blocks_dashboard',
+        ),
     );
 }
 
 /**
- * A page counts as "not yet migrated" when its content has no real text and no blocks — an empty
- * string, whitespace, or a lone empty block-editor paragraph. We never overwrite anything else.
+ * A page counts as "not yet migrated" when its content has no blocks at all and no real text — an
+ * empty string or whitespace. If it already contains ANY blocks (even a single empty paragraph or a
+ * lone shortcode an editor added), we leave it untouched, so we never overwrite editor changes.
  */
 function well_migration_page_is_empty( $post ) {
     if ( ! $post instanceof WP_Post ) {

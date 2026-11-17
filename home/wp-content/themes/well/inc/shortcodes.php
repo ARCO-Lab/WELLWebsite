@@ -8,6 +8,7 @@
 //   [well_hero_carousel]   the homepage hero is a Flickity carousel engine (sections/hero.php).
 //   [well_latest_news]     the homepage "Latest News" strip queries live posts (sections/news.php).
 //   [well_dashboard_embed] embeds the separate Next.js dashboard app over a fixed message origin.
+//   [well_dashboard_card]  the homepage dashboard card is a CSS-coupled card (flex-lg-row, hover).
 //   [well_team]            each About team card is wired to its own modal by a matching id.
 //   [well_sampling_checker] posts files to the dashboard's real CSV validator endpoint.
 //
@@ -34,6 +35,14 @@ add_shortcode('well_latest_news', function () {
 
 add_shortcode('well_dashboard_embed', function () {
     return well_render_section_shortcode('dashboard-embed');
+});
+
+// The homepage "The WELL Dashboard" card (sections/dashboard.php): a styled, CSS-coupled card
+// (flex-lg-row, card-img-mask-full, hover states) describing the dashboard. Like McSCert's home
+// "What We Do" rows, it stays developer-owned code rather than editable blocks; its prose is
+// maintained in sections/dashboard.php.
+add_shortcode('well_dashboard_card', function () {
+    return well_render_section_shortcode('dashboard');
 });
 
 add_shortcode('well_team', function () {

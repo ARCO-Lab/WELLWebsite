@@ -158,3 +158,68 @@ function well_blocks_about() {
 
     return implode("\n\n", $sections) . "\n\n" . $team;
 }
+
+/**
+ * A core/html block wrapping exact HTML (used for pieces whose markup must stay byte-identical, such as
+ * logos with inline sizing or figures with a specific mask structure).
+ */
+function well_blocks_html($inner) {
+    return "<!-- wp:html -->\n" . $inner . "\n<!-- /wp:html -->";
+}
+
+/**
+ * A core/shortcode block for one of the developer-owned shortcodes (see inc/shortcodes.php).
+ */
+function well_blocks_shortcode($shortcode) {
+    return "<!-- wp:shortcode -->\n[" . $shortcode . "]\n<!-- /wp:shortcode -->";
+}
+
+/**
+ * The Dashboard page body: the live dashboard embed (developer-owned shortcode), then the editable
+ * "Archived Datasets" section with the Borealis and SharePoint repository links.
+ */
+function well_blocks_dashboard() {
+    $embed = well_blocks_shortcode('well_dashboard_embed');
+
+    // Borealis logo (an uploaded image with specific inline sizing) and SharePoint logo (theme media),
+    // kept as exact HTML so they match the original.
+    $borealis_img = well_blocks_html(
+        '<div class="text-center"><figure class="mw-100"><img alt="Borealis Logo" srcset="/wp-content/uploads/2025/09/borealislogo.jpg 414w, /wp-content/uploads/2025/09/borealislogo.jpg 720w, /wp-content/uploads/2025/09/borealislogo.jpg 1080w, /wp-content/uploads/2025/09/borealislogo.jpg 1600w" sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px" src="/wp-content/uploads/2025/09/borealislogo.jpg" class="img-fluid d-block mx-auto" style="max-width: 200px; width: 100%; height: auto;" loading="lazy" decoding="async"></figure></div>'
+    );
+
+    $sharepoint_img = well_blocks_html(
+        '<div class="text-center"><figure class="mw-100">'
+        . well_blocks_media_img('logo-sharepoint', array(280, 560, 840), array(840, 560), array(
+            'alt'     => 'SharePoint Logo',
+            'sizes'   => '(max-width: 480px) 140px, (max-width: 800px) 220px, 280px',
+            'class'   => 'img-fluid d-block mx-auto',
+            'loading' => 'lazy',
+        ))
+        . '</figure></div>'
+    );
+
+    $buttons = well_blocks_html(
+        '<p style="text-align: left;"><a class="btn btn-primary btn-lg text-center d-inline-block mb-2 mr-sm-2" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://borealisdata.ca/dataverse/WELL" target="_blank" rel="noopener noreferrer">Borealis</a> <a class="btn btn-primary btn-lg text-center d-inline-block mb-2" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="https://mcmasteru365.sharepoint.com/sites/WELL" target="_blank" rel="noopener noreferrer">Sharepoint</a></p>'
+    );
+
+    $center = "<!-- wp:heading -->\n<h2 class=\"wp-block-heading\">Archived Datasets</h2>\n<!-- /wp:heading -->\n\n"
+        . "<!-- wp:paragraph -->\n<p>For premade datasets uploaded monthly, visit the <strong>WELL</strong> data repositories:</p>\n<!-- /wp:paragraph -->\n\n"
+        . $buttons;
+
+    $left_col   = "<!-- wp:column {\"verticalAlignment\":\"center\",\"width\":\"33.33%\"} -->\n<div class=\"wp-block-column is-vertically-aligned-center\" style=\"flex-basis:33.33%\">\n" . $borealis_img . "\n</div>\n<!-- /wp:column -->";
+    $center_col = "<!-- wp:column {\"verticalAlignment\":\"center\",\"width\":\"33.33%\"} -->\n<div class=\"wp-block-column is-vertically-aligned-center\" style=\"flex-basis:33.33%\">\n" . $center . "\n</div>\n<!-- /wp:column -->";
+    $right_col  = "<!-- wp:column {\"verticalAlignment\":\"center\",\"width\":\"33.33%\"} -->\n<div class=\"wp-block-column is-vertically-aligned-center\" style=\"flex-basis:33.33%\">\n" . $sharepoint_img . "\n</div>\n<!-- /wp:column -->";
+
+    $archived = "<!-- wp:group {\"className\":\"content-area cool-grey my-4\",\"layout\":{\"type\":\"default\"}} -->\n"
+        . "<div class=\"wp-block-group content-area cool-grey my-4\">\n"
+        . "<!-- wp:group {\"className\":\"container\",\"layout\":{\"type\":\"default\"}} -->\n"
+        . "<div class=\"wp-block-group container\">\n"
+        . "<!-- wp:columns {\"verticalAlignment\":\"center\"} -->\n"
+        . "<div class=\"wp-block-columns are-vertically-aligned-center\">\n"
+        . $left_col . "\n\n" . $center_col . "\n\n" . $right_col . "\n"
+        . "</div>\n<!-- /wp:columns -->\n"
+        . "</div>\n<!-- /wp:group -->\n"
+        . "</div>\n<!-- /wp:group -->";
+
+    return $embed . "\n\n" . $archived;
+}
