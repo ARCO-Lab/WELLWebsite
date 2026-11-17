@@ -52,6 +52,15 @@ function well_migration_targets() {
             'find'    => function () { return get_page_by_path( 'dashboard' ); },
             'content' => 'well_blocks_dashboard',
         ),
+        array(
+            // Only seeds the home page when the site uses a static front page (Settings > Reading).
+            'label'   => 'Home (static front page)',
+            'find'    => function () {
+                $id = (int) get_option( 'page_on_front' );
+                return $id ? get_post( $id ) : null;
+            },
+            'content' => 'well_blocks_front_page',
+        ),
     );
 }
 

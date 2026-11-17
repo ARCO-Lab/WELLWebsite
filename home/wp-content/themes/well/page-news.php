@@ -43,6 +43,19 @@ get_header();
 </header>
 
 <main id="site-content">
+  <?php
+  // The News listing below stays dynamic, developer-owned code (it loops live posts). But the page is
+  // now also block-editable: anything an editor writes in wp-admin for this page renders here, as an
+  // intro above the list. Empty by default, so nothing shows unless an editor adds content.
+  $news_page_obj = get_queried_object();
+  if ($news_page_obj instanceof WP_Post && '' !== trim(wp_strip_all_tags($news_page_obj->post_content))) :
+    ?>
+    <section class="section-padding pb-0">
+      <div class="container">
+        <div class="entry-content"><?php echo apply_filters('the_content', $news_page_obj->post_content); ?></div>
+      </div>
+    </section>
+  <?php endif; ?>
   <section class="section-padding">
     <div class="container">
       <h2 class="sr-only">News Listing</h2>

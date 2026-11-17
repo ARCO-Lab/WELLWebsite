@@ -223,3 +223,43 @@ function well_blocks_dashboard() {
 
     return $embed . "\n\n" . $archived;
 }
+
+/**
+ * The home page body, top to bottom: the hero carousel and the dashboard card (both developer-owned
+ * shortcodes), the editable "About Us" blurb, then the live "Latest News" strip (shortcode). This
+ * mirrors front-page.php's section order; only the About blurb becomes editable blocks, matching how
+ * the McSCert home page keeps its hero, feature rows and news strip as code.
+ */
+function well_blocks_front_page() {
+    $hero = well_blocks_shortcode('well_hero_carousel');
+    $card = well_blocks_shortcode('well_dashboard_card');
+    $news = well_blocks_shortcode('well_latest_news');
+
+    $logo = well_blocks_html(
+        '<div class="text-center"><figure class="mw-100"><img alt="WELL Logo" srcset="/wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-32x32.png 32w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-150x150.png 150w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-180x180.png 180w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-192x192.png 192w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-270x270.png 270w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-300x300.png 300w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG.png 600w" sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px" src="/wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG.png" class="img-fluid d-block mx-auto" loading="lazy" decoding="async"></figure></div>'
+    );
+
+    $button = well_blocks_html(
+        '<p style="text-align: left;"><a class="btn btn-primary btn-lg text-center" style="background-color: #fdbf57; color: black; border-color: #FDBF57;" href="/about">Learn More</a></p>'
+    );
+
+    $text = "<!-- wp:heading -->\n<h2 class=\"wp-block-heading\">About Us</h2>\n<!-- /wp:heading -->\n\n"
+        . "<!-- wp:paragraph -->\n<p>The <strong> Watershed and Ecosystems Living Lab (WELL) </strong> at McMaster University is an interdisciplinary initiative that brings together students, researchers, and the community to monitor and learn from real-time environmental data. <strong>WELL</strong> provides hands-on learning opportunities and valuable data through its network of real-time environmental sensors and comprehensive watershed-wide sampling regime within the Ancaster Creek watershed in Hamilton. </p>\n<!-- /wp:paragraph -->\n\n"
+        . $button;
+
+    $logo_col = "<!-- wp:column {\"verticalAlignment\":\"center\",\"width\":\"33.33%\"} -->\n<div class=\"wp-block-column is-vertically-aligned-center\" style=\"flex-basis:33.33%\">\n" . $logo . "\n</div>\n<!-- /wp:column -->";
+    $text_col = "<!-- wp:column {\"verticalAlignment\":\"center\",\"width\":\"66.66%\"} -->\n<div class=\"wp-block-column is-vertically-aligned-center\" style=\"flex-basis:66.66%\">\n" . $text . "\n</div>\n<!-- /wp:column -->";
+
+    $about = "<!-- wp:group {\"className\":\"content-area cool-grey my-4\",\"layout\":{\"type\":\"default\"}} -->\n"
+        . "<div class=\"wp-block-group content-area cool-grey my-4\">\n"
+        . "<!-- wp:group {\"className\":\"container\",\"layout\":{\"type\":\"default\"}} -->\n"
+        . "<div class=\"wp-block-group container\">\n"
+        . "<!-- wp:columns {\"verticalAlignment\":\"center\"} -->\n"
+        . "<div class=\"wp-block-columns are-vertically-aligned-center\">\n"
+        . $logo_col . "\n\n" . $text_col . "\n"
+        . "</div>\n<!-- /wp:columns -->\n"
+        . "</div>\n<!-- /wp:group -->\n"
+        . "</div>\n<!-- /wp:group -->";
+
+    return $hero . "\n\n" . $card . "\n\n" . $about . "\n\n" . $news;
+}
