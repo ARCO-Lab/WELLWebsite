@@ -6,7 +6,8 @@ year's first Thursday, and the days around New Year can belong to the other year
 the next 1st. Each has a key, the form people type and the upload records store:
   daily    2026-11-14   WELLWestCampus_2026-11-14.csv
   weekly   2026-W46     WELLWestCampus_2026-W46.csv
-  monthly  2026-10      WELLWestCampus_Oct2026.csv (the Borealis file's name)
+  monthly  2026-10      WELLWestCampus_Oct2026.csv (SharePoint's monthly name; the Borealis monthly upload names
+                        the same file 2026-10_WELLWestCampus.csv, built in scripts/upload_data.py)
 """
 import re
 from collections import namedtuple
