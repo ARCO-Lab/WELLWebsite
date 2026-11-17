@@ -36,7 +36,7 @@ https://well.mcmaster.ca/sampling-upload-guide-05beeadb/
 | `time` | no | Time of sampling in 24-hour `HH:MM`, local Hamilton time (America/Toronto). Empty means the reading is stored at midnight of that date. |
 | `site` | yes | One of the sites listed below, by name, number, or both. |
 | `parameter` | yes | One of the parameters listed below. |
-| `value` | yes | A plain decimal number. See the notes on blanks and the below-detection convention. |
+| `value` | yes | A plain decimal number (scientific notation such as `1.5e-3` is fine), with a `.` for decimals and no thousands separator. See the notes on blanks and the below-detection convention. |
 | `unit` | yes | The parameter's expected unit from the table below. A mismatched unit is an error, not converted. |
 | `creek` | no | The creek name. If given, it must match the site's creek (a cross-check). |
 | `below_detection` | no | `true` if the value is below the detection limit (see below), otherwise `false` or empty. |

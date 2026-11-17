@@ -23,7 +23,8 @@ way and each file stands on its own.
 Each row is one timestamp (one ~10 minute interval). The columns are grouped by instrument. Reading left to right,
 a file has:
 
-1. `ID` and `Timestamp` (see the time zone note below).
+1. `ID` and the timestamp column (its header names the time zone: `Timestamp (America/Toronto)`; see the time
+   zone note below).
 2. A **Weather** section: the weather station's readings.
 3. A **Quality** section: the water quality sonde's readings.
 4. A **Logger** section: the five water level loggers, one after another.
@@ -36,7 +37,7 @@ in a spreadsheet.
 | Column(s) | Meaning |
 |---|---|
 | `ID` | A simple row counter (1, 2, 3, ...) within the file. Not a sensor value. |
-| `Timestamp` | The date and time of the reading (see time zone below). |
+| `Timestamp (America/Toronto)` | The date and time of the reading. The column header names the time zone (see the time zone note below). |
 | `Group` = `Weather` | Marks the start of the weather station section. |
 | `Latitude`, `Longitude` | The weather station's location. |
 | weather variables | One column per weather variable, headed `Name: unit` (see variables below). |
