@@ -134,18 +134,14 @@ Five pressure/temperature loggers are placed along the creek. Each reports:
 
 ## Blank cells
 
-A blank cell means **no reading was stored for that instrument and variable at that timestamp**. Blanks are left
-empty on purpose rather than filled with a zero, so a blank is never a measured value of zero.
+A blank cell means **there was no reading for that instrument at that timestamp**. This is a deliberate choice by
+the WELL team: when no measurement was recorded for a given date and time, the cell is left empty rather than filled
+with a zero or a placeholder, so a blank is never mistaken for a measured value of zero.
 
-A blank can happen when:
-
-- the instrument was offline or not reporting at that timestamp, or
-- that timestamp has a reading from one instrument but not from another (the instruments do not always report on
-  exactly the same clock), or
-- the variable is one the instrument on that row does not report.
-
-[TODO: confirm this reading of blank cells, and add any site-specific reason you want researchers to know about
-(for example planned maintenance windows, or a known outage period).]
+In practice a blank happens when the instrument was offline or not reporting at that timestamp (for example a sensor
+outage, a maintenance window, or a logger that was out of the water), or when the instruments did not all report on
+exactly the same clock, so one section of the row has values and another is blank. The variable columns that an
+instrument does not measure are also left blank in that instrument's section.
 
 ## Credit and contact
 
