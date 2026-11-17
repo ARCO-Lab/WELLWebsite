@@ -81,10 +81,10 @@ export const CREEK_ID_MAP_REVERSE = Object.fromEntries(
 export const SENSOR_STATION_COORDINATES = [
   { id: "2577531", lat: 43.267100, lng: -79.928830, label: "Water Logger 1", group: "gauges" },
   { id: "2577532", lat: 43.266390, lng: -79.929400, label: "Water Logger 2", group: "gauges" },
-  { id: "2577533", lat: 43.264720, lng: -79.928440, label: "Water Logger 3", group: "gauges" },
-  { id: "2577534", lat: 43.264140, lng: -79.928310, label: "Water Logger 4", group: "gauges" },
-  { id: "2577535", lat: 43.263850, lng: -79.929850, label: "Water Logger 5", group: "gauges" },
-  { id: "Water Quality Station", lat: 43.264700, lng: -79.928400, label: "Water Quality Sensor", group: "quality" },
+  { id: "2577533", lat: 43.264661, lng: -79.928982, label: "Water Logger 3", group: "gauges" },
+  { id: "2577534", lat: 43.263933, lng: -79.928811, label: "Water Logger 4", group: "gauges" },
+  { id: "2577535", lat: 43.263297, lng: -79.929660, label: "Water Logger 5", group: "gauges" },
+  { id: "Water Quality Station", lat: 43.264637, lng: -79.928977, label: "Water Quality Sensor", group: "quality" },
   { id: "Weather Station", lat: 43.266110, lng: -79.928660, label: "Weather Station", group: "weather" },
 ];
 
