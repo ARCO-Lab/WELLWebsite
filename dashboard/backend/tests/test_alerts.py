@@ -39,7 +39,7 @@ SMTP = {"SMTP_HOST": "relay.test", "SMTP_PORT": "25", "SMTP_FROM": "well@test.ca
 
 
 def site(aware):
-    """recorded_at as stored: naive Toronto time."""
+    """recorded_at as naive Toronto time, the format /api/latest shows (Instant stores it as the instant it names)."""
     return aware.astimezone(EST_TZ).replace(tzinfo=None)
 
 

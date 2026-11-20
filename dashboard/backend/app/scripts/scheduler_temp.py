@@ -96,7 +96,7 @@ SETTLE_AFTER = timedelta(days=7)
 # SHAREPOINT_NIGHT_BUDGET_S + PERIOD_TIMEOUT_S. What's left goes up the next night.
 SHAREPOINT_NIGHT_BUDGET_S = int(2.5 * 60 * 60)
 
-# Site time. recorded_at is stored as Toronto wall-clock time, so months start and end there, not in UTC
+# Site time. Monthly uploads cover Toronto calendar months (the CSV shows Toronto time), so months start and end there, not in UTC
 # (the container's clock).
 SITE_TZ = ZoneInfo("America/Toronto")
 

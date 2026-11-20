@@ -34,8 +34,10 @@ from db.models import SensorMeasurement  # noqa: E402
 
 def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
     """The sensor export as it was before streaming (every reading loaded with .all()), kept as the reference the
-    streamed output must match. Copied unchanged apart from the def line, this docstring, an unused loop
-    variable renamed to _ and the time column's header, which now names the zone."""
+    streamed output must match. Copied unchanged apart from the def line, this docstring, an unused loop variable
+    renamed to _ and the time column's header, which now names the zone. With recorded_at an instant (timestamptz),
+    it keys rows by the instant and writes site wall time, as the sensor export did before streaming."""
+    from utils.timezone import site_wall_time
     requested_groups = set(filters.get("group_types", []))
 
     query = _sensor_query(filters)
@@ -53,9 +55,10 @@ def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
     all_logger_stations = set()
     units_by_metric = {}
 
-    # First pass: collect all data and organize by group
+    # First pass: collect all data and organize by group. Rows are keyed by the instant, so the two copies of the
+    # hour repeated when clocks fall back stay two rows; the Timestamp column shows site wall time (below).
     for record in records:
-        timestamp = record.recorded_at.isoformat() if record.recorded_at else ""
+        timestamp = record.recorded_at
         metric = record.measurement_type or ""
         value = record.value
         unit = record.unit or ""
@@ -149,7 +152,7 @@ def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
         # Write data rows
         sorted_timestamps = sorted(all_timestamps)
         for row_num, timestamp in enumerate(sorted_timestamps, 1):
-            csv_row = [row_num, timestamp]
+            csv_row = [row_num, site_wall_time(timestamp).isoformat()]
 
             # Weather section data
             if include_weather:
@@ -190,8 +193,8 @@ def legacy_sensor_csv(filters: Dict, output_path: str) -> int:
 
 
 def fixture_readings():
-    """Four hours of 15-minute readings from 2026-10-31 23:00, naive Toronto wall time as ingestion stores it, so
-    they cross 01:00-02:00 on Nov 1, the hour repeated when clocks fall back. Readings are left out or empty here
+    """Four hours of 15-minute readings from 2026-10-31 23:00, given as naive Toronto wall time (stored as the instants
+    they name), so they cross 01:00-02:00 on Nov 1, the hour repeated when clocks fall back. Readings are left out or empty here
     and there, a unit changes partway (the latest one names the column), one logger isn't a configured one, and
     one reading has a fraction of a second."""
     start = dt.datetime(2026, 10, 31, 23, 0)

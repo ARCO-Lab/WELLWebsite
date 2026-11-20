@@ -6,7 +6,8 @@ import math
 from datetime import datetime, timezone
 
 from db.models import SensorMeasurement
-from utils.fetching import FUTURE_LIMIT, WRONG_UNITS, to_local
+from utils.fetching import FUTURE_LIMIT, WRONG_UNITS
+from utils.timezone import as_utc
 from utils.sensor_names import weather_measurement_name
 
 # Water-level loggers report through the weather station; every sensor whose serial starts with
@@ -288,14 +289,15 @@ def parse_quality_entry(entry, station_id, skipped=None, now=None):
     return results
 
 
-def to_row(obj, tz):
-    """(unique key, insertable row) for a SensorMeasurement, with recorded_at as stored (local wall-clock time)."""
-    key = (str(obj.station_id), obj.measurement_type, to_local(obj.recorded_at, tz))
+def to_row(obj):
+    """(unique key, insertable row) for a SensorMeasurement, with recorded_at as stored: an aware UTC instant, so
+    the two readings of the hour repeated when clocks fall back get different keys."""
+    key = (str(obj.station_id), obj.measurement_type, as_utc(obj.recorded_at))
     return key, {"station_id": key[0], "group_type": obj.group_type, "measurement_type": key[1],
                  "value": obj.value, "unit": obj.unit, "recorded_at": key[2]}
 
 
-def licor_rows(records, groups, weather_station, tz, skipped=None, now=None) -> dict:
+def licor_rows(records, groups, weather_station, skipped=None, now=None) -> dict:
     """Rows from LI-COR records for the given groups ("Weather" and/or "Logger"), keyed by unique key.
     Prints one [ERROR] line per sensor whose records were skipped for an unexpected unit, and one [WARN] line for
     those and the records that couldn't be read (a caller that passes its own counter, `skipped`, reports it
@@ -319,7 +321,7 @@ def licor_rows(records, groups, weather_station, tz, skipped=None, now=None) -> 
             skipped.add(e, entry, record_time(entry, now) if isinstance(entry, dict) else None)
             continue
         if obj is not None:
-            key, row = to_row(obj, tz)
+            key, row = to_row(obj)
             rows.setdefault(key, row)
     for (sensor_sn, unit, expected), count in sorted(wrong_units.items(), key=str):
         skipped.add_wrong_unit(sensor_sn, unit, expected, count)
@@ -333,7 +335,7 @@ def licor_rows(records, groups, weather_station, tz, skipped=None, now=None) -> 
     return rows
 
 
-def quality_rows(entries, station_id, tz, skipped=None, now=None) -> dict:
+def quality_rows(entries, station_id, skipped=None, now=None) -> dict:
     """Rows from WQData entries, keyed by unique key. An entry without a readable timestamp is skipped whole, a
     malformed reading (no parameterId, say) on its own; each is counted and reported in one [WARN] line, by
     the caller when it passes its own counter (`skipped`)."""
@@ -347,7 +349,7 @@ def quality_rows(entries, station_id, tz, skipped=None, now=None) -> dict:
             skipped.add(e, entry)
             continue
         for obj in objs:
-            key, row = to_row(obj, tz)
+            key, row = to_row(obj)
             rows.setdefault(key, row)
     if own:
         skipped.report()

@@ -34,7 +34,8 @@ APP_DIR = (pathlib.Path(__file__).resolve().parents[1]
            if pathlib.Path(globals().get("__file__", "")).is_file() else pathlib.Path.cwd())   # cwd when piped in on stdin
 sys.path.insert(0, str(APP_DIR))
 
-from utils.fetching import MAX_DAYS, UTC, fetch_window, to_local, windows  # noqa: E402
+from utils.fetching import MAX_DAYS, UTC, fetch_window, windows  # noqa: E402
+from utils.timezone import EST_TZ, site_wall_time  # noqa: E402
 
 KEY_COLUMNS = ["station_id", "measurement_type", "recorded_at"]   # the table's unique key
 
@@ -70,7 +71,6 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     from sqlalchemy import text
     from sqlalchemy.dialects.postgresql import insert
-    from zoneinfo import ZoneInfo
     from api.services.weather import WeatherService
     from config import Config
     from db.database import db
@@ -93,26 +93,25 @@ def main(argv=None) -> int:
 
     with app.app_context():
         engine = db.engine
-        tz = ZoneInfo("America/Toronto")   # recorded_at is site wall-clock time, whatever the database's TimeZone
         end = dt.datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
         start = end - dt.timedelta(days=args.days)
         print(f"{'Checking' if args.check else 'Backfilling'} {','.join(sorted(args.groups))} from {start:%Y-%m-%d %H:%M} UTC "
-              f"to now, a week per request (stored times are {tz.key})", flush=True)
+              f"to now, a week per request (the summary counts {EST_TZ.key} days)", flush=True)
 
         for w0, w1 in windows(start, end):
             records = fetch_window(licor.get_page, w0, w1, stats)
             stats["windows"] += 1
-            rows = licor_rows(records, args.groups, station, tz)
+            rows = licor_rows(records, args.groups, station)
             with engine.connect() as c:
-                stored = {(s, m, t): v for s, m, t, v in c.execute(text(
+                stored = {(s, m, t.astimezone(UTC)): v for s, m, t, v in c.execute(text(
                     "select station_id, measurement_type, recorded_at, value from sensor_measurements "
                     "where group_type = any(:g) and recorded_at >= :lo and recorded_at < :hi"),
-                    {"g": sorted(args.groups), "lo": to_local(w0, tz), "hi": to_local(w1, tz)})}
+                    {"g": sorted(args.groups), "lo": w0, "hi": w1})}
             missing = []
             for key, row in rows.items():
                 s = series[key[:2]]
                 s["at LI-COR"] += 1
-                source_days[key[:2]].add(key[2].date())
+                source_days[key[:2]].add(site_wall_time(key[2]).date())
                 if key in stored:
                     compared += 1
                     biggest_diff = max(biggest_diff, abs((stored[key] or 0.0) - (row["value"] or 0.0)))
@@ -143,7 +142,7 @@ def main(argv=None) -> int:
                   f"{len(missing):6} missing" + ("" if args.check else f", {len(inserted):6} inserted"), flush=True)
             time.sleep(1)
 
-    first_day, last_day = to_local(start, tz).date() + dt.timedelta(days=1), to_local(end, tz).date() - dt.timedelta(days=1)
+    first_day, last_day = site_wall_time(start).date() + dt.timedelta(days=1), site_wall_time(end).date() - dt.timedelta(days=1)
     all_days = [first_day + dt.timedelta(days=i) for i in range((last_day - first_day).days + 1)]
     cols = ["at LI-COR", "stored", "missing"] + ([] if args.check else ["inserted"]) + ["stored, not at LI-COR"]
     print("\nstation    measurement                " + "".join(f"{c:>23}" for c in cols) + "   days with nothing at LI-COR")

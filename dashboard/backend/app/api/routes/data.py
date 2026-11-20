@@ -17,7 +17,7 @@ from api.validation import bad_text
 from db.database import db
 from db.models import SensorMeasurement
 from utils.parsers import reading_value
-from utils.timezone import site_range
+from utils.timezone import parse_instant, site_wall_time
 
 log = logging.getLogger(__name__)
 
@@ -62,12 +62,15 @@ def register_data_route(app):
             return jsonify({"error": "group_type values may not contain control characters"}), 400
 
         try:
-            # As naive Toronto wall time, like recorded_at: a bound with an offset (...Z) is converted, one without
-            # is taken as local time (utils/timezone.site_range), so the session's TimeZone doesn't matter.
-            start_dt, end_dt = site_range(start, end)
+            # Real instants (recorded_at is timestamptz): the dashboard sends ...Z; a time without an offset is
+            # site wall time, as before. Bound as instants, so the session's TimeZone doesn't matter.
+            start_dt = parse_instant(start)
+            end_dt = parse_instant(end)
         except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
-        if end_dt - start_dt > timedelta(days=MAX_DAYS):  # both naive local times now
+        # MAX_DAYS counts the picked calendar range on the wall clock, so a 31-day range that spans the 25-hour
+        # fall-back day isn't refused for the extra real hour.
+        if site_wall_time(end_dt) - site_wall_time(start_dt) > timedelta(days=MAX_DAYS):
             return jsonify({"error": f"Pick a range of at most {MAX_DAYS} days, or use Download for longer ones.",
                             "max_days": MAX_DAYS}), 400
 
@@ -109,7 +112,7 @@ def register_data_route(app):
                 "measurement_type": r.measurement_type,
                 "value": reading_value(r.value),
                 "unit": r.unit,
-                "recorded_at": r.recorded_at.isoformat(),
+                "recorded_at": site_wall_time(r.recorded_at).isoformat(),   # site wall time, without an offset, as always
             }
             for r in rows
         ]

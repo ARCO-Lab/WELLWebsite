@@ -8,10 +8,12 @@
 #     "series": [{"group_type", "station_id", "measurement_type", "unit", "agg",
 #                 "t": [epoch ms, UTC], "avg": [...], "min": [...], "max": [...], "n": [...]}, ...]}
 #
-# start/end: an ISO time with an offset (e.g. ...Z) is a real instant; one without is local wall-clock time.
-# recorded_at is stored as naive America/Toronto wall-clock time (utils/timezone.py), so buckets follow local time
-# (daily buckets are local days) and `t` is each bucket start converted to a real instant. The zone is named in the
-# SQL, so the result doesn't depend on the database session's TimeZone setting.
+# start/end: an ISO time with an offset (e.g. ...Z) is a real instant; one without is local wall-clock time
+# (utils.timezone.parse_instant). recorded_at is an instant (timestamptz); readings are bucketed on its America/Toronto
+# wall-clock time from 3-hour buckets up, so those follow local time (daily buckets are local days); buckets of up to an
+# hour are on real time, which gives the same edges (Toronto's offsets are whole hours) and keeps the two readings of
+# the hour repeated when clocks fall back apart. `t` is each bucket's start as a real instant. The zone is named in
+# the SQL, so the result doesn't depend on the session's TimeZone setting.
 #
 # `agg` says what each series' `avg` holds:
 #   "mean"        the mean of the readings in the bucket; min/max are the smallest and largest reading.
@@ -60,21 +62,22 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from flask import current_app, jsonify, request
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from api.services.catalog import earliest_readings, known_series
 from api.validation import bad_text
 from db.database import db
+from db.models import Instant
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ, check_site_years, iso_time
+from utils.timezone import EST_TZ, check_site_years, iso_time, parse_instant, site_wall_time
 
 # Bucket sizes, smallest first. Every sensor reports every 10 minutes, so 600 s is the raw resolution.
 LADDER = (600, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600)
 MAX_POINTS = 2000
 GROUPS = {"Weather", "Quality", "Logger"}
 AGG = {"Rain": "sum", "Wind Direction": "vector_mean"}  # every other measurement: "mean"
-LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the zone recorded_at is stored in
+LOCAL_ZONE = EST_TZ.key  # 'America/Toronto', the site's zone
 SNAP = timedelta(minutes=10)
 RECENT = timedelta(hours=1)  # a range ending less long ago than this is still filling in, so reuse it briefly
 MAX_AGE_RECENT, MAX_AGE_PAST, MAX_AGE_SETTLED = 60, 300, 3600  # seconds the shared cache keeps a response
@@ -91,7 +94,12 @@ ONE_SECOND = timedelta(seconds=1)
 SQL = text(f"""
 WITH b AS (
   SELECT group_type, station_id, measurement_type, unit, value,
-         to_timestamp(floor(extract(epoch FROM recorded_at) / :b) * :b) AT TIME ZONE 'UTC' AS bucket_local
+         -- Up to an hour, buckets on real time: Toronto's offsets are whole hours, so the edges are the same as on
+         -- the wall clock, and the two copies of the hour repeated when clocks fall back stay apart. From 3 h,
+         -- buckets on the wall clock, so they start at local 00:00, 03:00, ... (daily buckets are local days).
+         CASE WHEN :b <= 3600 THEN to_timestamp(floor(extract(epoch FROM recorded_at) / :b) * :b)
+              ELSE (to_timestamp(floor(extract(epoch FROM (recorded_at AT TIME ZONE '{LOCAL_ZONE}')) / :b) * :b)
+                    AT TIME ZONE 'UTC') AT TIME ZONE '{LOCAL_ZONE}' END AS bucket
   FROM sensor_measurements
   WHERE recorded_at BETWEEN :s AND :e AND group_type = ANY(:g) AND value IS NOT NULL
         AND value > {SENTINEL_MAX} AND value < 'Infinity'::float8  -- PostgreSQL sorts NaN above Infinity
@@ -103,7 +111,7 @@ WITH b AS (
              OR group_type || '|' || station_id || '|' || measurement_type = ANY(CAST(:k AS text[])))
 )
 SELECT group_type, station_id, measurement_type, unit,
-       (extract(epoch FROM (bucket_local AT TIME ZONE '{LOCAL_ZONE}')) * 1000)::bigint AS t,
+       (extract(epoch FROM bucket) * 1000)::bigint AS t,
        CASE WHEN measurement_type = 'Rain' THEN sum(value)
             WHEN measurement_type = 'Wind Direction'
               THEN mod((degrees(atan2(avg(sin(radians(value))), avg(cos(radians(value))))) + 360)::numeric, 360)::float
@@ -112,9 +120,9 @@ SELECT group_type, station_id, measurement_type, unit,
        CASE WHEN measurement_type = 'Wind Direction' THEN NULL ELSE max(value) END AS hi,
        count(value) AS n
 FROM b
-GROUP BY group_type, station_id, measurement_type, unit, bucket_local
-ORDER BY group_type, station_id, measurement_type, unit, bucket_local
-""")
+GROUP BY group_type, station_id, measurement_type, unit, bucket
+ORDER BY group_type, station_id, measurement_type, unit, bucket
+""").bindparams(bindparam("s", type_=Instant), bindparam("e", type_=Instant))  # the bounds as instants
 
 
 def pick_bucket(span_seconds, max_points=MAX_POINTS):
@@ -130,7 +138,7 @@ def pick_bucket(span_seconds, max_points=MAX_POINTS):
 
 
 def floor_mark(t):
-    """`t` rounded down to a 10-minute mark."""
+    """`t` rounded down to a 10-minute mark (the same marks in UTC and in Toronto: its offsets are whole hours)."""
     return t - timedelta(minutes=t.minute % 10, seconds=t.second, microseconds=t.microsecond)
 
 
@@ -257,7 +265,9 @@ def tile_answer(bucket, start, end, series, now):
         t += size
     # A tile that ends before its group's earliest reading, or starts after now, can hold nothing: it is answered
     # empty, with no query and no cache entry, so asking for years without data costs nothing and fills nothing.
-    earliest = earliest_readings()
+    # earliest_readings() holds instants (recorded_at is timestamptz); the tiles are on the wall clock, so compare
+    # it on the wall clock too.
+    earliest = {g: site_wall_time(t) for g, t in earliest_readings().items()}
     parts = {(tile, s): [] for tile in tiles for s in series
              if s[0] not in earliest or tile + size - ONE_SECOND < earliest[s[0]] or tile > now}
     keys = {(tile, s): tile_cache_key(bucket, tile, s) for tile in tiles for s in series if (tile, s) not in parts}
@@ -398,30 +408,29 @@ def register_series_route(app):
         if not start or not end or not groups:
             return jsonify({"error": "Missing required parameters: start, end and at least one group_type"}), 400
         try:
-            start_in, end_in = parse_iso(start), parse_iso(end)
-            start_dt, end_dt = local_naive(start_in), local_naive(end_in)
-        except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no local time
+            # Real instants, compared as such even inside the repeated fall-back hour (05:30Z then 06:10Z is
+            # 01:30 EDT then 01:10 EST: later, though its wall clock reads earlier)
+            start_dt, end_dt = parse_instant(start), parse_instant(end)
+        except (ValueError, OverflowError):  # OverflowError: e.g. 0001-01-01T00:00+05:00 has no UTC time
             return jsonify({"error": "Invalid date format"}), 400
         try:
             check_site_years(start_dt, end_dt)
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
-        if start_in.tzinfo and end_in.tzinfo:
-            # Two real instants: compare those. Their wall-clock times can run backwards inside the hour repeated
-            # when clocks fall back (05:30Z -> 01:30 EDT, 06:10Z -> 01:10 EST), so the naive bounds are put in
-            # order for the query. recorded_at keeps one naive 01:xx per reading, so that hour is approximate.
-            if end_in <= start_in:
-                return jsonify({"error": "end must be after start"}), 400
-            span = (end_in - start_in).total_seconds()
-            start_dt, end_dt = min(start_dt, end_dt), max(start_dt, end_dt)
-        else:
-            if end_dt <= start_dt:
-                return jsonify({"error": "end must be after start"}), 400
-            span = (end_dt - start_dt).total_seconds()
+        # Compared as instants, so a range inside the repeated fall-back hour whose wall clock runs backwards
+        # (05:30Z then 06:10Z) is valid, and its reverse is a 400.
+        if end_dt <= start_dt:
+            return jsonify({"error": "end must be after start"}), 400
+        span = (end_dt - start_dt).total_seconds()
 
+        # Tiles are counted on the wall clock (a daily tile is a local day), so a tile request's range is read in
+        # site wall time; tile_answer's bounds become instants again when the SQL binds them (as Instant). Tiles are
+        # at least 2.5 days, never inside the repeated fall-back hour, so the round trip through the wall clock is
+        # exact. end_wall is the range's end on the wall clock, for the cache ages.
+        start_wall = end_wall = None
         if asked_bucket:
             try:
-                start_dt, end_dt = check_tiles(start_dt, end_dt, asked_bucket)
+                start_wall, end_wall = check_tiles(site_wall_time(start_dt), site_wall_time(end_dt), asked_bucket)
             except ValueError as error:
                 return jsonify({"error": str(error)}), 400
             except OverflowError:  # a tile past datetime's last year; check_site_years keeps requests well short
@@ -431,23 +440,24 @@ def register_series_route(app):
             return jsonify({"error": f"That is more than {MAX_BUCKETS} points per series: pick a shorter range or a "
                                      "larger bucket."}), 400
         now = datetime.now(EST_TZ).replace(tzinfo=None)
+        end_wall = end_wall if asked_bucket else site_wall_time(end_dt)
         filters, matches_nothing = known_filters(filters)
         if matches_nothing:
             # Nothing to look up, and nothing worth keeping in the cache
             response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": []})
-            response.headers["Cache-Control"] = browser_cache_control(end_dt, now, BROWSER_MAX_AGE)
+            response.headers["Cache-Control"] = browser_cache_control(end_wall, now, BROWSER_MAX_AGE)
             return response
         seconds_left = None
         if asked_bucket:
-            series, seconds_left = tile_answer(bucket, start_dt, end_dt, covered_series(groups, filters), now)
+            series, seconds_left = tile_answer(bucket, start_wall, end_wall, covered_series(groups, filters), now)
             body = (f'{{"aggregated":{json.dumps(bucket > LADDER[0])},"bucket_seconds":{bucket},'
                     f'"series":{series}}}\n')
             response = current_app.response_class(body, mimetype="application/json")
         else:
-            # Never stored (see "Caching" at the top)
-            start_dt, end_dt = snap_range(start_dt, end_dt)
+            # Never stored (see "Caching" at the top). The bounds stay instants, snapped to 10-minute marks.
+            start_q, end_q = snap_range(start_dt, end_dt)
             db.session.execute(text("SET LOCAL work_mem = '64MB'"))  # keeps the GROUP BY sort in memory (~3x faster)
-            rows = db.session.execute(SQL, {"b": bucket, "s": start_dt, "e": end_dt, "g": groups, **filters}).fetchall()
+            rows = db.session.execute(SQL, {"b": bucket, "s": start_q, "e": end_q, "g": groups, **filters}).fetchall()
             response = jsonify({"bucket_seconds": bucket, "aggregated": bucket > LADDER[0], "series": columnar(rows)})
-        response.headers["Cache-Control"] = browser_cache_control(end_dt, now, seconds_left)
+        response.headers["Cache-Control"] = browser_cache_control(end_wall, now, seconds_left)
         return response

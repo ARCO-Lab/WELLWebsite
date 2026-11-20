@@ -13,10 +13,9 @@ Options:
 
 The last hour is left out: the ingestion still re-reads it. Rows are built with the same function as
 the ingestion (utils/parsers.py quality_rows), so values, units and times are identical, and points
-that only carry power or diagnostic values are skipped the same way. Stored times are local
-wall-clock times, so on the night clocks go back the repeated hour's readings share their times with
-the first one and can't be stored; they aren't counted as missing. --check also compares the values
-of readings already stored.
+that only carry power or diagnostic values are skipped the same way. Days are local (America/Toronto)
+days; stored times are instants, so the night clocks go back is a 25-hour day and both copies of its
+repeated hour are compared and stored. --check also compares the values of readings already stored.
 
 WQData limits requests per hour (HTTP 429 "Request exceeds hourly limit"), and the limit is shared with
 the 10-minute ingestion. So days are fetched WINDOW_DAYS at a time (a full day is about 2,700 values
@@ -43,7 +42,8 @@ APP_DIR = (pathlib.Path(__file__).resolve().parents[1]
            if pathlib.Path(globals().get("__file__", "")).is_file() else pathlib.Path.cwd())   # cwd when piped in on stdin
 sys.path.insert(0, str(APP_DIR))
 
-from utils.fetching import FMT, UTC, to_local  # noqa: E402
+from utils.fetching import FMT, UTC  # noqa: E402
+from utils.timezone import EST_TZ, site_to_utc, site_wall_time  # noqa: E402
 
 KEY_COLUMNS = ["station_id", "measurement_type", "recorded_at"]   # the table's unique key
 PAUSE = 3.5                       # seconds between WQData requests; it throttles bursts
@@ -131,20 +131,18 @@ def fetch_points(get_page, start: dt.datetime, end: dt.datetime) -> list:
         frm = last
 
 
-def day_windows(end: dt.datetime, days: int, tz) -> list[tuple[dt.date, dt.datetime, dt.datetime]]:
-    """The last `days` local days up to `end` (aware), oldest first, as (day, start, end) in naive local
-    time, the way recorded_at is stored. The last day stops at `end`."""
-    end_local = to_local(end, tz)
-    last_day = (end_local - dt.timedelta(microseconds=1)).date()   # `end` at midnight closes the day before
+def day_windows(end: dt.datetime, days: int) -> list[tuple[dt.date, dt.datetime, dt.datetime]]:
+    """The last `days` site (Toronto) days up to `end` (aware), oldest first, as (day, start, end) with start and
+    end as UTC instants: the day from local midnight to local midnight, 23 or 25 hours on DST days. The last day
+    stops at `end`."""
+    last_day = (site_wall_time(end) - dt.timedelta(microseconds=1)).date()   # `end` at midnight closes the day before
     out = []
     for i in range(days - 1, -1, -1):
-        lo = dt.datetime.combine(last_day - dt.timedelta(days=i), dt.time())
-        out.append((lo.date(), lo, min(lo + dt.timedelta(days=1), end_local)))
+        day = last_day - dt.timedelta(days=i)
+        lo = site_to_utc(dt.datetime.combine(day, dt.time()))
+        hi = site_to_utc(dt.datetime.combine(day + dt.timedelta(days=1), dt.time()))
+        out.append((day, lo, min(hi, end.astimezone(UTC))))
     return out
-
-
-def to_utc(local: dt.datetime, tz) -> dt.datetime:
-    return local.replace(tzinfo=tz).astimezone(UTC)
 
 
 def same_value(a, b) -> bool:
@@ -172,7 +170,7 @@ def parse_args(argv=None):
     return args
 
 
-def backfill(days, tz, station, get_page, read_stored, insert_rows, ids_path, check, log=print, requests_made=None,
+def backfill(days, station, get_page, read_stored, insert_rows, ids_path, check, log=print, requests_made=None,
              window=WINDOW_DAYS) -> int:
     """Compare WQData with the database for each (day, start, end) in `days` and, unless `check`, insert
     what's missing. WQData is read `window` consecutive days at a time, to spend fewer requests of its
@@ -196,8 +194,8 @@ def backfill(days, tz, station, get_page, read_stored, insert_rows, ids_path, ch
         """(day, lo, hi, that day's rows), fetching WQData `window` days at a time."""
         for i in range(0, len(days), window):
             chunk = days[i:i + window]
-            points = fetch_points(get_page, to_utc(chunk[0][1], tz), to_utc(chunk[-1][2], tz))
-            window_rows = quality_rows(points, station, tz)
+            points = fetch_points(get_page, chunk[0][1], chunk[-1][2])
+            window_rows = quality_rows(points, station)
             for day, lo, hi in chunk:
                 yield day, lo, hi, {k: r for k, r in window_rows.items() if lo <= k[2] < hi}
 
@@ -241,7 +239,6 @@ def main(argv=None) -> int:
         return 2
     from sqlalchemy import text
     from sqlalchemy.dialects.postgresql import insert
-    from zoneinfo import ZoneInfo
     from db.database import db
     from db.models import SensorMeasurement
     from server import create_app
@@ -260,7 +257,7 @@ def main(argv=None) -> int:
 
         def read_stored(lo, hi):
             with engine.connect() as c:
-                return {(station, m, t): v for m, t, v in c.execute(text(
+                return {(station, m, t.astimezone(UTC)): v for m, t, v in c.execute(text(
                     "select measurement_type, recorded_at, value from sensor_measurements "
                     "where station_id = :s and group_type = 'Quality' and recorded_at >= :lo and recorded_at < :hi"),
                     {"s": station, "lo": lo, "hi": hi})}
@@ -275,12 +272,11 @@ def main(argv=None) -> int:
                 record_ids(ids)   # before the commit: if this write fails, the day is rolled back
             return ids
 
-        tz = ZoneInfo("America/Toronto")   # recorded_at is site wall-clock time, whatever the database's TimeZone
         end = (dt.datetime.now(UTC) - SETTLE).replace(second=0, microsecond=0)
-        days = day_windows(end, args.days, tz)
+        days = day_windows(end, args.days)
         print(f"{'Checking' if args.check else 'Backfilling'} WQData device {station} for {days[0][0]} to "
-              f"{days[-1][2]:%Y-%m-%d %H:%M} ({tz.key}, as stored), reading WQData {WINDOW_DAYS} days at a time", flush=True)
-        code = backfill(days, tz, station, wq.get_page, read_stored, insert_rows, ids_path, args.check,
+              f"{site_wall_time(days[-1][2]):%Y-%m-%d %H:%M} ({EST_TZ.key}), reading WQData {WINDOW_DAYS} days at a time", flush=True)
+        code = backfill(days, station, wq.get_page, read_stored, insert_rows, ids_path, args.check,
                         log=lambda line: print(line, flush=True), requests_made=lambda: wq.requests)
     return code
 

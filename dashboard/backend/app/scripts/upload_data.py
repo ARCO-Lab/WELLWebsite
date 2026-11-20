@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
 from utils.jobs import NO_DATA_EXIT, SETTINGS_ERROR_EXIT
 from utils.periods import containing
+from utils.timezone import site_to_utc, site_wall_time
 
 load_dotenv()
 
@@ -79,7 +80,7 @@ def get_logger_label(station_id):
     return SENSOR_FILTER_CONFIG["gauges"]["sites"].get(str(station_id), f"Logger {station_id}")
 
 def get_last_month_range():
-    # recorded_at is naive Toronto wall-clock time, so "last month" is measured there too, not on the
+    # Months are site (Toronto) calendar months, so "last month" is measured on that clock, not on the
     # container's UTC clock, which turns to the next month at 19:00 or 20:00 Toronto time on the last day.
     now = datetime.now(ZoneInfo("America/Toronto")).replace(tzinfo=None)
     first_of_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -96,6 +97,7 @@ def build_csv_frontend_style(data_list, file_obj):
     """Write the dashboard's CSV layout for `data_list` (dicts with station_id, group_type, measurement_type, value,
     unit and recorded_at as an ISO string) to `file_obj`.
 
+    recorded_at is the instant (UTC, from the database), or naive site time; Timestamp shows site wall time.
     The layout: ID, Timestamp, then a Weather block (Group, Latitude, Longitude, one column per metric), a Quality
     block like it, and a Logger block (Group, then for each logger Sensor, Latitude, Longitude and its metrics),
     with an empty column between blocks. A cell is the first reading for its timestamp, group (and logger) and
@@ -151,7 +153,9 @@ def build_csv_frontend_style(data_list, file_obj):
     station_coords = {"Weather": get_weather_station_coords(), "Quality": get_quality_station_coords()}
     rows = []
     for idx, timestamp in enumerate(timestamps, 1):
-        csv_row = [idx, timestamp]
+        # Rows are keyed by the instant (UTC ISO), so both copies of the repeated fall-back hour stay; the file shows
+        # site wall time, as it always has.
+        csv_row = [idx, site_wall_time(datetime.fromisoformat(timestamp)).isoformat()]
         for section_idx, (label, keys) in enumerate(sections):
             if section_idx != 0:
                 csv_row.append("")
@@ -242,9 +246,10 @@ def export_csv(start, end):
     dialect = db.engine.dialect.name
     query = db.session.query(SensorMeasurement).filter(
         SensorMeasurement.group_type.in_(["Weather", "Quality", "Logger"]),
-        # Half-open, so the reading at midnight on the 1st goes in the new month's file only
-        SensorMeasurement.recorded_at >= start,
-        SensorMeasurement.recorded_at < end,
+        # The local calendar month as instants (recorded_at is timestamptz). Half-open, so the reading at midnight
+        # on the 1st goes in the new month's file only.
+        SensorMeasurement.recorded_at >= site_to_utc(start),
+        SensorMeasurement.recorded_at < site_to_utc(end),
     ).order_by(SensorMeasurement.recorded_at, bytewise(SensorMeasurement.station_id, dialect),
                bytewise(SensorMeasurement.measurement_type, dialect))
     data = [
@@ -254,7 +259,7 @@ def export_csv(start, end):
             "measurement_type": r.measurement_type,
             "value": r.value,
             "unit": r.unit,
-            "recorded_at": r.recorded_at.isoformat(),
+            "recorded_at": r.recorded_at.isoformat(),   # the UTC instant; shown as site time in the file
         }
         for r in query
     ]

@@ -25,14 +25,15 @@ import json
 from datetime import datetime, timedelta
 
 from flask import current_app, jsonify, request
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import OperationalError
 
 from db.database import db
+from db.models import Instant
 from utils import response_cache
 from utils.parsers import SENTINEL_MAX
-from utils.timezone import EST_TZ, check_site_years
-from .series import browser_cache_control, local_naive, max_age, parse_iso, snap_range, whole_buckets
+from utils.timezone import EST_TZ, check_site_years, parse_instant, site_wall_time
+from .series import browser_cache_control, max_age, snap_range, whole_buckets
 
 SECTORS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 # Upper edges of the speed classes (m/s); a speed of exactly an edge belongs to the class above it.
@@ -74,7 +75,7 @@ SELECT spd.measurement_type,
        count(*) AS n
 FROM dir JOIN spd USING (station_id, recorded_at)
 GROUP BY 1, 2, 3
-""")
+""").bindparams(bindparam("s", type_=Instant), bindparam("e", type_=Instant))  # the bounds as instants
 
 
 def tabulate(rows, speeds):
@@ -110,22 +111,22 @@ def register_windrose_route(app):
             return jsonify({"error": "speed must be Wind Speed or Gust Speed"}), 400
         speeds = [s for s in SPEEDS if s in asked] if asked else list(SPEEDS)
         try:
-            start_in, end_in = parse_iso(start), parse_iso(end)
-            start_dt, end_dt = local_naive(start_in), local_naive(end_in)
+            # Real instants, as /api/series reads its range: an offset is that instant, none is Toronto wall time.
+            start_q, end_q = parse_instant(start), parse_instant(end)
         except (ValueError, OverflowError):
             return jsonify({"error": "Invalid date format"}), 400
+        # A reading's count is the same whatever the session zone, so the query and the cache work on the wall clock
+        # (the whole hours/days the buckets are counted on); the SQL binds these bounds back to instants (as Instant).
+        start_dt, end_dt = site_wall_time(start_q), site_wall_time(end_q)
         try:
             check_site_years(start_dt, end_dt)
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
-        if start_in.tzinfo and end_in.tzinfo:
-            # Compared as instants; inside the hour repeated when clocks fall back the wall-clock bounds can run
-            # backwards, so they're put in order for the query (as /api/series does).
-            if end_in <= start_in:
-                return jsonify({"error": "end must be after start"}), 400
-            start_dt, end_dt = min(start_dt, end_dt), max(start_dt, end_dt)
-        elif end_dt <= start_dt:
+        # Compared as instants; inside the hour repeated when clocks fall back the wall-clock bounds can run
+        # backwards, so they're put in order for the query (as /api/series does).
+        if end_q <= start_q:
             return jsonify({"error": "end must be after start"}), 400
+        start_dt, end_dt = min(start_dt, end_dt), max(start_dt, end_dt)
 
         if end_dt - start_dt > WHOLE_DAYS_AFTER:
             start_dt, end_dt = whole_buckets(start_dt, end_dt, 24 * 3600)

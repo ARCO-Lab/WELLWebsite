@@ -41,10 +41,11 @@ from utils.parsers import SENTINEL_MAX  # noqa: E402
 
 COLUMNS = ("id", "station_id", "group_type", "measurement_type", "value", "unit", "recorded_at")
 
+# recorded_at is an instant (timestamptz): the day is taken on the site's clock, whatever the session's TimeZone
 COUNT_SQL = text("""
-SELECT group_type, measurement_type, CAST(recorded_at AS DATE) AS day, count(*) AS n
+SELECT group_type, measurement_type, CAST(recorded_at AT TIME ZONE 'America/Toronto' AS DATE) AS day, count(*) AS n
 FROM sensor_measurements WHERE value <= :s
-GROUP BY group_type, measurement_type, CAST(recorded_at AS DATE)
+GROUP BY group_type, measurement_type, CAST(recorded_at AT TIME ZONE 'America/Toronto' AS DATE)
 ORDER BY day, group_type, measurement_type
 """)
 ROWS_SQL = text(f"SELECT {', '.join(COLUMNS)} FROM sensor_measurements WHERE value <= :s ORDER BY id")
@@ -57,6 +58,16 @@ def counts(conn):
     return [tuple(r) for r in conn.execute(COUNT_SQL, {"s": SENTINEL_MAX}).fetchall()]
 
 
+def cell(value):
+    """A backup CSV cell. recorded_at (an instant) is written in UTC with its offset, so the rows go back unchanged
+    whatever the TimeZone of the session that restores them."""
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(dt.timezone.utc)
+        return value.isoformat(sep=" ")
+    return value
+
+
 def write_backup(rows, path):
     """Write the rows to a new CSV only its owner can read (umask 077), and flush it to disk."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +77,7 @@ def write_backup(rows, path):
             w = csv.writer(f)
             w.writerow(COLUMNS)
             for r in rows:
-                w.writerow([v.isoformat(sep=" ") if isinstance(v, dt.datetime) else v for v in r])
+                w.writerow([cell(v) for v in r])
             f.flush()
             os.fsync(f.fileno())
     finally:

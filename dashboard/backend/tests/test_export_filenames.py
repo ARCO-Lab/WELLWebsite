@@ -43,25 +43,30 @@ class ExportFilenames(unittest.TestCase):
         self.assertEqual(name, "WELLWestCampus_WaterQuality_20261109_20261109.csv")
 
 
-class ExportRangeIsSiteTime(unittest.TestCase):
-    """recorded_at is naive Toronto time, so the range the query compares it with must be too: an aware bound would
-    be compared in the database session's time zone (UTC), and the export would be 4-5 hours off."""
+class ExportRangeForEachTable(unittest.TestCase):
+    """Sensor readings are stored as instants, so a sensor range is kept as UTC instants (a bound without an offset
+    is Toronto time); sampling times are naive Toronto time, so a sampling range becomes Toronto wall-clock time.
+    Either way the range doesn't depend on the database session's time zone."""
 
-    def test_aware_bounds_become_toronto_wall_clock(self):
+    def test_aware_bounds_stay_instants(self):
         filters = sensor("2026-10-31T04:00:00.000Z", "2026-11-02T04:59:59.999Z")
-        self.assertEqual(filters["start"], "2026-10-31T00:00:00")
-        self.assertEqual(filters["end"], "2026-11-01T23:59:59.999000")
+        self.assertEqual(filters["start"], "2026-10-31T04:00:00+00:00")
+        self.assertEqual(filters["end"], "2026-11-02T04:59:59.999000+00:00")
 
-    def test_mixed_aware_and_naive_bounds_are_compared_in_site_time(self):
-        # 03:00Z on Nov 10 is 22:00 on Nov 9 in Toronto, after the naive start; compared as given this raised TypeError
+    def test_mixed_aware_and_naive_bounds_are_compared_as_instants(self):
+        # 21:00 on Nov 9 in Toronto is 02:00Z on Nov 10, before the aware end; compared as given this raised TypeError
         filters = sensor("2026-11-09T21:00:00", "2026-11-10T03:00:00Z")
-        self.assertEqual((filters["start"], filters["end"]), ("2026-11-09T21:00:00", "2026-11-09T22:00:00"))
+        self.assertEqual((filters["start"], filters["end"]), ("2026-11-10T02:00:00+00:00", "2026-11-10T03:00:00+00:00"))
         with self.assertRaisesRegex(ValueError, "start must be before end"):
             sensor("2026-11-09T23:00:00", "2026-11-10T03:00:00Z")
 
     def test_naive_bounds_are_kept(self):
         filters = sampling("2026-11-09T00:00:00", "2026-11-09T23:59:59")
         self.assertEqual((filters["start"], filters["end"]), ("2026-11-09T00:00:00", "2026-11-09T23:59:59"))
+
+    def test_aware_sampling_bounds_become_toronto_wall_clock(self):
+        filters = sampling("2026-10-31T04:00:00.000Z", "2026-11-02T04:59:59.999Z")
+        self.assertEqual((filters["start"], filters["end"]), ("2026-10-31T00:00:00", "2026-11-01T23:59:59.999000"))
 
 
 if __name__ == "__main__":

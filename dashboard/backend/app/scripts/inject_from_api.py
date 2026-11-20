@@ -39,7 +39,6 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
-from zoneinfo import ZoneInfo
 
 from server import create_app
 from db.database import db
@@ -93,16 +92,16 @@ def store(rows):
     return new
 
 
-def run_start(group, tz, now):
+def run_start(group, now):
     """Where this run starts for a group: its newest stored reading minus the overlap, at most RUN_LOOKBACK ago, and
     never later than now minus the overlap: a reading stored with a future time (a device clock that jumped ahead,
     before such records were skipped) would otherwise make every request start after it ends, and nothing new
     would be stored until someone deleted the row."""
-    start = max(start_from_newest(newest_stored(group), tz, FIRST_START[group]), now - RUN_LOOKBACK)
+    start = max(start_from_newest(newest_stored(group), FIRST_START[group]), now - RUN_LOOKBACK)
     return min(start, now - OVERLAP)
 
 
-def licor_start(tz, now):
+def licor_start(now):
     """Where a LI-COR run starts: LICOR_LATE before the end of the last fetch whose readings were all stored, or
     earlier where a group's newest reading is older than that (a short gap, caught up as before), except a group
     silent for more than LICOR_SILENT. Without that exception a silent group
@@ -112,7 +111,7 @@ def licor_start(tz, now):
     growing while the station is offline, every record is unreadable, or ingestion was down. A station left out
     (its newest reading is older than the start) has its gap fetched once it reports again (catch_up). With no fetch
     recorded yet, the older group's start, as before."""
-    starts = {group: run_start(group, tz, now) for group in ("Weather", "Logger")}
+    starts = {group: run_start(group, now) for group in ("Weather", "Logger")}
     until = fetched_until("LI-COR")
     if until is None:
         start = min(starts.values())
@@ -124,7 +123,7 @@ def licor_start(tz, now):
 
 
 def stations_newest(rows):
-    """{(group, station_id): (its newest stored reading, its newest reading in rows)}, local wall-clock times, for
+    """{(group, station_id): (its newest stored reading, its newest reading in rows)}, aware UTC instants, for
     each station in rows. The stored one is the newest over the station's series in rows, one lookup of the series
     index each (a station's series that sent nothing don't count). When none of those has anything stored (a sensor
     added to the station, say), the newest over all of the station's series; None for a station never stored."""
@@ -147,7 +146,7 @@ def stations_newest(rows):
     return stations
 
 
-def catch_up(start, rows, tz, now):
+def catch_up(start, rows, now):
     """(where to fetch from again, the stations back as "Logger 2577533"), or (None, []): from the newest stored
     reading (minus the overlap, at most RUN_LOOKBACK ago) of each station that this answer, read from `start`,
     has newer readings from while its newest stored one is older than `start`. A logger out of contact resends what
@@ -155,9 +154,9 @@ def catch_up(start, rows, tz, now):
     the start is set by the whole group, so one logger's silence doesn't move it while the others report."""
     gap_start, back = None, []
     for (group, station), (stored, answered) in sorted(stations_newest(rows).items()):
-        if stored is not None and (answered <= stored or stored.replace(tzinfo=tz) >= start):
+        if stored is not None and (answered <= stored or stored >= start):
             continue   # nothing new, or its gap is inside this run's window
-        own = max(start_from_newest(stored, tz, FIRST_START[group]), now - RUN_LOOKBACK)
+        own = max(start_from_newest(stored, FIRST_START[group]), now - RUN_LOOKBACK)
         if own < start:
             back.append(f"{group} {station}")
             gap_start = own if gap_start is None else min(gap_start, own)
@@ -190,9 +189,9 @@ def read_answer(source, parse, error=None, skipped=None, record_success=True):
     return rows, error
 
 
-def inject_licor(tz, now):
+def inject_licor(now):
     # One read of LI-COR covers both the weather station and the water-level loggers.
-    start = licor_start(tz, now)
+    start = licor_start(now)
     try:
         records = fetch_range(weather_service.get_page, start, now)
     except Exception as e:
@@ -202,11 +201,11 @@ def inject_licor(tz, now):
     # Success is recorded below, once a silent station's gap (if any) is fetched too: recorded here, a gap fetch that
     # fails run after run would reset the failure count each time, and report_failure would never send it.
     rows, error = read_answer("LI-COR", lambda counter: licor_rows(
-        records, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, counter, now), skipped=skipped,
+        records, {"Weather", "Logger"}, weather_service.get_logger_id(), counter, now), skipped=skipped,
         record_success=False)
     if error is not None:
         raise error
-    gap_start, back = catch_up(start, rows, tz, now)
+    gap_start, back = catch_up(start, rows, now)
     if gap_start is not None:
         # A silent station is back: fetch its gap too, before anything is stored or the mark moves.
         try:
@@ -215,7 +214,7 @@ def inject_licor(tz, now):
             record_vendor_result("LI-COR", e)
             raise
         before = skipped.count
-        gap_rows = licor_rows(gap, {"Weather", "Logger"}, weather_service.get_logger_id(), tz, skipped, now)
+        gap_rows = licor_rows(gap, {"Weather", "Logger"}, weather_service.get_logger_id(), skipped, now)
         if skipped.count > before:
             skipped.report()   # the run's total, now including the gap
             if not gap_rows:
@@ -243,13 +242,13 @@ def inject_licor(tz, now):
           f"{len(rows)} readings, {new} new")
 
 
-def inject_quality(tz, now):
+def inject_quality(now):
     # QualityService follows WQData's paging (until a response holds all the values it reports), so one call
     # covers the range.
-    start = run_start("Quality", tz, now)
+    start = run_start("Quality", now)
     entries = quality_service.get_quality_data(start.strftime(FMT), now.strftime(FMT))
     # get_quality_data logs a failed request or a paging stall and returns what it read
-    rows, error = read_answer("WQData", lambda skipped: quality_rows(entries, Config.WQ_DEVICE_ID, tz, skipped, now),
+    rows, error = read_answer("WQData", lambda skipped: quality_rows(entries, Config.WQ_DEVICE_ID, skipped, now),
                               quality_service.last_error)
     new = store(list(rows.values()))
     print(f"[INFO] WQData: {start:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M} UTC: {len(entries)} points, "
@@ -292,12 +291,11 @@ def inject_all_new_data():
     # Fetch and store new readings from both vendors. A failure in one doesn't stop the other,
     # but the run still ends with an error so the scheduler logs it as failed.
     with app.app_context():
-        tz = ZoneInfo("America/Toronto")   # recorded_at is site wall-clock time, whatever the database's TimeZone
         now = datetime.now(timezone.utc)
         failed = []
         for name, job in (("LI-COR", inject_licor), ("WQData", inject_quality)):
             try:
-                job(tz, now)
+                job(now)
             except Exception as e:
                 db.session.rollback()
                 failed.append(name)

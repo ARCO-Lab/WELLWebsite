@@ -32,7 +32,7 @@ import requests  # noqa: E402
 from utils.digest import (anomalies, build_digest, find_gaps, parse_alert_emails, smtp_settings,  # noqa: E402
                           station_gaps)
 from utils.email_format import markdown_to_html  # noqa: E402
-from utils.monitoring import age_minutes, as_site_time, assess_freshness  # noqa: E402
+from utils.monitoring import age_minutes, assess_freshness  # noqa: E402
 from utils.timezone import EST_TZ  # noqa: E402
 
 WINDOW = timedelta(hours=24)
@@ -49,12 +49,13 @@ ORDER BY recorded_at
 
 def read_groups(db, freshness, now):
     """Rows, time slots, gaps and anomaly findings of the 24 h before `now` (aware) for every checked (not
-    excluded) series. Slots and gaps are worked out in UTC: recorded_at is naive Toronto time, so on DST days
-    its wall clock skips or repeats an hour, which would look like a gap or a shortfall. Gaps are found for the
-    group's time slots and for each station's, so one logger's silence shows while the others report."""
+    excluded) series. Slots and gaps are worked out in UTC, on the stored instants: on DST days the wall clock
+    skips or repeats an hour, which would look like a gap or a shortfall. Gaps are found for the group's time
+    slots and for each station's, so one logger's silence shows while the others report."""
+    from db.models import Instant
     since_utc = now.astimezone(timezone.utc) - WINDOW
-    since = since_utc.astimezone(EST_TZ).replace(tzinfo=None)   # for the query: recorded_at is naive site time
-    query = db.text(SERIES_SQL).columns(recorded_at=db.DateTime)
+    # Typed both ways, so the bound instant and the result are aware UTC on any database (SQLite in the tests)
+    query = db.text(SERIES_SQL).bindparams(db.bindparam("since", type_=Instant)).columns(recorded_at=Instant)
     groups, findings = {}, []
     for group, info in freshness["groups"].items():
         slots, rows, count, by_station = set(), 0, 0, {}
@@ -63,9 +64,10 @@ def read_groups(db, freshness, now):
                 continue
             count += 1
             readings = db.session.execute(query, {"station": s["station_id"], "measurement": s["measurement_type"],
-                                                  "since": since}).all()
+                                                  "since": since_utc}).all()
             rows += len(readings)
-            times = {as_site_time(r.recorded_at).astimezone(timezone.utc) for r in readings}
+            # recorded_at is already an aware UTC instant (the Instant column type), so slots are those instants
+            times = {r.recorded_at for r in readings}
             slots.update(times)
             by_station.setdefault(s["station_id"], set()).update(times)
             findings += anomalies(group, s["station_id"], s["measurement_type"],
@@ -179,7 +181,7 @@ def main(argv=None):
     from config import Config
     from db.database import db
     from server import create_app
-    from api.routes.latest import query_latest_per_series
+    from api.routes.latest import latest_rows
 
     from utils.alerts import RECOVERY_WINDOW, Settings, settings_from_env
     from utils.alert_state import alerts_report, mark_recoveries_reported, missed_recoveries, recent_recoveries
@@ -192,7 +194,7 @@ def main(argv=None):
     now = datetime.now(timezone.utc)
     app = create_app()
     with app.app_context():
-        freshness = assess_freshness(query_latest_per_series(), now)
+        freshness = assess_freshness(latest_rows(), now)
         groups, findings = read_groups(db, freshness, now)
         try:
             incidents = alerts_report()["open"]
