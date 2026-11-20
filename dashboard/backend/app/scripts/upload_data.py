@@ -5,7 +5,7 @@
 #   python scripts/upload_data.py --year 2026 --month 10             that month
 #   python scripts/upload_data.py                                    last month
 #   python scripts/upload_data.py --year 2026 --month 10 --dry-run   build the CSV and print its size only
-# Every month goes into the one dataset BOREALIS_UPLOAD_PERSISTENT_ID as WELLWestCampus_<Mon><YYYY>.csv, in a folder
+# Every month goes into the one dataset BOREALIS_UPLOAD_PERSISTENT_ID as YYYY-MM_WELLWestCampus.csv, in a folder
 # per year, and the dataset is then published as a new major version (utils/borealis.py has the details). Running it
 # again for a month is safe: an identical file isn't sent twice, and a changed one replaces the old copy.
 # It prints "Successfully uploaded <file> to Borealis" only once the file is in the dataset and published (or left
@@ -27,7 +27,6 @@ from dotenv import load_dotenv
 from utils.borealis import Dataverse, DataverseError, api_base, is_demo, upload_file
 from utils.jobs import NO_DATA_EXIT, SETTINGS_ERROR_EXIT
 from utils.periods import containing
-from utils.periods import file_name as period_file_name
 from utils.timezone import site_to_utc, site_wall_time
 
 load_dotenv()
@@ -218,7 +217,7 @@ def upload_to_borealis(csv_content, csv_name, year, client=None, settings=None):
     answer, if it was already asked."""
     server, token, pid = settings or borealis_settings()
     client = client or Dataverse(server, token)
-    month = csv_name[len("WELLWestCampus_"):-len(".csv")]
+    month = csv_name[:-len("_WELLWestCampus.csv")]
     try:
         outcome, version = upload_file(client, pid, csv_name, csv_content,
                                        description=f"WELL West Campus sensor data, {month} (automated monthly export)",
@@ -279,8 +278,10 @@ def export_month_csv(start, end):
 
 
 def month_file_name(start):
-    """WELLWestCampus_Oct2026.csv for October 2026 (English month names, whatever the locale)."""
-    return period_file_name(containing("monthly", start.date()))
+    """2026-10_WELLWestCampus.csv for October 2026, so the dataset's files sort by date. The curator (McMaster RDM)
+    renamed the existing files to this convention, so building the same name keeps a re-run idempotent (the upload
+    finds the file already there, unchanged, and sends nothing). upload_to_borealis parses the month back out of it."""
+    return f"{containing('monthly', start.date()).key}_WELLWestCampus.csv"
 
 
 def get_month_range(year: int, month: int):

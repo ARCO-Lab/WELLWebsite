@@ -16,10 +16,12 @@ APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "scripts"))
 from scripts import download_data  # noqa: E402
-from utils.sampling_csv import INVALID_FILE_EXIT  # noqa: E402
+from utils.sampling_csv import INVALID_FILE_EXIT, validate_csv  # noqa: E402
 from utils.jobs import SETTINGS_ERROR_EXIT  # noqa: E402
 sys.modules.setdefault("inject_from_api", types.SimpleNamespace(inject_all_new_data=lambda: None))
 import scheduler_temp  # noqa: E402
+
+MAX_LISTED = 50   # inject_sampling.py lists at most this many problems; keep in step with it
 
 
 def dataset_file(file_id, day):
@@ -28,6 +30,20 @@ def dataset_file(file_id, day):
 
 OLD, BAD, NEW = dataset_file(1, 1), dataset_file(2, 2), dataset_file(3, 3)
 REFUSED_OUT = "[ERROR] row 2, site: unknown site 'X'\n[ERROR] 7 problems in /tmp/x.xlsx; nothing was imported.\n"
+
+
+def inject_refused_output(csv_text, path="/tmp/x.csv"):
+    """What inject_sampling.py prints when the standard-CSV validator refuses `csv_text` (utils/sampling_csv), so a
+    test exercises the real format rules, not a hand-written message. Returns (stdout, Result)."""
+    result = validate_csv(csv_text.encode("utf-8"))
+    assert not result.ok, "expected a malformed file"
+    lines = [f"[ERROR] {issue}" for issue in result.errors[:MAX_LISTED]]
+    if len(result.errors) > MAX_LISTED:
+        lines.append(f"[ERROR] ... and {len(result.errors) - MAX_LISTED} more problems not listed "
+                     f"(scripts/check_sampling_csv.py lists them all)")
+    lines.append(f"[ERROR] {len(result.errors)} problems in {path}; nothing was imported. Fix them and upload the "
+                 f"file again.")
+    return "\n".join(lines) + "\n", result
 
 
 def empty_state():
@@ -144,6 +160,57 @@ class BookkeepingTests(TestCase):
         self.assertEqual(download_data.import_scope('[INFO] x\n[SCOPE] {"sites": ["1"]}\n'), {"sites": ["1"]})
         self.assertIsNone(download_data.import_scope("[INFO] Inserted 1 new sampling records.\n"))
 
+    def test_refusal_problems_are_the_listed_issues_only(self):
+        out = ("[INFO] Loading file: /tmp/x.csv\n"
+               "[ERROR] row 1, unit: required column is missing\n"
+               "[ERROR] row 12, date: '2026-13-05' is not a real date\n"
+               "[ERROR] ... and 3 more problems not listed (scripts/check_sampling_csv.py lists them all)\n"
+               "[ERROR] 5 problems in /tmp/x.csv; nothing was imported. Fix them and upload the file again.\n")
+        self.assertEqual(download_data.refusal_problems(out),
+                         ["row 1, unit: required column is missing",
+                          "row 12, date: '2026-13-05' is not a real date"])
+        self.assertEqual(download_data.refusal_problems(""), [])
+
+    def test_refusal_attention_names_the_file_the_count_and_the_first_problems(self):
+        line = download_data.refusal_attention(BAD, 5, ["row 1, unit: required column is missing",
+                                                        "row 12, date: '2026-13-05' is not a real date",
+                                                        "row 2, parameter: unknown parameter 'Nitrite'",
+                                                        "row 3, site: unknown site 'X'"])
+        self.assertTrue(line.startswith("ATTENTION: WELLAncasterWatershed_2.csv (ID: 2): "))
+        self.assertIn("sampling upload in the wrong format (5 problems), needs a manual check", line)
+        self.assertIn("row 1, unit: required column is missing", line)
+        self.assertIn("and 2 more", line)                               # 4 given, 3 shown
+        self.assertNotIn("unknown site 'X'", line)                      # the 4th isn't shown
+        self.assertIn("docs/sampling-csv-format.md", line)
+        # One problem reads as singular, and a short list names them all without "more"
+        one = download_data.refusal_attention(BAD, 1, ["row 1, unit: required column is missing"])
+        self.assertIn("(1 problem),", one)
+        self.assertNotIn("more", one)
+
+    def test_each_malformed_file_is_flagged_with_the_validators_own_message(self):
+        # The real format rules (utils/sampling_csv), so the alert can't drift from the one source of truth
+        header = "date,site,parameter,value,unit\n"
+        cases = {
+            "missing column": ("date,site,parameter,value\n2026-05-06,Falkirk Forest,pH,7.1\n",
+                               "unit: required column is missing"),
+            "unparseable date": (header + "2026-13-40,Falkirk Forest,pH,7.1,pH units\n", "is not a real date"),
+            "ambiguous date": (header + "05/06/2026,Falkirk Forest,pH,7.1,pH units\n", "ambiguous"),
+            "unknown parameter": (header + "2026-05-06,Falkirk Forest,Nitrite,0.1,mg/L\n",
+                                  "unknown parameter 'Nitrite'"),
+            "unknown site": (header + "2026-05-06,Nowhere,pH,7.1,pH units\n", "unknown site 'Nowhere'"),
+            "wrong unit": (header + "2026-05-06,Falkirk Forest,pH,7.1,NTU\n", "doesn't match pH"),
+            "no readings": (header, "no readings to import"),
+        }
+        for name, (csv_text, expected) in cases.items():
+            with self.subTest(case=name):
+                out, result = inject_refused_output(csv_text)
+                problems = download_data.refusal_problems(out)
+                self.assertEqual(problems, [str(issue) for issue in result.errors])   # the validator's exact text
+                line = download_data.refusal_attention(BAD, len(result.errors), problems)
+                self.assertIn("sampling upload in the wrong format", line)
+                self.assertIn("needs a manual check", line)
+                self.assertIn(expected, line)
+
 
 class MainTests(TestCase):
     def run_main(self, state, outcomes, *argv, files=(OLD, BAD, NEW)):
@@ -182,6 +249,36 @@ class MainTests(TestCase):
         self.assertEqual([(f["id"], f["errors"]) for f in state["refused_files"]], [(2, 7)])
         # Imported with nothing new (every row already stored) still counts as processed: no weekly retry
         self.assertEqual(sorted(f["id"] for f in state["processed_files"]), [1, 3])
+
+    def test_a_wrong_format_file_is_flagged_and_the_good_files_still_import(self):
+        # A mix: the good files ingest, the malformed one is flagged for a manual check and fails the run
+        # One row with several problems: a bad date, an unknown site and an unknown parameter
+        bad_csv = "date,site,parameter,value,unit\n2026-13-40,Nowhere,Nitrite,0.1,mg/L\n"
+        refused_out, result = inject_refused_output(bad_csv)
+        self.assertGreater(len(result.errors), 1)
+        ok = (0, "[INFO] Inserted 5 new sampling records.\n")
+        code, out, saved, _ = self.run_main(empty_state(),
+                                             {1: ok, 2: (INVALID_FILE_EXIT, refused_out), 3: ok})
+        self.assertEqual(code, 1)
+        self.assertIn("OUTPUT: REJECTED_1_FILES", out)
+        attention = [line for line in out.splitlines() if line.startswith("ATTENTION:")]
+        self.assertEqual(len(attention), 1, out)
+        self.assertIn("WELLAncasterWatershed_2.csv (ID: 2): sampling upload in the wrong format", attention[0])
+        self.assertIn("needs a manual check", attention[0])
+        self.assertIn(f"({len(result.errors)} problems)", attention[0])
+        self.assertIn("unknown site 'Nowhere'", attention[0])   # a real problem the validator found
+        # The good files were imported and recorded; only the malformed one is refused
+        self.assertEqual(sorted(f["id"] for f in saved[-1]["processed_files"]), [1, 3])
+        self.assertEqual([f["id"] for f in saved[-1]["refused_files"]], [2])
+
+    def test_a_clean_run_raises_no_format_alert(self):
+        ok = (0, "[INFO] Inserted 4 new sampling records.\n")
+        code, out, saved, _ = self.run_main(empty_state(), {1: ok, 2: ok, 3: ok})
+        self.assertEqual(code, 0)
+        self.assertIn("OUTPUT: PROCESSED_3_FILES", out)
+        self.assertNotIn("wrong format", out)
+        self.assertEqual([line for line in out.splitlines() if line.startswith("ATTENTION:")], [])
+        self.assertEqual(saved[-1]["refused_files"], [])
 
     def test_a_refused_file_is_not_retried_but_a_reminder_is_logged(self):
         state = empty_state()
@@ -332,6 +429,18 @@ class SchedulerTests(TestCase):
         with mock.patch.object(scheduler_temp, "capture_job_warning") as warn:
             self.assertEqual(self.run_job("OUTPUT: PROCESSED_1_FILES\n", 0)[1], [("download", "success")])
             warn.assert_not_called()
+
+    def test_a_wrong_format_refusal_reaches_sentry_and_the_digest(self):
+        # The refused run exits 1 (REJECTED); its ATTENTION: line must still reach Sentry (warning) and the digest
+        line = ("ATTENTION: WELLAncasterWatershed_May2026.csv (ID: 57): sampling upload in the wrong format "
+                "(3 problems), needs a manual check; nothing from it was imported.")
+        with mock.patch.object(scheduler_temp, "capture_job_warning") as warn, \
+                mock.patch.object(scheduler_temp, "record_attention") as record:
+            logs, pings = self.run_job(f"{line}\nOUTPUT: REJECTED_1_FILES\n", 1)
+        warn.assert_called_once_with(line)
+        recorded = [x for call in record.call_args_list for x in call.args[0] if x.startswith("ATTENTION:")]
+        self.assertEqual(recorded, [line])          # the daily digest lists it under "needs a decision"
+        self.assertEqual(pings, [("download", "fail")])
 
     def test_success_and_nothing_new(self):
         self.assertEqual(self.run_job("OUTPUT: PROCESSED_2_FILES\n", 0)[1], [("download", "success")])

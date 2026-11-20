@@ -398,6 +398,21 @@ function well_meta_tags() {
 add_action('wp_head', 'well_meta_tags', 5);
 
 /**
+ * Keep the link-only Sampling data upload guide out of search engines. The page is shared by its link alone (it is
+ * not in any menu and has an unlisted slug); this tells crawlers not to index it or follow its links, so it does
+ * not surface in search results. WordPress prints the robots meta tag from this filter (wp_robots, 5.7+), so the
+ * page carries <meta name="robots" content="noindex, nofollow, ...">.
+ */
+function well_sampling_upload_noindex($robots) {
+    if (is_page_template('template-sampling-upload.php')) {
+        $robots['noindex']  = true;
+        $robots['nofollow'] = true;
+    }
+    return $robots;
+}
+add_filter('wp_robots', 'well_sampling_upload_noindex');
+
+/**
  * Open the connections to Google Fonts early. The Poppins stylesheet comes from fonts.googleapis.com
  * and its font files from fonts.gstatic.com; without this the browser finds the second host only
  * after the first stylesheet has downloaded.

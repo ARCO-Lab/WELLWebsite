@@ -107,6 +107,29 @@ const defaultFrame: Scheduler = (cb) => {
   else setTimeout(cb, 16);
 };
 
+// Chart redraws take turns, one chart per animation frame. New data usually reaches every chart of the page in the
+// same reply, and three charts redrawn in one frame were one task of over a second on a phone (at 4x CPU slowdown):
+// in turns the page paints, and can answer a touch, between two charts. A chart in a gesture goes first.
+type RedrawTurns = (cb: () => void, first: boolean) => void;
+const turns: Array<() => void> = [];
+let turnsRunning = false;
+const nextTurn = (): void => {
+  const cb = turns.shift();
+  try {
+    if (cb) cb();
+  } finally { // a redraw that throws doesn't stop the others' turns
+    if (turns.length) defaultFrame(nextTurn);
+    else turnsRunning = false;
+  }
+};
+const defaultTurns: RedrawTurns = (cb, first) => {
+  if (first) turns.unshift(cb);
+  else turns.push(cb);
+  if (turnsRunning) return;
+  turnsRunning = true;
+  defaultFrame(nextTurn);
+};
+
 const now = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 export function clampWindow(w: Range, extent: Range, keep: "center" | "start" | "end" = "center"): Range {
@@ -157,6 +180,7 @@ export class ChartController {
   readonly id: string;
   private loader: SeriesLoader;
   private frame: Scheduler;
+  private redrawTurn: RedrawTurns;
   private debounceMs: number;
 
   constructor(
@@ -171,6 +195,8 @@ export class ChartController {
     this.id = id;
     this.loader = loader;
     this.frame = frame;
+    // A scheduler passed in (the tests' synchronous one) also schedules the redraws, as it is
+    this.redrawTurn = frame === defaultFrame ? defaultTurns : (cb) => frame(cb);
     this.debounceMs = debounceMs;
     this.keys = [...keys];
     this.ext = extent;
@@ -608,7 +634,7 @@ export class ChartController {
   private schedulePaced(): void {
     if (this.paceQueued || this.disposed) return;
     this.paceQueued = true;
-    const go = () => this.frame(() => this.runPaced());
+    const go = () => this.redrawTurn(() => this.runPaced(), this.gestureActive);
     const wait = this.lastEnd + this.lastCost * PACE - now();
     if (wait > 4) setTimeout(go, wait);
     else go();

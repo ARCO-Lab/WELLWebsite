@@ -227,8 +227,9 @@ The database lives on one VM, so each month's sensor data is also copied off it,
 
 - **Borealis** (`borealisdata.ca`, the Scholars Portal Dataverse that McMaster uses). This is the public, citable copy.
   On the 1st of each month at 02:00 Toronto time the worker runs `scripts/upload_data.py`. It exports the month that
-  just ended as `WELLWestCampus_<Mon><YYYY>.csv` (the dashboard's CSV layout), adds it to the upload dataset in a
-  folder for the year, and publishes a new major version of the dataset.
+  just ended as `YYYY-MM_WELLWestCampus.csv` (e.g. `2026-10_WELLWestCampus.csv`, so the dataset's files sort by
+  date; the dashboard's CSV layout), adds it to the upload dataset in a folder for the year, and publishes a new
+  major version of the dataset.
 - **SharePoint**, a McMaster document library. Right after Borealis, `scripts/sharepoint_upload.py` uploads files
   through Microsoft Graph, in one of two layouts (below). The two copies are kept apart: each has its own record of
   what went up and its own heartbeat (`HEALTHCHECK_URL_UPLOAD` and `HEALTHCHECK_URL_SHAREPOINT`). If one of them
@@ -242,7 +243,7 @@ fills a library of its own (with `SHAREPOINT_FOLDER` unset, from its root):
 West Campus/
   Daily/<year>/<MM>/WELLWestCampus_2026-11-14.csv     each day, midnight to midnight
   Weekly/<ISO year>/WELLWestCampus_2026-W46.csv       each ISO week, Monday 00:00 to Monday 00:00
-  Monthly/<year>/WELLWestCampus_Oct2026.csv           each month (the Borealis file)
+  Monthly/<year>/WELLWestCampus_Oct2026.csv           each month (same content as the Borealis file)
 Ancaster Watershed/
   <year>/WELLAncasterWatershed_Oct2026.csv            the creek sampling readings of each month that has any
 ```
@@ -270,7 +271,8 @@ imports it into the Ancaster Watershed tab.
 
 ### The monthly file's format
 
-`WELLWestCampus_<Mon><YYYY>.csv` is UTF-8 CSV with one row per time a reading was taken, in time order. The
+The monthly file (`YYYY-MM_WELLWestCampus.csv` on Borealis, `WELLWestCampus_<Mon><YYYY>.csv` on SharePoint, same
+content) is UTF-8 CSV with one row per time a reading was taken, in time order. The
 [golden files](tests/golden/README.md) pin it byte for byte.
 
 - **Columns**, left to right: `ID` (the row number), `Timestamp (America/Toronto)`, then a Weather block (`Group`,

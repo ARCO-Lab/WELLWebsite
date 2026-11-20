@@ -74,7 +74,7 @@ class MonthlyUploadCheckTests(TestCase):
         return scheduler_temp.load_uploaded_months(self.record)
 
     def test_a_successful_upload_is_recorded(self):
-        self.check(dt.datetime(2026, 11, 1, 7, tzinfo=dt.timezone.utc), finished("Successfully uploaded WELLWestCampus_Oct2026.csv to Borealis\n"))
+        self.check(dt.datetime(2026, 11, 1, 7, tzinfo=dt.timezone.utc), finished("Successfully uploaded 2026-10_WELLWestCampus.csv to Borealis\n"))
         self.assertEqual(self.cmds, [["2026", "--month", "10"]])
         self.assertEqual(self.recorded(), {"2026-10"})
 

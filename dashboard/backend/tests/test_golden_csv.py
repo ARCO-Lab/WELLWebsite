@@ -325,8 +325,8 @@ class MonthlyFile:
         return name, content.encode("utf-8")
 
     def test_october_and_november(self):
-        for (year, month), expected_name in (((2026, 10), "WELLWestCampus_Oct2026.csv"),
-                                             ((2026, 11), "WELLWestCampus_Nov2026.csv")):
+        for (year, month), expected_name in (((2026, 10), "2026-10_WELLWestCampus.csv"),
+                                             ((2026, 11), "2026-11_WELLWestCampus.csv")):
             with self.subTest(expected_name):
                 name, data = self.month(year, month)
                 self.assertEqual(name, expected_name)

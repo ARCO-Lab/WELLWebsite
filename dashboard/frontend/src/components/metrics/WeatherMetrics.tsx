@@ -46,4 +46,5 @@ const WeatherMetrics = ({
   return <MetricGroup title="Weather Metrics" sections={[{ key: "weather", rows }]} loading={loading} layout={inModal ? "wrap" : "ticker"} />;
 };
 
-export default WeatherMetrics;
+// Memoized: its tiles are only worked out again when the readings or the ticked metrics change
+export default React.memo(WeatherMetrics);

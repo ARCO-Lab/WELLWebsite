@@ -51,6 +51,8 @@ interface FilterPanelProps {
 // WCAG 1.4.11 asks 3:1) where a group has a white one. A gold box can't carry a gold tick, and a gold box with a white
 // tick was about 1.4:1, so ticked and unticked metrics looked the same.
 const TICKED_GOLD = "data-[state=checked]:text-accent";
+// A metric's or site's name ticks its box. On phones it is as tall as its row (32 px) to tap, not just its 14 px of text.
+const SUB_LABEL = "mcmaster-body cursor-pointer max-sm:min-h-8";
 
 // --- COMPONENT ---
 const FilterPanel: React.FC<FilterPanelProps> = ({
@@ -239,7 +241,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
             <FadeAnimation key={label} delay={idx * 30} duration={400} resetKey={open[groupKey]}>
               <div className="flex items-center space-x-2 max-sm:min-h-8">
                 <Checkbox id={`${groupKey}-${label}`} checked={subs.includes(label)} onCheckedChange={() => handleSubToggle(groupKey, label)} className={TICKED_GOLD} />
-                <Label htmlFor={`${groupKey}-${label}`} className="mcmaster-body cursor-pointer">{label}</Label>
+                <Label htmlFor={`${groupKey}-${label}`} className={SUB_LABEL}>{label}</Label>
               </div>
             </FadeAnimation>
           ))}
@@ -251,7 +253,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
               <FadeAnimation delay={config.metrics.length * 30} duration={400} resetKey={open[groupKey]}>
                 <div className="flex items-center space-x-2 max-sm:min-h-8">
                   <Checkbox id={`${groupKey}-${itemsLabel}`} checked={subs.includes(itemsLabel)} onCheckedChange={() => handleSubToggle(groupKey, itemsLabel)} className={TICKED_GOLD} />
-                  <Label htmlFor={`${groupKey}-${itemsLabel}`} className="mcmaster-body cursor-pointer">{itemsLabel}</Label>
+                  <Label htmlFor={`${groupKey}-${itemsLabel}`} className={SUB_LABEL}>{itemsLabel}</Label>
                 </div>
               </FadeAnimation>
 
@@ -262,7 +264,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
                     <FadeAnimation key={id} delay={idx * 30} duration={400} resetKey={!subs.includes(itemsLabel)}>
                       <div className="flex items-center space-x-2 max-sm:min-h-8">
                         <Checkbox id={`${groupKey}-${id}`} checked={subs.includes(id)} onCheckedChange={() => handleSubToggle(groupKey, id)} className={TICKED_GOLD} />
-                        <Label htmlFor={`${groupKey}-${id}`} className="mcmaster-body cursor-pointer text-sm">{name}</Label>
+                        <Label htmlFor={`${groupKey}-${id}`} className={`${SUB_LABEL} text-sm`}>{name}</Label>
                       </div>
                     </FadeAnimation>
                   ))}

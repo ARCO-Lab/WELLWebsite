@@ -1,0 +1,193 @@
+/*
+ * Styles for the Sampling data upload guide (template-sampling-upload.php) and its "Check my CSV format" tool.
+ * Loaded only on that page. Uses the theme's brand colours: maroon #7a003c, gold #fdbf57, slate #495965.
+ */
+
+.sampling-guide {
+  max-width: 980px;
+}
+
+.sampling-guide h2 {
+  color: #7a003c;
+}
+
+.sampling-guide code {
+  background: #f2eef0;
+  color: #7a003c;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+/* Pipeline diagram */
+.sampling-pipeline {
+  margin: 0;
+  padding: 0.5rem;
+}
+
+.sampling-pipeline figcaption {
+  font-size: 0.85rem;
+  color: #495965;
+  text-align: center;
+  margin-top: 0.5rem;
+}
+
+/* Numbered steps */
+.sampling-step {
+  padding: 1.25rem 0;
+  border-top: 1px solid #e6e1e3;
+}
+
+.sampling-step:first-of-type {
+  border-top: 0;
+}
+
+.sampling-step h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sampling-step__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+  border-radius: 50%;
+  background: #7a003c;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sampling-cols li,
+.sampling-mistakes li {
+  margin-bottom: 0.4rem;
+}
+
+/* Reference tables */
+.sampling-ref th {
+  background: #f7f4f5;
+  color: #7a003c;
+}
+
+/* Callout boxes */
+.alert-box {
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin: 1.25rem 0;
+}
+
+.alert-box--info {
+  background: #fff8e8;
+  border: 1px solid #fdbf57;
+}
+
+/* Real screenshots and illustrations */
+.sampling-figure {
+  margin: 1.25rem 0 0.5rem;
+}
+
+.sampling-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #e0dadd;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.sampling-figure figcaption {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #495965;
+}
+
+/* Screenshot placeholders (still used where we can't capture our own content) */
+.sampling-shot {
+  margin: 1rem 0 0.25rem;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+  border: 2px dashed #c9bfc4;
+  border-radius: 6px;
+  background: #faf8f9;
+  color: #7a6b73;
+  font-style: italic;
+}
+
+/* The checker tool */
+.sampling-checker {
+  background: #faf8f9;
+  border: 1px solid #e6e1e3;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0 2rem;
+}
+
+.sampling-checker textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+}
+
+.sampling-checker__actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+/* "Clear" button: dark text on a light background so it reads against the panel
+   (the theme's .btn-outline-secondary default is too light to see here). */
+.sampling-checker__actions #sampling-clear-btn {
+  color: #1a1a1a;
+  border-color: #6c757d;
+  background-color: #fff;
+}
+
+.sampling-checker__actions #sampling-clear-btn:hover,
+.sampling-checker__actions #sampling-clear-btn:focus {
+  color: #000;
+  background-color: #f1f1f1;
+  border-color: #495965;
+}
+
+.sampling-result {
+  margin-top: 1.25rem;
+}
+
+.sampling-result__banner {
+  border-radius: 6px;
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.sampling-result__banner.is-ok {
+  background: #e7f5ec;
+  border: 1px solid #2e7d4f;
+  color: #1c5733;
+}
+
+.sampling-result__banner.is-bad {
+  background: #fdecea;
+  border: 1px solid #c0392b;
+  color: #8e241a;
+}
+
+.sampling-result.is-busy {
+  color: #495965;
+}
+
+.sampling-problems th {
+  background: #f7f4f5;
+  color: #7a003c;
+}
+
+.sampling-problems td {
+  vertical-align: top;
+}

@@ -338,6 +338,22 @@ def import_outcome(returncode, stdout):
     return "failed", None
 
 
+def refusal_problems(stdout):
+    """The problems inject_sampling.py listed for a refused file, oldest first, as it printed them: its [ERROR] lines
+    without the summary line ("N problems in ...") or the "... and N more" line it ends a long list with. Each is a
+    sampling_csv Issue like "row 12, date: '2026-13-05' is not a real date" or "row 1, unit: required column is
+    missing"."""
+    problems = []
+    for line in (stdout or "").splitlines():
+        if not line.startswith("[ERROR] "):
+            continue
+        rest = line[len("[ERROR] "):]
+        if re.match(r"^\d+ problems in ", rest) or rest.startswith("... and "):
+            continue
+        problems.append(rest)
+    return problems
+
+
 # The lines inject_sampling.py prints for a stored file, and the count each one gives
 _COUNT_LINES = {
     "inserted": r"^\[INFO\] Inserted (\d+) new sampling records\.",
@@ -368,6 +384,25 @@ def import_scope(stdout):
         return None
 
 
+# How many of a refused file's problems to name in its ATTENTION: line; the full list stays in the log.
+ATTENTION_PROBLEMS = 3
+
+
+def refusal_attention(file_info, count, problems):
+    """The ATTENTION: line for a file refused because it doesn't match the sampling format (docs/sampling-csv-format.md):
+    it names the file, how many problems it has and the first few, and says a person has to check it. The scheduler
+    sends ATTENTION: lines to Sentry as warnings and the daily digest lists them (utils/jobs.record_attention), so a
+    wrong-format upload is flagged there instead of only failing the weekly download quietly."""
+    shown = problems[:ATTENTION_PROBLEMS]
+    detail = (" First: " + "; ".join(shown) + (f"; and {count - len(shown)} more" if count > len(shown) else "")
+              + ".") if shown else ""
+    return (f"ATTENTION: {file_info['filename']} (ID: {file_info['id']}): sampling upload in the wrong format "
+            f"({count} problem{'' if count == 1 else 's'}), needs a manual check; nothing from it was imported."
+            f"{detail} Upload a corrected file (it gets a new id and is imported automatically); the full list is in "
+            f"the worker's logs/download_injections.log, and docs/sampling-csv-format.md says what the file must look "
+            f"like.")
+
+
 def run_status(processed, refused, failed):
     """The OUTPUT status for the scheduler. A refused or failed file also makes the run exit 1."""
     if refused:
@@ -379,7 +414,8 @@ def run_status(processed, refused, failed):
 
 def import_file(file_info, inject_script, newer=()):
     """Download one file and run inject_sampling.py on it, with `newer` (newer_files) as --newer. Returns
-    import_outcome()'s pair, the run's import_counts() and the file's import_scope()."""
+    import_outcome()'s pair, the run's import_counts(), the file's import_scope() and, for a refused file, the
+    problems inject_sampling.py listed (refusal_problems; empty otherwise)."""
     tmp_file_path = None
     try:
         tmp_file_path = process_single_file(file_info)
@@ -397,10 +433,12 @@ def import_file(file_info, inject_script, newer=()):
             print(f"ERROR: inject_sampling.py failed with return code {result.returncode}")
         outcome, number = import_outcome(result.returncode, result.stdout)
         ok = result.returncode == 0
-        return outcome, number, import_counts(result.stdout if ok else ""), import_scope(result.stdout) if ok else None
+        problems = refusal_problems(result.stdout) if outcome == "refused" else []
+        return (outcome, number, import_counts(result.stdout if ok else ""),
+                import_scope(result.stdout) if ok else None, problems)
     except Exception as e:
         print(f"ERROR: Failed to process {file_info['filename']}: {e}")
-        return "failed", None, import_counts(""), None
+        return "failed", None, import_counts(""), None, []
     finally:
         if tmp_file_path:
             try:
@@ -485,7 +523,8 @@ def main():
         rows = import_counts("")
         for i, file_info in enumerate(files_to_process, 1):
             print(f"\nDEBUG: === Processing file {i}/{len(files_to_process)} ===")
-            outcome, number, file_rows, scope = import_file(file_info, inject_script, newer_files(state, file_info))
+            outcome, number, file_rows, scope, problems = import_file(file_info, inject_script,
+                                                                       newer_files(state, file_info))
             counts[outcome] += 1
             if outcome == "processed":
                 # Recorded even when every row was already stored: importing it again would add nothing
@@ -506,6 +545,9 @@ def main():
                 record(state, file_info, "refused", number)
                 print(f"ERROR: {file_info['filename']} (ID: {file_info['id']}) was refused: {number} problems, listed "
                       f"above. Nothing from it was imported, and it won't be retried; upload a corrected file.")
+                # The scheduler sends this ATTENTION: line to Sentry as a warning and the daily digest lists it: a
+                # wrong-format upload needs a person to fix and re-upload it, so it mustn't pass with only a failed run.
+                print(refusal_attention(file_info, number, problems))
             else:
                 print(f"ERROR: Importing {file_info['filename']} failed; it will be retried next run")
 

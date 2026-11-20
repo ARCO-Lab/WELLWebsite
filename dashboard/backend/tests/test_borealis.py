@@ -146,7 +146,7 @@ def quiet(fn, *args, **kwargs):
 
 
 CSV = b"ID,Timestamp\n1,2026-10-01T00:00:00\n"
-NAME = "WELLWestCampus_Oct2026.csv"
+NAME = "2026-10_WELLWestCampus.csv"
 
 
 class UploadFileTests(TestCase):
@@ -182,7 +182,7 @@ class UploadFileTests(TestCase):
         borealis.upload_file(client(server), PID, NAME, CSV, "October", log=logs.append)
         self.assertTrue(any("already had a draft" in line for line in logs), logs)
         logs.clear()
-        borealis.upload_file(client(FakeDataverse(published=[])), PID, "WELLWestCampus_Nov2026.csv", CSV, "Nov",
+        borealis.upload_file(client(FakeDataverse(published=[])), PID, "2026-11_WELLWestCampus.csv", CSV, "Nov",
                              log=logs.append)
         self.assertFalse(any("already had a draft" in line for line in logs), logs)
 
@@ -515,7 +515,21 @@ class UploadScriptTests(TestCase):
 
     def test_month_file_name(self):
         import datetime as dt
-        self.assertEqual(upload_data.month_file_name(dt.datetime(2026, 10, 1)), NAME)
+        # YYYY-MM_ prefix, so the dataset's files sort by date (the curator's convention)
+        self.assertEqual(upload_data.month_file_name(dt.datetime(2026, 10, 1)), "2026-10_WELLWestCampus.csv")
+        self.assertEqual(upload_data.month_file_name(dt.datetime(2026, 1, 31)), "2026-01_WELLWestCampus.csv")
+
+    def test_the_month_is_parsed_back_from_the_new_name(self):
+        # The upload reads the month out of the file name for the file's description, so the name's format and the
+        # parser must agree; this is the round trip for the curator's YYYY-MM_ convention.
+        import datetime as dt
+        name = upload_data.month_file_name(dt.datetime(2026, 10, 1))
+        server = FakeDataverse(published=[])
+        with self.settings():
+            quiet(upload_data.upload_to_borealis, CSV.decode(), name, 2026, client=client(server))
+        add = next(c for c in server.calls if c["path"].endswith("/add"))
+        description = json.loads(add["data"]["jsonData"])["description"]
+        self.assertEqual(description, "WELL West Campus sensor data, 2026-10 (automated monthly export)")
 
     def test_csv_layout(self):
         rows = [

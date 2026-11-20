@@ -222,7 +222,8 @@ class BuildDigestTests(TestCase):
         subject, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[entry])
         self.assertEqual(subject, "[WELL] Daily digest 2026-11-10: 1 to check")
         self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- Mon Nov 9, 21:00: aw_2026.csv (ID: 57195): "
-                      "3 rows present in the DB but not in the latest file were kept\n\nThe [WARN] lines", body)
+                      "3 rows present in the DB but not in the latest file were kept\n\nThe [WARN] and [ERROR] lines",
+                      body)
         _, body = build_digest("2026-11-10", freshness, {}, [], None, attention=[])
         self.assertIn("## Sampling data needing a decision (last 24 h)\n\n- none", body)
         self.assertIn("could not be read: ValueError", build_digest(
