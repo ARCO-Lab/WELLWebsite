@@ -1,11 +1,8 @@
 # The WELL Website Editor Handbook
 
-*A guide to editing the WELL website in WordPress — no coding required for most of it.*
+*A guide to editing the WELL site's pages in WordPress — no coding required for most of it.*
 
-This handbook covers how to update the WELL website (well.mcmaster.ca): editing text, adding new
-content, reordering things, and using the ready-made building blocks — called **patterns** — that
-were built specifically for this site. It also says honestly which parts need a developer, so you
-never guess wrong on those.
+This handbook covers how to update the text and images on the WELL website using the WordPress block editor, which ready-made building blocks (**patterns**) were made for this site, and — just as importantly — which parts are intentionally left as code so you never change something that would break.
 
 ---
 
@@ -13,145 +10,113 @@ never guess wrong on those.
 
 ### Logging in
 
-Go to `well.mcmaster.ca/wp-admin` and sign in with your WordPress username and password.
+Go to the site's `/wp-admin` address and sign in with your WordPress username and password.
 
-> **Heads up:** if you're editing for a while and a login box suddenly appears, that's just your
-> session timing out — not a bug. Sign in again and you'll be back where you were.
+> **Heads up:** if a login box pops up *inside* a page you're editing, that's just your session timing out — not a bug. Sign in again and you'll be dropped back where you were.
 
 ### Pages vs. Posts
 
-- **Pages** are the permanent structure of the site. You write and lay them out yourself.
-- **Posts** are **News** items — announcements, updates, press. Add these under **Posts**; they
-  appear on the News page automatically. (See the theme's own `README.md` for the short posts guide.)
+- **Pages** — Home, About, Dashboard, News, and the Sampling Data Upload Guide. The permanent structure of the site.
+- **Posts** — the news items that appear in the News list and the home page's "Latest News" strip. Use these for announcements.
 
-A few pages are special and are **built by the developer, not from blocks** — leave their layout
-alone (you can still ask a developer for text changes):
+Both use the same block editor.
 
-| Page | Why it's developer-built |
-|---|---|
-| **Home** | Hand-built front page with the banner carousel and the Latest News strip |
-| **Dashboard** | Embeds the live data dashboard from welldash.mcmaster.ca |
-| **News** | Lists posts automatically with filters and pagination |
-| **About** | Custom layout for the team, sensors and watershed sections |
-
-Any **other** page — a new standard content page you create under **Pages > Add New** — is yours to
-build with the blocks and WELL patterns described below.
-
-### The three save buttons
+### The save buttons
 
 | Button | What it does |
 |---|---|
-| **Save draft** | Saves privately. The public page is untouched until you publish. |
-| **Preview** | Opens the page in a new tab exactly as visitors will see it — always check a big change here first. |
-| **Publish** / **Update** | Makes your changes live immediately. |
+| **Save draft** | Saves privately; the public page is untouched until you publish. |
+| **Preview** | Opens the page in a new tab exactly as visitors see it — always check this before a big change. |
+| **Update** / **Publish** | Makes your changes live immediately. |
 
 ---
 
-## 2. The editor shows the real site styling
+## 2. Editing text and images
 
-When you open a page, you're in the **Block Editor**. Everything — a heading, a paragraph, an image,
-a card — is a **block**.
+1. Click directly on the text you want to change and type — it behaves like any text box. Select text to make it bold, italic, or a link using the small floating toolbar.
+2. To move a block, select it and use the **drag handle (⠿)** or the up/down arrows in its toolbar.
+3. **List View** (the ☰ icon, top-left) shows the whole page as an outline — the easiest way to select something that's fiddly to click, like a block inside a card.
 
-This theme loads the live site's stylesheet into the editor, so **what you see while editing is very
-close to what visitors will see**: the maroon brand colour, the gold accents, the Poppins headings,
-the card and button styles all show up right in the editing canvas. You rarely need to hit Preview
-just to check styling — though it's still worth a final Preview before publishing.
+> **Preview before you publish**, and remember **Ctrl+Z / Cmd+Z** undoes your last action. Every page also keeps **Revisions** (right-hand sidebar) so you can restore an earlier version.
 
-> A few complex, interactive pieces (see Section 6) are kept as raw HTML and will show as a plain
-> **HTML/Custom HTML block** in the editor rather than a styled preview. That's expected. All
-> ordinary content and all the WELL patterns render styled.
+> **If you ever see "This block contains unexpected or invalid content"** — stop, don't click "Attempt Recovery," and ask a developer. It's usually a two-minute fix, and recovery can sometimes reset custom text.
 
----
+### The developer-owned pieces now preview in the editor
 
-## 3. Editing existing text and images
+Some pieces of the site stay as code (the team cards, the live dashboard, the "Check my CSV format" tool — see Section 5). In the editor these now appear as a **WELL block that shows a live preview of the real content**: you'll see the actual team cards, the dashboard and the checker right in the editing canvas, each labelled with a name like *WELL: Team Grid* in its toolbar and in List View.
 
-The easiest kind of edit, and it works almost everywhere:
-
-1. Click directly on the text you want to change.
-2. Type — it behaves like any text box. Select text to make it bold, italic, or a link using the
-   little floating toolbar.
-3. For an image, click it, then use the toolbar's **Replace** button to swap in another image from
-   the Media Library or an upload.
+- You can **move or delete** one of these blocks to re-arrange a page.
+- You **can't type inside it** — there are no text boxes to click. To change what it contains, ask a developer.
+- The preview is a still image of the real thing: carousels don't rotate and the checker doesn't take a file *in the editor*. Those come alive on the published page (hit **Preview** to see them working).
 
 ---
 
-## 4. Moving and reordering content
+## 3. The WELL pattern library
 
-Every page is a stack of independent blocks, so almost anything can be reordered:
+Patterns are pre-built, pre-styled pieces made for this site. Find them under **Inserter (⊕) → Patterns → WELL**.
 
-1. Click the block to select it (or find it in **List View** — the ☰ icon, top-left — if it's hard
-   to click directly).
-2. Either drag it by its **⠿** handle, or use the **↑ / ↓** arrows in its toolbar to nudge it.
-3. Update, and check **Preview**.
+| Pattern | What it is |
+|---|---|
+| **Text + Circular Photo (About section)** | A banded section with a heading and text beside a circular photo — the About page's style. |
+| **Hero Banner** | A full-width image banner with a title and one line. |
+| **Section Heading** | A heading with the gold underline accent. |
+| **Two Column (Text + Image)** | Text on one side, a photo on the other. |
+| **Card Grid (3-up)** | A row of three matching cards. |
+| **CTA Banner** | A full-width maroon call-to-action banner with a button. |
+| **Team Member Card** | A single team-member card (photo, name, role, bio). |
+| **Featured Quote** | A pulled-out quote with a maroon side rule. |
+| **WELL: Standard Content Page** | A full starter layout for a new page. |
 
-> **Tip:** rich blocks like cards can be fiddly to click exactly. **List View** always selects the
-> right one by name.
+There are also a few patterns that simply **place a developer-owned piece** (see Section 5), so you can drop it onto a page and see it preview straight away: *Home Hero Carousel*, *Latest News Strip*, *Dashboard Embed*, *Sampling CSV Checker*, and *Team Grid*.
 
 ---
 
-## 5. The WELL pattern library
+## 4. What's editable on each page
 
-Patterns are pre-built, pre-styled pieces made for this site. Find them under
-**Inserter (the ⊕ button, top-left) → Patterns → WELL**.
-
-| Pattern | What it is | Use it for |
+| Page | Click-and-edit | Stays as code (ask a developer) |
 |---|---|---|
-| **Hero Banner** | Full-width photo banner with a page title over it | Starting a new page in the site's style |
-| **Section Heading** | A heading with the gold underline accent + intro line | Starting a new section of a page |
-| **Card Grid (3-up)** | A row of three photo cards with title, text and a link | A row of features, projects or links |
-| **Two Column (Text + Image)** | Text on one side, a photo on the other | An intro, a feature, or a profile block |
-| **Featured Quote** | A pulled-out quote with a maroon side rule and attribution | Highlighting a quote in news or features |
-| **Team Member Card** | Photo, name, role and short bio in a card | A person; place three across for a team row |
-| **CTA Banner** | Full-width maroon banner with a heading and a button | A "call to action" strip |
-| **WELL: Standard Content Page** | A whole starter page: hero + heading + cards + CTA | The fastest way to start a brand-new page |
+| **Home** | The "About Us" blurb (heading, text, Learn More button) | Hero carousel, the dashboard card, the "Latest News" strip |
+| **About** | The four "About WELL / What is WELL measuring? …" text-and-photo sections | The circular photos (kept exact), the "Our Team" cards |
+| **Dashboard** | The "Archived Datasets" section (Borealis / SharePoint links) | The live dashboard embed and the banner above it |
+| **News** | An optional intro above the list (anything you add renders there) | The news list itself — it builds from your posts automatically (see the note below) |
+| **Sampling Data Upload Guide** | The headings and explanatory paragraphs throughout | The reference tables, the diagrams, the screenshots, the step buttons, and the "Check my CSV format" tool |
 
-**To insert a pattern:** Inserter → **Patterns** tab → **WELL** → click the one you want. It drops in
-at your cursor. Then edit the text and images inside it like normal.
+Within an otherwise-editable page, each "stays as code" piece appears as a **WELL block with a live preview** of the real content (for example *WELL: Team Grid*). You can move or delete those blocks, but there's nothing to type inside them — if the content needs to change, ask a developer.
 
-> The patterns use the site's own classes, so they look native. Replace the placeholder photos
-> (they default to WELL installation photos) and the placeholder text with your own.
+### The News page looks empty in the editor — that's by design
+
+The News page is **dynamic**: the list of articles is built automatically from your **Posts**, so there is nothing to lay out and the editor opens to a (nearly) blank canvas. **That's expected — the page is not broken.** To add or change a news item, add or edit a **Post**, not this page.
+
+If you want a short intro line above the list (for example "Keep up with the latest from WELL"), you *can* type it on the News page: anything you add renders above the automatic list. Leaving it empty simply shows the list on its own.
 
 ---
 
-## 6. What *not* to edit (and why)
+## 5. What *not* to edit (and why)
 
-A few pieces depend on precise code or live data and should not be rebuilt as blocks:
+A few pieces are kept as code rather than rebuilt as simple blocks, because they depend on exact markup or live behaviour that a generic block would break. In the editor they appear as a **WELL preview block** (and, under the hood, each also has a matching shortcode a developer can place by hand):
 
-| Element | Where | Why |
+| Piece | WELL block / shortcode | Why it's code |
 |---|---|---|
-| Banner carousel | Home page | Auto-rotating carousel tied to exact markup |
-| Live data dashboard | Dashboard page | Embedded from the dashboard app |
-| News list + filters | News page | Generated from posts automatically |
-| Team / sensor / watershed sections | About page | Custom developer layout |
+| Home hero carousel | *WELL: Home Hero Carousel* (`[well_hero_carousel]`) | A JavaScript carousel engine tied to exact markup. |
+| Home "Latest News" strip | *WELL: Latest News Strip* (`[well_latest_news]`) | Queries the latest posts live; updates itself. |
+| Home dashboard card | *WELL: Dashboard Card* (`[well_dashboard_card]`) | A CSS-coupled card (hover states, split image/text). |
+| Dashboard embed | *WELL: Dashboard Embed* (`[well_dashboard_embed]`) | Embeds the separate dashboard app and talks to it. |
+| About team grid | *WELL: Team Grid* (`[well_team]`) | Each card is wired to its own contact pop-up by a matching id. |
+| Sampling CSV checker | *WELL: Sampling CSV Checker* (`[well_sampling_checker]`) | Sends files to the dashboard's real CSV validator. |
+| News list | *(built into the News template)* | Loops your posts, with paging. |
 
-You can still select and move these as whole blocks to reorder sections — just don't open **Edit as
-HTML** and change their structure. If one needs a content change, ask a developer.
+You can still **select and move** these blocks to reorder a page — just don't open "Edit as HTML" and change what's inside them. To change their content, ask whoever manages the site's code.
 
----
-
-## 7. Working safely
-
-- **Preview before you publish.** It takes ten seconds and shows exactly what visitors will see.
-- **Undo is your friend.** `Ctrl+Z` (`Cmd+Z` on Mac) undoes your last actions.
-- **Revisions let you go back in time.** Each saved page keeps a history — find **Revisions** in the
-  right-hand sidebar to compare or restore an earlier version.
-- **If you see "This block contains unexpected or invalid content"** — stop, don't click "Attempt
-  Recovery," and ask a developer. It's usually a quick fix, and recovery can wipe custom text.
+The circular About photos and the Sampling guide's diagrams/tables are kept as **HTML blocks** for the same reason (pixel-exact, or wired to the checker). A developer changes those in the theme files.
 
 ---
 
-## 8. Notes for developers (editors can ignore)
+## 6. For developers
 
-- **On-brand editor:** `theme.json` plus `add_editor_style()` in `functions.php` load the real
-  front-end CSS (and a small `css/editor.css` shim) into the block editor, which is why the editor
-  canvas looks like the live site. The patterns live in the theme's `patterns/` folder and are
-  registered automatically; their shared styles are in `css/well-patterns.css`.
-- **Single News posts** show their **featured image** at the top automatically — just set one with
-  "Set featured image" in the editor sidebar.
-- **Republished news posts** (brought over from another site) use three custom fields, all handled by
-  the theme automatically — **editors don't touch these**:
-  - `_original_author` (+ optional `_original_source`, `_original_author_url`) is shown as the byline
-    ("By Jane Doe, McMaster Daily News", the name linked if a URL is given) instead of the WordPress
-    account name; it falls back to the account for original posts.
-  - `_canonical_url` points that post's `rel="canonical"` at the original article, so search engines
-    credit the source (it replaces the default self-canonical — there is only ever one).
+- The pages' editable content is seeded by `home/wp-content/themes/well/tools/migrate-pages-to-blocks.php` (run with wp-cli; it only writes a page's content when that page is still empty, so it's safe to re-run and never overwrites editor changes). The block markup it uses is in `tools/page-blocks.php`.
+- The developer-owned pieces live in `home/wp-content/themes/well/sections/*.php`. They are registered two ways, both rendering the *same* section partial so the front end is identical:
+  - as **dynamic blocks** (`inc/blocks.php`, with the editor definitions in `js/blocks.js`) — e.g. `well/team` — so the block editor previews the real content with a `ServerSideRender` instead of a bare "Shortcode" placeholder. `tools/page-blocks.php` emits these block comments (`<!-- wp:well/team /-->`).
+  - as **shortcodes** (`inc/shortcodes.php`) — e.g. `[well_team]` — kept registered for backward compatibility with any content that still uses them.
+- The editor preview is static HTML (the block's `ServerSideRender` fetches the server-rendered markup). JavaScript-driven behaviour — the Flickity carousels, the checker's file handling, the team modals — only runs on the published page, not in the editor canvas.
+- If a page has no content yet, its template falls back to the original hard-coded sections, so nothing goes blank before the migration runs.
+- Patterns are in `home/wp-content/themes/well/patterns/`; the brand styling of blocks and patterns is in `css/well-patterns.css` and the editor shim `css/editor.css`.
