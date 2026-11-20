@@ -258,6 +258,25 @@
   }
 }
 
+/* The home "The WELL Dashboard" card preview (sections/dashboard.php) is the ONLY .card-img-mh on the
+   site. Its screenshot is wide (1600x1209), but on desktop the card is a flex row whose image column is
+   as tall as the long text beside it, making the image box nearly square. The rule above covers that box
+   (height:105%, width:105%, object-fit:cover), which scaled the shot up and clipped the dashboard's left
+   and right panels. Show the WHOLE dashboard instead (zoomed out, as asked): object-fit:contain fits the
+   entire image in the box, and the card background is set to white so the small space above/below the
+   contained image blends into the card rather than showing a grey band. Scoped to .card-img-mh, with
+   enough specificity to also beat the :hover rule above, so no other card or the home carousels change. */
+.card .card-img-mask.card-img-mh img,
+.card:hover .card-img-mask-full.card-img-mh img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.card .card-img-mask.card-img-mh {
+  background: #fff;
+}
+
 .media .icon-circle.mb-4 {
   margin-bottom: 24px !important;
 }

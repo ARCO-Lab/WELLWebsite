@@ -7,6 +7,11 @@ defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct req
 // (hero carousel, dashboard embed, live news strip, team cards, sampling checker). See the file header.
 require_once get_template_directory() . '/inc/shortcodes.php';
 
+// Dynamic blocks wrapping the same developer-owned pieces, so the block editor PREVIEWS the real team
+// cards / dashboard / checker instead of a bare "Shortcode" placeholder. The front end renders the same
+// sections/*.php output as the shortcodes. See inc/blocks.php.
+require_once get_template_directory() . '/inc/blocks.php';
+
 /**
  * Register navigation menus and load the Navwalker.
  * This function runs when the theme is initialized.
