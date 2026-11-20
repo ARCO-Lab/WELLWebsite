@@ -1,76 +1,30 @@
 <?php
 // This is the "Dashboard" page template for the WELL WordPress theme.
-// It displays an embedded dashboard, links to archived datasets, and related resources.
+//
+// The page's editable prose (the "Archived Datasets" section with the Borealis and SharePoint links)
+// now lives in the page's block content and is rendered by the_content() below. The live dashboard
+// embed stays developer-owned code and is placed in the content as the [well_dashboard_embed]
+// shortcode (see sections/dashboard-embed.php and inc/shortcodes.php).
+//
+// Fallback: if the page has no block content yet (not migrated — see
+// tools/migrate-pages-to-blocks.php), the original embed and "Archived Datasets" section render, so
+// the page is never blank.
 defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 get_header();
 ?>
 
 <main id="site-content">
-<banner>
-  <div class="banner-carousel" data-flickity='{ "cellAlign": "left", "contain": true, "adaptiveHeight": true, "pageDots": false, "autoPlay": 15000, "wrapAround": true }'>
-    <div class="carousel-cell d-flex cool-grey text-black banner-carousel-left flex-column">
-      <div class="container-fluid py-4 align-self-center">
-        <div class="row">
-          <div class="col-12 col-md-10 mx-auto">
-            <div class="row mx-auto align-items-center">
-              <div class="col-lg-3 text-lg-left py-2">
-                <h2 class="banner-title my-0">Handling large data sets?</h2>
-              </div>
-              <div class="col-lg-6 py-2">
-                <p class="banner-text">For smoother experience and quicker downloads, use the full dashboard site.</p>
-              </div>
-              <div class="col-lg-3 text-lg-right py-2">
-                <?php $dashboard_url = getenv('DASHBOARD_URL') ?: 'https://welldash.mcmaster.ca'; ?>
-                <a class="btn my-0 focusable btn-secondary" href="<?php echo esc_url($dashboard_url); ?>" target="_blank" rel="noopener noreferrer">Dashboard</a>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</banner>
 <?php
-$dashboard_url = isset($dashboard_url) ? $dashboard_url : (getenv('DASHBOARD_URL') ?: 'https://welldash.mcmaster.ca');
-// The dashboard's origin (scheme, host and port), the only one js/dashboard-embed.js exchanges messages with
-$dashboard_parts = wp_parse_url($dashboard_url);
-$dashboard_origin = isset($dashboard_parts['scheme'], $dashboard_parts['host'])
-  ? $dashboard_parts['scheme'] . '://' . $dashboard_parts['host'] . (isset($dashboard_parts['port']) ? ':' . $dashboard_parts['port'] : '')
-  : '';
-// js/dashboard-embed.js sizes the iframe to the dashboard's content (loaded in the footer, after the iframe)
-wp_enqueue_script(
-  'well-dashboard-embed',
-  get_template_directory_uri() . '/js/dashboard-embed.js',
-  array(),
-  well_asset_version('/js/dashboard-embed.js'),
-  true
-);
-?>
-<style>
-  /* Until the dashboard has painted, "Loading the dashboard…" shows through the iframe in a box of the iframe's
-     starting height, so the page doesn't jump when it arrives. Once the dashboard reports its height the iframe
-     takes that height, and the dashboard scrolls with the page. */
-  .well-dashboard-embed { position: relative; background: #f5f5f5; }
-  .well-dashboard-embed iframe { position: relative; display: block; width: 100%; height: clamp(560px, 88vh, 1000px); border: 0; }
-  .well-dashboard-embed__loading { position: absolute; top: 3rem; left: 0; right: 0; margin: 0; text-align: center; color: #495965; }
-  .well-dashboard-embed.is-loaded { background: transparent; }
-  .well-dashboard-embed.is-loaded .well-dashboard-embed__loading { display: none; }
-</style>
-<div class="well-dashboard-embed">
-  <p class="well-dashboard-embed__loading" aria-hidden="true">Loading the dashboard…</p>
-  <!-- ?embed=1: the dashboard without its own header and footer, sized to its content. Not lazy-loaded: it is the
-       page's main content, at the top. "fullscreen" is for the map's full-screen button. -->
-  <iframe
-    id="well-dashboard-frame"
-    src="<?php echo esc_url(rtrim($dashboard_url, '/') . '/?embed=1'); ?>"
-    title="WELL data dashboard"
-    data-dashboard-origin="<?php echo esc_attr($dashboard_origin); ?>"
-    allow="fullscreen"
-    referrerpolicy="strict-origin-when-cross-origin"
-  ></iframe>
-</div>
+while (have_posts()) :
+  the_post();
 
+  if ('' !== trim(wp_strip_all_tags(get_the_content()))) {
+    the_content();
+  } else {
+    // Not migrated yet: render the original embed and section so the page is never blank.
+    get_template_part('sections/dashboard-embed');
+    ?>
 <section class="content-area cool-grey my-4">
   <div class="container">
     <div class="row">
@@ -80,7 +34,7 @@ wp_enqueue_script(
           <div class="col-md-4 pr-md-4 my-3 align-self-center">
             <div class="text-center">
               <figure class="mw-100">
-                <img 
+                <img
                   alt="Borealis Logo"
                   srcset="
                       /wp-content/uploads/2025/09/borealislogo.jpg 414w,
@@ -94,7 +48,7 @@ wp_enqueue_script(
                   style="max-width: 200px; width: 100%; height: auto;"
                   loading="lazy"
                   decoding="async"
-                />            
+                />
               </figure>
             </div>
           </div>
@@ -125,6 +79,10 @@ wp_enqueue_script(
     </div>
   </div>
 </section>
+    <?php
+  }
+endwhile;
+?>
 </main>
 
 <?php
