@@ -92,8 +92,11 @@ jobs:
     uses: ./.github/workflows/maintainer-run.yml
     with:
       mode: pat
-      dry_run: ${{ inputs.dry_run || false }}
-      max_prs: ${{ inputs.max_prs || 3 }}
+      # workflow_dispatch inputs arrive as strings over the API/CLI, but the reusable workflow declares dry_run as
+      # boolean and max_prs as number; passing a string fails the type check and the job never starts. format()+
+      # fromJSON() coerces to the declared type for API, CLI and UI triggers alike (and for the schedule's defaults).
+      dry_run: ${{ fromJSON(format('{0}', inputs.dry_run || false)) }}
+      max_prs: ${{ fromJSON(format('{0}', inputs.max_prs || 3)) }}
     secrets: inherit
 
   # No PAT: the workflow token pushes, opens the pull requests and labels them, and starts CI on them through
@@ -111,6 +114,9 @@ jobs:
     uses: ./.github/workflows/maintainer-run.yml
     with:
       mode: github_token
-      dry_run: ${{ inputs.dry_run || false }}
-      max_prs: ${{ inputs.max_prs || 3 }}
+      # workflow_dispatch inputs arrive as strings over the API/CLI, but the reusable workflow declares dry_run as
+      # boolean and max_prs as number; passing a string fails the type check and the job never starts. format()+
+      # fromJSON() coerces to the declared type for API, CLI and UI triggers alike (and for the schedule's defaults).
+      dry_run: ${{ fromJSON(format('{0}', inputs.dry_run || false)) }}
+      max_prs: ${{ fromJSON(format('{0}', inputs.max_prs || 3)) }}
     secrets: inherit
