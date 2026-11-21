@@ -6,7 +6,9 @@
  * still empty), so the prose that used to be hard-coded in the templates becomes editable in wp-admin.
  * The markup here mirrors the serialization WordPress itself produces for core blocks (see the theme's
  * patterns/ files for verified examples), reuses the site's existing CSS classes so the pages look
- * identical, and places the interactive, developer-owned pieces as shortcodes (see inc/shortcodes.php).
+ * identical, and places the interactive, developer-owned pieces as WELL dynamic blocks (see
+ * inc/blocks.php), e.g. <!-- wp:well/team /-->, so the editor previews them instead of showing a bare
+ * "Shortcode" placeholder.
  *
  * Images use root-relative URLs (/wp-content/themes/well/img/media/...), the same convention the theme
  * already uses in sections/about.php, so they resolve wherever the site is served.
@@ -154,9 +156,20 @@ function well_blocks_about() {
         true
     );
 
-    $team = "<!-- wp:shortcode -->\n[well_team]\n<!-- /wp:shortcode -->";
+    $team = well_blocks_dynamic('team');
 
     return implode("\n\n", $sections) . "\n\n" . $team;
+}
+
+/**
+ * The News page body: just the developer-owned news listing block. The listing is a live, paginated
+ * query of post cards (sections/news-list.php), so it stays code rather than editable blocks; placing it
+ * as the well/news-list block means the News page editor PREVIEWS the real listing instead of a blank
+ * canvas. An editor may still add an OPTIONAL intro ABOVE this block in wp-admin; none is seeded here, so
+ * by default the News page shows only the listing, exactly as before.
+ */
+function well_blocks_news() {
+    return well_blocks_dynamic('news-list');
 }
 
 /**
@@ -168,10 +181,14 @@ function well_blocks_html($inner) {
 }
 
 /**
- * A core/shortcode block for one of the developer-owned shortcodes (see inc/shortcodes.php).
+ * A WELL dynamic block comment for one of the developer-owned pieces (see inc/blocks.php). Emitted
+ * instead of a raw [shortcode] block so the editor previews the real content (team cards, dashboard
+ * embed, checker) rather than a bare "Shortcode" placeholder. $name is the block name without the
+ * "well/" prefix, e.g. "team" -> <!-- wp:well/team /-->. The block renders the same sections/*.php
+ * output as the matching shortcode, so the front end is unchanged.
  */
-function well_blocks_shortcode($shortcode) {
-    return "<!-- wp:shortcode -->\n[" . $shortcode . "]\n<!-- /wp:shortcode -->";
+function well_blocks_dynamic($name) {
+    return "<!-- wp:well/" . $name . " /-->";
 }
 
 /**
@@ -179,7 +196,7 @@ function well_blocks_shortcode($shortcode) {
  * "Archived Datasets" section with the Borealis and SharePoint repository links.
  */
 function well_blocks_dashboard() {
-    $embed = well_blocks_shortcode('well_dashboard_embed');
+    $embed = well_blocks_dynamic('dashboard-embed');
 
     // Borealis logo (an uploaded image with specific inline sizing) and SharePoint logo (theme media),
     // kept as exact HTML so they match the original.
@@ -231,9 +248,9 @@ function well_blocks_dashboard() {
  * the McSCert home page keeps its hero, feature rows and news strip as code.
  */
 function well_blocks_front_page() {
-    $hero = well_blocks_shortcode('well_hero_carousel');
-    $card = well_blocks_shortcode('well_dashboard_card');
-    $news = well_blocks_shortcode('well_latest_news');
+    $hero = well_blocks_dynamic('hero-carousel');
+    $card = well_blocks_dynamic('dashboard-card');
+    $news = well_blocks_dynamic('latest-news');
 
     $logo = well_blocks_html(
         '<div class="text-center"><figure class="mw-100"><img alt="WELL Logo" srcset="/wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-32x32.png 32w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-150x150.png 150w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-180x180.png 180w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-192x192.png 192w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-270x270.png 270w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG-300x300.png 300w, /wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG.png 600w" sizes="(max-width: 480px) 140px, (max-width: 800px) 220px, 280px" src="/wp-content/uploads/2025/08/cropped-WELL_LogoOnly_TransparentBG.png" class="img-fluid d-block mx-auto" loading="lazy" decoding="async"></figure></div>'
@@ -399,8 +416,8 @@ function well_blocks_sampling() {
 
     $b[] = well_blocks_html('<hr class="my-5">');
 
-    // --- The live checker (developer-owned shortcode; includes its own heading and intro) ---
-    $b[] = well_blocks_shortcode('well_sampling_checker');
+    // --- The live checker (developer-owned block; includes its own heading and intro) ---
+    $b[] = well_blocks_dynamic('sampling-checker');
 
     return implode("\n\n", $b);
 }

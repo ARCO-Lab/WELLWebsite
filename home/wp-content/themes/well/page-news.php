@@ -1,6 +1,16 @@
 <?php
 // This is the "News" page template for the WELL WordPress theme.
 // It displays a list of recent news posts in a card layout.
+//
+// The listing itself lives in sections/news-list.php and is placed in the page's block content as the
+// well/news-list dynamic block (see inc/blocks.php and tools/page-blocks.php), so the News page editor
+// PREVIEWS the real listing instead of opening to a blank canvas. An editor can also write an OPTIONAL
+// intro above that block in wp-admin, which renders above the listing via the_content() below.
+//
+// The listing ALWAYS appears, whatever the page content: we render the_content() (the optional intro,
+// and the news-list block when present), and then include the listing partial ourselves unless the
+// content already rendered it as the block. So an un-migrated/empty page, a page with an intro but no
+// block, and a fully migrated page all show the list exactly as the old template did.
 defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 // 9 published posts per page, newest first (well_news_query() in functions.php explains what counts
@@ -19,6 +29,10 @@ if ($news_page > max(1, $news_pages)) {
   include get_404_template();
   return;
 }
+
+// Hand the query we just built to the listing partial (reached below, or through the well/news-list
+// block in the_content()), so the posts are fetched once per request rather than queried again there.
+$GLOBALS['well_news_list_query'] = $news_query;
 
 get_header();
 ?>
@@ -43,89 +57,22 @@ get_header();
 </header>
 
 <main id="site-content">
-  <?php
-  // The News listing below stays dynamic, developer-owned code (it loops live posts). But the page is
-  // now also block-editable: anything an editor writes in wp-admin for this page renders here, as an
-  // intro above the list. Empty by default, so nothing shows unless an editor adds content.
-  $news_page_obj = get_queried_object();
-  if ($news_page_obj instanceof WP_Post && '' !== trim(wp_strip_all_tags($news_page_obj->post_content))) :
-    ?>
-    <section class="section-padding pb-0">
-      <div class="container">
-        <div class="entry-content"><?php echo apply_filters('the_content', $news_page_obj->post_content); ?></div>
-      </div>
-    </section>
-  <?php endif; ?>
-  <section class="section-padding">
-    <div class="container">
-      <h2 class="sr-only">News Listing</h2>
-      <div class="row row-eq-height">
-        <?php
-        if ($news_query->have_posts()) :
-          while ($news_query->have_posts()) : $news_query->the_post(); ?>
-            <div class="col-lg-4 col-md-6">
-              <div class="card card-shadow border-top-0">
-                <div class="card-main border-top h-100">
-                  <div class="card border-0 no-shadow card-hover">
-                    <?php well_news_card_image(); ?>
-                    <div class="card-body pb-0">
-                      <h3 class="card-title">
-                        <a href="<?php the_permalink(); ?>">
-                          <?php the_title(); ?>
-                        </a>
-                      </h3>
-                      <div class="card-text mb-0">
-                        <p class="card-subtitle mt-2 text-maroon">News</p>
-                        <p><?php echo esc_html(wp_trim_words(get_the_excerpt(), 20)); ?></p>
-                      </div>
-                    </div>
-                    <div class="card-footer border-top-0 px-4 py-3">
-                      <p class="small m-0"><strong><?php echo get_the_date(); ?></strong></p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-        <?php
-          endwhile;
-          wp_reset_postdata();
-        else :
-          echo '<p>No news articles found.</p>';
-        endif;
-        ?>
-      </div>
-      <?php
-      // Page links under the cards, once there are more than 9 posts. Bootstrap's .pagination
-      // styles them; the current page is a <span aria-current="page">, not a link.
-      $news_base  = trailingslashit(get_permalink());
-      $news_links = paginate_links(array(
-        'base'      => $news_base . 'page/%#%/',
-        'format'    => '',
-        'current'   => $news_page,
-        'total'     => $news_pages,
-        'type'      => 'array',
-        'prev_text' => 'Newer',
-        'next_text' => 'Older',
-      ));
-      if (!empty($news_links)) : ?>
-        <nav class="mt-4" aria-label="News pages">
-          <ul class="pagination justify-content-center flex-wrap">
-            <?php foreach ($news_links as $link) : ?>
-              <li class="page-item<?php echo false !== strpos($link, 'current') ? ' active' : ''; ?>">
-                <?php
-                // Page 1 is the News page itself, not /news/page/1/.
-                echo str_replace(
-                  array('page-numbers', '"' . $news_base . 'page/1/"'),
-                  array('page-numbers page-link', '"' . $news_base . '"'),
-                  $link
-                ); ?>
-              </li>
-            <?php endforeach; ?>
-          </ul>
-        </nav>
-      <?php endif; ?>
-    </div>
-  </section>
+<?php
+while (have_posts()) :
+  the_post();
+
+  // Render the page's editable content: any optional intro, and the well/news-list block when the page
+  // has been migrated to carry it.
+  the_content();
+
+  // The listing must always show. If the content did not already render it (an empty/un-migrated page,
+  // or a page an editor gave an intro but no news-list block), include the partial now. When the block
+  // IS present, the_content() rendered the listing already, so we don't render it twice.
+  if ( ! has_block( 'well/news-list', get_post() ) ) {
+    get_template_part('sections/news-list');
+  }
+endwhile;
+?>
 </main>
 <?php
 get_footer();

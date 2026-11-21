@@ -106,9 +106,25 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ csv: text })
       }).then(function (res) {
-        return res.json().then(function (data) {
+        // Read the body as text first and parse it ourselves, so a non-JSON answer (an HTML error page
+        // from a 500, a proxy timeout page, an empty body) never reaches the user as a raw
+        // "Unexpected token '<' ... is not valid JSON" parse error. The server-side root cause of the
+        // route 500ing on bad input is tracked separately (Sentry #172); this is the client staying
+        // graceful whatever comes back, so the checker is "consistently working, VM or not".
+        return res.text().then(function (body) {
+          var data = null;
+          try {
+            data = body ? JSON.parse(body) : null;
+          } catch (parseErr) {
+            data = null;
+          }
+          if (!data || typeof data !== 'object') {
+            throw new Error("The checker couldn't read that one - please try again in a moment, "
+              + 'or upload your file to Borealis and let the weekly import check it for you. (If it keeps '
+              + 'happening, let the WELL team know.)');
+          }
           if (!res.ok && !Array.isArray(data.problems)) {
-            // A transport-level or size error (e.g. 413, 400) that is not the normal "problems" answer.
+            // A transport-level or size error (e.g. 413, 400) that still returned a JSON { error }.
             throw new Error(data.error || ('The checker could not read that (status ' + res.status + ').'));
           }
           renderResult(data);

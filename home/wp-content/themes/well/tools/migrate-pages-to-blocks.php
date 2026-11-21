@@ -62,6 +62,14 @@ function well_migration_targets() {
             'content' => 'well_blocks_front_page',
         ),
         array(
+            // The News page (its page-news.php template is matched by the "news" slug). Seeded with just
+            // the well/news-list block, so its editor previews the live listing; an editor may add an
+            // optional intro above it.
+            'label'   => 'News (/news/)',
+            'find'    => function () { return get_page_by_path( 'news' ); },
+            'content' => 'well_blocks_news',
+        ),
+        array(
             // The Sampling Data Upload Guide: found by its page template, not a fixed slug/id.
             'label'   => 'Sampling Data Upload Guide',
             'find'    => function () {
