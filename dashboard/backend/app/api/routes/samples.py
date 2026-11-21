@@ -22,6 +22,14 @@ SAMPLING_TEMPLATE = pathlib.Path(__file__).resolve().parents[2] / "sampling_temp
 # is a pre-upload convenience, so a file at the cap can still be checked for real by uploading it to Borealis.
 MAX_VALIDATE_BYTES = 2_000_000
 
+# The app-wide MAX_CONTENT_LENGTH (config.py) is 64 KB: enough for the export routes' tiny JSON, but far below a
+# normal sampling file, so werkzeug would reject anything larger with a 413 before this route ran and the researcher
+# would never learn which columns are wrong (Sentry #172). This route raises the per-request limit to the dashboard
+# proxy's own body cap (dashboard/frontend/src/pages/api/samples/validate.ts, 3 MB), so a normal-sized file reaches
+# the validator below and gets its real column problems; the user-facing size limit stays MAX_VALIDATE_BYTES, whose
+# friendlier 413 is returned by this route. Beyond this hard ceiling, server.py's JSON 413 handler answers.
+MAX_VALIDATE_REQUEST_BYTES = 3_000_000
+
 # Query flag -> creek_id stored with each sample (the same IDs utils/sampling_csv.py assigns on import).
 CREEK_ID_MAP = {
     "ancaster": "19431905",
@@ -105,9 +113,13 @@ def register_samples_route(app):
 
         The CSV comes as JSON {"csv": "<text>"} or as the raw request body. The answer is
         {ok, problems: [{row, column, message}], summary, counts}."""
+        # Lift the 64 KB app-wide cap for this route alone (see MAX_VALIDATE_REQUEST_BYTES), so a normal sampling file
+        # reaches the validator instead of werkzeug's 413. Set before the body is read below.
+        request.max_content_length = MAX_VALIDATE_REQUEST_BYTES
         too_large = (jsonify({"error": f"That file is too large to check here (the limit is "
-                                       f"{MAX_VALIDATE_BYTES // 1000} KB). A sampling CSV is normally far smaller; "
-                                       f"check the columns, or upload it to Borealis, which checks the file in "
+                                       f"{MAX_VALIDATE_BYTES // 1000} KB). A sampling CSV is normally only a few KB, "
+                                       f"so this looks like sensor data rather than a sampling file. Check that you "
+                                       f"picked the right file, or upload it to Borealis, which checks the file in "
                                        f"full."}), 413)
         if request.content_length and request.content_length > MAX_VALIDATE_BYTES:
             return too_large

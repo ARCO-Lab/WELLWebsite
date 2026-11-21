@@ -12,6 +12,7 @@ init_sentry("backend")
 
 from flask import Flask, jsonify, request  # noqa: E402
 from sqlalchemy.exc import DataError, OperationalError  # noqa: E402
+from werkzeug.exceptions import RequestEntityTooLarge  # noqa: E402
 from api.routes import register_routes  # noqa: E402
 from api.routes.health import register_health_routes  # noqa: E402
 from db.database import db, engine_options  # noqa: E402
@@ -88,6 +89,16 @@ def create_app():
         if isinstance(exc, UnicodeEncodeError) or NUL_IN_STRING in str(exc):
             return bad_value(type(exc).__name__)
         raise exc
+
+    # A body past a size limit (the global MAX_CONTENT_LENGTH in config.py, or a per-request limit a route sets)
+    # must answer with JSON, not werkzeug's default HTML 413 page. The dashboard's API routes and the sampling
+    # "Check my CSV format" tool read the answer with res.json(); an HTML body there throws and the researcher sees
+    # "the checker couldn't read that one" instead of being told the file is too big (Sentry #172). No error report:
+    # an oversize request is the client's doing, not a bug.
+    @app.errorhandler(RequestEntityTooLarge)
+    def request_too_large(exc):
+        return jsonify({"error": "That request is too large. If you're checking a sampling CSV, a sampling file is "
+                                 "normally only a few KB; this looks like the wrong file."}), 413
 
     @app.route('/health')
     def health():
