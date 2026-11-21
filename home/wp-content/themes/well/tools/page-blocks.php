@@ -162,6 +162,17 @@ function well_blocks_about() {
 }
 
 /**
+ * The News page body: just the developer-owned news listing block. The listing is a live, paginated
+ * query of post cards (sections/news-list.php), so it stays code rather than editable blocks; placing it
+ * as the well/news-list block means the News page editor PREVIEWS the real listing instead of a blank
+ * canvas. An editor may still add an OPTIONAL intro ABOVE this block in wp-admin; none is seeded here, so
+ * by default the News page shows only the listing, exactly as before.
+ */
+function well_blocks_news() {
+    return well_blocks_dynamic('news-list');
+}
+
+/**
  * A core/html block wrapping exact HTML (used for pieces whose markup must stay byte-identical, such as
  * logos with inline sizing or figures with a specific mask structure).
  */

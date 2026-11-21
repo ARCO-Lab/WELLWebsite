@@ -1,6 +1,6 @@
 <?php
-// Dynamic blocks for the WELL pieces that must stay developer-owned code (hero carousel, dashboard
-// embed, live news strip, dashboard card, team cards, sampling checker).
+// Dynamic blocks for the WELL pieces that must stay developer-owned code (hero carousel, live news
+// strip, News-page listing, dashboard embed, dashboard card, team cards, sampling checker).
 //
 // These used to be placed as raw [shortcode] blocks, which show in the block editor as a bare
 // "Shortcode" placeholder: the editor could not SEE the team cards, the dashboard embed or the
@@ -23,6 +23,7 @@ function well_dynamic_blocks() {
     return array(
         'well/hero-carousel'    => 'hero',
         'well/latest-news'      => 'news',
+        'well/news-list'        => 'news-list',
         'well/dashboard-embed'  => 'dashboard-embed',
         'well/dashboard-card'   => 'dashboard',
         'well/team'             => 'team',
