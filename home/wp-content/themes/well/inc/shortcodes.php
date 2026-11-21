@@ -7,6 +7,7 @@
 // Why these stay code (not editable blocks):
 //   [well_hero_carousel]   the homepage hero is a Flickity carousel engine (sections/hero.php).
 //   [well_latest_news]     the homepage "Latest News" strip queries live posts (sections/news.php).
+//   [well_news_list]       the News page's full listing is a live, paginated query (sections/news-list.php).
 //   [well_dashboard_embed] embeds the separate Next.js dashboard app over a fixed message origin.
 //   [well_dashboard_card]  the homepage dashboard card is a CSS-coupled card (flex-lg-row, hover).
 //   [well_team]            each About team card is wired to its own modal by a matching id.
@@ -31,6 +32,13 @@ add_shortcode('well_hero_carousel', function () {
 
 add_shortcode('well_latest_news', function () {
     return well_render_section_shortcode('news');
+});
+
+// The News page's full listing (sections/news-list.php): a live, paginated grid of post cards. It is a
+// live query (newest posts first), so like [well_latest_news] it stays developer-owned code; the News
+// page carries it as the well/news-list block so the editor previews the real listing.
+add_shortcode('well_news_list', function () {
+    return well_render_section_shortcode('news-list');
 });
 
 add_shortcode('well_dashboard_embed', function () {

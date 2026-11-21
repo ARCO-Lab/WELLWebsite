@@ -67,7 +67,7 @@ Patterns are pre-built, pre-styled pieces made for this site. Find them under **
 | **Featured Quote** | A pulled-out quote with a maroon side rule. |
 | **WELL: Standard Content Page** | A full starter layout for a new page. |
 
-There are also a few patterns that simply **place a developer-owned piece** (see Section 5), so you can drop it onto a page and see it preview straight away: *Home Hero Carousel*, *Latest News Strip*, *Dashboard Embed*, *Sampling CSV Checker*, and *Team Grid*.
+There are also a few patterns that simply **place a developer-owned piece** (see Section 5), so you can drop it onto a page and see it preview straight away: *Home Hero Carousel*, *Latest News Strip*, *News Listing*, *Dashboard Embed*, *Sampling CSV Checker*, and *Team Grid*.
 
 ---
 
@@ -78,16 +78,16 @@ There are also a few patterns that simply **place a developer-owned piece** (see
 | **Home** | The "About Us" blurb (heading, text, Learn More button) | Hero carousel, the dashboard card, the "Latest News" strip |
 | **About** | The four "About WELL / What is WELL measuring? …" text-and-photo sections | The circular photos (kept exact), the "Our Team" cards |
 | **Dashboard** | The "Archived Datasets" section (Borealis / SharePoint links) | The live dashboard embed and the banner above it |
-| **News** | An optional intro above the list (anything you add renders there) | The news list itself — it builds from your posts automatically (see the note below) |
+| **News** | An optional intro above the list (anything you add renders there) | The news list itself — a *WELL: News Listing* preview block that builds from your posts automatically (see the note below) |
 | **Sampling Data Upload Guide** | The headings and explanatory paragraphs throughout | The reference tables, the diagrams, the screenshots, the step buttons, and the "Check my CSV format" tool |
 
 Within an otherwise-editable page, each "stays as code" piece appears as a **WELL block with a live preview** of the real content (for example *WELL: Team Grid*). You can move or delete those blocks, but there's nothing to type inside them — if the content needs to change, ask a developer.
 
-### The News page looks empty in the editor — that's by design
+### The News page previews the list, but you don't edit the articles there
 
-The News page is **dynamic**: the list of articles is built automatically from your **Posts**, so there is nothing to lay out and the editor opens to a (nearly) blank canvas. **That's expected — the page is not broken.** To add or change a news item, add or edit a **Post**, not this page.
+The News page shows a **WELL: News Listing** preview block — the same grid of article cards your visitors see. It is **dynamic**: the list is built automatically from your **Posts**, so there is nothing to lay out inside it and nothing to type. **That's expected — the block is not broken.** To add or change a news item, add or edit a **Post**, not this page.
 
-If you want a short intro line above the list (for example "Keep up with the latest from WELL"), you *can* type it on the News page: anything you add renders above the automatic list. Leaving it empty simply shows the list on its own.
+If you want a short intro line above the list (for example "Keep up with the latest from WELL"), you *can* type it on the News page, **above** the News Listing block: anything you add there renders above the automatic list. Leaving it empty simply shows the list on its own.
 
 ---
 
@@ -103,7 +103,7 @@ A few pieces are kept as code rather than rebuilt as simple blocks, because they
 | Dashboard embed | *WELL: Dashboard Embed* (`[well_dashboard_embed]`) | Embeds the separate dashboard app and talks to it. |
 | About team grid | *WELL: Team Grid* (`[well_team]`) | Each card is wired to its own contact pop-up by a matching id. |
 | Sampling CSV checker | *WELL: Sampling CSV Checker* (`[well_sampling_checker]`) | Sends files to the dashboard's real CSV validator. |
-| News list | *(built into the News template)* | Loops your posts, with paging. |
+| News page list | *WELL: News Listing* (`[well_news_list]`) | A live, paginated query of your posts; updates itself. |
 
 You can still **select and move** these blocks to reorder a page — just don't open "Edit as HTML" and change what's inside them. To change their content, ask whoever manages the site's code.
 

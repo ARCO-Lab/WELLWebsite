@@ -39,6 +39,12 @@
 			icon: 'megaphone'
 		},
 		{
+			name: 'well/news-list',
+			title: __( 'WELL: News Listing', 'well' ),
+			description: __( 'The full News page grid of post cards, with page links. Updates itself as news is published.', 'well' ),
+			icon: 'list-view'
+		},
+		{
 			name: 'well/dashboard-embed',
 			title: __( 'WELL: Dashboard Embed', 'well' ),
 			description: __( 'The live WELL data dashboard, embedded from the dashboard app.', 'well' ),
