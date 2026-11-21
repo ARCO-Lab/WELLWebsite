@@ -7,8 +7,10 @@
 // PREVIEWS the real listing instead of opening to a blank canvas. An editor can also write an OPTIONAL
 // intro above that block in wp-admin, which renders above the listing via the_content() below.
 //
-// Fallback: if the page has no block content yet (not migrated — see tools/migrate-pages-to-blocks.php),
-// the listing partial is included directly, so the page is never blank and the front end is unchanged.
+// The listing ALWAYS appears, whatever the page content: we render the_content() (the optional intro,
+// and the news-list block when present), and then include the listing partial ourselves unless the
+// content already rendered it as the block. So an un-migrated/empty page, a page with an intro but no
+// block, and a fully migrated page all show the list exactly as the old template did.
 defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 // 9 published posts per page, newest first (well_news_query() in functions.php explains what counts
@@ -27,6 +29,10 @@ if ($news_page > max(1, $news_pages)) {
   include get_404_template();
   return;
 }
+
+// Hand the query we just built to the listing partial (reached below, or through the well/news-list
+// block in the_content()), so the posts are fetched once per request rather than queried again there.
+$GLOBALS['well_news_list_query'] = $news_query;
 
 get_header();
 ?>
@@ -55,12 +61,14 @@ get_header();
 while (have_posts()) :
   the_post();
 
-  // An empty block-editor paragraph still counts as empty.
-  if ('' !== trim(wp_strip_all_tags(get_the_content()))) {
-    // Migrated: render the block content (the optional editable intro, then the well/news-list block).
-    the_content();
-  } else {
-    // Not migrated yet: render the listing partial directly so the page is never blank.
+  // Render the page's editable content: any optional intro, and the well/news-list block when the page
+  // has been migrated to carry it.
+  the_content();
+
+  // The listing must always show. If the content did not already render it (an empty/un-migrated page,
+  // or a page an editor gave an intro but no news-list block), include the partial now. When the block
+  // IS present, the_content() rendered the listing already, so we don't render it twice.
+  if ( ! has_block( 'well/news-list', get_post() ) ) {
     get_template_part('sections/news-list');
   }
 endwhile;
