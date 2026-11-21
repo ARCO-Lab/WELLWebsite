@@ -103,6 +103,38 @@ class SamplingValidateRouteTests(unittest.TestCase):
         r = self.client.post("/api/samples/validate", data=big.encode("utf-8"),
                              content_type="text/csv")
         self.assertEqual(r.status_code, 413)
+        # Even over the cap, the answer is JSON the checker can read (never werkzeug's HTML 413 page), and says the
+        # file looks like the wrong one.
+        self.assertEqual(r.content_type.split(";")[0], "application/json")
+        self.assertIn("sensor data", r.get_json()["error"])
+
+    def test_large_wrong_format_body_gets_column_problems_not_an_html_413(self):
+        # Sentry #172, the real failure: a real-sized West Campus monthly sensor file (~1.4 MB) is far above the
+        # app-wide 64 KB MAX_CONTENT_LENGTH (config.py) but below this route's own 2 MB cap. werkzeug used to reject
+        # it with an HTML 413 before the route ran, so the checker (which calls res.json()) could only say "couldn't
+        # read that one". The validator must now RUN and the researcher must see the actual column problems.
+        header = "ID,Timestamp (America/Toronto),Group,Latitude,Longitude,Air Temperature: °C,Rain: mm\n"
+        row = "1,2026-10-01T00:00:00,Weather,43.26611,-79.92866,12.5,0.0\n"
+        big = header + row * (1_400_000 // len(row.encode("utf-8")) + 1)
+        size = len(big.encode("utf-8"))
+        self.assertGreater(size, self.app.config["MAX_CONTENT_LENGTH"])  # above the app-wide 64 KB cap
+        self.assertLess(size, samples_route.MAX_VALIDATE_BYTES)          # below this route's own 2 MB cap
+        r = self.post_json(big)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.content_type.split(";")[0], "application/json")
+        body = r.get_json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(any("unknown column" in p["message"] for p in body["problems"]))
+
+    def test_the_app_wide_cap_still_answers_json_on_other_routes(self):
+        # The 64 KB MAX_CONTENT_LENGTH still protects the export routes; server.py's handler makes its 413 JSON too,
+        # so no client ever gets an HTML 413 page.
+        self.assertEqual(self.app.config["MAX_CONTENT_LENGTH"], 64 * 1024)
+        over = b'{"x":"' + b"a" * (64 * 1024) + b'"}'
+        r = self.client.post("/api/exports/estimate", data=over, content_type="application/json")
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r.content_type.split(";")[0], "application/json")
+        self.assertIn("error", r.get_json())
 
     def test_validate_never_persists(self):
         # A valid file must leave nothing behind: the route must not write to the sampling table.
