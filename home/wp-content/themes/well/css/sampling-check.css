@@ -142,17 +142,27 @@
   margin-top: 0.5rem;
 }
 
-/* "Clear" button: dark text on a light background so it reads against the panel
-   (the theme's .btn-outline-secondary default is too light to see here). */
-.sampling-checker__actions #sampling-clear-btn {
-  color: #1a1a1a;
+/* "Clear" button: dark text on a light background so it reads against the panel.
+   Two base rules fight it: btn.css sets `.btn { color: #fff }` (white text), and theme.css's Bootstrap
+   `.btn-outline-secondary:hover/:focus/:active` paints it grey (#6c757d) with white text. The !important on the
+   text colour wins over both no matter which stylesheet loads last (btn.css already uses !important on buttons),
+   so the label stays dark in every state; a light background is set to match. Every interactive state is listed
+   so none can fall back to the grey Bootstrap default. */
+.sampling-checker__actions #sampling-clear-btn,
+.sampling-checker__actions #sampling-clear-btn:hover,
+.sampling-checker__actions #sampling-clear-btn:focus,
+.sampling-checker__actions #sampling-clear-btn:focus-visible,
+.sampling-checker__actions #sampling-clear-btn:active {
+  color: #1a1a1a !important;
   border-color: #6c757d;
   background-color: #fff;
 }
 
 .sampling-checker__actions #sampling-clear-btn:hover,
-.sampling-checker__actions #sampling-clear-btn:focus {
-  color: #000;
+.sampling-checker__actions #sampling-clear-btn:focus,
+.sampling-checker__actions #sampling-clear-btn:focus-visible,
+.sampling-checker__actions #sampling-clear-btn:active {
+  color: #000 !important;
   background-color: #f1f1f1;
   border-color: #495965;
 }
