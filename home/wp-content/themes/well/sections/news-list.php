@@ -7,15 +7,25 @@
 // blank canvas, while the front-end output is the same markup it always was.
 //
 // The listing is a live query (the latest published posts, newest first, nine per page) so it stays
-// developer-owned code rather than editable blocks. It builds its own paged query from the current URL
+// developer-owned code rather than editable blocks. It uses a paged query from the current URL
 // (get_query_var), exactly as the News template used to, so /news/page/2/ and so on keep working whether
 // this partial is reached through the_content() (migrated page) or included directly (fallback).
 defined( 'ABSPATH' ) || exit; // Only WordPress may load this file; a direct request gets an empty page.
 
 // 9 published posts per page, newest first (well_news_query() in functions.php explains what counts as
 // news). Later pages are /news/page/2/ and so on.
-$news_page  = max(1, (int) get_query_var('paged'), (int) get_query_var('page'));
-$news_query = well_news_query(9, array(), $news_page);
+$news_page = max(1, (int) get_query_var('paged'), (int) get_query_var('page'));
+if ( isset($GLOBALS['well_news_list_query']) && $GLOBALS['well_news_list_query'] instanceof WP_Query ) {
+  // The News template (page-news.php) already built this query for its 404 bounds check; reuse it so
+  // the posts are fetched once per request. rewind_posts() makes it safe to loop here however it was
+  // reached (directly, or through the well/news-list block in the_content()).
+  $news_query = $GLOBALS['well_news_list_query'];
+  $news_query->rewind_posts();
+} else {
+  // Standalone contexts that have no template to build the query first: the editor's block preview and
+  // the [well_news_list] shortcode. Build it here so the partial is self-contained.
+  $news_query = well_news_query(9, array(), $news_page);
+}
 $news_pages = (int) $news_query->max_num_pages;
 ?>
   <section class="section-padding">
