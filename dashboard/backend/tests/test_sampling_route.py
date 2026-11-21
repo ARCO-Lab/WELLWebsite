@@ -71,9 +71,31 @@ class SamplingValidateRouteTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json()["ok"])
 
+    def test_wrong_format_sensor_file_returns_problems_not_an_error(self):
+        # Sentry #172: a West Campus sensor monthly file (columns ID, Timestamp, Group, ..., not the sampling format)
+        # was pasted into the checker. The validator must RUN and list the format problems as a normal 200 answer,
+        # never crash into a 500: the checker expects a JSON verdict, not an error page.
+        path = (pathlib.Path(__file__).resolve().parent / "golden" / "monthly"
+                / "2026-10_WELLWestCampus.csv")
+        text = path.read_text(encoding="utf-8")
+        r = self.post_json(text)
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(any("unknown column" in p["message"] for p in body["problems"]))
+        self.assertTrue(any(p["column"] == "date" and "missing" in p["message"] for p in body["problems"]))
+
     def test_non_string_csv_is_a_400(self):
         r = self.client.post("/api/samples/validate", json={"csv": 123})
         self.assertEqual(r.status_code, 400)
+        self.assertIn("error", r.get_json())
+
+    def test_malformed_json_body_is_a_json_400(self):
+        # A body that claims to be JSON but isn't must still get a JSON error, never Flask's HTML 400 page.
+        r = self.client.post("/api/samples/validate", data='{"csv": "a,b', content_type="application/json")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.content_type.split(";")[0], "application/json")
+        self.assertIn("error", r.get_json())
 
     def test_oversize_body_is_refused_with_413(self):
         big = ("x" * 1000 + "\n") * 2100  # > MAX_VALIDATE_BYTES (2 MB)
