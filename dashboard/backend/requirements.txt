@@ -44,7 +44,7 @@ python-dotenv==1.2.4
 redis==8.1.0
 requests==2.34.2
 schedule==1.2.2
-sentry-sdk[flask,celery]==2.74.0
+sentry-sdk[flask,celery]==2.75.0
 six==1.17.0
 SQLAlchemy==2.0.57
 typing_extensions==4.16.0
