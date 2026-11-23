@@ -71,7 +71,7 @@ services:
   wordpress:
     # Only PHP and Apache come from this image. WordPress core and plugins live in ./home
     # (tracked in git) and are updated there, so bump this tag for PHP/Apache fixes.
-    image: wordpress:7.1.4-php8.3-apache@sha256:8b64037bb2a3bdc41bebccb165f20ad5e4c786b684ae4a2bd5981f98aa1eb107
+    image: wordpress:7.1.4-php8.3-apache@sha256:074f9ef5429025dab76a4242f5b796f64ae76a49dd19b6708ad29e1893a8d383
     depends_on:
       - db
     volumes:
