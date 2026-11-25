@@ -28,7 +28,8 @@ if [ "$is_probe" = 1 ]; then
     ok)       printf '%s\n%s' '[{"recorded_at":"2026-11-24T21:30:00","value":1.5}]' 200 ;;
     http502)  printf '%s\n%s' '<html><body>502 Bad Gateway</body></html>' 502 ;;
     empty)    printf '%s\n%s' '[]' 200 ;;
-    connfail) exit 7 ;;   # curl's connect error: no output, non-zero exit
+    http000)  printf '\n%s' 000; exit 7 ;;   # curl on a refused connection: writes "\n000" to stdout, non-zero exit
+    connfail) exit 7 ;;   # curl before it writes anything (e.g. DNS failure): no output, non-zero exit
   esac
   exit 0
 fi
@@ -78,6 +79,10 @@ check "200 with an empty [] (no readings): FAIL, exit 1, pings /fail" \
 
 SCENARIO=connfail HC=$HC run
 check "connection failure (non-zero, no output): FAIL, exit 1, pings /fail" \
+  'rc 1 && said "no response" && pinged "$HC/fail"'
+
+SCENARIO=http000 HC=$HC run
+check "connection refused (curl writes status 000, non-zero): FAIL, exit 1, pings /fail" \
   'rc 1 && said "no response" && pinged "$HC/fail"'
 
 SCENARIO=ok HC="" run

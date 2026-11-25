@@ -30,7 +30,7 @@ URL=${UPTIME_URL:-https://welldash.mcmaster.ca/api/latest}
 TIMEOUT=${UPTIME_CURL_TIMEOUT:-20}
 CURL=${CURL:-curl}
 
-# A UTC ISO-8601 timestamp, as the other cron scripts stamp their lines
+# A UTC ISO-8601 timestamp at the start of each line, so log entries sort and read unambiguously wherever the VM runs
 log() { echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*"; }
 # Pings HEALTHCHECK_URL_UPTIME (if set) with the suffix in $1 ("" for success, /fail); a failed ping is ignored and
 # never changes the exit code. The ping URL is never printed, so it stays out of the log.
