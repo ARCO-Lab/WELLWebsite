@@ -105,3 +105,25 @@ takes (30 minutes is safe), or a slow CI run will look like an outage.
 To show deploys on welldash²'s Overview page, point `DEPLOY_LOG` into its logs folder (see
 [Showing deploys](../dashboard/backend/app/ops/README.md#showing-deploys)). The script's other settings are in
 [configuration.md](configuration.md#deploy-script-deploysh-set-in-the-crontab-line).
+
+## Dashboard uptime check
+
+`uptime_check.sh` probes the public API from outside the stack and pings a Healthchecks.io check, so an outage is
+noticed even when nothing throws. Sentry only reports exceptions from running code, so a backend that is stopped,
+crash-looping or answering 502 is invisible to it; and the other heartbeats on the VM are all worker or scheduler
+tasks, so none proves the dashboard API is actually serving. This check fills that gap: it calls `/api/latest` the
+way a visitor's browser does and treats the API as healthy only when HTTP 200 comes back with a real reading in it
+(a 200 serving an empty `[]` or an error page is treated as down).
+
+Set it up (once, on the VM) with a Healthchecks.io check whose period is 5 minutes and grace time 20-30 minutes, and
+which has an email (or Slack) notification integration so a missed ping actually reaches someone. Then add this to
+the crontab of the user that owns `~/WELLWebsite` (`crontab -e`); it runs every 5 minutes and appends to `uptime.log`
+(gitignored, like `deploy.log` and `wp-backup.log`):
+
+```
+*/5 * * * * cd ~/WELLWebsite && HEALTHCHECK_URL_UPTIME=https://hc-ping.com/<uuid> ./uptime_check.sh >>uptime.log 2>&1
+```
+
+`HEALTHCHECK_URL_UPTIME` is optional: left out, the script only prints the result and sets the exit code, so you can
+run `./uptime_check.sh` by hand to see the current state without pinging anything. The script's other settings are in
+[configuration.md](configuration.md#dashboard-uptime-check-uptime_checksh-set-in-the-crontab-line).

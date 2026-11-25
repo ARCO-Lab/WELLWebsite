@@ -169,6 +169,16 @@ Details in [wordpress/README.md](../wordpress/README.md#backups).
 | `DEPLOY_CI_WAIT_HOURS` | `3` | How long `--auto` waits for CI to finish on a commit before it reports it (a `/fail` ping and a `FAILED` line). |
 | `GITHUB_REPO` | `ARCO-Lab/WELLWebsite` | Where `--auto` reads CI results. |
 
+## Dashboard uptime check (`uptime_check.sh`, set in the crontab line)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HEALTHCHECK_URL_UPTIME` | none | Healthchecks.io ping URL: pinged on success, `<url>/fail` on a failure. Unset, the script only prints the result and sets the exit code, pinging nothing, so it is safe to run by hand. |
+| `UPTIME_URL` | `https://welldash.mcmaster.ca/api/latest` | The API endpoint the probe calls. Healthy means HTTP 200 and a body that contains a reading. |
+| `UPTIME_CURL_TIMEOUT` | `20` | Seconds to wait for the API. |
+
+Details in [deploying.md](deploying.md#dashboard-uptime-check).
+
 ## Tests
 
 | Variable | Meaning |

@@ -289,8 +289,8 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
 
       # The runner image ships shellcheck.
-      - name: shellcheck on deploy.sh, the WordPress backup, the CI scripts, the load-test scripts and the roles steps
-        run: shellcheck deploy.sh wordpress/*.sh .github/scripts/*.sh dashboard/loadtest/*.sh dashboard/backend/app/db/*.sh
+      - name: shellcheck on deploy.sh, the uptime check, the WordPress backup, the CI scripts, the load-test scripts and the roles steps
+        run: shellcheck deploy.sh uptime_check.sh wordpress/*.sh .github/scripts/*.sh dashboard/loadtest/*.sh dashboard/backend/app/db/*.sh
 
       # It only prints the steps; check that it does, and that it refuses a database name that isn't a plain name.
       - name: roles.sh prints the database roles steps
@@ -374,3 +374,6 @@ jobs:
 
       - name: canary_issue.sh against a stub gh
         run: bash .github/scripts/test_canary_issue.sh
+
+      - name: uptime_check.sh against a stub curl
+        run: bash .github/scripts/test_uptime_check.sh
